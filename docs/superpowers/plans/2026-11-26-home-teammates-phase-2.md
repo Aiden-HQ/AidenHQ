@@ -854,6 +854,40 @@ After this task, only `parseRoute`'s `redirectOld` and docs describing the redir
 - [ ] `docs/design/sessions.md` 8, 11, 48. `docs/design/agent-and-module-pages.md` routes (22, 29, 47, 69).
   `docs/design/agent-work-board.md` 121, 266.
 
+## Task 15: an agent asks the owner on its own open task
+
+**Why:** an agent could ask the owner (notify `kind: decision` → `/v1/wait`) only on the task its running job is on. Tess's
+open-loops sweep runs on the routine task and asks on her `task_join` part of the owner's `waiting-on` task (handbook step
+3), so notify fell back to a "Settle: questions from Tess" task for the Fleet Steward and the question never reached Needs
+you.
+
+**Files:** `kernel/src/idle.ts` (`wait`), `kernel/src/escalate.ts` (`ownersPart`), `kernel/src/backplane.ts` (comment),
+`modules/owner-channel/connections/notify/src/threads.ts` (`taskForNotify`), `src/main.ts` (`resolveTask`), `src/mcp.ts` and
+`src/notify.ts` (wording), `src/kernel.ts` (the unused `work` read goes), `module.yaml` (role comments),
+`modules/chief-of-staff/agents/chief-of-staff/AGENTS.md`.
+
+**Interfaces**
+- `/v1/wait` body `task`: the job's own task, or any other open task assigned to the calling job's agent (read from the
+  control plane with the owner's key). Anything else stays a 409. The wait fact, the ask marker and the wait's wake are
+  that task's, and the owner's answer there wakes the agent on it as any owner comment does (wakes.ts). Every other rule
+  stands: one open ask per task, the per-agent ask cap, the decision-token flow.
+- `escalate.ask`: an agent's question on its part of the owner's own task (its open parent is held by a person, not an
+  agent: `task_join`) goes to the owner directly, like a task the owner is talking on; every other owner question still
+  goes to the Fleet Steward.
+- `taskForNotify(issue, agents)`: an open task with an agent assignee; notify keeps it only when that agent is the caller
+  (unchanged check), so it no longer needs a running job on it.
+
+- [x] Kernel: `idle.wait` resolves the named task; `ownersPart` routing (the reverted kernel half, reapplied).
+- [x] Notify: `taskForNotify` without the job requirement; descriptions say "your current task, or another open task
+  assigned to you".
+- [x] Test (kernel `idle.test.ts`): a job on tA asks with `task` = its part t1 of the owner's t0 → `to: owner`, t1's state
+  is `owner_wait` with question and detail, tA doesn't wait, the wait's wake is t1's; the agent's own later comment (step
+  3's `task_handoff`) leaves it open and the owner's comment ends it; the owner's task and a closed part are refused.
+- [x] Test (notify `threads.test.ts`): an open task with an agent assignee is claimed whatever its job runs on; a closed
+  one or one with no agent isn't.
+- [x] Test (board `answers.test.ts`): `/api/needs-you` carries the state's question, detail and options, and the owner's
+  answer posts once on that task.
+
 ## New installs
 
 A fresh install with the default bundle and quiet start, nothing connected:

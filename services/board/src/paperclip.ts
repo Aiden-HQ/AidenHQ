@@ -323,8 +323,8 @@ export class Paperclip {
   }
 
   /** Tasks with a label (chats): open ones, or the newest finished ones. */
-  async labelled(labelId: string, status: string, limit = "200"): Promise<Issue[]> {
-    const q = new URLSearchParams({ labelId, status, limit, excludeRoutineExecutions: "true" });
+  async labelled(labelId: string, status: string, limit = "200", offset = 0): Promise<Issue[]> {
+    const q = new URLSearchParams({ labelId, status, limit, excludeRoutineExecutions: "true", ...(offset ? { offset: String(offset) } : {}) });
     return this.request<Issue[]>("GET", `/api/companies/${this.companyId}/issues?${q}`);
   }
 
@@ -372,8 +372,8 @@ export class Paperclip {
     await this.request("POST", `/api/approvals/${encodeURIComponent(id)}/reject`, { decisionNote: reason });
   }
 
-  closedSince(since: string, limit = "100"): Promise<Issue[]> {
-    return this.list("done,cancelled", since, limit);
+  closedSince(since: string, limit = "100", offset = 0): Promise<Issue[]> {
+    return this.list("done,cancelled", since, limit, false, offset);
   }
 
   /** Every task updated after `since`, routine runs included, newest first (the Flow timeline's titles). */

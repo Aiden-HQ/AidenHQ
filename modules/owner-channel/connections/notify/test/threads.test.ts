@@ -4,11 +4,10 @@ import { taskForNotify } from "../src/threads.js";
 
 
 describe("taskForNotify", () => {
-  const issue = { id: "i9", assigneeAgentId: "a1" };
   const names = [{ id: "a1", name: "Inbox Agent" }];
-  it("refuses a task its agent isn't running a job on right now (an ended job, or another agent passing someone else's task)", () => {
-    expect(taskForNotify(issue, [], names)).toBeUndefined();
-    expect(taskForNotify(issue, [{ agent: "a1", state: "done" }], names)).toBeUndefined();
-    expect(taskForNotify(issue, [{ agent: "a2", state: "running" }], names)).toBeUndefined();
+  it("claims an open task with an agent assignee, whatever task its job runs on; never a closed one or one with no agent", () => {
+    expect(taskForNotify({ id: "i9", status: "todo", assigneeAgentId: "a1" }, names)).toEqual({ issueId: "i9", agentId: "a1", agentName: "Inbox Agent" });
+    expect(taskForNotify({ id: "i9", status: "done", assigneeAgentId: "a1" }, names)).toBeUndefined();
+    expect(taskForNotify({ id: "i9", status: "todo", assigneeAgentId: null }, names)).toBeUndefined();
   });
 });

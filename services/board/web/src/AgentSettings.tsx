@@ -1,4 +1,4 @@
-// An agent's Settings tab (#/agents/<key>/settings), docs/design/agent-and-module-pages.md "Agent page".
+// An agent's Settings tab (#/team/agents/<key>/settings), docs/design/agent-and-module-pages.md "Agent page".
 import { useRef, useState } from "react";
 import { useLive } from "./events";
 import { AgentGrants } from "./AgentGrants";

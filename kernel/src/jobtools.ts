@@ -5,8 +5,12 @@
 // next turn's admission (admission.ts) applies `reset` and `engine`, checking the engine and model against the agent's grants
 // then, and the requests go once that turn has started (taken), so a deferred or failed start keeps them for the next try.
 // It also counts a job's prechecks (`aidenhq review`, backplane.ts and main.ts): a reviewer call each, PRECHECKS a job.
+import { request } from "node:http";
 import type { DatabaseSync } from "node:sqlite";
+import type { Asserter } from "./assert.ts";
 import { verifyToken } from "./gateway/token.ts";
+import type { Whoami } from "./identity.ts";
+import type { Resolver } from "./net.ts";
 
 export const JOB_TOOLS = ["reset", "engine", "cleanup"] as const;
 /** A job's prechecks (`aidenhq review`): each is a reviewer call. */
@@ -153,3 +157,87 @@ export function createJobTools({ db, secret, engines, orgs = () => [], reach = (
   };
 }
 export type JobTools = ReturnType<typeof createJobTools>;
+
+/** A module's job tools (module.yaml providers.jobtools, compiled into modules.json `jobtools`). */
+export type ModuleJobToolsDecl = { url: string; auth_secret: string; ops: string[] };
+/** The caller a module's job tool hears: the kernel's own reading of the job and its task, never the box's. */
+export type JobToolCaller = { agent: string; roles: string[]; task: string; task_module: string | null; task_source: string | null };
+/** The `tool` claim of a module job tool's caller assertion: it never equals a connection's `<connection>.<tool>`. */
+export const JOBTOOL_CLAIM = (module: string, op: string) => `jobtool:${module}/${op}`;
+const OP = /^[a-z][a-z0-9-]{0,40}$/;
+/** The box's body, and the module's answer: at most these. */
+export const JOBTOOL_BODY_MAX = 16 * 1024;
+const ANSWER_MAX = 64 * 1024;
+const TIMEOUT_S = 60;
+
+/**
+ * POST /v1/jobtools/module/:module/:op: a module's own job tool, for a kernel job's box (`ui-review login`). The caller is the
+ * job's own token, read by whoami (live, on its own agent and task); the op is one the module lists. The kernel POSTs
+ * `{op, body, caller}` to the module's `providers.jobtools.url` with the module's key and a caller assertion for the job,
+ * in flight while the module answers. The assertion opens only a module+assertion route that accepts a job tool's call
+ * (assert.ts `inFlight` with `jobtool: true`), for this job and no other: none does yet. `task_module` and `task_source` are the module and source the kernel recorded when that module filed the task
+ * (modtasks.ts `task_filers`), never the task's text, which its assignee may edit; null for any other task. The module decides
+ * what to release; its status and answer go back to the box as they came (bounded).
+ */
+export function createModuleTool({ db, whoami, decl, asserter, resolver, secret, log = () => {} }: {
+  /** The kernel's database: its `task_filers` rows (modtasks.ts). */
+  db: DatabaseSync;
+  whoami: Whoami;
+  decl: (module: string) => ModuleJobToolsDecl | undefined;
+  asserter: Asserter;
+  resolver: Resolver;
+  secret: (name: string) => string;
+  log?: (msg: string, f?: Record<string, unknown>) => void;
+}) {
+  function taskOrigin(task: string): { task_module: string | null; task_source: string | null } {
+    const r = db.prepare("SELECT filer, source FROM task_filers WHERE task = ?").get(task) as { filer: string; source: string | null } | undefined;
+    const module = /^module:([\w-]+)$/.exec(r?.filer ?? "")?.[1];
+    return module && r?.source ? { task_module: module, task_source: r.source } : { task_module: null, task_source: null };
+  }
+  /** The live kernel job this token names (whoami: on its own agent and task, admitted or running), or 401. */
+  const liveJob = async (token: string) => {
+    const who = await whoami(token).catch(() => undefined);
+    if (who?.kind !== "run" || !who.job || !who.task || !who.agent) throw new JobToolError(401, "unauthorized", "a kernel job's own token is required");
+    return who as typeof who & { job: string; task: string; agent: string };
+  };
+
+  return async function call(token: string, module: string, op: string, body: unknown): Promise<{ status: number; body: string }> {
+    await liveJob(token);
+    const d = decl(module);
+    if (!d || !OP.test(op) || !d.ops.includes(op)) throw new JobToolError(404, "no-tool", `${module} serves no job tool ${op.slice(0, 60)}`);
+    const key = secret(d.auth_secret);
+    if (!key) throw new JobToolError(503, "no_service_key", `${module}'s service key is missing`);
+    const to = await resolver.resolve(d.url).catch((e: Error) => { throw new JobToolError(502, "bad_upstream", e.message); });
+    // Read again after the wait: a job that ended meanwhile sends nothing.
+    const who = await liveJob(token);
+    const caller: JobToolCaller = { agent: who.key ?? "", roles: [...who.roles], task: who.task, ...taskOrigin(who.task) };
+    const payload = JSON.stringify({ op, body: body ?? {}, caller });
+    const signed = asserter.signCaller({ agent: who.agent, key: who.key ?? "", name: who.name ?? "", roles: who.roles, task: who.task, tool: JOBTOOL_CLAIM(module, op), aud: module, kind: who.kind });
+    asserter.begin(signed.jti, { credential: "", bearer: token, job: who.job, aud: module, kind: who.kind, jobtool: true }, TIMEOUT_S);
+    try {
+      const out = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        let deadline: NodeJS.Timeout | undefined;
+        const ok = (v: { status: number; body: string }) => { clearTimeout(deadline); resolve(v); };
+        const no = (e: JobToolError) => { clearTimeout(deadline); reject(e); };
+        const req = request({ host: to.host, port: to.port, path: to.path, method: "POST", headers: { authorization: `Bearer ${key}`, "x-aidenhq-caller": signed.jwt, "content-type": "application/json", "content-length": Buffer.byteLength(payload) } }, (res) => {
+          const chunks: Buffer[] = [];
+          let n = 0;
+          res.on("data", (c: Buffer) => { if ((n += c.length) > ANSWER_MAX) { res.destroy(); no(new JobToolError(502, "too_large", `${module}'s answer is over ${ANSWER_MAX} bytes`)); } else chunks.push(c); });
+          res.on("end", () => ok({ status: res.statusCode ?? 502, body: Buffer.concat(chunks).toString("utf8") }));
+          res.on("error", () => no(new JobToolError(502, "bad_upstream", `${module} broke off its answer`)));
+        });
+        req.on("error", (e) => { resolver.forget(d.url); no(new JobToolError(502, "bad_upstream", `${module} is unreachable (${e.message})`)); });
+        // One deadline for the whole answer, not an idle timer: a module trickling bytes can't hold the call (and its assertion) open.
+        deadline = setTimeout(() => { req.destroy(); no(new JobToolError(504, "timeout", `${module} didn't answer within ${TIMEOUT_S} s`)); }, TIMEOUT_S * 1000);
+        req.end(payload);
+      });
+      // The module's own refusal (a 4xx with its reason) reaches the box; its failure is the kernel's 502.
+      const status = out.status >= 500 || out.status < 200 ? 502 : out.status;
+      log("module job tool", { module, op, agent: caller.agent, task: who.task, job: who.job, status });
+      return { status, body: out.body };
+    } finally {
+      asserter.end(signed.jti);
+    }
+  };
+}
+export type ModuleTool = ReturnType<typeof createModuleTool>;

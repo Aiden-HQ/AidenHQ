@@ -206,8 +206,8 @@ export function testUserIdentity(baseText: string | undefined, headText: string 
   const apps = (Array.isArray(after?.apps) ? after.apps : []).filter((x: unknown): x is string => typeof x === "string" && x.length > 0);
   // The effective identity, by value: a rewrite that only reorders the keys or the apps changes no access, so no raise.
   if (eq(identityKey(parse(baseText)?.settings?.edge?.test_user), identityKey(after))) return {};
-  const identity = `Adds a test sign-in identity${email ? `: ${email}` : ""}${apps.length ? ` as a member of ${apps.join(", ")}` : ""}; 15-minute sessions; every mint and revoke audited.`;
-  const host = "An apply doesn't install the canary network: on an upgraded host, install ops/vm/canary-net.sh and its aidenhq-canary-net.service once, and open the listener with ops/vm/ufw-rules.sh where ufw is active (docs/design/access.md, \"Test-user sign-in\"), or app_page_canary can't start a browser.";
+  const identity = `Adds a test sign-in identity${email ? `: ${email}` : ""}${apps.length ? ` as a member of ${apps.join(", ")}` : ""}, for agents holding app-tester; read-only sessions of up to 60 minutes (app_page_canary's one 15-minute submission writes); every mint and revoke audited.`;
+  const host = "An apply doesn't install the canary network or re-run the computers' rule: on an upgraded host, install ops/vm/canary-net.sh and its aidenhq-canary-net.service once, re-run ops/vm/computer-net.sh (it opens the listener to the computers' bridge), and open the listener with ops/vm/ufw-rules.sh where ufw is active (docs/design/access.md, \"Test-user sign-in\"), or app_page_canary can't start a browser and a box can't reach the listener.";
   return { raise: { tier: 2, rule: "test-user-identity", reason: "adds or changes the instance's agent sign-in identity (settings.edge.test_user)" }, line: `${identity}\n${host}` };
 }
 

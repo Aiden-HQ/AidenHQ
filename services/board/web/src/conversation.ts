@@ -6,10 +6,12 @@ import type { Approval, ChatAgent, ChatMessage, ChatRow } from "./types.js";
  * The chat list as the device may keep it (queries.ts): each row's fields named one by one, so a field added later stays
  * off the device until listed here; never the last message's preview or a run's failure text.
  */
-export function chatListForDevice(r: { chats: ChatRow[]; agents: ChatAgent[] }) {
+export function chatListForDevice(r: { chats: ChatRow[]; agents: ChatAgent[]; more?: boolean; next_offset?: number }) {
   return {
     agents: r.agents,
-    chats: r.chats.map(({ identifier, title, open, agent, state, updatedAt, unread, from }) => ({ identifier, title, open, agent, state, updatedAt, unread, ...(from ? { from } : {}) })),
+    chats: r.chats.map(({ identifier, title, open, agent, state, updatedAt, unread, from, settled }) => ({ identifier, title, open, agent, state, updatedAt, unread, ...(from ? { from } : {}), ...(settled ? { settled } : {}) })),
+    ...(r.more !== undefined ? { more: r.more } : {}),
+    ...(r.next_offset !== undefined ? { next_offset: r.next_offset } : {}),
   };
 }
 

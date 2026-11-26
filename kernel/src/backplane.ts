@@ -88,6 +88,9 @@
 //                              filed by nothing (writes.preview, review-loop precheck), at most PRECHECKS reviewer calls a job
 //                              | clone {repo}: a repository its dispatcher's clone grant covers as a git bundle (its default
 //                              branch; every branch on this server), which the box clones, or fetches into its clone, itself
+//   POST /v1/jobtools/module/<module>/<op>  (a kernel job's own token, body ≤ 16 KB) one of the module's own job tools (module.yaml
+//                              providers.jobtools ops): the kernel POSTs {op, body, caller} to the module with its key and a caller
+//                              assertion in flight for the job; the module's status and answer (≤ 64 KB) go back (jobtools.ts createModuleTool)
 //   GET  /v1/advisories        (the board's key) the marketplace advisories open against installed modules (advisories.ts)
 //   GET  /v1/connections/health (the board's key) every connection's /healthz as the kernel reaches it -> {probes: {name: {ok, status?, state?, detail?, channels?, checkedAt}}} (health.ts)
 //   POST /v1/connections/:module/ok  (the board's key) a sign-in or setup flow of that module finished: its down state clears and
@@ -138,7 +141,7 @@ import type { Jobs } from "./jobs.ts";
 import type { Admission } from "./admission.ts";
 import { JOB_KINDS, type Outcomes } from "./outcomes.ts";
 import { notice, type Notify } from "./notify.ts";
-import type { JobTools } from "./jobtools.ts";
+import { JOBTOOL_BODY_MAX, type JobTools, type ModuleTool } from "./jobtools.ts";
 import type { Routing } from "./routing-tune.ts";
 import { CODEHOSTS, hostOf, type Answer } from "./codehost.ts";
 import { fail } from "./proxy.ts";
@@ -240,6 +243,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/checks/:check/kept", auth: "module" },
   { method: "POST", path: "/v1/receipts/verify", auth: "module" },
   { method: "POST", path: "/v1/jobtools/:cmd", auth: "job" },
+  { method: "POST", path: "/v1/jobtools/module/:module/:cmd", auth: "job" },
   { method: "POST", path: "/v1/checkout", auth: "job" },
   { method: "GET", path: "/v1/advisories", auth: "board" },
   { method: "GET", path: "/v1/connections/health", auth: "board" },
@@ -357,7 +361,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, answers, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], testSessions, accounts, checks, checkJobs, jobTools, precheck, repoBundle, appToken, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, compileCheck, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, views, log = () => {} }: {
+export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, answers, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], testSessions, accounts, checks, checkJobs, jobTools, moduleTool, precheck, repoBundle, appToken, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, compileCheck, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, views, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts, and GET /v1/facts for incremental readers. */
   facts?: Facts;
   /** Projects (projects.ts): a code host's new PR fills in its task's project. */
@@ -414,6 +418,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
   checkJobs?: CheckJobs;
   /** A running job's requests for its task's next turn (jobtools.ts). */
   jobTools?: JobTools;
+  /** A module's own job tools, for a kernel job's box (jobtools.ts createModuleTool). */
+  moduleTool?: ModuleTool;
   /** A job's precheck (`aidenhq review`): what the AI reviewer would say of this write, filing nothing; `slot` counts the reviewer call. */
   precheck?: (who: Identity, b: { kind: string; args: unknown }, slot: () => (failure: unknown) => void) => Promise<{ text: string; reason?: string; decision?: string }>;
   /** A session job's git token for a repo (codehost.ts appToken): the App's, narrowed to that repo. */
@@ -471,7 +477,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         case "GET /v1/jwks": return send(res, 200, asserter.jwks);
         case "POST /v1/wait": {
           // A module with role kernel.wake serving a kernel job's task_wait, task_handoff or notify call in flight: the job is
-          // read from its own token (never the assertion's or the body's say-so), and the wait is on that job's own task.
+          // read from its own token (never the assertion's or the body's say-so), and the wait is on that job's own task or, named
+          // in the body, another open task its agent holds (idle.ts checks it against the control plane).
           const w = await moduleOf(req);
           if (!w.roles.includes("kernel.wake")) throw fail(403, "forbidden", `${w.module} may not record waits (role kernel.wake)`);
           if (!idle) throw fail(503, "unavailable", "waits are off");
@@ -634,6 +641,17 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
             throw e;
           }
           return await codehost(hostOf(snap.repo), "snapshot", snap, res);
+        }
+        case "POST /v1/jobtools/module/:module/:cmd": {
+          if (!moduleTool) throw fail(503, "unavailable", "module job tools are off");
+          const b = await json(req, JOBTOOL_BODY_MAX);
+          let out;
+          try { out = await moduleTool(bearer(req), m[0]!, m[1]!, b); } catch (e) {
+            const j = e as { name?: string; status?: number; code?: string; message: string };
+            if (j.name === "JobToolError") throw fail(j.status!, j.code!, j.message);
+            throw e;
+          }
+          return void res.writeHead(out.status, { "content-type": "application/json" }).end(out.body);
         }
         case "POST /v1/jobtools/:cmd": {
           if (!jobTools) throw fail(503, "unavailable", "job tools are off");
@@ -819,9 +837,10 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         try { return send(res, 200, await settingsChange.asAgent(requester, job.task, b.changes, w.module!, { tool, why: b.why })); } catch (e) { throw fail((e as { status?: number }).status ?? 502, "refused", String((e as Error).message).slice(0, 1000)); }
       }
       if (hit && (hit.path === "/v1/test-session" || hit.path === "/v1/test-session/:op")) {
-        // The test-user page canary (test-session.ts): a module holding kernel.test-session serves a kernel job's own tool call
-        // in flight. Who the agent is comes from its job token and grants row, never from the request body; the app list and
-        // the task's assignee are re-read in test-session.ts. With no settings.edge.test_user the route refuses everything.
+        // Test-user sessions (test-session.ts): a module holding kernel.test-session serves a kernel job's own tool call in
+        // flight (app_page_canary, or a module's job tool forwarded for that job). Who the agent is, and its roles, come from
+        // its job token and grants row, never from the request body; the app list and the task's assignee are re-read in
+        // test-session.ts. With no settings.edge.test_user the route refuses everything.
         const w = await moduleOf(req);
         if (!w.roles.includes("kernel.test-session")) throw fail(403, "forbidden", `${w.module} may not reach the test session (role kernel.test-session)`);
         const sessions = testSessions?.();
@@ -829,19 +848,21 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
         const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
         if (!live || job?.kind !== "run" || !job.task || !job.job || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight opens a test session");
-        const signed = String(live.caller.tool ?? "");
-        const tool = signed === "apps.app_page_canary" ? "apps.app_page_canary" : "";
-        if (!tool) throw fail(403, "forbidden", "a test session is app_page_canary's only");
+        // The mode is the kernel's: app_page_canary's one feedback submission writes (test-write); every other caller reads.
+        // AidenHQ apps never get more: a body asking for test-write or any is refused, whatever the app's own settings say.
+        const canary = String(live.caller.tool ?? "") === "apps.app_page_canary";
         const b = await json(req);
         const op = hit.path === "/v1/test-session" ? "mint" : m[0]!;
         // The allowlist and the audit use the grants key; the task's assignee is the control plane's agent id.
-        const who = { agentKey: String(job.key ?? ""), agentId: String(job.agent ?? ""), task: job.task };
+        const who = { agentKey: String(job.key ?? ""), agentId: String(job.agent ?? ""), roles: job.roles ?? [], task: job.task };
         try {
           if (op === "mint") {
             if (typeof b.app !== "string" || !/^[a-z][a-z0-9-]{1,30}$/.test(b.app)) throw fail(400, "bad_request", "send {app}");
-            const t = await sessions.mint({ agentKey: who.agentKey, agentId: who.agentId, task: who.task, app: b.app });
+            if (b.mode !== undefined && b.mode !== "read") throw fail(400, "bad_request", "an AidenHQ app's test session is read-only: send mode read or none");
+            if (b.minutes !== undefined && (canary || typeof b.minutes !== "number")) throw fail(400, "bad_request", canary ? "app_page_canary's session is 15 minutes" : "minutes is a number");
+            const t = await sessions.mint({ ...who, app: b.app, mode: canary && b.mode === undefined ? "test-write" : "read", ...(typeof b.minutes === "number" ? { minutes: b.minutes } : {}) });
             // The one place a code or cookie leaves the kernel: back to the tool call that asked, never to a browser.
-            return send(res, 200, { app: t.app, host: t.host, expires: t.expires, email: t.email, code: t.code, state: t.state, id: t.id });
+            return send(res, 200, { app: t.app, host: t.host, expires: t.expires, mode: t.mode, email: t.email, code: t.code, state: t.state, id: t.id });
           }
           if (op === "check") {
             if (typeof b.cookie !== "string" || typeof b.host !== "string") throw fail(400, "bad_request", "send {cookie, host}");
@@ -851,7 +872,7 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           if (op === "revoke") {
             const sessionId = typeof b.sessionId === "string" ? b.sessionId : undefined;
             // The calling job's task always scopes the revocation, so one task can never end another's session by id.
-            return send(res, 200, await sessions.revoke({ ...(sessionId ? { sessionId } : {}), task: who.task, reason: "canary finished" }));
+            return send(res, 200, await sessions.revoke({ ...(sessionId ? { sessionId } : {}), task: who.task, reason: "caller finished" }));
           }
           throw fail(404, "not_found", `no test session op ${op}`);
         } catch (e) {

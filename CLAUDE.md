@@ -171,7 +171,7 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
   surface it gives the owner: its board sign-in and Connect, status, setup help and secrets. Each mode gets one end-to-end test
   of the owner's setup from a fresh install to connected.
 - **Minimal tests.** A few that prove the thing works end to end; no tests for obvious code.
-- **Board UI follows [docs/design/board-ui.md](docs/design/board-ui.md)**: chat first, the frame and kit in
+- **Board UI follows [docs/design/board-ui.md](docs/design/board-ui.md)**: Home first, the frame and kit in
   `services/board/web/src`, tokens only, both themes, motion tokens. Modules declare what the board and the owner's Claude draw and drive: [modules/AGENTS.md](modules/AGENTS.md).
 - **Fluid UI, checked at real sizes.** Board and app pages are fluid at every common resolution: fluid widths with clamp()
   gutters, a clamp() type scale, grids that reflow, never a fixed narrow column floating on a large screen. Before

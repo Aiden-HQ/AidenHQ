@@ -231,6 +231,8 @@ a.ui-tag:hover { color: var(--text); border-color: var(--border-strong); }
 .ui-tile:has(.ui-tile-title a:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 .ui-tile-needs { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
 .ui-tile-failed { border-color: color-mix(in srgb, var(--urgent) 40%, var(--border)); }
+.ui-tile-ghost { border-style: dashed; border-color: var(--border-strong); background: transparent; box-shadow: none; }
+.ui-tile-ghost:hover { background: var(--surface); }
 .ui-tile-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .ui-tile-head .ui-status { font-size: var(--text-sm); font-weight: 550; }
 .ui-tile-title { flex: 1; min-width: 0; margin: 0; font-size: var(--text-body); font-weight: 650; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -332,6 +334,8 @@ button.ui-dr-top:hover .ui-dr-q { color: var(--accent); }
 .ui-dr-detail::before { content: open-quote; }
 .ui-dr-detail::after { content: close-quote; }
 .ui-dr-actions, .ui-dr-receipt { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-left: var(--dr-indent); font-size: var(--text-sm); color: var(--faint); }
+/* One button size in a row, whoever supplies them (an approval card's Decide included). */
+.ui-dr-actions .btn { font-size: var(--text-md); padding: 5px 12px; font-weight: 500; }
 .ui-dr-receipt { animation: ui-enter var(--medium) var(--ease-out) both; }
 .ui-dr-done { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-base); font-weight: 600; color: var(--ok-text); }
 @media (max-width: 560px) {

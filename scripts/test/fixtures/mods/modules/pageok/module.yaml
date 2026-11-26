@@ -6,6 +6,8 @@ connections:
 contributes:
   board.pages:
     - { id: notes, title: Notes, icon: list, order: 10, connection: pageok-mcp, view: "ui://pageok/page", tools: [pageok_notes, pageok_configure] }
+  board.reads:
+    - { id: notes_today, connection: pageok-mcp, tool: pageok_notes }
 services:
   run:
     pageok-mcp: { image: "example/pageok@sha256:0000000000000000000000000000000000000000000000000000000000000000", port: 1 }

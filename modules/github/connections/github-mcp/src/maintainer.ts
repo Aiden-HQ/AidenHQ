@@ -720,9 +720,9 @@ export class Maintainer {
     return hit ? { id: Number(hit.id), url: String(hit.html_url ?? ""), createdAt: String(hit.created_at ?? "") } : undefined;
   }
 
-  /** The body every post of this note carries: the signed note and the marker that identifies it. */
+  /** The body every post of this note carries: the marker that identifies it, then the signed note (which ends with its footer). */
   private static noteBody(spec: NoteSpec, marker: string) {
-    return `${withFooter(spec.text, spec.agent)}\n\n<!-- aidenhq-note:${marker} -->`;
+    return `<!-- aidenhq-note:${marker} -->\n\n${withFooter(spec.text, spec.agent)}`;
   }
 
   /** Posts this call's note and records it (unconfirmed) before the POST answers, so a retry or an overlapping close reuses it.

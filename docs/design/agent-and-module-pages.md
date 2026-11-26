@@ -19,21 +19,20 @@ one place per thing. Code: `services/board/web/src` (`AgentPage.tsx`, `AgentSett
 - One pending change per field: while one is in flight its editor shows the stage and offers Cancel; the live value stays
   visible until the change is live.
 
-## Agents list (`#/agents`)
+## Agents list (`#/team/agents`)
 
 The table (Now / Next / Last, grouped by department) whose row expansion is a quick look with **Open page**, Chat and
 Give it a task.
 
 ## Agent page
 
-`#/agents/<key>[/overview|activity|chats|handbook|settings]`. Header: avatar, name, status, what it does, source
-(`<module> <version>` or "Your agent"), model and effort, reports to; actions Chat, Give it a task, and a menu to
+`#/team/agents/<key>[/overview|activity|handbook|settings]`. Header: avatar, name, status, what it does, source
+(`<module> <version>` or "Your agent"), model and effort, reports to; actions Chat and Give it a task (a teammate only: they open its page, `#/team/<key>`), and a menu to
 Pause/Resume (or pause and stop it now).
 
 - **Overview:** needs you, ongoing and past tasks (paged, filterable; `GET /api/agents/by-key/<key>/tasks`, not the
   25-run window); each task opens the drawer, where the owner talks to the agent about that work.
 - **Activity:** its jobs newest first, with what woke them, cost and the writes they filed (`GET .../timeline`).
-- **Chats:** its general chats and New chat.
 - **Handbook:** Your rules, the main handbook, What it reads, History (below).
 - **Settings:** rows that show the module default beside the instance value, each edit opening the preview-to-progress
   flow: model, effort, heartbeat, max parallel, routines (schedule, status, model), connection grants
@@ -44,7 +43,7 @@ event, no commit.
 
 ## Modules
 
-`#/modules` (a top-bar tab; `#/settings/modules` opens it too) is a grid of tiles with a segmented **Installed**
+`#/team/modules` (Team's list) is a grid of tiles with a segmented **Installed**
 (needs-you first, then chosen, then dependencies, core last) / **Available** / **All** and one search. A tile shows name,
 state (On, Off, Always on, Needs setup, Security fix, or the in-flight stage), what it brings, why it can't be turned
 off, and one action; the whole tile opens the module page. One action follows the module's state everywhere: Turn on,
@@ -66,7 +65,7 @@ available, and a "Needs setup" badge and **Set up** (later a quiet **Run setup a
 
 ### Module page
 
-`#/modules/<name>[/overview|contents|settings|changes]`. Header: name, version, marketplace and tier, the one action, Turn
+`#/team/modules/<name>[/overview|contents|settings|changes]`. Header: name, version, marketplace and tier, the one action, Turn
 off. **Overview:** its agents and their ongoing work, what it may do (write kinds and tier, secrets), needs / needed by.
 **Contents:** agents, connections, routines, apps, shared prompts, README. **Settings:** its `settings:` fields with
 defaults. **Changes:** pending and past changes, with reviewed revert.

@@ -12,25 +12,36 @@ and type, grids that add columns, never a narrow column in the middle of a big s
 
 ## Priorities
 
-1. **Chat is the heart.** It is the home view, gets the most width and care, and nothing in the frame crowds it: a
-   change that costs chat space or speed loses.
-2. **Tasks** next, then everything else.
+1. **Home is the heart.** The board opens on it (`#/`), it gets the most care, and nothing in the frame crowds it.
+2. **Teammates and their chats** next.
+3. **Tasks**, then everything else.
 
 ## The frame
 
-- **Top bar** (`TopNav`): Chat, Approvals, Tasks, Sessions (only when the sessions module is on; [sessions.md](sessions.md)), Fleet, Insight; then ⌘K search, today's spend, shortcuts, Settings.
-  Live counts sit on the section (approvals waiting, agents working). No sidebar frame (owner rule).
-- **Chat's details panel** starts shut below 1920px wide and open from 1920 up; one click on Details opens or hides it,
-  and the choice is remembered (localStorage `aidenhq.panel`, a stored choice beats the width). Chat gets the width first.
-- **A section of several pages lists them on its left** (`SubNav`): Fleet is Agents, Apps (with pinned app panels),
-  Modules, Reviews; Insight is Costs, Flow. Settings uses the same list for its categories. A section of one page has
-  no list; chat keeps the full width under the bar with its own conversation list.
-- **⌘K** (`Palette`) jumps to any page, agent, chat, app, module or setting from cached data only.
-- **Phone**: a bottom bar (Chat, Approvals, Agents, Tasks, More); an open conversation is full screen with no bars.
+- **Top bar** (`TopNav`): Home (the Needs-you count) · Tasks · Apps · Team (a live dot while agents work) · Insight (today's
+  spend, small), then Search ⌘K, **Ask Aiden** ⌘J and Settings. Brief and help live on their keys (`b`, `?`) and in ⌘K.
+  No sidebar frame (owner rule).
+- **A section of several pages lists them on its left** (`SubNav`): Tasks is Tasks and Sessions (only with the sessions
+  module, [sessions.md](sessions.md)); Team is Teammates, All agents, Modules, then the modules' pages; Insight is Costs,
+  Flow, Decisions; Apps lists its pinned app panels when there are some. A teammate's own page has no list.
+- **Ask Aiden** (`AskAiden.tsx`): a non-modal side panel on the right, beside the page (the page narrows; it never covers
+  it), with Aiden's current chat, its history (Active / Settled) and a composer; "@Max …" starts a chat with that teammate. ⌘J toggles it from anywhere, it stays open across
+  pages, Escape closes it (when focus is in it, or nothing else is open) and focus goes back to what opened it. A full
+  screen sheet below 1000px.
+- **⌘K** (`Palette`) jumps to any page, teammate ("Name · Role"), agent, chat, app, module or setting from cached data.
+- **Phone**: a bottom bar (Home · Tasks · Ask Aiden · Team · More); More holds Apps, Insight, Settings, module pages and
+  app panels.
 - **A page's own tools** go in the page (its header, or a `.page-tools` row like Tasks), never in the top bar.
+- **Routes:** `#/` Home (`#/approvals/<id>` opens that card in Home's pane), `#/tasks[?view=<id>]`,
+  `#/tasks/sessions[/<ref>]`, `#/apps[/<name>]`, `#/team`, `#/team/<key>[/c/<chat>][?text=…]`, `#/team/agents[/<key>[/<tab>]]`,
+  `#/team/modules[/<name>[/<tab>]]`, `#/team/m/<page>[/<sub>]`, `#/insight/{costs,flow,decisions}`, `#/settings[/<cat>]`;
+  overlays `#/t/<task>`, `#/r/<run>`, `#/brief`, `#/help`, `#/setup/<module>` keep the page under them, and closing one
+  goes back to it. An old address (`#/c/…`, `#/agents…`, `#/modules…`, `#/fleet/…`, `#/board`, `#/sessions…`,
+  `#/costs`, `#/flow…`, `#/approvals`) is rewritten once by `parseRoute`'s `redirectOld`; its view is gone.
 
 A new board page: add its view to `NavView`/`ITEMS` in `Shell.tsx` and to a section in `SECTIONS` (an existing one
-unless it is daily work), its route in `App.tsx`, and a `VIEW_CHUNKS` entry in `queries.ts` so hover prefetches it.
+unless it is daily work), its route in `App.tsx` (`parseRoute`, `viewOf`), and a `VIEW_CHUNKS` entry in `queries.ts` so
+hover prefetches it.
 
 ## A page
 
@@ -41,7 +52,8 @@ unless it is daily work), its route in `App.tsx`, and a `VIEW_CHUNKS` entry in `
 </Page>
 ```
 
-Add only the page's own layout, in its own small CSS file. An item's page (agent, module, app) adds `crumb`, `face`
+Build only from `web/src/ui`: pages compose the kit, never restyle it (extend the kit when something is missing). Add
+only the page's own layout, in its own small CSS file. An item's page (agent, module, app) adds `crumb`, `face`
 and `status` to its `PageHeader`, puts `hueClass(name)` on the `Page`, `Tabs` under the header (each tab its own URL),
 and `.ui-split` for the work on the left and a rail of `Card`s with `Facts` on the right.
 
@@ -73,6 +85,9 @@ and `.ui-split` for the work on the left and a rail of `Card`s with `Facts` on t
 | A keyboard shortcut | `Kbd` |
 | Cards that add columns as the screen grows | `.ui-grid` (`--grid-min`) |
 
+**Layout:** a page's content caps at `--page-max` (1920px) and centres beyond it (the frame's padding, so the scrollbar
+stays at the edge). Grids are fluid: `repeat(auto-fill | auto-fit, minmax(min(100%, X), 1fr))`; never a narrow column.
+
 ## Tokens
 
 - **Colour**: every colour is a token, `light-dark(light, dark)`. Light is a cool near-white page (`#f6f7f9`) with white
@@ -101,7 +116,8 @@ of its own.
 
 The motion classes, on tokens: `.enter` arrives rising `--enter-y` over `--medium` (stagger siblings with `style={{"--i": n}}`,
 `--stagger` apart); `.lift` rises `--lift-y` with `--shadow-hover` on hover; `.press` shrinks to `--press-scale` while pressed.
-Panes slide in over `--medium` and leave over `--fast`. A face's own motion (a working bob and glance, a needs-you ring,
+Panes slide in over `--medium` and leave over `--fast`; a `Disclosure` and a receipt collapse over `--medium`. That is the
+whole vocabulary: enter, lift, press, pane slide, collapse, with one `prefers-reduced-motion` block in `ui.css`. A face's own motion (a working bob and glance, a needs-you ring,
 a blink) is CSS too, so reduced motion stills it on its resting frame.
 
 ## Accessibility
@@ -115,24 +131,56 @@ inputs are 16px (no zoom).
 `npm run lint` in `services/board` (ESLint and stylelint, config only; CI runs it): no raw colours or px font sizes
 outside `tokens.css`, and no class the kit replaced (`web/legacy-classes.json`, each with what to use instead).
 
+## Home
+
+`Home.tsx`, one read (`GET /api/home`): Needs you (answers, approval cards and handed-back tasks, oldest first, answered in
+place as `DecisionRow`s), Since you last looked (what the team told the owner and what closed, grouped by teammate, top
+three and "All N"), Your world (who the owner waits on; today's calendar), Your team (teammates with news, and Hire a
+teammate) and one Idea. **A block with no source or no data is left out**, never shown empty; a fresh install sees
+"Nothing needs you." and the team row.
+
+- **Keyboard** (`needs.ts`): J/K move through Needs you, Enter opens the detail pane, E does the row's main action (approve,
+  the recommended option, mark done), S snoozes it. Enter, E and S wait until a row is picked; every key is off while
+  typing, with a modifier, or with focus in Ask Aiden, a pane, a dialog or ⌘K.
+- **Snooze** hides a row until 08:00 the next day, per account. **Receipts** replace an answered row ("Sent: …", "Approved",
+  "Tess is sending it"); only a snooze has Undo (an answer or a decision isn't undoable).
+- **The window** of Since is per visit: the first answer's `since_from` goes back with every refetch, and the cursor moves
+  to a snapshot's `as_of` once it has been on screen.
+- `#/approvals/<id>` opens that card in the pane: its row when it is listed, else the card read alone (a decided one shows
+  its outcome).
+- Every other write record is on Insight › Decisions; failed and idle tasks are on Team › All agents (`AttentionStrip`).
+
+## Teammates
+
+A teammate is an agent with a `teammate:` block (its module's); the rest are hidden staff behind one. The owner meets
+teammates as "Name · Role" everywhere (`TeammateChip`), never a module name in primary text.
+
+- **Team** (`#/team`) lists them with face and state, what each is doing, Rename and who works behind it.
+- **A teammate's page** (`#/team/<key>`): its chat (the newest open one, any of its chats from the switcher, Active or
+  Settled, or a new one whose placeholder is its sample line) beside a generic side column: what it does, recent work,
+  how it is set up (its `controls` modules' declared settings, changed by asking it) and the team behind it. One Advanced
+  link goes to its first controlled module's page or settings. Pause pauses only the teammate, never its staff.
+- **Every chat entry point reaches teammates only** (the composer's @-mentions, Ask Aiden, a teammate's page, the server's
+  routing). A chat opened by id (`#/t/<ref>`) opens in the task drawer.
+
 ## Modules
 
 Modules declare (`board.signins`, `board.setup_flows`, `board.pages`, `providers.board` (the warehouse's search), settings) and both the board and the
 owner's MCP drive the declarations: a Connect on Settings, Connections, a setup sheet and wizard step
-([guided-setup.md](guided-setup.md)), a page in the Fleet sidebar, a setting with its help. How a module is built:
+([guided-setup.md](guided-setup.md)), a page under Team, a setting with its help. How a module is built:
 [modules/AGENTS.md](../../modules/AGENTS.md).
 
-**A module's Fleet page is a module view** ([MCP Apps](https://github.com/modelcontextprotocol/ext-apps), protocol
+**A module's page (under Team, `#/team/m/<id>`) is a module view** ([MCP Apps](https://github.com/modelcontextprotocol/ext-apps), protocol
 2026-01-26): an HTML resource its own MCP connection serves, declared in `module.yaml`:
 
 ```yaml
 requires: [board]
 contributes:
   board.pages:
-    - id: ship                      # its address, #/fleet/ship; unique
+    - id: ship                      # its address, #/team/m/ship; unique
       title: Ship
       icon: rocket                  # one of the icons modules/board/schemas/pages.json lists
-      order: 10                     # after Agents, Apps and Modules, ascending
+      order: 10                     # after Team's own pages, ascending
       connection: ship              # one of this module's own connections
       view: ui://ship/page          # served by it (resources/read, text/html;profile=mcp-app)
       tools: [ship_config, ship_configure]   # what the view calls: read or write tools of that connection, named <module>_…
@@ -141,7 +189,7 @@ contributes:
 
 - **Compile** checks it (the connection is the module's, the view is `ui://<module>/…`, no destructive tool and none a write kind routes, tool names
   `<module>_…`) and puts each view with its tools on its connection in the kernel's `connections.json` (`views`).
-- **The board** lists the pages after Fleet's own (sidebar, phone More, ⌘K) and shows one at `#/fleet/<id>`
+- **The board** lists the pages after Team's own (its list, phone More, ⌘K) and shows one at `#/team/m/<id>`
   (`ModuleView.tsx`). The view runs in an iframe served from `/api/pages/<id>/frame` with a sandbox CSP (`allow-scripts
   allow-forms` only): an opaque origin with no network, no cookies, no navigation and nothing loaded from outside. Inline
   script and style only; `_meta.ui.csp` domains aren't honoured. The board's own CSP (`frame-src 'self'`) keeps the frame from navigating anywhere outside the board, and the bridge serves only the first document a frame loads; a view that navigates itself, or doesn't send `ui/initialize` within 8 seconds (its module down), is replaced by a Try again.
@@ -165,10 +213,15 @@ contributes:
 - **A view's job:** the module's state and its feature settings, empty states that say how to connect. The example
   (`web/dev/example-view.html`, the mock API's Notes page) is the starting point: no build step, about 100 lines.
 
-Code review's Reviews page is a module view too (`modules/code-review/service/src/page.html`, order 5: tabs Reviews, Repos and Insights, a run's findings with the owner's Dismiss, a repo's settings through `code_review_configure`'s proposal). Every module page has this one path; a `#/reviews/…` link opens it.
+Code review's Reviews page is a module view too (`modules/code-review/service/src/page.html`, order 5: tabs Reviews, Repos and Insights, a run's findings with the owner's Dismiss, a repo's settings through `code_review_configure`'s proposal). Every module page has this one path; an old `#/reviews/…` link redirects to it.
+
+**`board.reads`** are a module's owner-view reads for Home: `{id, connection, tool}`, a read tool of its own connection,
+called by the board through the kernel's view route (google's `calendar_today`, owner-channel's `told`). Home names no
+module: it asks for a read by id, and leaves its block out when the read is absent or fails.
 
 ## Working on the UI without an instance
 
-`node web/dev/mock-api.ts` answers the board's reads on :3120 with neutral fixtures, and `npm run dev:web` serves the
-UI against it on :5173. `GET /__mock?welcome=1` shows the first-run wizard, `?empty=1` empties the lists, `?slow=800`
-delays every answer (loading states). Check a change at 1512, 1920, 2560 and 390 wide, light and dark, chat first.
+`node web/dev/mock-api.ts` answers the board's reads on :3120 (`PORT=` to move it) with neutral fixtures, and
+`npm run dev:web` serves the UI against it on :5173. `GET /__mock?welcome=1` shows the first-run wizard, `?empty=1` empties
+the lists (Home as a fresh install sees it), `?nocal=1` drops Home's calendar, `?slow=800` delays every answer (loading
+states). Check a change at 1512, 1920, 2560 and 390 wide, light and dark, Home first.

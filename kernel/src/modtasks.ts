@@ -66,8 +66,11 @@ export function createModuleTasks({ db, owner, agents, plugin, rubric, log = () 
   log?: (msg: string, f?: Record<string, unknown>) => void;
 }) {
   db.exec("CREATE TABLE IF NOT EXISTS graded_tasks (task TEXT PRIMARY KEY, module TEXT NOT NULL)");
-  // Who filed each task (admission.ts reads it): a module's task carries no platform authority, whatever role it went to.
+  // Who filed each task (admission.ts reads it): a module's task carries no platform authority, whatever role it went to. A
+  // module's row keeps the source it filed under: a module's job tool (jobtools.ts createModuleTool) reads it there, never from
+  // the task's text, which its assignee may edit.
   db.exec("CREATE TABLE IF NOT EXISTS task_filers (task TEXT PRIMARY KEY, filer TEXT NOT NULL)");
+  if (!(db.prepare("PRAGMA table_info(task_filers)").all() as { name: string }[]).some((c) => c.name === "source")) db.exec("ALTER TABLE task_filers ADD COLUMN source TEXT");
   /**
    * Close a task this module filed (its marker, and no agent made it): done or cancelled, with one line why. The line carries
    * the kernel's tag (wakes.ts SELF_TAG), so it wakes nobody and is never read as the owner's words.
@@ -156,7 +159,7 @@ export function createModuleTasks({ db, owner, agents, plugin, rubric, log = () 
       idempotencyKey: `pw-${createHash("sha256").update(graded ? `${module}\0${b.source}` : b.source).digest("hex").slice(0, 32)}`,
     });
     if (r.status >= 300 || !r.json?.id) throw new TaskError(502, `the control plane answered ${r.status}`);
-    if (!r.json.deduplicated) db.prepare("INSERT OR IGNORE INTO task_filers (task, filer) VALUES (?, ?)").run(String(r.json.id), `module:${module}`);
+    if (!r.json.deduplicated) db.prepare("INSERT OR IGNORE INTO task_filers (task, filer, source) VALUES (?, ?, ?)").run(String(r.json.id), `module:${module}`, b.source);
     // Graded status is the kernel's own row, never the task's editable text. A dedup hit takes a rubric only on a task this
     // module filed graded.
     if (graded) {

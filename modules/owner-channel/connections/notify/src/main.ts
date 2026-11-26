@@ -47,11 +47,11 @@ const d: Deps = {
     timezone: process.env.OWNER_TIMEZONE || "UTC",
     warn: (o, msg) => log.warn(o, msg),
   },
-  // The task's live agent heads the message, and the owner's reply goes where they last wrote on it (read through the kernel).
+  // The task's agent heads the message (notify keeps it only when that is the caller), and the owner's reply goes where they last wrote on it (read through the kernel).
   resolveTask: async (identifier) => {
     const issue = await kernel.read(`/api/issues/${encodeURIComponent(identifier)}`);
-    const [agents, work] = await Promise.all([kernel.read(`/api/companies/${issue.companyId}/agents`), kernel.work(String(issue.id))]);
-    const found = taskForNotify({ id: String(issue.id), assigneeAgentId: issue.assigneeAgentId ?? null }, work.jobs, agents);
+    const agents = await kernel.read(`/api/companies/${issue.companyId}/agents`);
+    const found = taskForNotify({ id: String(issue.id), status: issue.status ?? null, assigneeAgentId: issue.assigneeAgentId ?? null }, agents);
     if (!found) return undefined;
     const commentsOf = async (id: string) => {
       const c = await kernel.read(`/api/issues/${encodeURIComponent(id)}/comments`).catch(() => []);

@@ -35,7 +35,7 @@ function hostContext() {
   return { theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light", styles: { variables }, displayMode: "inline", platform: matchMedia("(max-width: 720px)").matches ? "mobile" : "web", locale: navigator.language, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
 }
 
-export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined; /** The part of the address after the page's own (#/fleet/<id>/<sub>): handed to the view in its host context. */ sub?: string; onSignIn: () => void }) {
+export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined; /** The part of the address after the page's own (#/team/m/<id>/<sub>): handed to the view in its host context. */ sub?: string; onSignIn: () => void }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(480);
   const [proposal, setProposal] = useState<Proposal | null>(null);

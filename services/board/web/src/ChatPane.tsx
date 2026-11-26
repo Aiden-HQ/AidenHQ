@@ -1,43 +1,27 @@
-// The chat workspace: agents on the left with their chats (Aiden pinned on top as the front door), the conversation
-// in the middle, and one details panel on the right (context, the tasks the chat handed out, progress and files). On a
-// narrow screen the panel opens over the conversation; on a phone: the list, then the conversation full screen, the
-// panel as a sheet. Lives at #/c/ (a new chat) and #/c/<chat>.
+// The chat pane: a conversation with one agent: its messages, cards and questions in time order, the live row, the composer, and the
+// Details panel (context, the tasks the chat handed out, progress and files) opened over it. Shown on a teammate's page
+// (Teammate.tsx), in Ask Aiden (AskAiden.tsx) and with the fast lane's chat (LaneChat.tsx, which reuses the Composer).
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { SignInRequired, api } from "./api";
 import { load as loadCached } from "./cache";
-import { QUERIES, chatQuery, peekingChat, prefetchChat, useQuery } from "./queries";
-import { ChatListSkeleton, SkeletonLines } from "./Skeleton";
+import { chatQuery, peekingChat, useQuery } from "./queries";
+import { SkeletonLines } from "./Skeleton";
 import { AnswerForm } from "./AnswerForm";
-import { ApprovalCard } from "./Chat";
-import { LaneChat } from "./LaneChat";
+import { ApprovalCard } from "./ApprovalCard";
 import { FeatureCostStrip } from "./FeatureCost";
 import { DelegatedList, LineageStrip, useLineage } from "./Lineage";
 import { live as streaming, useEvents } from "./events";
 import { AgentFace, CloseIcon, Plan, PlusIcon } from "./components";
 import { Markdown } from "./markdown";
-import { anyLive, groupChats, groupTasks, laneOf, settleableChat, taskSummary, type AgentGroup } from "./sidebar";
+import { anyLive, groupTasks, settleableChat } from "./sidebar";
 import { TaskState, isActive, needsOwner, waitsForAnswer } from "./ui/TaskState";
 import { foldCount, foldNoise, isNoise, seenByOwner, shortTitle, shownInChat, type Folded } from "./conversation";
-import type { Approval, Assignee, ChatAgent, ChatDetail, LaneAgent, ChatMessage, ChatRow, FileView, Lineage, SettledItem, Working } from "./types";
+import type { Approval, Assignee, ChatDetail, ChatMessage, ChatRow, FileView, Lineage, Working } from "./types";
 import { MAX_FILE, ago, elapsed, fileSize, handleOf } from "./util";
 import { Icon } from "./ui/icons";
 
-interface Props {
-  selected: string | null;
-  /** #/c/ itself: a new chat (on a phone, full screen instead of the list). */
-  composing: boolean;
-  mobile: boolean;
-  crew: Assignee[];
-  prefix: string;
-  go: (hash: string) => void;
-  onSignIn: () => void;
-  toast: (text: string) => void;
-}
-
 const QUIET_MS = 2 * 60_000;
-const PANEL_KEY = "aidenhq.panel";
-/** From this width the details panel starts open; below it, it starts shut until the owner opens it (a stored choice wins). */
-const PANEL_OPEN_FROM = 1920;
+
 
 /**
  * The fallback timer (the cache fetched on mount already; live updates, events.ts, refetch on every change): at the old
@@ -53,340 +37,6 @@ function usePoll(load: () => Promise<unknown>, fast: boolean, idleMs: number) {
     }, fast ? 2_000 : idleMs);
     return () => clearInterval(t);
   }, [load, fast, idleMs]);
-}
-
-const NO_AGENTS: ChatAgent[] = [];
-const NO_LANE: LaneAgent[] = [];
-
-export function ChatWorkspace({ selected, composing, mobile, crew, prefix, go, onSignIn, toast }: Props) {
-  // From the cache (queries.ts): coming back to Chat paints the last list at once while it refreshes.
-  const chats = useQuery(QUERIES.chats, onSignIn);
-  const rows = chats.data?.chats ?? null;
-  const agents = chats.data?.agents ?? NO_AGENTS;
-  const error = chats.error;
-  const load = chats.reload;
-  usePoll(load, anyLive(rows ?? []), 6_000);
-  // Fast-lane agents (LaneChat.tsx): their one conversation is listed under the agent; none on an instance without the lane.
-  const laneAgents = useQuery(QUERIES.lane, onSignIn).data?.agents ?? NO_LANE;
-  const laneAgent = selected?.startsWith("lane:") ? laneAgents.find((a) => a.key === selected.slice(5)) : undefined;
-  useEvents(["chat", "approvals"], load);
-  const [panel, setPanel] = useState(() => {
-    try {
-      const saved = localStorage.getItem(PANEL_KEY);
-      return saved ? saved === "1" : window.innerWidth >= PANEL_OPEN_FROM;
-    } catch {
-      return window.innerWidth >= PANEL_OPEN_FROM;
-    }
-  });
-  const togglePanel = () =>
-    setPanel((p) => {
-      try {
-        localStorage.setItem(PANEL_KEY, p ? "0" : "1");
-      } catch {}
-      return !p;
-    });
-
-  const list = <Sidebar lane={laneAgents} rows={rows} agents={agents} crew={crew} selected={selected} go={go} error={error} retry={load} />;
-  const main = laneAgent ? (
-    <LaneChat key={laneAgent.key} agent={laneAgent} mobile={mobile} crew={crew} go={go} />
-  ) : selected?.startsWith("lane:") ? (
-    // A lane chat is not a Paperclip task: until the lane's agents load (a reload on its URL) show nothing, never open it as a task ref.
-    <section className="ws-main" />
-  ) : selected ? (
-    <Conversation key={selected} refId={selected} row={rows?.find((r) => r.identifier === selected)} mobile={mobile} crew={crew} prefix={prefix} go={go} onSignIn={onSignIn} toast={toast} panel={panel} togglePanel={togglePanel} reloadList={load} />
-  ) : (
-    <NewChat agents={agents} crew={crew} mobile={mobile} go={go} toast={toast} reloadList={load} />
-  );
-  if (mobile) return <div className="ws ws-phone">{selected || composing || (rows && !rows.length) ? main : list}</div>;
-  return (
-    <div className="ws">
-      {list}
-      {main}
-    </div>
-  );
-}
-
-// ------------------------------------------------------------------ sidebar
-
-function Sidebar({ lane, rows, agents, crew, selected, go, error, retry }: { lane: LaneAgent[]; rows: ChatRow[] | null; agents: ChatAgent[]; crew: Assignee[]; selected: string | null; go: (h: string) => void; error: string; retry: () => void }) {
-  const active = useMemo(() => (rows ?? []).filter((r) => !r.settled), [rows]);
-  const groups = useMemo(() => groupChats(active, agents), [active, agents]);
-  const [tab, setTab] = useState<"active" | "settled">("active");
-  const [query, setQuery] = useState("");
-  const q = query.trim().toLowerCase();
-  // A search looks through every chat of the agent, open or finished, and lists the matches flat.
-  const filter = (g: AgentGroup): AgentGroup => {
-    if (!q) return g;
-    const hit = (c: ChatRow) => `${c.title} ${c.preview?.text ?? ""} ${g.agent.name}`.toLowerCase().includes(q);
-    return { ...g, chats: [...g.chats, ...g.more].filter(hit), more: [], earlier: g.earlier.filter(hit), tests: g.tests.filter(hit) };
-  };
-  return (
-    <aside className="ws-side" aria-label="Chats">
-      <div className="side-top">
-        <button className="btn primary new-chat-btn" onClick={() => go("#/c/")}>
-          <PlusIcon /> New chat
-        </button>
-        <div className="side-tabs" role="tablist">
-          <button role="tab" aria-selected={tab === "active"} className={tab === "active" ? "on" : ""} onClick={() => setTab("active")}>
-            Active<i>{active.filter((r) => !r.from && r.open).length}</i>
-          </button>
-          <button role="tab" aria-selected={tab === "settled"} className={tab === "settled" ? "on" : ""} onClick={() => setTab("settled")}>
-            Settled
-          </button>
-        </div>
-        {tab === "active" && <input className="side-search" type="search" placeholder="Search chats" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search chats" />}
-      </div>
-      {tab === "settled" && <SettledList selected={selected} go={go} reloadList={retry} />}
-      {error && (
-        <div className="alert">
-          Couldn't load your chats: {error}{" "}
-          <button className="link-btn" onClick={retry}>
-            Retry
-          </button>
-        </div>
-      )}
-      {tab === "active" && (!rows ? (
-        <ChatListSkeleton />
-      ) : (
-        <nav className="side-scroll">
-          {groups.front && <Group g={filter(groups.front)} lane={laneOf(lane, groups.front.agent.key)} crew={crew} selected={selected} go={go} front searching={!!q} />}
-          {groups.others.length > 0 && <h3 className="side-h">Agents</h3>}
-          {groups.others.map((g) => (
-            <Group key={g.agent.key} g={filter(g)} lane={laneOf(lane, g.agent.key)} crew={crew} selected={selected} go={go} searching={!!q} />
-          ))}
-        </nav>
-      ))}
-    </aside>
-  );
-}
-
-/** Settled chats and tasks: searchable; a click views one, Reopen brings it back to the active list. */
-function SettledList({ selected, go, reloadList }: { selected: string | null; go: (h: string) => void; reloadList: () => void }) {
-  const [q, setQ] = useState("");
-  const [items, setItems] = useState<SettledItem[] | null>(null);
-  const load = useCallback(() => api.settledList(q.trim()).then((r) => setItems(r.settled), () => setItems([])), [q]);
-  useEffect(() => {
-    const t = setTimeout(() => void load(), 150);
-    return () => clearTimeout(t);
-  }, [load]);
-  const hash = (i: SettledItem) => (i.kind === "chat" ? `#/c/${i.identifier}` : `#/t/${i.identifier}`);
-  const reopen = async (i: SettledItem) => {
-    await api.settle(i.identifier, false).catch(() => undefined);
-    reloadList();
-    void load();
-    go(hash(i));
-  };
-  return (
-    <div className="side-scroll settled-list">
-      <input className="side-search" type="search" placeholder="Search settled" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search settled chats and tasks" autoFocus />
-      {!items ? (
-        <ChatListSkeleton count={3} />
-      ) : !items.length ? (
-        <p className="side-empty muted small">{q ? "No matches." : "Nothing settled yet. Settle a finished chat or task to keep the active list short."}</p>
-      ) : (
-        <ul className="side-chats">
-          {items.map((i) => (
-            <li key={i.issueId}>
-              <div className={`settled-row${i.identifier === selected ? " on" : ""}`}>
-                <button className="settled-open" onClick={() => go(hash(i))} title={`View ${i.identifier} without reopening`}>
-                  <span className="side-chat-title">{i.title}</span>
-                  <span className="muted small">
-                    {i.agent} · {i.kind} · settled {ago(i.at)}
-                  </span>
-                </button>
-                <button className="btn reopen-btn" onClick={() => void reopen(i)}>
-                  Reopen
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-function Group({ g, lane, crew, selected, go, front, searching }: { g: AgentGroup; lane?: LaneAgent; crew: Assignee[]; selected: string | null; go: (h: string) => void; front?: boolean; searching?: boolean }) {
-  const inMore = g.more.some((c) => c.identifier === selected);
-  const inEarlier = g.earlier.some((c) => c.identifier === selected);
-  const inTests = g.tests.some((c) => c.identifier === selected);
-  const holds = g.chats.some((c) => c.identifier === selected) || inMore || inEarlier || inTests || [...g.handedOut.values()].flat().some((c) => c.identifier === selected);
-  const laneOn = selected === `lane:${g.agent.key}`;
-  const [open, setOpen] = useState(front || holds || laneOn || !!lane || g.chats.length > 0);
-  const [showMore, setShowMore] = useState(inMore);
-  const [showEarlier, setShowEarlier] = useState(inEarlier);
-  const [showTests, setShowTests] = useState(inTests);
-  useEffect(() => {
-    if (holds || laneOn) setOpen(true);
-    if (inMore) setShowMore(true);
-    if (inEarlier) setShowEarlier(true);
-    if (inTests) setShowTests(true);
-  }, [holds, laneOn, inMore, inEarlier, inTests]);
-  const row = (c: ChatRow) => (
-    <li key={c.identifier}>
-      <ChatLink c={c} selected={selected} go={go} tasks={g.handedOut.get(c.identifier)} />
-    </li>
-  );
-  return (
-    <section className={`side-group${front ? " front" : ""}`}>
-      <div className="side-agent">
-        <button className="side-agent-btn" onClick={() => (front && !open ? setOpen(true) : setOpen(!open))} aria-expanded={open}>
-          <AgentFace crew={crew} agent={g.agent.key} name={g.agent.name} size={front ? 32 : 26} />
-          <span className="side-agent-name">{g.agent.name}</span>
-          {g.count && (
-            <span className={`side-count ${g.count.kind}`} title={`${g.count.n} of ${g.agent.name}'s chats (and the work they handed out) ${g.count.kind === "needs" ? "need you" : "working now"}`}>
-              {g.count.kind === "needs" ? <i className="needs-dot" /> : <i className="live-dot" />}
-              {g.count.n} {g.count.kind === "needs" ? (g.count.n === 1 ? "needs you" : "need you") : "working"}
-            </span>
-          )}
-          {!open && g.unread && <span className="unread-dot" title="New reply" />}
-          <span className={`chev${open ? " open" : ""}`} aria-hidden>
-            <Chevron />
-          </span>
-        </button>
-        <button className="icon-btn subtle" title={`New chat with ${g.agent.name}`} aria-label={`New chat with ${g.agent.name}`} onClick={() => go(`#/c/?to=${encodeURIComponent(g.agent.key)}`)}>
-          <PlusIcon />
-        </button>
-      </div>
-      {open && (
-        <ul className="side-chats">
-          {lane && !searching && (
-            <li>
-              <button className={`side-chat${laneOn ? " on" : ""}`} onClick={() => go(`#/c/lane:${lane.key}`)} title={`${lane.name}: fast chat`}>
-                <span className="side-chat-top">
-                  <span className="side-chat-title">Fast chat</span>
-                </span>
-              </button>
-            </li>
-          )}
-          {!lane && !g.chats.length && !g.earlier.length && !g.tests.length && <li className="side-empty muted small">{searching ? "No matches." : "No chats yet."}</li>}
-          {g.chats.map(row)}
-          {showMore && g.more.map(row)}
-          {g.more.length > 0 && !showMore && (
-            <li>
-              <button className="side-toggle" onClick={() => setShowMore(true)}>
-                Show {g.more.length} more
-              </button>
-            </li>
-          )}
-          {g.earlier.length > 0 && (
-            <li>
-              <button className="side-toggle" aria-expanded={showEarlier || !!searching} onClick={() => setShowEarlier(!showEarlier)}>
-                Earlier ({g.earlier.length})
-                <span className={`chev${showEarlier || searching ? " open" : ""}`} aria-hidden>
-                  <Chevron />
-                </span>
-              </button>
-            </li>
-          )}
-          {(showEarlier || searching) && g.earlier.map(row)}
-          {g.tests.length > 0 && (
-            <li>
-              <button className="side-toggle" aria-expanded={showTests || !!searching} onClick={() => setShowTests(!showTests)} title="Chats titled TEST or throwaway">
-                Tests ({g.tests.length})
-                <span className={`chev${showTests || searching ? " open" : ""}`} aria-hidden>
-                  <Chevron />
-                </span>
-              </button>
-            </li>
-          )}
-          {(showTests || searching) &&
-            g.tests.map((c) => (
-              <li key={c.identifier} className="side-test">
-                <ChatLink c={c} selected={selected} go={go} />
-              </li>
-            ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
-function ChatLink({ c, selected, go, tasks }: { c: ChatRow; selected: string | null; go: (h: string) => void; tasks?: ChatRow[] }) {
-  const t = tasks?.length ? taskSummary(tasks) : undefined;
-  return (
-    <button
-      className={`side-chat${c.identifier === selected ? " on" : ""}${c.open ? "" : " closed"}`}
-      title={c.title}
-      onClick={() => go(`#/c/${c.identifier}`)}
-      // Warmed on hover or focus, so the click paints the conversation at once.
-      onPointerEnter={() => prefetchChat(c.identifier)}
-      onFocus={() => prefetchChat(c.identifier)}
-    >
-      <span className="side-chat-top">
-        <span className={`side-chat-title${c.unread ? " unread" : ""}`}>{c.title}</span>
-        <span className="side-time">{ago(c.preview?.at ?? c.updatedAt)}</span>
-      </span>
-      <span className="side-chat-bottom">
-        <span className="side-preview">{c.preview ? `${c.preview.from === "you" ? "You: " : ""}${c.preview.text}` : ""}</span>
-        {isActive(c.state) && <TaskState state={c.state} bare />}
-        {c.unread && <span className="unread-dot" title="New reply" />}
-      </span>
-      {t && (
-        <span className="side-tasks">
-          {t.busy && <span className="live-dot" title="Working" />}
-          {t.total} task{t.total > 1 ? "s" : ""}
-          {t.needs > 0 && (
-            <>
-              {" · "}
-              <b className="side-tasks-needs">{t.needs} needs you</b>
-            </>
-          )}
-        </span>
-      )}
-    </button>
-  );
-}
-
-// ------------------------------------------------------------------ a new chat (the home screen)
-
-const STARTERS = ["What's waiting on me today?", "Who is working on what right now?", "Brief me on yesterday", "I need a new agent for…"];
-
-function NewChat({ agents, crew, mobile, go, toast, reloadList }: { agents: ChatAgent[]; crew: Assignee[]; mobile: boolean; go: (h: string) => void; toast: (t: string) => void; reloadList: () => Promise<void> }) {
-  const to = new URLSearchParams(location.hash.split("?")[1] ?? "").get("to") ?? "";
-  const text = new URLSearchParams(location.hash.split("?")[1] ?? "").get("text") ?? ""; // a pre-filled message (Settings: Ask Aiden)
-  const [agent, setAgent] = useState(to);
-  useEffect(() => setAgent(to), [to]);
-  const front = agents.find((a) => a.front);
-  const name = agents.find((a) => a.key === agent)?.name ?? front?.name ?? "Aiden";
-  const send = async (text: string, files: File[]) => {
-    const { identifier } = await api.newChat(text || `Files: ${files.map((f) => f.name).join(", ")}`, agent || undefined);
-    for (const f of identifier.startsWith("lane:") ? [] : files) await api.attach(identifier, f).catch((e: Error) => toast(`Couldn't attach ${f.name}: ${e.message}`));
-    await reloadList();
-    go(`#/c/${identifier}`);
-  };
-  return (
-    <section className="ws-main ws-home">
-      {mobile && (
-        <header className="conv-head">
-          <button className="icon-btn" aria-label="Back to chats" onClick={() => go("#/")}>
-            <Icon name="back" size={20} />
-          </button>
-          <span className="conv-name">New chat</span>
-        </header>
-      )}
-      <div className="home-center">
-        <AgentFace crew={crew} agent={agent || front?.key || ""} name={name} size={56} />
-        <h1 className="home-title">What should {name} take off your plate?</h1>
-        <div className="home-to">
-          <label className="muted small" htmlFor="home-agent">
-            To
-          </label>
-          <select id="home-agent" value={agent} onChange={(e) => setAgent(e.target.value)}>
-            <option value="">{front?.name ?? "Aiden"}</option>
-            {agents
-              .filter((a) => !a.front)
-              .map((a) => (
-                <option key={a.key} value={a.key}>
-                  {a.name}
-                </option>
-              ))}
-          </select>
-        </div>
-        <Composer key={`${agent}|${text}`} initialText={text} placeholder={`Message ${name}`} draftKey={`draft:new:${agent}`} mobile={mobile} autoFocus={!mobile} onSend={send} starters={!agent || agent === front?.key ? STARTERS : []} />
-      </div>
-    </section>
-  );
 }
 
 // ------------------------------------------------------------------ the conversation
@@ -429,7 +79,8 @@ const useOutbox = (ref: string) => useSyncExternalStore(subscribeOutbox, () => o
 type Ask = ChatDetail["asks"][number];
 type Item = { at: string; key: string } & ({ type: "message"; m: ChatMessage } | { type: "approval"; a: Approval } | { type: "ask"; q: Ask });
 
-function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, panel, togglePanel, reloadList }: { refId: string; row?: ChatRow; mobile: boolean; crew: Assignee[]; prefix: string; go: (h: string) => void; onSignIn: () => void; toast: (t: string) => void; panel: boolean; togglePanel: () => void; reloadList: () => Promise<void> }) {
+/** One chat. `crew`: who the composer offers for @-mentions (teammates only); `faces`: every agent, so each message shows its speaker's own face. `compact` (Ask Aiden): the header drops the agent's face and name. */
+export function Conversation({ refId, row, mobile, crew, faces, prefix, go, onSignIn, toast, reloadList, compact, intercept }: { refId: string; row?: ChatRow; mobile: boolean; crew: Assignee[]; faces: Assignee[]; prefix: string; go: (h: string) => void; onSignIn: () => void; toast: (t: string) => void; reloadList: () => Promise<unknown>; compact?: boolean; /** A message the caller takes instead (Ask Aiden: "@Max …" starts a chat with Max); true when it did. */ intercept?: (text: string, files: File[]) => Promise<boolean> }) {
   // From the cache (queries.ts): a chat opened before (or warmed by a hover) paints at once, then refreshes.
   const query = useQuery(chatQuery(refId), onSignIn);
   const chat = query.data ?? null;
@@ -495,6 +146,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
    * a failure stays on the message with Retry, even after a switch to another chat and back.
    */
   async function send(text: string, files: File[], answer = false) {
+    if (!answer && intercept && (await intercept(text, files))) return;
     const id = Date.now() + Math.random();
     const queued = live;
     const q = chatQuery(refId);
@@ -512,12 +164,14 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
           if (view.movedTo) toast(`Sent to ${view.movedTo}`);
           setOutbox(refId, (p) => p.map((x) => (x.id === id ? { ...x, text: body, state: "sent" } : x)));
         } else setOutbox(refId, (p) => p.filter((x) => x.id !== id));
-        // Through the cache, not this view: it may have closed by now.
-        await Promise.all([loadCached(q.key, q.fetch, false, true), reloadList()]);
       } catch (e) {
         if (e instanceof SignInRequired) onSignIn();
         setOutbox(refId, (p) => p.map((x) => (x.id === id ? { ...x, state: "failed", error: (e as Error).message } : x)));
+        return;
       }
+      // Sent: a refresh that fails is never a Retry (that would post it twice); the next event or poll brings it.
+      // Through the cache, not this view: it may have closed by now.
+      await Promise.all([loadCached(q.key, q.fetch, false, true), reloadList()]).catch(() => {});
     };
     setOutbox(refId, (p) => [...p, { id, text, files: files.map((f) => f.name), state: "sending", queued, retry: () => void inTurn(refId, attempt) }]);
     (stick.current = true), setAtEnd(true);
@@ -537,14 +191,14 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
     },
     [refId, waitSince, reloadList],
   );
-  const openChat = useCallback((id: string) => go(`#/c/${id}`), [go]);
+  const openChat = useCallback((id: string) => go(`#/t/${id}`), [go]);
 
   async function settle(on: boolean) {
     await api.settle(refId, on).then(
       () => toast(on ? `Settled “${shortTitle(chat!.title)}”` : "Back in the active list"),
       (e: Error) => toast(`Couldn't ${on ? "settle" : "reopen"}: ${e.message}`),
     );
-    await reloadList();
+    await Promise.all([load(), reloadList()]).catch(() => {});
   }
 
   const notRight = useCallback(
@@ -608,28 +262,24 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
                 <ApprovalCard a={it.a} open={openChat} inline prefix={prefix} hold={hold} />
               </ul>
             ) : it.type === "ask" ? (
-              <AskView q={it.q} crew={crew} prefix={prefix} go={go} answered={load} toast={toast} />
+              <AskView q={it.q} crew={faces} prefix={prefix} go={go} answered={load} toast={toast} />
             ) : (
-              <MessageView m={it.m} crew={crew} prefix={prefix} lastReply={it.m === lastReply} asking={it.m === asking} open={open} notRight={notRight} answer={answer} answerAsk={answerAsk} />
+              <MessageView m={it.m} crew={faces} prefix={prefix} lastReply={it.m === lastReply} asking={it.m === asking} open={open} notRight={notRight} answer={answer} answerAsk={answerAsk} />
             )}
           </div>
         );
       }),
-    [items, crew, prefix, lastReply, asking, open, hold, openChat, load, go, toast, notRight, answer, answerAsk],
+    [items, faces, prefix, lastReply, asking, open, hold, openChat, load, go, toast, notRight, answer, answerAsk],
   );
 
   if (!chat)
     return (
+      <div className="chatpane">
       <section className="ws-main conv">
         {/* The chat's header comes from its row in the list, so only the messages wait. */}
         {row && (
           <header className="conv-head">
-            {mobile && (
-              <button className="icon-btn" aria-label="Back to chats" onClick={() => go("#/")}>
-                <Icon name="back" size={20} />
-              </button>
-            )}
-            <AgentFace crew={crew} agent={row.agent.key} name={row.agent.name} size={32} />
+            {!compact && <AgentFace crew={faces} agent={row.agent.key} name={row.agent.name} size={32} />}
             <span className="conv-who">
               <span className="conv-name" title={row.title}>
                 {shortTitle(row.title)}
@@ -655,12 +305,13 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
           </div>
         )}
       </section>
+      </div>
     );
 
   const needs = groupTasks(chat.handedOut).needs.length;
-  const shut = mobile ? !sheet : !panel;
+  const shut = !sheet;
   return (
-    <>
+    <div className="chatpane">
       <section
         className="ws-main conv"
         onDragOver={(e) => {
@@ -668,12 +319,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
         }}
       >
         <header className="conv-head">
-          {mobile && (
-            <button className="icon-btn" aria-label="Back to chats" onClick={() => go("#/")}>
-              <Icon name="back" size={20} />
-            </button>
-          )}
-          <AgentFace crew={crew} agent={chat.agent.key} name={chat.agent.name} size={32} state={chat.state?.kind === "working" ? "working" : needsOwner(chat.state) ? "needs" : "idle"} />
+          {!compact && <AgentFace crew={faces} agent={chat.agent.key} name={chat.agent.name} size={32} state={chat.state?.kind === "working" ? "working" : needsOwner(chat.state) ? "needs" : "idle"} />}
           <span className="conv-who">
             <span className="conv-name" title={chat.title}>
               {shortTitle(chat.title)}
@@ -683,7 +329,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
             </span>
           </span>
           <TaskState state={chat.state} />
-          {row?.settled ? (
+          {chat.settled ? (
             <button className="btn settle-btn on" onClick={() => void settle(false)} title="Settled: bring it back to the active list">
               ◆ Settled · Reopen
             </button>
@@ -700,8 +346,8 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
               Last run
             </a>
           )}
-          <button className={`btn details-btn${shut ? "" : " on"}`} aria-expanded={!shut} onClick={() => (mobile ? setSheet(!sheet) : togglePanel())} title="Tasks, progress, files and context">
-            {mobile || shut ? "Details" : "Hide details"}
+          <button className={`btn details-btn${shut ? "" : " on"}`} aria-expanded={!shut} onClick={() => setSheet(!sheet)} title="Tasks, progress, files and context">
+            {shut ? "Details" : "Hide details"}
             {shut && needs > 0 && (
               <span className="details-needs" title={`${needs} task${needs > 1 ? "s" : ""} need${needs > 1 ? "" : "s"} you`}>
                 {needs}
@@ -712,12 +358,12 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
         {chat.parent && (
           <div className="conv-from muted small">
             Handed out from{" "}
-            <a href={`#/c/${chat.parent.identifier}`} onClick={(e) => (e.preventDefault(), go(`#/c/${chat.parent!.identifier}`))}>
+            <a href={`#/t/${chat.parent.identifier}`} onClick={(e) => (e.preventDefault(), go(`#/t/${chat.parent!.identifier}`))}>
               {chat.parent.title}
             </a>
           </div>
         )}
-        <LineageStrip data={lineage} refId={chat.identifier} title={chat.title} agent={chat.agent.name} crew={crew} prefix={prefix} href={(id) => `#/c/${id}`} onSignIn={onSignIn} />
+        <LineageStrip data={lineage} refId={chat.identifier} title={chat.title} agent={chat.agent.name} crew={faces} prefix={prefix} href={(id) => `#/t/${id}`} onSignIn={onSignIn} />
         <FeatureCostStrip refId={chat.identifier} />
         <div
           className="conv-scroll"
@@ -775,9 +421,9 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
           dropZone
         />
       </section>
-      {!mobile && panel && (
+      {!mobile && sheet && (
         <aside className="ws-panel" aria-label="Details">
-          <button className="icon-btn subtle panel-close" aria-label="Hide details" onClick={togglePanel}>
+          <button className="icon-btn subtle panel-close" aria-label="Hide details" onClick={() => setSheet(false)}>
             <CloseIcon />
           </button>
           <DetailsPanel chat={chat} lineage={lineage} go={go} />
@@ -800,7 +446,7 @@ function Conversation({ refId, row, mobile, crew, prefix, go, onSignIn, toast, p
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 }
 
@@ -1069,7 +715,7 @@ function DetailsPanel({ chat, lineage, go }: { chat: ChatDetail; lineage: Lineag
           <div className="wide">
             <dt>From</dt>
             <dd>
-              <a href={`#/c/${chat.parent.identifier}`} onClick={(e) => (e.preventDefault(), go(`#/c/${chat.parent!.identifier}`))}>
+              <a href={`#/t/${chat.parent.identifier}`} onClick={(e) => (e.preventDefault(), go(`#/t/${chat.parent!.identifier}`))}>
                 {chat.parent.title}
               </a>
             </dd>
@@ -1345,7 +991,7 @@ function AskView({ q, crew, prefix, go, answered, toast }: { q: Ask; crew: Assig
         <AgentFace crew={crew} agent={q.agent} name={q.agent} size={26} /> <b className="msg-name">{q.agent}</b>{" "}
         <span className="msg-time">
           {clock(q.at)} · on{" "}
-          <a href={`#/c/${q.identifier}`} onClick={(e) => (e.preventDefault(), go(`#/c/${q.identifier}`))}>
+          <a href={`#/t/${q.identifier}`} onClick={(e) => (e.preventDefault(), go(`#/t/${q.identifier}`))}>
             {q.identifier}
           </a>
         </span>

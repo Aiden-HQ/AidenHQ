@@ -10,7 +10,7 @@ PartOf=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-Environment=NET=aidenhq-ci BRIDGE=ahq-ci SUBNET=10.231.4.0/24 GATEWAY=10.231.4.1 GATEWAY_PORT=8201 TABLE=aidenhq_ci
+Environment=NET=aidenhq-ci BRIDGE=ahq-ci SUBNET=10.231.4.0/24 GATEWAY=10.231.4.1 GATEWAY_PORT=8201 TEST_LISTENER= TABLE=aidenhq_ci
 ExecStart=/usr/local/sbin/aidenhq-computer-net
 
 [Install]

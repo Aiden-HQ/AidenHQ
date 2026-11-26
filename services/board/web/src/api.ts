@@ -1,5 +1,5 @@
 import type { AuthorKind, FlowSummary, IdleItem, JourneyInfo, JourneyList, JourneySort, Waterfall } from "../../src/flow";
-import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, AsideMessage, Lineage, SettledItem, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, PageRow, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, SharePreview, FiledChange, SettingsData, Update, SessionRow } from "./types";
+import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, AsideMessage, Lineage, Home, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, PageRow, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, SharePreview, FiledChange, SettingsData, Update, SessionRow } from "./types";
 import type { ConnectionsData } from "./connections";
 import type { TimelineEntry } from "../../src/timeline";
 import type { Explanation } from "../../src/explain";
@@ -278,7 +278,12 @@ export const api = {
   /** A 409 (changed or deleted elsewhere) throws ViewConflict with the row as it is now. */
   updateView: (v: { id: string; rev: number; name?: string; spec?: ViewSpec }) => viewWrite<SavedView>("PUT", `/api/views/${v.id}`, { rev: v.rev, ...(v.name ? { name: v.name } : {}), ...(v.spec ? { spec: v.spec } : {}) }),
   deleteView: (v: { id: string; rev: number }) => viewWrite<{ ok: true }>("DELETE", `/api/views/${v.id}?rev=${v.rev}`),
-  chats: () => call<{ chats: ChatRow[]; agents: ChatAgent[] }>("GET", "/api/chats"),
+  /** Every chat (⌘K), or one agent's page of chats (`state`: active or settled, newest first; `more`: a next page, read from `next_offset`). */
+  chats: (agent?: string, opts: { offset?: number; state?: "active" | "settled" } = {}) =>
+    call<{ chats: ChatRow[]; agents: ChatAgent[]; more?: boolean; next_offset?: number }>("GET", `/api/chats${agent ? `?${new URLSearchParams({ agent, offset: String(opts.offset ?? 0), state: opts.state ?? "active" })}` : ""}`),
+  home: (from?: string) => call<Home>("GET", `/api/home${from ? `?from=${encodeURIComponent(from)}` : ""}`),
+  homeSeen: (asOf: string) => call<{ seen: string }>("POST", "/api/home/seen", { as_of: asOf }),
+  homeSnooze: (id: string, on: boolean) => call<{ until?: string }>("POST", "/api/home/snooze", { id, on }),
   /** `peek`: a prefetch, which leaves the chat unread. */
   chat: (ref: string, peek = false) => call<ChatDetail>("GET", `/api/chats/${encodeURIComponent(ref)}${peek ? "?peek" : ""}`),
   newChat: (text: string, agent?: string) => call<{ identifier: string }>("POST", "/api/chats", { text, ...(agent ? { agent } : {}) }),
@@ -361,7 +366,6 @@ export const api = {
   /** The owner's Stop: the kernel ends the task's running job; the task stays open. */
   stop: (ref: string) => call<{ stopped: number }>("POST", `/api/issues/${encodeURIComponent(ref)}/stop`, {}),
   settle: (ref: string, settled: boolean) => call<{ settled: boolean }>("POST", `/api/issues/${encodeURIComponent(ref)}/settle`, { settled }),
-  settledList: (q: string) => call<{ settled: SettledItem[] }>("GET", `/api/settled?q=${encodeURIComponent(q)}`),
   /** The side chat: answered by a model, never posted on the task, never waking its agent. */
   aside: (ref: string, messages: AsideMessage[]) => call<{ answer: string }>("POST", `/api/issues/${encodeURIComponent(ref)}/aside`, { messages }),
   update: (ref: string, u: Update) => call<IssueView>("PATCH", `/api/issues/${encodeURIComponent(ref)}`, u),

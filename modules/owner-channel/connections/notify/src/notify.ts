@@ -91,6 +91,30 @@ export function spellOut(questions: Question[] = []): string {
   return `\n\n${blocks.join("\n\n")}\n\nReply like "1A, 2B", or in your own words.`;
 }
 
+/** The text as the owner's chat renders it: markdown emphasis and escapes go, so a marker or label is judged as read. */
+const plain = (s: string) => s.replace(/[*_~`\\]/g, "");
+/** The tool's own marker, appended to the first option: a caller writing it itself would show two recommendations. */
+const MARKER = /\(\s*recommended\s*\)/i;
+/** A label with no text after it ("A)", "A.", "1)", "1.", "(A)", "(1)"): nothing the owner can read. */
+const LABEL_ONLY = /^(?:[A-Za-z]|\d+)\s*[).]$|^\((?:[A-Za-z]|\d+)\)$/;
+
+/**
+ * The first question or option the owner couldn't read, named so the caller fixes the wording: an option of only punctuation
+ * or symbols, a bare label prefix, or the tool's own recommendation marker (which it adds to the first option itself). The
+ * form is refused whole rather than sent broken.
+ */
+function formProblem(questions: Question[] = []): string | undefined {
+  for (const [n, q] of questions.entries()) {
+    if (MARKER.test(plain(q.question))) return `Question ${n + 1}'s text writes the tool's own "(recommended)" marker: the tool marks the first option itself. Nothing was sent.`;
+    for (const [i, o] of q.options.entries()) {
+      const t = plain(o).trim();
+      if (MARKER.test(t)) return `Question ${n + 1}'s option ${i + 1} writes the tool's own "(recommended)" marker: the tool marks the first option itself. Nothing was sent.`;
+      if (!/[\p{L}\p{N}]/u.test(t) || LABEL_ONLY.test(t)) return `Question ${n + 1}'s option ${i + 1} has no visible text (send an option the owner can read, not a label or punctuation). Nothing was sent.`;
+    }
+  }
+  return undefined;
+}
+
 // Some agents fill `text` with the word "placeholder" (the real message in `questions`): it never reaches the owner.
 const stripPlaceholder = (text: string) => text.replace(/^\s*placeholder\b[\s:.\-–—]*/i, "").trim();
 
@@ -124,6 +148,10 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     const quoted = detail ? `\n\n${detail.split("\n").map((l) => `> ${l}`).join("\n")}` : "";
     // The chief of staff asks the owner in multiple choice, always: its recommendation first, their own words always welcome.
     if (kind === "decision" && !a.questions?.length && caller?.roles?.includes(CHIEF)) return { sent: false, reason: "error", note: "Ask the owner with `questions`: each question with 2-5 options, your recommendation first (they can always answer in their own words). Put the context in `text`. Nothing was sent." };
+    // A form the owner can't read (a blank or label-only option, or a second recommendation) is refused before anything is
+    // deduped, waited on, posted, queued or sent, so a corrected form is the only one that reaches them.
+    const unreadable = formProblem(a.questions);
+    if (unreadable) return { sent: false, reason: "error", note: unreadable };
     const dedupe = `dedupe:${createHash("sha256").update(a.dedupe_key ? `key\n${a.dedupe_key}` : `${kind}\n${a.task ?? ""}\n${text}\n${JSON.stringify(a.questions ?? [])}${detail ? `\n${detail}` : ""}`).digest("hex").slice(0, 32)}`;
     const last = Number(d.store.getKv(dedupe) ?? 0);
     if (last && now - last < (kind === "alert" ? WINDOW.alert : WINDOW.other)) return { sent: true, reason: "duplicate" };
@@ -134,8 +162,8 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
       const b = await d.brake(a.task, who.id, kind === "decision").catch(() => ({ allow: true, note: undefined }));
       if (!b.allow) return { sent: false, reason: "limit", note: b.note ?? `Limit reached on ${a.task} since the owner last wrote there (or since UTC midnight). Nothing was sent; batch it into your next update.` };
     }
-    // The chat is the calling agent's own, running on it now: only then its name heads the message, the reply lands there and
-    // goes where the owner wrote. (The kernel's, the board's and the runner's messages carry the task in their text.)
+    // The task is an open one the calling agent holds (its job's, or another: a sweep's part of the owner's task): only then its
+    // name heads the message, the reply lands there and goes where the owner wrote. (The kernel's, the board's and the runner's messages carry the task in their text.)
     const resolved = a.task && caller && d.resolveTask ? await d.resolveTask(a.task).catch(() => undefined) : undefined;
     const found: Found | undefined = a.relay ? { issueId: a.relay.issueId, agentId: "", agentName: a.relay.agentName, ownerVia: a.relay.via } : a.head && !caller ? { issueId: a.head.issueId, agentId: "", agentName: a.head.agentName } : resolved?.agentId === caller?.id ? resolved : undefined;
     // Attention: a blocked or over-cap agent sends nothing; a crew agent's routine done/fyi goes to the digest (and its chat).
@@ -143,8 +171,8 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     if (att.do === "block" || att.do === "limit") return { sent: false, reason: att.do === "block" ? "blocked" : "limit", note: att.note };
     // When the wait this question opens began: what a one-tap answer is bound to.
     let since: string | undefined;
-    // A question reaches the owner directly only from the chief of staff, or on a task the owner is talking to its agent on
-    // (the kernel decides, escalate.ts); any other goes to the Fleet Steward, which settles it (the Steward's own to the chief
+    // A question reaches the owner directly only from the chief of staff, on a task the owner is talking to its agent on, or
+    // on the agent's part of the owner's own task (the kernel decides, escalate.ts); any other goes to the Fleet Steward, which settles it (the Steward's own to the chief
     // of staff). The wait is recorded first, so a question is never sent without it.
     if (kind === "decision" && caller && !caller.roles?.includes(CHIEF)) {
       const steward = !caller.roles?.includes(SETTLER);
@@ -181,7 +209,7 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
           if (!c) break;
           if (c.closed) { source = `notify-ask:${caller.key}:${now}`; d.store.setKv(srcKey, source); continue; }
           d.store.setKv(dedupe, String(now));
-          return { sent: true, to: steward ? "steward" : "chief_of_staff", note: `Your question went to ${settler}, who settles it (and has it brought to the owner only when the call is theirs). Next time ask on the task you are working on, so the answer comes back to you.` };
+          return { sent: true, to: steward ? "steward" : "chief_of_staff", note: `Your question went to ${settler}, who settles it (and has it brought to the owner only when the call is theirs). Next time ask on a task assigned to you (the one you are working on, or your part of the owner's task), so the answer comes back to you.` };
         }
         return { sent: false, reason: "error", note: `Your question didn't reach ${settler}${err ? ` (${err})` : ""}: nothing was sent; try again.` };
       }
@@ -234,7 +262,8 @@ export async function notify(d: Deps, a: NotifyArgs, caller?: Caller, now = Date
     const ok = out === "sent" || out === "down" || onChat || digested;
     if (ok) d.store.setKv(dedupe, String(now));
     // Reached the owner (a channel took it, or it is on their chat) (a digest item is told when its digest goes); a message still waiting for a channel is written by the retry that delivers it.
-    if (out === "sent" || onChat) d.store.told(told, now);
+    // Stamped now, once delivered (not when the send began): a Home read during the send never moves its cursor past the row.
+    if (out === "sent" || onChat) d.store.told(told);
     const failed = waitError ? { wait_error: `the question went out, but its wait wasn't recorded (${waitError}): call task_wait for: owner with the question so the task isn't woken as idle.` } : {};
     const chat = onChat ? { onChat: true as const } : {};
     // Sent only when a channel took it, its chat holds it or the digest will carry it; waiting for a channel is never "sent".
@@ -264,7 +293,7 @@ async function retryPass(d: Pick<Deps, "send" | "store">, now: number): Promise<
     const out = now - at > 24 * 60 * MIN ? "off" : await deliver(d, m, to);
     if (out === "down" || (out === "off" && keep && now - at <= 24 * 60 * MIN)) continue;
     d.store.done(w.id);
-    if (out === "sent") { n++; if (told) d.store.told(told, now); }
+    if (out === "sent") { n++; if (told) d.store.told(told); }
   }
   return n;
 }

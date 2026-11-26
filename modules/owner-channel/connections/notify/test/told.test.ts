@@ -1,4 +1,5 @@
 // The ledger of what the owner was told: written once per message that reached them or waits for the digest; notify_recent reads it.
+import { generateKeyPairSync, sign } from "node:crypto";
 import { expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -6,6 +7,7 @@ import { flushDigest, queueDigest } from "../src/attention.js";
 import { buildServer } from "../src/mcp.js";
 import { notify, retry, type Deps } from "../src/notify.js";
 import { openStore } from "../src/store.js";
+import { verifyCaller } from "../src/aidenhq-sdk/caller.js";
 
 it("delivered, queued and retried messages are in notify_recent; dropped ones are not", async () => {
   let up = true;
@@ -68,4 +70,22 @@ it("a question keeps its options whole; long context is clipped, not the questio
   expect(Array.from(row!.text).length).toBeLessThanOrEqual(1500);
   expect(row!.text).toContain("Ship it?");
   expect(row!.text).toContain("B) No");
+});
+
+it("the board's Home reads notify_recent as the owner (the kernel's view route: kind owner, no agent)", async () => {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
+  const body = `${b64({ alg: "EdDSA", kid: "k" })}.${b64({ agent: "", key: "", name: "owner", roles: [], tool: "owner_channel.notify_recent", aud: "owner-channel", kind: "owner", exp: Math.floor(Date.now() / 1000) + 60 })}`;
+  const jwt = `${body}.${sign(null, Buffer.from(body), privateKey).toString("base64url")}`;
+  const caller = await verifyCaller({ headers: { "x-aidenhq-caller": jwt } }, { keys: [{ ...publicKey.export({ format: "jwk" }), kid: "k" }] }, "owner-channel");
+  const d: Deps = { store: openStore(":memory:"), transports: ["slack"], send: async () => ({ sent: true }) };
+  await notify(d, { kind: "done", text: "Shipped the fix", task: "WOR-2" }, { id: "a1", name: "Tess", key: "open-loops", assertion: "j", roles: [] });
+  // As main.ts builds it for this caller.
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await buildServer(d, { id: caller.agent, name: caller.name, key: caller.key, roles: caller.roles, assertion: jwt }).connect(b);
+  const client = new Client({ name: "t", version: "0" });
+  await client.connect(a);
+  const r = await client.callTool({ name: "notify_recent", arguments: { state: "delivered", limit: 50, days: 1 } });
+  expect(r.isError).toBeFalsy();
+  expect((JSON.parse((r.content as { text: string }[])[0]!.text) as { source: string; task: string }[]).map((x) => [x.source, x.task])).toEqual([["open-loops", "WOR-2"]]);
 });

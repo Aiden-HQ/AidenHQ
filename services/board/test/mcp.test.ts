@@ -20,7 +20,7 @@ import { BOARD_KEY, fakeKernel } from "./kernel.js";
 
 process.env.AIDENHQ_BOARD_ORIGINS = "https://board.example.com/, http://localhost:3121";
 const dir = mkdtempSync(join(tmpdir(), "mcp-"));
-writeFileSync(join(dir, "paperclip.yaml"), stringify({ settings: { grading: { value: "on", set: false } }, agents: { "chief-of-staff": { name: "Aiden", enabled_tools: { jira: ["jira_get"] } } }, mcp_servers: { jira: { url: "http://jira", tools: { read: ["jira_get", "jira_search"], write: ["jira_edit"] } } }, routines: {} }));
+writeFileSync(join(dir, "paperclip.yaml"), stringify({ settings: { grading: { value: "on", set: false } }, agents: { "chief-of-staff": { name: "Aiden", teammate: { job: "Chief of staff", sample: "Ask me", staff: [], controls: [], face: null }, enabled_tools: { jira: ["jira_get"] } }, aria: { name: "Aria", teammate: { job: "Assistant", sample: "Ask me", staff: [], controls: [], face: null } } }, mcp_servers: { jira: { url: "http://jira", tools: { read: ["jira_get", "jira_search"], write: ["jira_edit"] } } }, routines: {} }));
 const entry = (name: string, extra: Record<string, unknown> = {}) => ({ name, enabled: true, chosen: true, description: `The ${name} module, ${"with a long description ".repeat(20)}`, agents: [], requires: [], connections: [], routines: [], apps: [], ...extra });
 writeFileSync(join(dir, "modules.json"), JSON.stringify([entry("core", { settings: { grading: { default: "on", values: ["on", "off"] } } }), entry("jira", { connections: ["jira"] })]));
 process.env.BOARD_PAPERCLIP_CONFIG = join(dir, "paperclip.yaml");
@@ -42,7 +42,9 @@ let laneAnswers: "late" | "own" = "late";
 let runSaw: string[] = ["opening"];
 const chatReply = { id: "r-chat", body: "board answer\n\n<!-- aidenhq:job=j-0123456789abcdef kind=reply -->", authorType: "agent", authorAgentId: "aiden", createdAt: "2026-11-12T10:00:05.000Z" };
 const laneGrants = join(mkdtempSync(join(tmpdir(), "mcp-lane-")), "grants.json");
-writeFileSync(laneGrants, JSON.stringify({ agents: { a1: { key: "aria", chat_task: "i-chat" } } }));
+writeFileSync(laneGrants, JSON.stringify({ agents: { a1: { key: "aria", chat_task: "i-chat" }, aiden: { key: "chief-of-staff" } } }));
+// Teammates (Aiden, Aria) by the grants table: only they take chats.
+process.env.AIDENHQ_GRANTS_FILE = laneGrants;
 const fakeFetch = (async (url: URL, init: RequestInit = {}) => {
   const method = init.method ?? "GET";
   const lane = /^\/v1\/cp\/(read|owner)(\/.*)$/.exec(url.pathname)!;

@@ -1,6 +1,6 @@
-// The test-user page canary's kernel side (test-session.ts): one non-owner test account, a real Better Auth session for one
-// allowlisted agent's own open task, at exactly the apps the owner named, for 15 minutes, reached only through a one-time
-// handoff code. Every refusal and every audit row is here; the gate's listener test covers the browser's side.
+// Test-user sessions' kernel side (test-session.ts): one non-owner test account, a real Better Auth session for the own open
+// task of an agent holding app-tester, at exactly the apps the owner named, for 15 to 60 minutes in one live-app mode, reached
+// only through a one-time handoff code. Every refusal and every audit row is here; the gate's listener test covers the browser's side.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -55,16 +55,16 @@ const refused = async (p: Promise<unknown>, status: number, re: RegExp) => {
 
 test("with no settings.edge.test_user the route refuses, and so does every mint", async () => {
   const { s } = store({ testUser: () => undefined });
-  await refused(s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP }), 403, /test user is off/);
+  await refused(s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP }), 403, /test user is off/);
   // The capability is inert: no session, no account, no audit row.
   assert.deepEqual(s.auditRows(), []);
   assert.equal(s.isTestAccount(EMAIL), false);
 });
 
-test("an allowlisted red-teamer's own open task mints a 15-minute session and a 60-second handoff for a named app", async () => {
+test("an app-tester's own open task mints a 15-minute session and a 60-second handoff for a named app", async () => {
   let clock = Date.parse("2026-11-24T08:00:00Z");
   const { s } = store({ now: () => clock });
-  const m = await s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const m = await s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP });
   assert.equal(m.app, APP);
   assert.equal(m.host, HOST);
   assert.equal(m.email, EMAIL);
@@ -83,22 +83,42 @@ test("an allowlisted red-teamer's own open task mints a 15-minute session and a 
   );
 });
 
-test("only an allowlisted agent, a listed app and the agent's own task mint", async () => {
+test("a session lives at most 60 minutes, in read or test-write, and its check carries the mode", async () => {
+  const clock = Date.parse("2026-11-24T08:00:00Z");
+  const { s } = store({ now: () => clock });
+  const who = { agentKey: "ui-reviewer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP };
+  const hour = await s.mint({ ...who, minutes: 60 });
+  assert.equal(Date.parse(hour.expires), clock + 60 * 60_000);
+  assert.equal(hour.mode, "read");
+  await refused(s.mint({ ...who, minutes: 61 }), 400, /minutes/);
+  await refused(s.mint({ ...who, minutes: 0 }), 400, /minutes/);
+  // There is no `any`: an AidenHQ app's session never carries more than test-write.
+  await refused(s.mint({ ...who, mode: "any" as never }), 400, /bad mode/);
+  const w = await s.mint({ ...who, mode: "test-write" });
+  const { token } = await s.redeem({ code: w.code, host: HOST, state: w.state });
+  assert.equal((await s.check({ cookie: token, host: HOST }))?.mode, "test-write");
+  const r = await s.redeem({ code: hour.code, host: HOST, state: hour.state });
+  assert.equal((await s.check({ cookie: r.token, host: HOST }))?.mode, "read");
+});
+
+test("only an app-tester, a listed app and the agent's own task mint", async () => {
   const { s } = store();
-  await refused(s.mint({ agentKey: "security-watch", agentId: AGENT, task: TASK, app: APP }), 403, /may not sign in/);
-  await refused(s.mint({ agentKey: "app-maintainer", agentId: AGENT, task: TASK, app: APP }), 403, /may not sign in/);
-  await refused(s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: "other-app" }), 403, /isn't in settings/);
-  await refused(s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: "../etc" }), 400, /bad app/);
+  // The role decides, never the key: red-teamer without app-tester is refused, and any agent holding it may mint.
+  await refused(s.mint({ agentKey: "red-teamer", roles: [], agentId: AGENT, task: TASK, app: APP }), 403, /may not sign in.*app-tester/);
+  await refused(s.mint({ agentKey: "app-maintainer", roles: ["app-requests"], agentId: AGENT, task: TASK, app: APP }), 403, /may not sign in/);
+  assert.equal((await store().s.mint({ agentKey: "ui-reviewer", roles: ["ui-login", "app-tester"], agentId: AGENT, task: TASK, app: APP })).mode, "read");
+  await refused(s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: "other-app" }), 403, /isn't in settings/);
+  await refused(s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: "../etc" }), 400, /bad app/);
   // An app the gate doesn't serve as a shared app has no host.
   const noHost = store();
-  await refused(noHost.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: "notes" }), 403, /isn't in settings/);
+  await refused(noHost.s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: "notes" }), 403, /isn't in settings/);
   // A task assigned to someone else's control-plane id, or closed, or unknown.
   const mine = store({ tasks: { [TASK]: { id: TASK, identifier: "WOR-1", status: "in_progress", assigneeAgentId: "00000000-0000-4000-8000-00000000oth1" } } });
-  await refused(mine.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP }), 403, /isn't assigned to this agent/);
+  await refused(mine.s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP }), 403, /isn't assigned to this agent/);
   const closed = store({ tasks: { [TASK]: { id: TASK, identifier: "WOR-1", status: "done", assigneeAgentId: AGENT } } });
-  await refused(closed.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP }), 409, /task is closed/);
+  await refused(closed.s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP }), 409, /task is closed/);
   const none = store({ tasks: {} });
-  await refused(none.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP }), 404, /no such task/);
+  await refused(none.s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP }), 404, /no such task/);
   // None of those minted anything.
   for (const x of [s, noHost.s, mine.s, closed.s, none.s]) assert.deepEqual(x.auditRows().filter((r) => r.event === "test_session_minted"), []);
 });
@@ -106,26 +126,26 @@ test("only an allowlisted agent, a listed app and the agent's own task mint", as
 test("the handoff redeems once, for its host and state only", async () => {
   const { s } = store();
   // A wrong state (or another host) is refused, and spends the code: no oracle to guess with.
-  const wrong = await s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const wrong = await s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP });
   await refused(s.redeem({ code: wrong.code, host: HOST, state: "0".repeat(32) }), 400, /invalid or expired handoff/);
   await refused(s.redeem({ code: wrong.code, host: HOST, state: wrong.state }), 400, /invalid or expired handoff/);
-  const away = await s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const away = await s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP });
   await refused(s.redeem({ code: away.code, host: "other.example.com", state: away.state }), 400, /invalid or expired handoff/);
   // A right code, once.
-  const m = await s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const m = await s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP });
   const ok = await s.redeem({ code: m.code, host: HOST, state: m.state });
   assert.equal(ok.app, APP);
   assert.match(ok.token, /^[^.]+\.[A-Za-z0-9+/=]+$/); // the signed Better Auth cookie value, never the raw token
   await refused(s.redeem({ code: m.code, host: HOST, state: m.state }), 400, /invalid or expired handoff/);
   // Codes are independent: a second session's code works for its own host and state.
-  const other = await s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const other = await s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP });
   assert.equal((await s.redeem({ code: other.code, host: HOST, state: other.state })).app, APP);
 });
 
 test("check: only a live session for this host and app; expiry, revocation, a closed task and a removed setting end it", async () => {
   let clock = Date.parse("2026-11-24T08:00:00Z");
   const st = store({ now: () => clock });
-  const m = await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const m = await st.s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP });
   const cookie = (await st.s.redeem({ code: m.code, host: HOST, state: m.state })).token;
   assert.deepEqual((await st.s.check({ cookie, host: HOST }))?.role, "member");
   // The wrong host is its own refusal (the listener answers 404 for another app's session), never "no session".
@@ -145,7 +165,7 @@ test("check: only a live session for this host and app; expiry, revocation, a cl
 
 test("check reads the cookie Better Auth would: an unsigned value, or a session row that is gone, is no session", async () => {
   const st = store();
-  const m = await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const m = await st.s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP });
   const cookie = (await st.s.redeem({ code: m.code, host: HOST, state: m.state })).token;
   assert.equal((await st.s.check({ cookie, host: HOST }))?.app, APP);
   // The token half is a real minted token, but the cookie's signature is not: an unsigned or forged cookie never counts.
@@ -160,13 +180,13 @@ test("check reads the cookie Better Auth would: an unsigned value, or a session 
 
 test("revoke ends the session now (the tool's after-run call), and the sweep ends every session on a closed task", async () => {
   const st = store();
-  const m = await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const m = await st.s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP });
   const cookie = (await st.s.redeem({ code: m.code, host: HOST, state: m.state })).token;
   assert.equal((await st.s.revoke({ sessionId: m.id, reason: "canary finished" })).revoked, 1);
   assert.equal(await st.s.check({ cookie, host: HOST }), null);
   assert.ok(st.s.auditRows().some((r) => r.event === "test_session_revoked" && r.session_id === m.id && r.reason === "canary finished"));
   // A second session on the task, then the task closes: the sweep ends it by task.
-  const m2 = await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const m2 = await st.s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP });
   const cookie2 = (await st.s.redeem({ code: m2.code, host: HOST, state: m2.state })).token;
   assert.equal(await st.s.check({ cookie: cookie2, host: HOST }) !== null, true);
   st.tasks[TASK] = { ...st.tasks[TASK], status: "done" };
@@ -175,7 +195,7 @@ test("revoke ends the session now (the tool's after-run call), and the sweep end
   assert.ok(st.s.auditRows().some((r) => r.event === "test_session_revoked" && r.session_id === m2.id && r.reason === "task-closed"));
   // The task reopened: a new session mints; the setting going away is the other test's.
   st.tasks[TASK] = { ...st.tasks[TASK], status: "in_progress" };
-  assert.equal((await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP })).app, APP);
+  assert.equal((await st.s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP })).app, APP);
 });
 
 test("a session id is only revoked for the task that owns it, so one canary never ends another's", async () => {
@@ -184,7 +204,7 @@ test("a session id is only revoked for the task that owns it, so one canary neve
     [TASK]: { id: TASK, identifier: "WOR-11495", status: "in_progress", assigneeAgentId: AGENT },
     [OTHER_TASK]: { id: OTHER_TASK, identifier: "WOR-11496", status: "in_progress", assigneeAgentId: AGENT },
   } });
-  const m = await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const m = await st.s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP });
   const cookie = (await st.s.redeem({ code: m.code, host: HOST, state: m.state })).token;
   // Another task's id, or its identifier, is refused and the session stays live.
   await refused(st.s.revoke({ sessionId: m.id, task: OTHER_TASK }), 403, /isn't this task's/);
@@ -193,7 +213,7 @@ test("a session id is only revoked for the task that owns it, so one canary neve
   // The owning task, named by its id or its identifier, ends it.
   assert.equal((await st.s.revoke({ sessionId: m.id, task: TASK })).revoked, 1);
   assert.equal(await st.s.check({ cookie, host: HOST }), null);
-  const m2 = await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const m2 = await st.s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP });
   assert.equal((await st.s.revoke({ sessionId: m2.id, task: "WOR-11495" })).revoked, 1);
 });
 
@@ -207,7 +227,7 @@ test("a session signs in as the account it was minted for: a changed setting ema
       return { id, identifier: "WOR-11495", status: "in_progress", assigneeAgentId: AGENT };
     },
   });
-  const m = await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const m = await st.s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP });
   const cookie = (await st.s.redeem({ code: m.code, host: HOST, state: m.state })).token;
   // A brief control-plane failure refuses this check with a retryable 503 but must not end the session: the page's next
   // asset gets in.
@@ -233,7 +253,7 @@ test("a revoke or expiry that lands while the task lookup is awaited ends the se
       return { id, identifier: "WOR-11495", status: "in_progress", assigneeAgentId: AGENT };
     },
   });
-  const m = await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const m = await st.s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP });
   const cookie = (await st.s.redeem({ code: m.code, host: HOST, state: m.state })).token;
   revokeDuringRead = () => st.s.revoke({ sessionId: m.id, reason: "canary finished" });
   assert.equal(await st.s.check({ cookie, host: HOST }), null);
@@ -243,7 +263,7 @@ test("a removed setting ends live sessions, and nothing logs a cookie, token or 
   let setting: { email: string; apps: string[] } | undefined = { email: EMAIL, apps: [APP] };
   const logs: any[] = [];
   const st = store({ testUser: () => setting, logs });
-  const m = await st.s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const m = await st.s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP });
   const cookie = (await st.s.redeem({ code: m.code, host: HOST, state: m.state })).token;
   assert.ok(await st.s.check({ cookie, host: HOST }));
   setting = undefined;
@@ -259,9 +279,9 @@ test("a removed setting ends live sessions, and nothing logs a cookie, token or 
 test("a task's assignee is the control plane's agent id, never the grants key", async () => {
   // The same agent's key but a task assigned to another agent id: refused.
   const st = store();
-  await refused(st.s.mint({ agentKey: "red-teamer", agentId: "00000000-0000-4000-8000-00000000oth1", task: TASK, app: APP }), 403, /isn't assigned to this agent/);
+  await refused(st.s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: "00000000-0000-4000-8000-00000000oth1", task: TASK, app: APP }), 403, /isn't assigned to this agent/);
   // A job with no control-plane id mints nothing.
-  await refused(st.s.mint({ agentKey: "red-teamer", agentId: "", task: TASK, app: APP }), 403, /no control-plane agent id/);
+  await refused(st.s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: "", task: TASK, app: APP }), 403, /no control-plane agent id/);
 });
 
 test("a test account is never adopted: an existing account's email is refused", async () => {
@@ -280,7 +300,7 @@ test("a test account is never adopted: an existing account's email is refused", 
     task: async (id) => ({ id, status: "in_progress", assigneeAgentId: AGENT }),
     log: { info: () => {}, warn: () => {} },
   });
-  await assert.rejects(s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP }), /already an account/);
+  await assert.rejects(s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP }), /already an account/);
   assert.deepEqual(s.auditRows(), []);
 });
 
@@ -289,13 +309,13 @@ test("a test account is never adopted: an existing account's email is refused", 
 test("a handoff redeems after the setting removed its app or changed its email: no cookie, and the session ends", async () => {
   let setting: { email: string; apps: string[] } | undefined = { email: EMAIL, apps: [APP] };
   const { s, deleted } = store({ testUser: () => setting });
-  const m = await s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const m = await s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP });
   setting = { email: EMAIL, apps: [] };
   await refused(s.redeem({ code: m.code, host: HOST, state: m.state }), 401, /invalid or expired handoff/);
   assert.equal(deleted.length, 1, "the session ends rather than staying live for a page the listener refuses");
 
   setting = { email: EMAIL, apps: [APP] };
-  const e = await s.mint({ agentKey: "red-teamer", agentId: AGENT, task: TASK, app: APP });
+  const e = await s.mint({ agentKey: "red-teamer", roles: ["app-tester"], agentId: AGENT, task: TASK, app: APP });
   setting = { email: "someone-else@aidenhq.test", apps: [APP] };
   await refused(s.redeem({ code: e.code, host: HOST, state: e.state }), 401, /invalid or expired handoff/);
 });

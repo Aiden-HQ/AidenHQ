@@ -22,16 +22,14 @@ import { SignInRequired, api, type Session } from "./api";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { SignInScreen, RETURN_KEY } from "./Accounts";
 import { SettingsView, isCategory, type Category } from "./Settings";
-import { AttentionStrip } from "./Attention";
-import { ApprovalsView, onYouBeyondCards } from "./Chat";
-import { needsOwner } from "./ui/TaskState";
 import { clearCache, load, peek, setAccount, subscribe as cacheSubscribe } from "./cache";
 import { subscribe } from "./events";
 import type { AgentTab } from "./AgentPage";
 import type { ModuleTab } from "./ModulePage";
 import { QUERIES, VIEW_CHUNKS, hashPath, landsOnBoard, useQuery } from "./queries";
-import { ChatWorkspace } from "./Workspace";
-import { askForNotifications, notificationsSupported, watchNeedsYou } from "./notify";
+import { watchNeedsYou } from "./notify";
+import { HomeView } from "./Home";
+import { AskAiden, closeAsk, openAsk, toggleAsk } from "./AskAiden";
 import { CardView, GoogleBanner, PlusIcon, PoweredBy, SignInBanners, SortableCard, memberIssue } from "./components";
 import { CrewPicker, Drawer } from "./Drawer";
 import { SetupFlow } from "./SetupFlow";
@@ -45,6 +43,7 @@ import { NOTE_TEXT, useTaskSearch } from "./search";
 import { BoardTabs, ConflictBanner, FilterChips, FilterSheet, SaveButton, useTaskBoard } from "./TaskTools";
 import { applyFilters, cardMatches, isEmpty } from "./filters";
 import { Banner, Segmented } from "./ui";
+import { Icon } from "./ui/icons";
 import { setBoardTimezone } from "./ui/TaskState";
 import "./shell.css";
 
@@ -60,11 +59,33 @@ const RunPage = lazy(() => VIEW_CHUNKS.run().then((m) => ({ default: m.RunPage }
 const ModuleView = lazy(() => VIEW_CHUNKS.moduleView().then((m) => ({ default: m.ModuleView })));
 const SessionsView = lazy(() => VIEW_CHUNKS.sessions().then((m) => ({ default: m.SessionsView })));
 const DesignView = lazy(() => VIEW_CHUNKS.design().then((m) => ({ default: m.DesignView })));
+const TeamView = lazy(() => VIEW_CHUNKS.team().then((m) => ({ default: m.TeamView })));
+const TeammateView = lazy(() => VIEW_CHUNKS.teammate().then((m) => ({ default: m.TeammateView })));
+const DecisionsView = lazy(() => VIEW_CHUNKS.decisions().then((m) => ({ default: m.DecisionsView })));
 /** A page's place while its code arrives (rarely seen: it is warmed early). No spinner: the page paints in a moment. */
 const PageLoading = () => <main className="page wide" aria-busy="true" />;
 
 type Items = Record<Bucket, Card[]>;
-type Route = { kind: "board" } | { kind: "chat"; ref: string | null } | { kind: "view"; view: View; /** A saved board (#/board?view=<id>). */ saved?: string; /** One approval card (#/approvals/<id>). */ card?: string } | { kind: "settings"; cat: Category | null } | { kind: "agent"; key: string; tab: AgentTab } | { kind: "module"; name: string; tab: ModuleTab } | { kind: "task"; ref: string; focus?: string } | { kind: "run"; id: string } | { kind: "brief" } | { kind: "help" } | { kind: "design" } | { kind: "app"; name: string } | { kind: "setup"; module: string; change?: boolean } | { kind: "page"; id: string; sub?: string } | { kind: "session"; ref: string; fresh?: boolean };
+export type Route =
+  | { kind: "home"; /** One approval card (#/approvals/<id>), opened in Home's pane. */ card?: string }
+  | { kind: "tasks"; /** A saved board (#/tasks?view=<id>). */ saved?: string }
+  | { kind: "sessions"; ref?: string; fresh?: boolean }
+  | { kind: "apps"; name?: string }
+  | { kind: "team" }
+  | { kind: "teammate"; key: string; chat?: string; /** Pre-fills the composer (#/team/<key>?text=…). */ text?: string }
+  | { kind: "agents" }
+  | { kind: "agent"; key: string; tab: AgentTab }
+  | { kind: "modules" }
+  | { kind: "module"; name: string; tab: ModuleTab }
+  | { kind: "page"; id: string; sub?: string }
+  | { kind: "insight"; tab: "costs" | "flow" | "decisions" }
+  | { kind: "settings"; cat: Category | null }
+  | { kind: "design" }
+  | { kind: "task"; ref: string; focus?: string }
+  | { kind: "run"; id: string }
+  | { kind: "brief" }
+  | { kind: "help" }
+  | { kind: "setup"; module: string; change?: boolean };
 
 /** My day's Done column: cards shown before "Show more". */
 const DONE_PAGE = 10;
@@ -109,6 +130,44 @@ class MouseOrPenSensor extends PointerSensor {
   }));
 }
 
+/**
+ * Where an old address lives now (the path after `#/`), or null when it isn't an old one. parseRoute rewrites the address
+ * once (replaceState) and reads the new one; the old views are gone. `#/c/` with or without text also opens Ask Aiden.
+ */
+/** An address's path and its query (after the first `?`, still encoded). */
+const splitQuery = (h: string): [string, string] => {
+  const i = h.indexOf("?");
+  return i < 0 ? [h, ""] : [h.slice(0, i), h.slice(i + 1)];
+};
+export function redirectOld(h: string): string | null {
+  const [path, query] = splitQuery(h);
+  const q = query ? `?${query}` : "";
+  if (path === "c" || path === "c/") {
+    const p = new URLSearchParams(query);
+    if (p.has("to")) return "team";
+    pendingAsk = { text: p.get("text") ?? undefined };
+    return "";
+  }
+  if (path.startsWith("c/lane:")) return "team";
+  if (path.startsWith("c/")) return `t/${path.slice(2)}`;
+  if (path === "approvals") return "";
+  if (path === "agents" || path === "settings/agents") return "team/agents";
+  const agent = /^agents\/([a-z0-9-]+)(?:\/([a-z]+))?$/.exec(path);
+  if (agent) return agent[2] === "chats" ? `team/${agent[1]}` : `team/agents/${agent[1]}${agent[2] ? `/${agent[2]}` : ""}`;
+  if (path === "modules" || path === "settings/modules") return "team/modules";
+  if (path.startsWith("modules/")) return `team/${path}`;
+  if (path.startsWith("fleet/")) return `team/m/${path.slice(6)}${q}`;
+  if (path === "reviews" || path.startsWith("reviews/")) return `team/m/code-review${path.slice(7)}${q}`;
+  if (path === "board") return `tasks${q}`;
+  if (path === "sessions" || path.startsWith("sessions/")) return `tasks/${path}${q}`;
+  if (path === "costs") return `insight/costs${q}`;
+  if (path === "flow" || path.startsWith("flow/")) return `insight/${path}${q}`;
+  return null;
+}
+/** Ask Aiden's text from an old `#/c/?text=…` link, opened once the app has mounted. */
+let pendingAsk: { text?: string } | null = null;
+
+const AGENT_TABS = "overview|activity|handbook|settings";
 function parseRoute(): Route {
   // An old #/connect/<id>[?error=…] link: that connection's Connect, on Settings > Connections (read raw: the message is encoded).
   const connect = /^#\/?connect\/([a-z0-9-]{1,63})(?:\?([\s\S]*))?$/.exec(location.hash);
@@ -116,59 +175,66 @@ function parseRoute(): Route {
     history.replaceState(null, "", `#/settings/connections?connect=${connect[1]}${connect[2] ? `&${connect[2]}` : ""}`);
     return { kind: "settings", cat: "connections" };
   }
-  const h = hashPath();
+  let h = hashPath();
+  const moved = redirectOld(h);
+  if (moved !== null) {
+    history.replaceState(null, "", `#/${moved}`);
+    h = hashPath();
+  }
+  const [path, query] = splitQuery(h);
   // #/t/PEN-12 opens a task; #/t/PEN-12/PEN-15 opens it on the agent working in PEN-15.
-  if (h.startsWith("t/")) {
-    const [ref = "", focus] = h.slice(2).split("/");
+  if (path.startsWith("t/")) {
+    const [ref = "", focus] = path.slice(2).split("/");
     return { kind: "task", ref, ...(focus ? { focus } : {}) };
   }
-  // #/agents/<key>[/overview|activity|chats|handbook|settings] opens an agent's page. The old #/settings/agents lands on the Agents list.
-  const agent = /^agents\/([a-z0-9-]+)(?:\/(overview|activity|chats|handbook|settings))?$/.exec(h);
-  if (agent) return { kind: "agent", key: agent[1]!, tab: (agent[2] as AgentTab | undefined) ?? "overview" };
-  if (h === "settings/agents") return { kind: "view", view: "agents" };
   // #/r/<run id> opens a run's trace.
-  if (/^r\/(j-[0-9a-f]{16}|[0-9a-f-]{36})$/.test(h)) return { kind: "run", id: h.slice(2) };
-  // #/c/ starts a new chat; #/c/WOR-12 opens that chat in the chat workspace.
-  if (h === "c" || h.startsWith("c/")) return { kind: "chat", ref: h.slice(2).split("?")[0] || null };
-  if (h === "settings/modules" || h === "modules") return { kind: "view", view: "modules" };
-  // #/modules/<name>[/<tab>] opens a module's page.
-  const mod = /^modules\/([a-z0-9-]+)(?:\/(overview|contents|settings|changes))?$/.exec(h);
+  if (/^r\/(j-[0-9a-f]{16}|[0-9a-f-]{36})$/.test(path)) return { kind: "run", id: path.slice(2) };
+  // #/approvals/<k-id>: Home, with that card's pane open.
+  const card = /^approvals\/(k-[0-9a-f]{16})$/.exec(path);
+  if (card) return { kind: "home", card: card[1]! };
+  // #/tasks?view=<id>: Tasks on a saved board (TaskTools.tsx); an unknown id falls back to All tasks.
+  if (path === "tasks") {
+    const saved = /^view=([0-9a-f-]{36})$/.exec(query);
+    return { kind: "tasks", ...(saved ? { saved: saved[1]! } : {}) };
+  }
+  // #/tasks/sessions[/<identifier>][?new=1]: Sessions; ?new=1 after Start, while the computer admits it.
+  const ses = /^tasks\/sessions(?:\/([A-Za-z0-9-]{1,40}))?$/.exec(path);
+  if (ses) return { kind: "sessions", ...(ses[1] ? { ref: ses[1] } : {}), ...(ses[1] && query === "new=1" ? { fresh: true } : {}) };
+  if (path === "apps") return { kind: "apps" };
+  const app = /^apps\/([a-z0-9-]+)$/.exec(path);
+  if (app) return { kind: "apps", name: app[1]! };
+  if (path === "team") return { kind: "team" };
+  if (path === "team/agents") return { kind: "agents" };
+  const agent = new RegExp(`^team/agents/([a-z0-9-]+)(?:/(${AGENT_TABS}))?$`).exec(path);
+  if (agent) return { kind: "agent", key: agent[1]!, tab: (agent[2] as AgentTab | undefined) ?? "overview" };
+  if (path === "team/modules") return { kind: "modules" };
+  const mod = /^team\/modules\/([a-z0-9-]+)(?:\/(overview|contents|settings|changes))?$/.exec(path);
   if (mod) return { kind: "module", name: mod[1]!, tab: (mod[2] as ModuleTab | undefined) ?? "overview" };
+  // #/team/m/<id>[/<sub>] opens a module's page (board.pages, ModuleView.tsx).
+  const page = /^team\/m\/([a-z][a-z0-9-]{0,30})(?:\/([\w/-]{1,100}))?$/.exec(path);
+  if (page) return { kind: "page", id: page[1]!, ...(page[2] ? { sub: page[2] } : {}) };
+  // #/team/<key>[/c/<chat>][?text=…]: a teammate's page (after the reserved hire, agents, modules and m, which the compiler
+  // refuses as a teammate's key: scripts/modules.ts TEAM_PAGES).
+  const mate = /^team\/(?!(?:hire|agents|modules|m)(?:\/|$))([a-z0-9-]+)(?:\/c\/([A-Za-z0-9-]{1,40}))?$/.exec(path);
+  if (mate) {
+    const text = new URLSearchParams(query).get("text") ?? undefined;
+    return { kind: "teammate", key: mate[1]!, ...(mate[2] ? { chat: mate[2] } : {}), ...(text ? { text } : {}) };
+  }
+  // #/insight/costs[?…], #/insight/flow[/<tab>][?…] (Costs and Flow read their own state), #/insight/decisions.
+  const insight = /^insight\/(costs|flow|decisions)(?:\/[a-z]+)?$/.exec(path);
+  if (insight) return { kind: "insight", tab: insight[1] as "costs" | "flow" | "decisions" };
   // #/settings/<category> opens Settings there; the old tabs (#/connections, #/accounts) are categories now.
-  if (h === "settings" || h.startsWith("settings/")) {
-    const cat = h.slice("settings/".length).split("?")[0]!;
+  if (path === "settings" || path.startsWith("settings/")) {
+    const cat = path.slice("settings/".length);
     return { kind: "settings", cat: isCategory(cat) ? cat : null };
   }
-  if (h === "connections" || h === "accounts") return { kind: "settings", cat: h };
-  // #/board?view=<id>: Tasks on a saved board (TaskTools.tsx); an unknown id falls back to All tasks.
-  const saved = /^board\?view=([0-9a-f-]{36})$/.exec(h);
-  if (saved) return { kind: "view", view: "board", saved: saved[1]! };
-  // #/approvals/<k-id>: one card, decided here.
-  const card = /^approvals\/(k-[0-9a-f]{16})$/.exec(h);
-  if (card) return { kind: "view", view: "approvals", card: card[1]! };
-  // #/approvals, #/costs, ...: deep links to a tab.
-  // A tab link may carry the tab's own state after "?" (#/costs?range=7d).
-  if ((VIEWS as string[]).includes(h.split("?")[0]!)) return { kind: "view", view: h.split("?")[0] as View };
-  // #/reviews[/…]: the Reviews page is code review's module page now (links from before it moved).
-  const rv = /^reviews(?:\/([\w/-]{1,100}))?$/.exec(h);
-  if (rv) return { kind: "page", id: "code-review", ...(rv[1] ? { sub: rv[1] } : {}) };
-  // #/flow/<tab> opens a Flow tab (Flow.tsx reads the tab itself).
-  if (/^flow\/[a-z]+(\?.*)?$/.test(h)) return { kind: "view", view: "flow" };
-  const setup = /^setup\/([a-z0-9-]{1,63})(\?change=1)?$/.exec(h);
-  if (setup) return { kind: "setup", module: setup[1]!, ...(setup[2] ? { change: true } : {}) };
-  if (h === "brief") return { kind: "brief" };
-  if (h === "help") return { kind: "help" };
-  if (h === "design") return { kind: "design" };
-  // #/fleet/<id> opens a module's page (board.pages, ModuleView.tsx).
-  const page = /^fleet\/([a-z][a-z0-9-]{0,30})(?:\/([\w/-]{1,100}))?$/.exec(h);
-  if (page) return { kind: "page", id: page[1]!, ...(page[2] ? { sub: page[2] } : {}) };
-  // #/sessions/<identifier> opens a session (Sessions.tsx); ?new=1 after Start, while the computer admits it.
-  const ses = /^sessions\/([A-Za-z0-9-]{1,40})(\?new=1)?$/.exec(h);
-  if (ses) return { kind: "session", ref: ses[1]!, ...(ses[2] ? { fresh: true } : {}) };
-  // #/apps/<name> opens an app's page.
-  const app = /^apps\/([a-z0-9-]+)$/.exec(h);
-  if (app) return { kind: "app", name: app[1]! };
-  return { kind: "board" };
+  if (path === "connections" || path === "accounts") return { kind: "settings", cat: path };
+  const setup = /^setup\/([a-z0-9-]{1,63})$/.exec(path);
+  if (setup) return { kind: "setup", module: setup[1]!, ...(query === "change=1" ? { change: true } : {}) };
+  if (path === "brief") return { kind: "brief" };
+  if (path === "help") return { kind: "help" };
+  if (path === "design") return { kind: "design" };
+  return { kind: "home" };
 }
 const go = (hash: string) => {
   if (location.hash !== hash) location.hash = hash;
@@ -185,19 +251,36 @@ function useMedia(query: string) {
   return on;
 }
 
-// "design" (#/design, the design system's catalogue) has no tab of its own; "fleet" is a module's page (#/fleet/<id>).
-type View = "chat" | "agents" | "modules" | "approvals" | "board" | "sessions" | "apps" | "costs" | "flow" | "settings" | "design" | "fleet";
-const VIEWS: View[] = ["chat", "agents", "modules", "approvals", "board", "sessions", "apps", "costs", "flow", "settings"];
-const VIEW_KEY = "aidenhq.view";
-const savedView = (): View => {
-  try {
-    const v = localStorage.getItem(VIEW_KEY);
-    if (v === "connections" || v === "accounts") return "settings"; // tabs that moved into Settings
-    return v && (VIEWS as string[]).includes(v) ? (v as View) : "chat";
-  } catch {
-    return "chat";
+/** The page a route shows. A teammate's page is Team's ("team"); "design" (#/design, the kit's catalogue) has no section. */
+export type View = "home" | "tasks" | "sessions" | "apps" | "team" | "agents" | "modules" | "page" | "costs" | "flow" | "decisions" | "settings" | "design";
+/** The phone's top bar title for each page. */
+const TITLES: Record<View, string> = { home: "Home", tasks: "Tasks", sessions: "Sessions", apps: "Apps", team: "Team", agents: "All agents", modules: "Modules", page: "Team", costs: "Costs", flow: "Flow", decisions: "Decisions", settings: "Settings", design: "Design" };
+/** The page under a route; null for an overlay (a task, a run, the brief, help, a setup flow), which keeps the page under it. */
+export function viewOf(r: Route): View | null {
+  switch (r.kind) {
+    case "home":
+    case "tasks":
+    case "sessions":
+    case "apps":
+    case "team":
+    case "agents":
+    case "modules":
+    case "page":
+    case "settings":
+    case "design":
+      return r.kind;
+    case "teammate":
+      return "team";
+    case "agent":
+      return "agents";
+    case "module":
+      return "modules";
+    case "insight":
+      return r.tab;
+    default:
+      return null;
   }
-};
+}
 
 interface Toast {
   id: number;
@@ -226,17 +309,20 @@ export function App() {
   const [items, setItems] = useState<Items | null>(() => cachedBoard()?.buckets ?? null);
   const [error, setError] = useState("");
   const [route, setRoute] = useState<Route>(parseRoute);
-  // The Approvals badge: what the page lists as waiting on the owner (his Tier 2 cards and the other tasks waiting on him).
-  const [approvalsOpen, setApprovalsOpen] = useState(0);
-  const [notifyAsk, setNotifyAsk] = useState(() => notificationsSupported() && Notification.permission === "default");
+  // Home's badge: what needs the owner (Home's needs rows), from the one Home entry Home itself reads.
+  const [needsCount, setNeedsCount] = useState(0);
   const signInNeeded = useCallback(() => setNeedsSignIn(true), []);
-  // Browser notifications and the Approvals count: what needs you, polled while the board is open.
+  // Browser notifications and the badge: Home's needs, polled while the board is open (the same cache entry Home reads).
   useEffect(
     () =>
       watchNeedsYou(
-        () => api.needsYou().then((r) => (setApprovalsOpen(r.approvals + r.items.filter(onYouBeyondCards).length), { items: r.items.filter((i) => needsOwner(i.state)) })),
-        (identifier) => go(`#/c/${identifier}`),
-        (tick) => subscribe(["approvals", "chat", "tasks"], tick),
+        () =>
+          load(QUERIES.home.key, QUERIES.home.fetch, false, true).then((h) => {
+            setNeedsCount(h.needs.length);
+            return { items: h.needs.map((n) => ({ title: n.question, agent: n.teammate.name, key: `${n.id}:${n.since}`, href: n.kind === "approval" ? `#/approvals/${n.id}` : `#/t/${n.task.identifier}` })) };
+          }),
+        (href) => go(href),
+        (tick) => subscribe(["approvals", "chat", "tasks", "home"], tick),
       ),
     [],
   );
@@ -249,9 +335,17 @@ export function App() {
   const [tab, setTab] = useState<Bucket>("today");
   // A column's quick-add draft lives here, not in the column: leaving the board unmounts the columns, and the draft stays.
   const [drafts, setDrafts] = useState<Record<Bucket, string>>(() => ({ triage: "", today: "", tomorrow: "", later: "", backlog: "" }));
-  const [view, setViewState] = useState<View>(savedView);
+  const [view, setViewState] = useState<View>(() => viewOf(route) ?? "home");
   const viewRef = useRef(view);
   viewRef.current = view;
+  /** The last address that wasn't an overlay: closing a task, a run, the brief or help goes back there (never history.back(),
+   * which would leave the board when the overlay came from a Telegram or Slack link). */
+  const underHash = useRef(viewOf(route) ? location.hash || "#/" : "#/");
+  const closeOverlay = useCallback(() => go(underHash.current), []);
+  /** The page under an overlay: the last route that is a page, so a task opened from a teammate's chat keeps that chat mounted. */
+  const pageRef = useRef<Route>(viewOf(route) ? route : { kind: "home" });
+  if (viewOf(route)) pageRef.current = route;
+  const page = pageRef.current;
   /** When the board was last asked for (the timer below); opening Tasks asks again when that is over 10s ago. */
   const boardAt = useRef(Date.now());
   /** Shows view `v` (and `next`, the route that led there, in the same commit, so no in-between page is drawn). */
@@ -265,9 +359,6 @@ export function App() {
       viewRef.current = v;
       document.startViewTransition(() => flushSync(commit));
     } else commit();
-    try {
-      localStorage.setItem(VIEW_KEY, v);
-    } catch {}
   }, []);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [creating, setCreating] = useState(false);
@@ -275,13 +366,13 @@ export function App() {
   const [palette, setPalette] = useState(false);
   const closePalette = useCallback(() => setPalette(false), []);
   const newTask = useCallback(() => setCreating(true), []);
-  // ⌘K / Ctrl K opens the palette from anywhere, typing included.
+  // ⌘K / Ctrl K opens the palette and ⌘J / Ctrl J toggles Ask Aiden, from anywhere, typing included.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setPalette((o) => !o);
-      }
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === "k") (e.preventDefault(), setPalette((o) => !o));
+      if (k === "j") (e.preventDefault(), toggleAsk());
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -302,12 +393,12 @@ export function App() {
     }, action ? 7000 : 3500);
   }, []);
   // What Tasks shows: the layout, the filters (the search field is their text) and the saved boards (tabs once the session is confirmed).
-  const tb = useTaskBoard({ ready: !!session?.account, routed: route.kind === "view" && route.view === "board" ? route.saved ?? null : undefined, toast, go });
+  const tb = useTaskBoard({ ready: !!session?.account, routed: route.kind === "tasks" ? route.saved ?? null : undefined, toast, go });
   const query = tb.filters.text ?? "";
   const setQuery = (text: string) => tb.setFilters((f) => ({ ...f, text }));
   // The search field's answer (search.ts): the hits every filter's text term reads, and the closed hits Done shows.
   // My day shows only what its own Done would (the owner's and the crew's); Agent work shows every hit.
-  const found = useTaskSearch(query, (c) => (tb.layout === "work" || c.mine !== false) && cardMatches(c, { ...tb.filters, text: "" }), view === "board", !tb.filters.state?.length || tb.filters.state.includes("done"));
+  const found = useTaskSearch(query, (c) => (tb.layout === "work" || c.mine !== false) && cardMatches(c, { ...tb.filters, text: "" }), view === "tasks", !tb.filters.state?.length || tb.filters.state.includes("done"));
   useEffect(() => setDoneShown(DONE_PAGE), [query]);
   const filtering = !isEmpty(tb.filters);
   const [saveOpen, setSaveOpen] = useState(0);
@@ -354,7 +445,7 @@ export function App() {
   // A sign-in finished (in the tab Connect opened): its banner goes at once.
   useEffect(() => subscribe(["connections"], () => void refresh()), [refresh]);
   useEffect(() => {
-    if (view !== "board" || (loaded.current && Date.now() - boardAt.current < 10_000)) return;
+    if (view !== "tasks" || (loaded.current && Date.now() - boardAt.current < 10_000)) return;
     boardAt.current = Date.now();
     void refresh();
   }, [view, refresh]);
@@ -374,7 +465,7 @@ export function App() {
     if (!first) void refresh(true);
     // Every 10s on Tasks; elsewhere only the header reads it (the working dot, sign-in banners, the brief): once a minute.
     const t = setInterval(() => {
-      if (document.visibilityState !== "visible" || dragFrom.current || (viewRef.current !== "board" && Date.now() - boardAt.current < 60_000)) return;
+      if (document.visibilityState !== "visible" || dragFrom.current || (viewRef.current !== "tasks" && Date.now() - boardAt.current < 60_000)) return;
       boardAt.current = Date.now();
       void refresh();
     }, 10_000);
@@ -382,10 +473,16 @@ export function App() {
     document.addEventListener("visibilitychange", vis);
     const hash = () => {
       const r = parseRoute();
-      // A chat link opens the Chat tab; a tab link opens that tab.
-      const v: View | null = r.kind === "chat" ? "chat" : r.kind === "view" ? r.view : r.kind === "agent" ? "agents" : r.kind === "module" ? "modules" : r.kind === "settings" ? "settings" : r.kind === "design" ? "design" : r.kind === "app" ? "apps" : r.kind === "page" ? "fleet" : r.kind === "session" ? "sessions" : null;
-      if (v) setView(v, r);
-      else setRoute(r);
+      // A page's address shows that page; an overlay's keeps the page under it.
+      const v = viewOf(r);
+      if (v) {
+        underHash.current = location.hash || "#/";
+        setView(v, r);
+      } else setRoute(r);
+      // Below 1000px Ask Aiden is a full-screen sheet (shell.css): a link followed from it (a task, a run) shows at once.
+      if (matchMedia("(max-width: 1000px)").matches) closeAsk();
+      // An old #/c/?text=… link: Home, with Ask Aiden open on that text.
+      if (pendingAsk) (openAsk(pendingAsk), (pendingAsk = null));
     };
     hash();
     window.addEventListener("hashchange", hash);
@@ -599,14 +696,16 @@ export function App() {
       const el = e.target as HTMLElement;
       const typing = el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable;
       if (e.key === "Escape") {
+        // A pane (Home's detail, Ask Aiden) already took this press.
+        if (e.defaultPrevented) return;
         if (creating) return setCreating(false);
         if (typing) return el.blur();
-        if (route.kind !== "board" && route.kind !== "chat" && route.kind !== "view" && route.kind !== "agent" && route.kind !== "settings") return go("#/");
+        if (!viewOf(route)) return closeOverlay();
         if (query) return setQuery("");
         return setSelected(null);
       }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (route.kind === "task" || route.kind === "brief" || route.kind === "run" || view === "chat") return;
+      if (!viewOf(route)) return;
       const lists = filtered;
       if (!lists) return;
       const cols = visibleBuckets;
@@ -624,13 +723,13 @@ export function App() {
       };
       const p = pos();
       const k = e.key;
-      if (k === "/") return e.preventDefault(), searchRef.current?.focus();
+      if (k === "/" && view === "tasks") return e.preventDefault(), searchRef.current?.focus();
       if (k === "c" || k === "n") return e.preventDefault(), setCreating(true);
       if (k === "b") return go("#/brief");
       if (k === "?") return go("#/help");
-      if (k === "a") return go(view === "agents" ? "#/board" : "#/agents");
-      // My day's own keys: Agent work binds none.
-      if (view !== "board" || tb.layout !== "day") return;
+      if (k === "a") return go("#/team");
+      // My day's own keys (on Tasks): Agent work binds none.
+      if (view !== "tasks" || tb.layout !== "day") return;
       if (k === "d") return setShowDone((s) => !s);
       if (k === "r") return setShowRecurring((s) => !s);
       if (k === "j" || k === "ArrowDown") {
@@ -688,14 +787,15 @@ export function App() {
   // Every hook runs before the early returns below (React needs the same hooks on every render).
   const appsQ = useQuery(QUERIES.apps, signInNeeded);
   const pagesQ = useQuery(QUERIES.pages, signInNeeded);
+  const rosterQ = useQuery(QUERIES.roster, signInNeeded);
   const pages = pagesQ.data?.pages ?? [];
   // Sessions (the sessions module): its section shows only when the kernel lists the module, with the count working now.
   const sessionsQ = useQuery(QUERIES.sessions, signInNeeded);
   const sessions = sessionsQ.data?.enabled ? { live: sessionsQ.data.sessions.filter((x) => x.state === "running").length } : undefined;
-  // An apply can add or remove a module's page while the board is open: Fleet reads them again each time it is opened.
-  const inFleet = ["agents", "apps", "modules", "fleet"].includes(view);
+  // An apply can add or remove a module's page while the board is open: Team reads them again each time it is opened.
+  const inTeam = ["team", "agents", "apps", "modules", "page"].includes(view);
   const reloadPages = pagesQ.reload;
-  useEffect(() => void (inFleet && reloadPages()), [inFleet, reloadPages]);
+  useEffect(() => void (inTeam && reloadPages()), [inTeam, reloadPages]);
   // Signed out, or an admin without an authenticator yet: both are done on the kernel's sign-in pages.
   if (session && !session.account) return <SignInScreen />;
 
@@ -705,20 +805,19 @@ export function App() {
     ) : (
       <div className={`app boot${mobile ? " mobile" : ""}`} aria-busy="true" aria-label="Loading">
         {!mobile && <div className="topnav" />}
-        <div className="app-main">{tb.layout === "work" && <AgentWorkLoading />}</div>
+        <div className="app-main">{view === "tasks" && tb.layout === "work" && <AgentWorkLoading />}</div>
       </div>
     );
 
   const active = activeId ? BUCKETS.flatMap((b) => items[b]).find((c) => c.id === activeId) : undefined;
   const counts = Object.fromEntries(BUCKETS.map((b) => [b, items[b].length])) as Record<Bucket, number>;
   const mergeTargets = BUCKETS.flatMap((b) => items[b]).filter((c) => c.assignee === "me" && !c.recurring);
-  const openChat = (identifier: string) => go(`#/c/${identifier}`);
   // Every section has its own address, so the hash and the page never disagree (a click on the page already shown is a no-op).
   const nav = (v: NavView) => go(hrefOf(v));
   const panels = panelsOf(appsQ.data?.apps ?? [], keepsSecureCookies());
-  const onBoard = view === "board";
-  // A chat (or a settings category) open on a phone takes the whole screen (back arrow to the list).
-  const chatFull = mobile && ((view === "chat" && route.kind === "chat") || (view === "settings" && route.kind === "settings" && route.cat !== null));
+  const onBoard = view === "tasks";
+  // A settings category open on a phone takes the whole screen (back arrow to the list).
+  const fullPhone = mobile && view === "settings" && route.kind === "settings" && route.cat !== null;
   const local = ["localhost", "127.0.0.1"].includes(location.hostname); // a tunnel to 3121: the loopback sign-ins work
   const signInConnect = local || !!session?.signInConnect;
   const connectionsOk = !board.google?.error && !board.google?.accounts.some((a) => a.state === "expired") && (board.signIns ?? []).map((s) => s.status).every((c) => !c || !c.configured || c.state !== "expired");
@@ -738,33 +837,35 @@ export function App() {
   const doneCards = applyFilters([...board.done, ...older.filter((c) => c.mine !== false && !c.recent)], tb.filters, found.hits);
   // My day's Done column: when asked for, or while a search answer has matches there.
   const doneColumn = showDone || (searching && (doneCards.length > 0 || found.hasMore));
-
+  // The teammates only: what every composer offers for @-mentions (hidden agents work through their teammate).
+  // An assignee's seed is its definition key, the roster's `key`.
+  const mateKeys = new Set((rosterQ.data?.roster ?? []).filter((a) => a.teammate).map((a) => a.key));
+  const mates = board.assignees.filter((a) => mateKeys.has(a.seed));
 
   return (
-    <div className={`app${mobile ? " mobile" : ""}${view === "chat" ? " on-chat" : ""}`}>
+    <div className={`app${mobile ? " mobile" : ""}`}>
       {!mobile && (
         <TopNav
           view={view}
-          approvals={approvalsOpen}
-          agentsActive={board.agentsActive}
+          needs={needsCount}
+          working={board.agentsActive}
           onNav={nav}
           spend={board.spend}
           settingsAlert={!connectionsOk}
-          notify={notifyAsk ? () => void askForNotifications().then(() => setNotifyAsk(false)) : undefined}
-          brief={!!board.brief}
           onPalette={() => setPalette(true)}
           sessions={sessions}
         />
       )}
       <div className="app-row">
-      {!mobile && <SubNav view={view} onNav={nav} panels={panels} pages={pages} page={route.kind === "page" ? route.id : undefined} go={go} />}
+      {!mobile && route.kind !== "teammate" && <SubNav view={view} onNav={nav} panels={panels} pages={pages} page={route.kind === "page" ? route.id : undefined} go={go} sessions={!!sessions} />}
       <div className="app-main">
       {mobile && (
-        <header className="topbar" hidden={chatFull}>
+        <header className="topbar" hidden={fullPhone}>
           <a className="brand" href="#/" onClick={() => setQuery("")}>
             <img src="/icon.png" alt="" />
           </a>
-          {onBoard && <span className="topbar-title">Tasks</span>}
+          <span className="topbar-title">{TITLES[view]}</span>
+          {view === "home" && needsCount > 0 && <span className="tn-badge">{needsCount}</span>}
           <div className="topbar-tools">
             {onBoard && (
               <div className={`search${found.busy ? " busy" : ""}`}>
@@ -777,20 +878,12 @@ export function App() {
                 <PlusIcon />
               </button>
             )}
-            {board.spend && (
-              <a className={`spend-today${board.spend.day.spent >= board.spend.day.cap || board.spend.month.spent >= board.spend.month.cap ? " over" : ""}`} href="#/costs" title={`Today's model spend against the day limit; $${board.spend.month.spent.toFixed(2)} of $${board.spend.month.cap} this month`}>
-                ${board.spend.day.spent.toFixed(2)}
-              </a>
-            )}
-            {board.brief && (
-              <a className="btn" href="#/brief">
-                Brief
-              </a>
-            )}
+            <button type="button" className="icon-btn" onClick={() => setPalette(true)} aria-label="Search and jump">
+              <Icon name="search" size={20} />
+            </button>
           </div>
         </header>
       )}
-      {onBoard && work && <AttentionStrip onSignIn={signInNeeded} />}
       {!mobile && onBoard && (
         <header className="page-tools tt-tools">
           <div className="tt-row">
@@ -844,8 +937,6 @@ export function App() {
       )}
       {onBoard && <ConflictBanner tb={tb} onSaveNew={() => setSaveOpen((n) => n + 1)} />}
 
-      {onBoard && !work && <AttentionStrip onSignIn={signInNeeded} />}
-
       {error && <div className="offline">Offline: {error}. Retrying…</div>}
       <GoogleBanner google={board.google} />
       <SignInBanners board={board} canConnect={signInConnect} />
@@ -863,21 +954,23 @@ export function App() {
       )}
 
       <ErrorBoundary resetKey={`${view}:${JSON.stringify(route)}`}>
-      {view === "chat" && <ChatWorkspace selected={route.kind === "chat" ? route.ref : null} composing={route.kind === "chat" && !route.ref} mobile={mobile} crew={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} />}
-      {view === "approvals" && <ApprovalsView open={openChat} onSignIn={signInNeeded} card={route.kind === "view" && route.view === "approvals" ? route.card : undefined} />}
-      {view === "settings" && <SettingsView cat={route.kind === "settings" ? route.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect }} />}
-      {view === "modules" && route.kind !== "module" && <Suspense fallback={<PageLoading />}><ModulesView onSignIn={signInNeeded} can={{ signIn: signInConnect }} /></Suspense>}
-      {view === "modules" && route.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={route.name} name={route.name} tab={route.tab} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect }} /></Suspense>}
-      {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView key={route.kind === "app" ? route.name : ""} app={route.kind === "app" ? route.name : undefined} onSignIn={signInNeeded} /></Suspense>}
+      {view === "home" && <HomeView card={page.kind === "home" ? page.card : undefined} session={session} go={go} onSignIn={signInNeeded} toast={toast} mobile={mobile} timezone={board.timezone} front={route.kind === "home"} />}
+      {view === "team" && page.kind === "teammate" && <Suspense fallback={<PageLoading />}><TeammateView key={page.key} agentKey={page.key} chat={page.chat} text={page.text} crew={mates} faces={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} mobile={mobile} /></Suspense>}
+      {view === "team" && page.kind !== "teammate" && <Suspense fallback={<PageLoading />}><TeamView go={go} onSignIn={signInNeeded} /></Suspense>}
+      {view === "decisions" && <Suspense fallback={<PageLoading />}><DecisionsView onSignIn={signInNeeded} /></Suspense>}
+      {view === "settings" && <SettingsView cat={page.kind === "settings" ? page.cat : null} mobile={mobile} session={session} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect }} />}
+      {view === "modules" && page.kind !== "module" && <Suspense fallback={<PageLoading />}><ModulesView onSignIn={signInNeeded} can={{ signIn: signInConnect }} /></Suspense>}
+      {view === "modules" && page.kind === "module" && <Suspense fallback={<PageLoading />}><ModulePage key={page.name} name={page.name} tab={page.tab} go={go} onSignIn={signInNeeded} can={{ signIn: signInConnect }} /></Suspense>}
+      {view === "apps" && <Suspense fallback={<PageLoading />}><AppsView key={page.kind === "apps" ? page.name ?? "" : ""} app={page.kind === "apps" ? page.name : undefined} onSignIn={signInNeeded} /></Suspense>}
       {view === "design" && <Suspense fallback={<PageLoading />}><DesignView /></Suspense>}
-      {view === "fleet" && route.kind === "page" && <Suspense fallback={<PageLoading />}><ModuleView key={`${route.id}/${route.sub ?? ""}`} sub={route.sub} page={pages.find((p) => p.id === route.id)} onSignIn={signInNeeded} /></Suspense>}
-      {view === "sessions" && <Suspense fallback={<PageLoading />}><SessionsView key={route.kind === "session" ? route.ref : ""} open={route.kind === "session" ? route.ref : undefined} fresh={route.kind === "session" && route.fresh} mobile={mobile} prefix={board.prefix} go={go} onSignIn={signInNeeded} onChanged={sessionsQ.reload} /></Suspense>}
+      {view === "page" && page.kind === "page" && <Suspense fallback={<PageLoading />}><ModuleView key={`${page.id}/${page.sub ?? ""}`} sub={page.sub} page={pages.find((p) => p.id === page.id)} onSignIn={signInNeeded} /></Suspense>}
+      {view === "sessions" && <Suspense fallback={<PageLoading />}><SessionsView key={page.kind === "sessions" ? page.ref ?? "" : ""} open={page.kind === "sessions" ? page.ref : undefined} fresh={page.kind === "sessions" && !!page.fresh} mobile={mobile} prefix={board.prefix} go={go} onSignIn={signInNeeded} onChanged={sessionsQ.reload} /></Suspense>}
       {view === "flow" && <Suspense fallback={<PageLoading />}><FlowView onSignIn={signInNeeded} /></Suspense>}
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
-      {view === "agents" && route.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={route.key} agentKey={route.key} tab={route.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
-      {view === "agents" && route.kind !== "agent" && <Suspense fallback={<PageLoading />}><CrewView crew={board.assignees} onSignIn={signInNeeded} /></Suspense>}
-      {view === "board" && work && <AgentWork board={board} cards={workCards} groupBy={tb.groupBy} mobile={mobile} filtered={filtering} searching={searching} moreDone={found.hasMore ? found.more : undefined} onClear={() => tb.setFilters({})} />}
-      {view === "board" && !work && (
+      {view === "agents" && page.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={page.key} agentKey={page.key} tab={page.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
+      {view === "agents" && page.kind !== "agent" && <Suspense fallback={<PageLoading />}><CrewView crew={board.assignees} onSignIn={signInNeeded} /></Suspense>}
+      {view === "tasks" && work && <AgentWork board={board} cards={workCards} groupBy={tb.groupBy} mobile={mobile} filtered={filtering} searching={searching} moreDone={found.hasMore ? found.more : undefined} onClear={() => tb.setFilters({})} />}
+      {view === "tasks" && !work && (
       <main className={`columns${doneColumn || showRecurring ? " extra" : ""}`}>
         <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => (setActiveId(null), (dragFrom.current = null), void refresh(true))}>
           {visibleBuckets.map((b) => (
@@ -951,7 +1044,7 @@ export function App() {
           refId={route.ref}
           focus={route.focus}
           board={board}
-          onClose={() => go("#/")}
+          onClose={closeOverlay}
           onChanged={() => void refresh(true)}
           onMove={(id, b) => moveCard(id, b)}
           onSnooze={(id, date) => snoozeCard(id, date)}
@@ -959,17 +1052,17 @@ export function App() {
         />
       )}
       {route.kind === "brief" && board.brief && (
-        <div className="drawer-backdrop" onPointerDown={(e) => e.target === e.currentTarget && go("#/")}>
+        <div className="drawer-backdrop" onPointerDown={(e) => e.target === e.currentTarget && closeOverlay()}>
           <aside className="drawer brief" role="dialog" aria-label="Brief">
             <header className="drawer-head">
               <span className="ident">{board.brief.identifier}</span>
               <span className="spacer" />
-              <button className="btn" onClick={() => void api.update(board.brief!.id, { status: "done" }).then(() => (go("#/"), refresh(true)), (e) => toast(`Couldn't update: ${(e as Error).message}`))}>
+              <button className="btn" onClick={() => void api.update(board.brief!.id, { status: "done" }).then(() => (closeOverlay(), refresh(true)), (e) => toast(`Couldn't update: ${(e as Error).message}`))}>
                 Mark read
               </button>
-              <a className="icon-btn" href="#/" aria-label="Close">
+              <button type="button" className="icon-btn" onClick={closeOverlay} aria-label="Close">
                 ✕
-              </a>
+              </button>
             </header>
             <div className="drawer-scroll">
               <Markdown text={board.brief.description} prefix={board.prefix} className="brief-md" />
@@ -977,9 +1070,9 @@ export function App() {
           </aside>
         </div>
       )}
-      {route.kind === "run" && <Suspense fallback={null}><RunPage key={route.id} id={route.id} onClose={() => (history.length > 1 ? history.back() : go("#/"))} onSignIn={signInNeeded} /></Suspense>}
-      {route.kind === "help" && <Help />}
-      {route.kind === "setup" && <SetupFlow key={route.module} module={route.module} change={route.change} onDone={() => go("#/")} onSignIn={signInNeeded} />}
+      {route.kind === "run" && <Suspense fallback={null}><RunPage key={route.id} id={route.id} onClose={closeOverlay} onSignIn={signInNeeded} /></Suspense>}
+      {route.kind === "help" && <Help onClose={closeOverlay} />}
+      {route.kind === "setup" && <SetupFlow key={route.module} module={route.module} change={route.change} onDone={closeOverlay} onSignIn={signInNeeded} />}
       {creating && (
         <NewTask
           board={board}
@@ -987,7 +1080,7 @@ export function App() {
           onCreated={(identifier, agent) => {
             setCreating(false);
             toast(agent ? `Added ${identifier} · ${agent} is on it` : `Added ${identifier} to Triage`);
-            if (mobile) setTab("triage"), go("#/board");
+            if (mobile) setTab("triage"), go("#/tasks");
             void refresh(true);
           }}
           toast={toast}
@@ -995,21 +1088,22 @@ export function App() {
       )}
       </ErrorBoundary>
 
-      {mobile && !chatFull && route.kind !== "task" && <BottomBar sessions={!!sessions} view={view} approvals={approvalsOpen} agentsActive={board.agentsActive} onNav={nav} panels={panels} pages={pages} go={go} notify={notifyAsk ? () => void askForNotifications().then(() => setNotifyAsk(false)) : undefined} />}
+      {mobile && !fullPhone && route.kind !== "task" && <BottomBar sessions={!!sessions} view={view} needs={needsCount} working={board.agentsActive} onNav={nav} panels={panels} pages={pages} go={go} />}
       </div>
+      <AskAiden mobile={mobile} crew={mates} faces={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} />
       </div>
       <Palette
         sessions={!!sessions}
         open={palette}
         onClose={closePalette}
         go={go}
-        crew={board.assignees}
+        roster={rosterQ.data?.roster ?? []}
         apps={appsQ.data?.apps ?? []}
         onNewTask={newTask}
         tasks={[
           { id: "t-work", kind: "Go to", label: "Agent work", icon: "tasks", run: () => tb.select(null, tb.views, "work") },
           ...(tb.views ?? []).map((v) => ({ id: `t-${v.id}`, kind: "Board", label: v.name, icon: "tasks" as const, run: () => tb.select(v.id) })),
-          ...(tb.views ? [{ id: "t-save", kind: "Action", label: "Save board", icon: "plus" as const, run: () => (go(tb.view ? `#/board?view=${tb.view.id}` : "#/board"), setSaveOpen((n) => n + 1)) }] : []),
+          ...(tb.views ? [{ id: "t-save", kind: "Action", label: "Save board", icon: "plus" as const, run: () => (go(tb.view ? `#/tasks?view=${tb.view.id}` : "#/tasks"), setSaveOpen((n) => n + 1)) }] : []),
         ]}
       />
       <div className="toasts" aria-live="polite">
@@ -1163,7 +1257,7 @@ function AsOf({ board, stale }: { board: Board; stale: boolean }) {
   );
 }
 
-function Help() {
+function Help({ onClose }: { onClose: () => void }) {
   const rows: [string, string][] = [
     ["⌘K", "Search and jump to any page, agent, chat or app"],
     ["j / k  ↓ ↑", "Select next / previous"],
@@ -1178,12 +1272,14 @@ function Help() {
     ["b", "Today's brief"],
     ["d", "Show recently done"],
     ["r", "Show recurring tasks"],
-    ["a", "Crew: who is working on what"],
+    ["a", "Your team"],
+    ["⌘J", "Ask Aiden"],
+    ["J / K, E, S", "On Home: move through Needs you, done, snooze"],
     ["⌘↵", "Send reply / save description"],
     ["Esc", "Close"],
   ];
   return (
-    <div className="drawer-backdrop center" onPointerDown={(e) => e.target === e.currentTarget && go("#/")}>
+    <div className="drawer-backdrop center" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="help" role="dialog" aria-label="Keyboard shortcuts">
         <h2>Keyboard</h2>
         <dl>

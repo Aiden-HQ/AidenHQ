@@ -1,6 +1,8 @@
 name: security
 description: "Security Watch (CVE scans of everything we run, verified with the web, fix tasks) and the Red Teamer (attacks our own apps and agents, reports with a proof of concept, never patches)."
 roles:
+  # app-tester (apps-platform's): the Red Teamer's app_page_canary signs in as the test user.
+  requests: [ app-tester ]
   declares:
     - { id: security-verdict, description: "finding_verdict: apps-mcp records a verdict on a src_security finding." }
 requires:
@@ -55,6 +57,8 @@ agents:
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_create, task_comment, task_block, task_cancel, task_finish, fleet_catalog ]
     # Its fix tasks go to the Fleet Steward, which routes them to the owner's chosen engineer (`?`: only when it is installed).
     delegate_to: [ fleet-steward? ]
+    # app-tester: app_page_canary signs in as the test user (kernel/src/test-session.ts).
+    roles: [ app-tester ]
 routines:
   security-scan:
     title: Security scan triage

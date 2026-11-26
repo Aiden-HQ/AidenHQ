@@ -91,7 +91,7 @@ export async function flushDigest(store: Store, cfg: AttentionConfig, send: (tex
     store.setKv("digest:needs-sent", JSON.stringify({ slot, ids: [...delivered, ...b.filter((i) => i.id?.startsWith("need:")).map((i) => i.id)] }));
     for (const i of b) if (i.id?.startsWith("need:")) delivered.add(i.id);
     store.setKv("digest:queue", JSON.stringify((JSON.parse(store.getKv("digest:queue") || "[]") as Item[]).filter((i) => !sent.has(i.id))));
-    if (out === true) for (const i of b) if (!i.told) store.told({ source: i.source ?? "kernel", task: i.task, kind: i.kind ?? "fyi", text: clip(i.text, 300) }, now);
+    if (out === true) for (const i of b) if (!i.told) store.told({ source: i.source ?? "kernel", task: i.task, kind: i.kind ?? "fyi", text: clip(i.text, 300) }); // stamped once delivered (notify.ts)
   }
   store.setKv("digest:slot", slot);
   return items.length > 0;

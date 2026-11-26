@@ -118,7 +118,7 @@ Beside `placements` in `src/store.ts` (`CREATE TABLE IF NOT EXISTS`). Single own
 
 Update and delete are one SQL statement `WHERE account_id = ? AND id = ? AND rev = ?`; no row changed is a 409, the page keeps
 the draft and reloads the saved row; if the row is gone (deleted elsewhere) the page offers "Save as new". Tabs render only after the session is confirmed (the board cache can paint before that,
-`App.tsx`). The route is `#/board?view=<id>`, parsed explicitly in `Route`; an unknown id falls back to All tasks with a toast.
+`App.tsx`). The route is `#/tasks?view=<id>`, parsed explicitly in `Route`; an unknown id falls back to All tasks with a toast.
 
 ## Projects (filter)
 
@@ -263,11 +263,11 @@ plugin can only read projects).
 
 ### One approvals UI: the board
 
-The board is the only approvals UI (owner, 2026-11-23: one UI, one flow). `#/approvals/<k-id>` opens one card inside the board:
+The board is the only approvals UI (owner, 2026-11-23: one UI, one flow). `#/approvals/<k-id>` opens one card in Home's detail pane:
 the full `ApprovalCard` (sentence, reads, changes, cost, the whole diff under review, the reviewer's note, Explain), read by its
 id whatever its age, with Approve and Reject (an optional reason). Every link to a card goes there: Agent work's Needs you
 callout, a chat's card, the card id on the list, Telegram's card ("on the board"), the MCP's `status` and `approvals` (`link`).
-On the Approvals list each pending card has a box, with "Select all" above; picking any shows one bar, Approve n or Reject n
+On Home, Select on Needs you gives each approval row a box; picking any shows one bar, Approve n or Reject n
 with one reason, and each card is decided on its own against the digest it showed (one that changed fails alone and is named).
 
 Deciding: the board's `POST /api/approvals/:id/decide {digest, decision, reason}` forwards the signed-in admin's board session to the
