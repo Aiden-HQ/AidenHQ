@@ -59,8 +59,8 @@ wait on that PR. Report only what those reads show.
 Never say which PR remains, or which will merge, from memory: name the PR and the state you read for it in the same turn.
 When the PR that carries the work is closed and not merged, and its branch is gone, its head survives at
 `refs/pull/<n>/head`: `aidenhq ship checkout <PR link> <head>` fetches it with the job's own token (`codehost fetch`
-needs a module's), then publish it on a new `agent/<task>/…` branch and wait on that PR instead of a merge that cannot
-happen.
+needs a module's) and puts it on `ship-pr-<n>`; branch from there onto a new `agent/<task>/…` branch (a scratch branch,
+so it needs that rename), publish that, and wait on its PR instead of a merge that cannot happen.
 
 ## Finishing a cancelled task's PR (a handoff)
 
