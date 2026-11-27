@@ -2,8 +2,9 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("../..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("../..", import.meta.url));
 
 test("every scripts/test/*.test.ts runs in exactly one suite", () => {
   const suites = JSON.parse(readFileSync(`${root}.github/ci/areas.json`, "utf8")).suites.filter((s: { dir?: string }) => s.dir === "scripts");
