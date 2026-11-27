@@ -77,6 +77,11 @@ export function openTd(o: { apiId: number; apiHash: string; dir: string; key: st
   client.on("update", (u) => {
     for (const fn of listeners) fn(u as TdUpdate);
   });
+  // An error tdl can't tie to a request arrives on "error" (an unhandled one kills the process): listeners get it as an update.
+  client.on("error", (e) => {
+    const x = e as { code?: number; message?: string };
+    for (const fn of listeners) fn({ _: "error", code: typeof x.code === "number" ? x.code : 500, message: x.message ?? String(e) });
+  });
   return {
     async invoke(req) {
       refuseReadState(req._);

@@ -16,6 +16,19 @@ const state = (s: Record<string, unknown>) => ({ _: "updateAuthorizationState", 
 const user = { _: "user", id: 42, first_name: "Owner", last_name: "", usernames: { active_usernames: ["owner"] }, type: { _: "userTypeRegular" } };
 
 describe("auth", () => {
+  it("cancelling a QR attempt ends it in TDLib: the shown code never signs in, and the service restarts idle", async () => {
+    const td = new FakeTd();
+    td.on("requestQrCodeAuthentication", () => (td.emit(state({ _: "authorizationStateWaitOtherDeviceConfirmation", link: "tg://login?token=L1" })), { _: "ok" }));
+    const { a, exits } = auth(td);
+    td.emit(state({ _: "authorizationStateWaitPhoneNumber" }));
+    await a.deviceStart();
+    a.cancel();
+    expect(a.deviceState()).toEqual({ state: "cancelled" });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(td.closed).toBe(true);
+    expect(exits).toEqual([0]);
+  });
+
   it("qr then password then ready", async () => {
     const td = new FakeTd();
     td.on("requestQrCodeAuthentication", () => (td.emit(state({ _: "authorizationStateWaitOtherDeviceConfirmation", link: "tg://login?token=L1" })), { _: "ok" }));

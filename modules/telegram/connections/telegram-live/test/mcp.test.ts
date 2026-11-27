@@ -48,6 +48,12 @@ test("tools never touch read state and fence text", async () => {
     expect(r.text).not.toMatch(/"text":"hello/);
   }
   expect((await call("telegram_save_draft", { chat_id: "-100123", text: "hi" })).err).toBe(false);
+  // the request TDLib's pinned types accept: content (not input_message_text), no thread id
+  expect(fake.calls.find((c) => c._ === "setChatDraftMessage")).toMatchObject({ draft_message: { _: "draftMessage", content: { _: "draftMessageContentText", text: { text: "hi" } } } });
+  // a page's cursor is exclusive: the boundary message comes back from TDLib and is dropped
+  const page = await call("telegram_read_chat", { chat_id: "-100123", before_message_id: "2", limit: 1 });
+  expect(page.text).toContain("hello 1 ");
+  expect(page.text).not.toContain("hello 2 ");
   expect((await call("telegram_send", { chat_id: "-100123", text: "hi" })).err).toBe(true);
   expect(fake.calls.some((c) => c._ === "sendMessage")).toBe(false);
   expect(fake.calls.filter((c) => READ_STATE_METHODS.has(c._))).toEqual([]);

@@ -202,7 +202,13 @@ export function createAuth(o: {
     },
 
     cancel() {
-      if (attempt) attempt.cancelled = true;
+      if (!attempt) return;
+      attempt.cancelled = true;
+      // A QR already shown stays scannable in TDLib (and a password step stays open): end the attempt by restarting idle, as Disconnect does.
+      if (client && state !== READY) {
+        ours = true;
+        void client.close().finally(() => setTimeout(() => exit(0), 200).unref?.());
+      }
     },
 
     async disconnect() {
