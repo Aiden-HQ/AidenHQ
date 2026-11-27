@@ -3,12 +3,13 @@
 FROM anchore/grype:v0.121.3@sha256:13113eeceab017260370cf540e1d25442c59665fd07d1b09b66d63bb0c282887 AS grype
 
 FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS build
+COPY --from=oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 /usr/local/bin/bun /usr/local/bin/bun
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts
+COPY package.json bun.lock bunfig.toml ./
+RUN bun install --frozen-lockfile --ignore-scripts
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
-RUN npm run build && npm prune --omit=dev
+RUN bun run build && rm -rf node_modules && bun install --frozen-lockfile --ignore-scripts --production
 
 FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS node
 RUN npm install -g npm@11.21.2 && npm cache clean --force

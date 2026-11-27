@@ -2,9 +2,10 @@
 # The server-manager service: Node runs its TypeScript directly; pg is its one dependency (the src_servers status writer), so the
 # build installs exactly the lockfile's tree and no install scripts run.
 FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS build
+COPY --from=oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 /usr/local/bin/bun /usr/local/bin/bun
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts --omit=dev
+COPY package.json bun.lock bunfig.toml ./
+RUN bun install --frozen-lockfile --ignore-scripts --production
 
 FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS node
 # Node 24.22.3 ships npm 11.19.1, whose bundled undici 6.28.0 and brace-expansion 5.0.9 carry published

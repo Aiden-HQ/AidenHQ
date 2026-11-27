@@ -3,12 +3,13 @@
 # modules and git) in one image and one Node process, on the owner's one sign-in. The tree mirrors the module's, so the code host
 # imports github-mcp's built entry by its relative path.
 FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS build
+COPY --from=oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 /usr/local/bin/bun /usr/local/bin/bun
 WORKDIR /app/connections/github-mcp
-COPY connections/github-mcp/package.json connections/github-mcp/package-lock.json ./
-RUN npm ci --ignore-scripts
+COPY connections/github-mcp/package.json connections/github-mcp/bun.lock connections/github-mcp/bunfig.toml ./
+RUN bun install --frozen-lockfile --ignore-scripts
 COPY connections/github-mcp/tsconfig.json connections/github-mcp/tsconfig.build.json ./
 COPY connections/github-mcp/src ./src
-RUN npm run build && npm prune --omit=dev
+RUN bun run build && rm -rf node_modules && bun install --frozen-lockfile --ignore-scripts --production
 
 FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS node
 # Node 24.22.3 ships npm 11.19.1, whose bundled undici 6.28.0 and brace-expansion 5.0.9 carry published

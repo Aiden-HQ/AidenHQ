@@ -130,11 +130,11 @@ RUN case "$(dpkg --print-architecture)" in \
 # copies below the fix for GHSA-mrhx-c7xc-m3w5 ($ZodArray keeps one issue per failing element with no cap, so a large
 # unconstrained array in a request body exhausts memory): @vercel/sandbox 1.10.2 pins zod 3.24.4 and @vercel/cli-config 0.3.1
 # pins 4.1.11. deepsec accepts no @vercel/sandbox that pins a fixed zod (1.x all pin 3.24.4; 4.x/5.x need zod ^4.6.7), so
-# zod 4.6.7 replaces both copies from a checked-in lockfile (deepsec-zod/), installed with `npm ci` as agent-base does for
+# zod 4.6.7 replaces both copies from a checked-in lockfile (deepsec-zod/), installed with `bun install` as agent-base does for
 # codegenie. One `mv` cannot serve both paths, so each copy is replaced and its version asserted; deepsec's own zod is 4.6.7.
 COPY deepsec-zod /opt/deepsec-zod
 RUN npm i -g --ignore-scripts deepsec@2.3.12 && npm cache clean --force \
-    && (cd /opt/deepsec-zod && npm ci --no-audit --no-fund) \
+    && (cd /opt/deepsec-zod && bun install --frozen-lockfile --ignore-scripts) \
     && for p in @vercel/sandbox @vercel/cli-config; do \
          d="$(npm root -g)/deepsec/node_modules/$p/node_modules" && rm -rf "$d/zod" && cp -a /opt/deepsec-zod/node_modules/zod "$d/zod" \
            && node -p "JSON.parse(require('fs').readFileSync('$d/zod/package.json','utf8')).version" | grep -qx 4.6.7 \

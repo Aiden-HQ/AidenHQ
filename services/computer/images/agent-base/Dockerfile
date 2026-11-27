@@ -4,6 +4,8 @@
 # node: Paperclip's sandbox runner needs sh, node, nohup. Codex pinned to the paperclip image's (0.166.0).
 ARG BASE=aidenhq/computer-browser
 FROM ${BASE}
+# Bun 1.4.5, the one package manager (bun install, bun run, bunx): the image's own installs below and an agent's in its box.
+COPY --from=oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 /usr/local/bin/bun /usr/local/bin/bunx /usr/local/bin/
 # file, binutils (strings, readelf) and sqlite3: the commands Engineer jobs reached for most and didn't find (job logs,
 # 2026-11-16: file 42 times, strings 11, sqlite3 4).
 # krb5 1.22.3-1 fixes seven high GSS-API/RPC CVEs (CVE-2026-107778, -112314, -112320, -112321, -112322, -112323, -119079).
@@ -25,13 +27,13 @@ RUN npm i -g @openai/codex@0.166.0 && npm cache clean --force
 # codegenie 0.7.0 pins zod 4.6.5, whose `$ZodArray` keeps one issue per failing element with no cap, so a large unconstrained
 # array in a request body exhausts memory (GHSA-mrhx-c7xc-m3w5). The newer codegenie that moves the pin is under 7 days old,
 # and the fix is in zod 4.6.6, so zod 4.6.7 (the 4.6.x the 7-day rule picks) replaces codegenie's own copy. It comes from a
-# checked-in lockfile (codegenie-zod/) that ships into both computer images and is installed with `npm ci`, because npm
-# re-resolves codegenie's own directory as a root project and fails on its dev tree, so installing in place won't do.
+# checked-in lockfile (codegenie-zod/) that ships into both computer images and is installed with `bun install`, because an
+# install in codegenie's own directory resolves it as a root project and fails on its dev tree, so installing in place won't do.
 COPY codegenie-zod /opt/codegenie-zod
 RUN npm i -g --before=2026-11-13 @anthropic-ai/claude-code@2.1.323 @0xsequence/codegenie@0.7.0 && npm cache clean --force \
     && (cd "$(npm root -g)/@anthropic-ai/claude-code" && node install.cjs) \
     && claude --version | grep -q '^2\.1\.323 ' && codegenie --version | grep -q '^codegenie v0\.7\.0 ' \
-    && (cd /opt/codegenie-zod && npm ci --no-audit --no-fund \
+    && (cd /opt/codegenie-zod && bun install --frozen-lockfile --ignore-scripts \
         && cd "$(npm root -g)/@0xsequence/codegenie/node_modules" && rm -rf zod \
         && mv /opt/codegenie-zod/node_modules/zod zod \
         && node -p 'JSON.parse(require("fs").readFileSync("zod/package.json","utf8")).version' | grep -qx 4.6.7)
@@ -52,7 +54,7 @@ WORKDIR /workspace
 # modules/apps-platform/starter: shadcn/ui on Vite + React) to scaffold new apps and mockups from, and to serve /catalog.
 # Its dependencies come from the checked-in lockfile (exact pins, nothing new); the build checks Chrome launches through playwright-core.
 COPY ui-review /opt/aidenhq/ui-review
-RUN cd /opt/aidenhq/ui-review && npm ci --ignore-scripts --no-audit --no-fund && npm cache clean --force \
+RUN cd /opt/aidenhq/ui-review && bun install --frozen-lockfile --ignore-scripts && bun pm cache rm \
     && printf '#!/bin/sh\nexec node /opt/aidenhq/ui-review/main.ts "$@"\n' > /usr/local/bin/ui-review && chmod 755 /usr/local/bin/ui-review \
     && node -e 'require("/opt/aidenhq/ui-review/node_modules/playwright-core").chromium.launch({ executablePath: process.env.AGENT_BROWSER_EXECUTABLE_PATH }).then((b) => b.close())' \
     && ui-review --help >/dev/null
@@ -79,7 +81,7 @@ COPY app-starter /opt/aidenhq/app-starter
 COPY design-eval /opt/aidenhq/design-eval
 # The starter's dependencies, installed once from its lockfile (exact pins, nothing new), so a mockup or a review's
 # `cp -r /opt/aidenhq/app-starter …` carries node_modules and can build at once, with no download.
-# Its Playwright Test (`npm run screens`) drives the image's pinned Chrome (AGENT_BROWSER_EXECUTABLE_PATH): no browser
+# Its Playwright Test (`bun run screens`) drives the image's pinned Chrome (AGENT_BROWSER_EXECUTABLE_PATH): no browser
 # download, ever. The build checks that it launches.
-RUN cd /opt/aidenhq/app-starter && npm ci --ignore-scripts --no-audit --no-fund && npm cache clean --force \
+RUN cd /opt/aidenhq/app-starter && bun install --frozen-lockfile --ignore-scripts && bun pm cache rm \
     && node -e 'require("@playwright/test").chromium.launch({ executablePath: process.env.AGENT_BROWSER_EXECUTABLE_PATH }).then((b) => b.close())'
