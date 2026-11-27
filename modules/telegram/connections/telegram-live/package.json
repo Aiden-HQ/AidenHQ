@@ -14,20 +14,20 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.0",
-    "better-sqlite3": "^13.2.0",
-    "pg": "^8.23.1",
-    "pino": "^10.4.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "better-sqlite3": "13.2.0",
+    "pg": "8.23.1",
+    "pino": "10.4.0",
     "prebuilt-tdlib": "0.1008070.0",
     "tdl": "8.1.0",
-    "zod": "^4.6.5"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@prebuilt-tdlib/types": "0.1008070.0",
-    "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^24.19.1",
-    "@types/pg": "^8.23.1",
-    "typescript": "^5.9.3",
-    "vitest": "^5.0.3"
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "24.19.2",
+    "@types/pg": "8.23.1",
+    "typescript": "5.9.3",
+    "vitest": "5.1.0"
   }
 }

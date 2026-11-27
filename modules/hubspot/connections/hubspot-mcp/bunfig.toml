@@ -1,0 +1,4 @@
+# Installs resolve only versions published 7+ days ago, saved as exact pins (the supply-chain rule; CI checks bun.lock).
+[install]
+exact = true
+minimumReleaseAge = 604800
