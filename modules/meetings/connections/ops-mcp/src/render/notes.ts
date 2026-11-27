@@ -66,6 +66,7 @@ export function renderCanonicalNote(m: MeetingInfo, x: Extraction, sources: Sour
     date: p.date,
     start: p.time,
     end: end.time,
+    timezone: m.timezone,
     attendees: m.attendees,
     topics: x.topics.map(inline),
     sources: sources.map((s) => ({ type: s.type, id: s.id })),

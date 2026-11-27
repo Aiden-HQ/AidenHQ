@@ -60,7 +60,7 @@ export function createApp(cfg: Config, log: Logger, overrides: { db?: Db; paperc
 export async function healthChecks(app: App): Promise<{ ok: boolean; state?: "missing"; detail?: string; checks: Record<string, { ok: boolean; detail?: string }> }> {
   const checks: Record<string, { ok: boolean; detail?: string }> = {};
   try {
-    app.db.exec("CREATE TABLE IF NOT EXISTS _health (ts TEXT); DELETE FROM _health; INSERT INTO _health VALUES (datetime('now'));");
+    app.db.exec("CREATE TABLE IF NOT EXISTS _health (ts TEXT); DELETE FROM _health; INSERT INTO _health VALUES (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));");
     checks.sqlite_writable = { ok: true };
   } catch (err) {
     checks.sqlite_writable = { ok: false, detail: String(err) };

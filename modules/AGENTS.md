@@ -83,6 +83,8 @@ The Maintainer page (`modules/maintainer/service/src/page.html`) is the referenc
   in one place").
 - **Gates.** A new non-security gate ships in observe mode. A module never touches the host firewall
   ([minimal-core-install.md](../docs/design/minimal-core-install.md)).
+- **Times:** a module's services, connections and tool schemas keep and exchange UTC instants and take local time only where
+  the input says so (CLAUDE.md "Times are UTC instants").
 - **Apps a module owns** start from the app starter and the design system (`modules/apps-platform/`).
 
 ## Agent anatomy
