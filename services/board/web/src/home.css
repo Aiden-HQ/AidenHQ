@@ -38,7 +38,8 @@
 .home-detail .qform { margin: 0; max-width: none; }
 .home-done { margin: 0; font-weight: 600; color: var(--ok-text); }
 .home-detail-actions { display: flex; gap: 8px; }
-.home-since-all { display: grid; gap: 14px; padding: 12px 16px; }
+/* Capped, so the card stays about as tall as the viewport and "in view" means its newest entries are. */
+.home-since-all { display: grid; gap: 14px; padding: 12px 16px; max-height: 22rem; overflow-y: auto; }
 .home-since-all section { display: grid; gap: 4px; }
 .home-since-all .ui-digest-row { padding-inline: 0; }
 

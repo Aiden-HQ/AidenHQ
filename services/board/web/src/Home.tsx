@@ -66,11 +66,28 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   // a read of this visit is pinned or marked seen.
   const fresh = !!data && !q.stale;
   useEffect(() => void (fresh && !homeFrom.value && (homeFrom.value = data.since_from)), [data, fresh]);
+  // Answered and decided rows keep their receipt for this visit, even when a refetch still lists them.
+  const [receipts, setReceipts] = useState<Map<string, Receipt>>(() => new Map());
+  const receipt = useCallback((row: NeedRow, r: Omit<Receipt, "row"> | null) => setReceipts((m) => { const n = new Map(m); if (r) n.set(rkey(row), { ...r, row }); else n.delete(rkey(row)); return n; }), []);
+  const [pane, setPane] = useState<Pane>(null);
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [batching, setBatching] = useState<"approve" | "reject" | null>(null);
+  const [unbatched, setUnbatched] = useState<string[]>([]);
+  // A row with a receipt stays for the visit after a refetch leaves it out (answered, decided, snoozed), with its receipt; one
+  // row per task (its newest receipt), as rows are picked and opened by id.
+  const rows = useMemo(() => {
+    const needs = data?.needs ?? [];
+    const kept = new Map<string, NeedRow>();
+    for (const { row } of receipts.values()) if (!needs.some((n) => n.id === row.id)) kept.set(row.id, row);
+    return [...needs, ...kept.values()];
+  }, [data?.needs, receipts]);
+  const live = rows.filter((r) => !receipts.has(rkey(r)));
+
   // The cursor moves to a snapshot's as_of once it has been on screen (never on leaving): the visit's first snapshot, then
   // only one that shows something newer than the last mark. (A mark emits `home`, which refetches: marking every snapshot
   // would loop.)
   const seen = useRef<string | null>(null);
-  const [pane, setPane] = useState<Pane>(null);
   // Since is the digest the cursor stands for: with one on the page, the mark waits until it has been in the viewport.
   const [sinceEl, setSinceEl] = useState<HTMLElement | null>(null);
   const [sinceInView, setSinceInView] = useState(false);
@@ -82,7 +99,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
     return () => io.disconnect();
   }, [sinceEl]);
   // On a phone the pane is a full-screen sheet over Home: what is behind it hasn't been seen (a row's pane closes when the row leaves).
-  const sheetOpen = !!pane && (pane.kind !== "row" || !!data?.needs.some((n) => n.id === pane.id));
+  const sheetOpen = !!pane && (pane.kind !== "row" || rows.some((r) => r.id === pane.id));
   const sinceReady = !data?.since || (sinceInView && !(mobile && sheetOpen));
   // Only while Home is in front: a task or run drawer over it (full screen on a phone) hides the snapshot.
   useLayoutEffect(() => {
@@ -98,22 +115,6 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
     return () => cancelAnimationFrame(f);
   }, [data?.as_of, fresh, front, sinceReady]);
 
-  // Answered and decided rows keep their receipt for this visit, even when a refetch still lists them.
-  const [receipts, setReceipts] = useState<Map<string, Receipt>>(() => new Map());
-  const receipt = useCallback((row: NeedRow, r: Omit<Receipt, "row"> | null) => setReceipts((m) => { const n = new Map(m); if (r) n.set(rkey(row), { ...r, row }); else n.delete(rkey(row)); return n; }), []);
-  const [selecting, setSelecting] = useState(false);
-  const [picked, setPicked] = useState<string[]>([]);
-  const [batching, setBatching] = useState<"approve" | "reject" | null>(null);
-  const [unbatched, setUnbatched] = useState<string[]>([]);
-  // A row with a receipt stays for the visit after a refetch leaves it out (answered, decided, snoozed), with its receipt; one
-  // row per task (its newest receipt), as rows are picked and opened by id.
-  const rows = useMemo(() => {
-    const needs = data?.needs ?? [];
-    const kept = new Map<string, NeedRow>();
-    for (const { row } of receipts.values()) if (!needs.some((n) => n.id === row.id)) kept.set(row.id, row);
-    return [...needs, ...kept.values()];
-  }, [data?.needs, receipts]);
-  const live = rows.filter((r) => !receipts.has(rkey(r)));
 
   const fail = (e: unknown, what: string) => {
     if (e instanceof SignInRequired) return onSignIn();
