@@ -17,8 +17,10 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 const lint = (as, source) => {
   mkdirSync(dirname(join(dir, as)), { recursive: true });
   writeFileSync(join(dir, as), source);
-  const r = spawnSync(join(root, "node_modules/.bin/oxlint"), ["--deny-warnings", as], { cwd: dir, encoding: "utf8" });
-  return { status: r.status, out: r.stdout, hits: r.stdout.split("\n").filter((l) => /^\S+:\d+:\d+: /.test(l)).map((l) => l.replace(/^\S+?:(\d+):\d+: (error|warning) \S+?: /, "$1: ")) };
+  // JSON, whatever the environment: Oxlint picks its own output format on CI (GitHub annotations).
+  const r = spawnSync(join(root, "node_modules/.bin/oxlint"), ["-f", "json", "--deny-warnings", as], { cwd: dir, encoding: "utf8" });
+  const found = JSON.parse(r.stdout).diagnostics.map((d) => ({ line: d.labels[0].span.line, col: d.labels[0].span.column, text: `${d.message} ${d.help ?? ""}` })).sort((x, y) => x.line - y.line || x.col - y.col);
+  return { status: r.status, out: found.map((d) => d.text).join("\n"), hits: found.map((d) => `${d.line}: ${d.text}`) };
 };
 
 test("lint: a hand-rolled header fails with the fix", () => {
