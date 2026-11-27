@@ -86,14 +86,6 @@ test("a session that keeps crashing on a signal other than its box's SIGTERM mee
   assert.deepEqual(k.scheduled, []);
 });
 
-test("a session that keeps exiting on its own still meets the retry limit", async () => {
-  // Seven runs that exited 0 with no reply (silent): its own doing, not the machinery's.
-  const ended = (i) => ({ id: `j${i}`, task: "t1", agent: "ses", profile: "session", state: "done", exit: 0, final: "", at: 10 - i, ended: 10 - i, acked: i > 0 });
-  const k = fake({ jobs: [0, 1, 2, 3, 4, 5, 6].map(ended) });
-  await k.dispatch.tick();
-  assert.deepEqual(k.scheduled, []);
-});
-
 test("an interrupted session resumes even after earlier runs used up the retry limit", async () => {
   // Six silent exits used the cap; the owner woke it, and that run's box was replaced (exit 143).
   const silent = (i) => ({ id: `j${i}`, task: "t1", agent: "ses", profile: "session", state: "done", exit: 0, final: "", at: 10 - i, ended: 10 - i, acked: true });

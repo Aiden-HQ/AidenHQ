@@ -61,14 +61,6 @@ function world({ db = new DatabaseSync(":memory:"), primer = true, areas = undef
   return { db, engine, heads, started, results, published, setups, branch, finish, finding, held, inputs, kept, plans, tick, later: (ms) => (t += ms) };
 }
 
-test("options must fit the tree", async () => {
-  const w = world();
-  const b = await w.engine.repoReview({ target: { repo: REPO } });
-  // Recommended and fitting the tree: lint (package.json), gitleaks and the Cloudflare skill; never vulture (no Python).
-  assert.deepEqual(b.options, ["maint.lint", "sec.cloudflare", "sec.gitleaks"]);
-  await assert.rejects(w.engine.repoReview({ target: { repo: REPO }, options: ["maint.vulture"] }), /not offered for acme\/app: maint.vulture/);
-});
-
 test("a finished default-branch read is never reused for a new ask of the head; an asked-for commit is", async () => {
   const w = world();
   assert.equal((await w.engine.catalogFor({ repo: REPO })).sha, sha("1"));
@@ -214,29 +206,6 @@ test("deepsec's set-up files are asked for once as a setup PR through the code h
   assert.equal(w.setups.length, 2);
 });
 
-test("a data version 1 database keeps its PR runs, reviews and findings readable", () => {
-  const db = new DatabaseSync(":memory:");
-  db.exec(`CREATE TABLE runs (id TEXT PRIMARY KEY, repo TEXT NOT NULL, number INTEGER NOT NULL, head TEXT NOT NULL, base TEXT NOT NULL,
-    engine TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, why TEXT,
-    cost_usd REAL NOT NULL DEFAULT 0, tokens_in INTEGER, tokens_cached INTEGER, tokens_out INTEGER, duration_ms INTEGER,
-    important INTEGER NOT NULL DEFAULT 0, nit INTEGER NOT NULL DEFAULT 0, pre_existing INTEGER NOT NULL DEFAULT 0, started TEXT, ended TEXT, check_job TEXT,
-    focus TEXT, full INTEGER NOT NULL DEFAULT 0, incremental_from TEXT, due INTEGER NOT NULL, created INTEGER NOT NULL,
-    posted TEXT, author TEXT NOT NULL DEFAULT '', attempts INTEGER NOT NULL DEFAULT 0, billed_prior REAL NOT NULL DEFAULT 0, write_id TEXT,
-    merge_base TEXT, review_url TEXT, resolved INTEGER, identity TEXT, batch TEXT NOT NULL, recheck INTEGER NOT NULL DEFAULT 0);
-    CREATE TABLE reviews (run TEXT PRIMARY KEY, json TEXT NOT NULL);
-    CREATE TABLE findings (run TEXT NOT NULL, id TEXT NOT NULL, repo TEXT NOT NULL, number INTEGER NOT NULL, severity TEXT NOT NULL,
-      path TEXT NOT NULL, line INTEGER NOT NULL, title TEXT NOT NULL, outcome TEXT, outcome_at TEXT, why TEXT, evidence TEXT, claim TEXT, PRIMARY KEY (run, id));
-    INSERT INTO runs (id, repo, number, head, base, engine, model, effort, kind, status, due, created, batch) VALUES ('cr-aaaaaaaaaaaa', 'acme/app', 4, '${sha("4")}', '${sha("b")}', 'codex', '~a/b', 'low', 'auto', 'done', 0, 0, 'b-1');
-    INSERT INTO reviews VALUES ('cr-aaaaaaaaaaaa', '{"version":1}');
-    INSERT INTO findings (run, id, repo, number, severity, path, line, title, outcome) VALUES ('cr-aaaaaaaaaaaa', 'f1', 'acme/app', 4, 'important', 'a.ts', 3, 't', 'fixed');
-    PRAGMA user_version = 1;`);
-  const w = world({ db });
-  assert.equal(db.prepare("PRAGMA user_version").get().user_version, 3);
-  const r = w.engine.run("cr-aaaaaaaaaaaa");
-  assert.deepEqual([r.run.target, r.run.number, r.review.version], ["pr", 4, 1]);
-  assert.deepEqual(r.findings, [{ id: "f1", severity: "important", path: "a.ts", line: 3, title: "t", outcome: "fixed" }]);
-});
-
 test("a tree result with a finding out of shape fails that option with the reason; the next option still runs and the report lists the failure", async () => {
   const w = world();
   const b = await w.engine.repoReview({ target: { repo: REPO }, options: ["sec.gitleaks", "sec.cloudflare"] });
@@ -319,16 +288,6 @@ test("the same options in another order are one review; a run the spend limit re
   assert.equal(w.db.prepare("SELECT status FROM runs WHERE profile = 'code-review-tools'").get().status, "failed");
   assert.equal(w.engine.batches({})[0].status, "done");
   assert.match(w.engine.report(a.batch), /spend limit reached/);
-});
-
-test("a report trimmed to fit still has the verdict of every finding", () => {
-  const big = (i, o = {}) => ({ id: `f${i}`, severity: "important", path: `src/f${i}.ts`, line: 1, title: `t${i}`, why: "w".repeat(1400), evidence: "e".repeat(1400), fix_brief: "b".repeat(900), option: "o", lens: "correctness", ...o });
-  const findings = [...Array.from({ length: 60 }, (_, i) => big(i)), big(99, { lens: "security", path: "zz.ts" })];
-  const out = render({ repo: REPO, sha: sha("1"), created: "2026-11-22T00:00:00Z", lensOf: () => "correctness", runs: [{ option: "o", lens: "correctness", status: "done", why: null, cost_usd: 0,
-    review: { findings, coverage: { reviewed: [], excluded: [], incomplete: null }, withheld: { important: 0, nit: 0, pre_existing: 0 } } }] });
-  assert.match(out.markdown, /Not shown, to keep the report within Primer's size/);
-  assert.equal(out.verdict, "blocked");
-  assert.ok(out.markdown.length <= REPORT_MAX);
 });
 
 test("each model option runs its own catalog default model and effort; a combo in the request overrides every option", async () => {

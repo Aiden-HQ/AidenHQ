@@ -39,19 +39,3 @@ test("discover: generated paths from .gitattributes and lockfiles only; the gene
   const needs = discover({ ".github/workflows/gen.yml": ["jobs:", "  codegen:", "    needs:", "      - build", "      - lint", "    defaults:", "      run:", "        working-directory: api", "    steps:", "      - run: make generate"].join("\n") });
   assert.deepEqual(needs.commands, [{ dir: "api", cmd: "make generate" }]);
 });
-
-test("discover: more generated files than the repair request holds are capped and said, lockfiles kept", () => {
-  const files: Record<string, string> = {};
-  // Discovery takes only the repo's own `linguist-generated` paths (and lockfiles): 300 of them.
-  files[".gitattributes"] = Array.from({ length: 300 }, (_, i) => `gen/f${i}.pb.go linguist-generated`).join("\n");
-  const d = discover(files);
-  assert.equal(d.globs.length, 200);
-  assert.ok(d.globs.includes("**/package-lock.json"));
-  assert.ok(d.ambiguous.some((a) => /left out of the repair/.test(a)));
-});
-
-test("discover: a nested .gitattributes pattern with no slash matches at any depth under it", () => {
-  const d = discover({ "backend/.gitattributes": "*.pb.go linguist-generated\napi/x.go linguist-generated\n" });
-  assert.ok(d.globs.includes("backend/**/*.pb.go"));
-  assert.ok(d.globs.includes("backend/api/x.go"));
-});

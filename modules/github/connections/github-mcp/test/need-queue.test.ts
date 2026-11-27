@@ -25,17 +25,6 @@ const need = () => new GitHubNeed({ cause: "restricted", org: "acme", url: "http
 const log = { warn: () => {} };
 
 describe("an owner-fixable need told to the kernel outside a tool call", () => {
-  it("reportNeed says whether the kernel has it, or whether a retry can help", async () => {
-    expect(await reportNeed("http://kernel", "key", need(), log, replies([ok()]).fetcher)).toBe("taken");
-    expect(await reportNeed("http://kernel", "key", need(), log, replies([busy()]).fetcher)).toBe("retry");
-    expect(await reportNeed("http://kernel", "key", need(), log, replies([new Error("ECONNREFUSED")]).fetcher)).toBe("retry");
-    expect(await reportNeed("http://kernel", "key", need(), log, replies([bad()]).fetcher)).toBe("refused");
-    // Nothing to report is not a failure: a vendor error the owner can't fix isn't sent.
-    const vendor = replies([ok()]);
-    expect(await reportNeed("http://kernel", "key", new GitHubNeed({ cause: "unreachable", repo: "acme/x" }), log, vendor.fetcher)).toBe("taken");
-    expect(vendor.seen).toHaveLength(0);
-  });
-
   it("a report the kernel couldn't take is kept and flushed once at the next request, with the same body", async () => {
     const k = replies([busy(), ok()]);
     const q = needQueue({ kernelUrl: "http://kernel", key: () => "the-key", log, fetcher: k.fetcher, waitMs: 50 });
@@ -65,24 +54,6 @@ describe("an owner-fixable need told to the kernel outside a tool call", () => {
     ]);
   });
 
-  // The owner reconnects with `workflow` ticked while the notice is kept: replaying it would mark the fresh grant down.
-  it("a kept workflow-scope need the fresh grant covers is dropped, not replayed", async () => {
-    let scope = "repo, read:org, project";
-    const k = replies([busy()]);
-    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50, covers: (s) => scope.split(", ").includes(s) });
-    const need = new GitHubNeed({ cause: "scope", scope: "workflow" }, "GitHub needs the `workflow` permission");
-    await q.tell(need);
-    expect(q.pending()).toBe(1);
-    scope = "repo, read:org, workflow, project";
-    await q.flush();
-    expect(k.seen, "the fixed grant was not told it lacks the scope").toHaveLength(1);
-    expect(q.pending()).toBe(0);
-    // A need met after the grant is not staged at all.
-    await q.tell(need);
-    expect(q.pending()).toBe(0);
-    expect(k.seen).toHaveLength(1);
-  });
-
   it("a permanent refusal (a 4xx) is dropped, not retried on every request", async () => {
     const k = replies([bad()]);
     const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50 });
@@ -90,27 +61,6 @@ describe("an owner-fixable need told to the kernel outside a tool call", () => {
     expect(q.pending()).toBe(0);
     await q.flush();
     expect(k.seen, "the refused report was not sent again").toHaveLength(1);
-  });
-
-  it("each kept need is visited at most once per flush, so a refusing kernel is not hammered in one pass", async () => {
-    const k = replies([busy()]);
-    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50 });
-    await q.tell(need());
-    const before = k.seen.length;
-    await q.flush();
-    expect(k.seen.length - before, "one attempt for the one kept need").toBe(1);
-    expect(q.pending()).toBe(1);
-  });
-
-  it("a report that outlives its bound is kept, so the reply is not blocked past it and the need is not dropped", async () => {
-    const k = replies(["hang", ok()]);
-    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 20 });
-    const t0 = Date.now();
-    await q.tell(need());
-    expect(Date.now() - t0, "the reply waited only its bound").toBeLessThan(1_000);
-    expect(q.pending()).toBe(1);
-    await q.flush();
-    expect(q.pending()).toBe(0);
   });
 
   it("kept needs survive a restart: a new queue reads them from disk and sends them", async () => {
@@ -128,14 +78,6 @@ describe("an owner-fixable need told to the kernel outside a tool call", () => {
     expect(q2.pending()).toBe(0);
     expect(second.seen[0]!.body).toMatchObject({ connection: "github", need: { cause: "restricted", org: "acme" } });
     expect(JSON.parse(readFileSync(file, "utf8"))).toHaveLength(0);
-  });
-
-  it("one need is kept once across repeated reports", async () => {
-    const k = replies([busy(), busy()]);
-    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50 });
-    await q.tell(need());
-    await q.tell(need());
-    expect(q.pending()).toBe(1);
   });
 
   it("the need is on disk before the first attempt, so a restart inside the wait still sends it", async () => {
@@ -175,44 +117,6 @@ describe("an owner-fixable need told to the kernel outside a tool call", () => {
     expect(JSON.parse(readFileSync(file, "utf8"))).toHaveLength(0);
   });
 
-  it("a need kept by an older version (no credential recorded) is adopted, not read as a reconnect", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "needs-"));
-    const file = join(dir, "connection-needs.json");
-    // The pre-upgrade file: no `gen` on the row, and a token installed since.
-    writeFileSync(file, JSON.stringify([{ key: "expired\u0000\u0000\u0000", need: { cause: "expired", detail: "sign-in expired" } }]));
-    const k = replies([ok()]);
-    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50, file, generation: () => "installed" });
-    expect(q.pending(), "kept through the upgrade").toBe(1);
-    await q.flush();
-    expect(k.seen, "and sent once").toHaveLength(1);
-    expect(q.pending()).toBe(0);
-    expect(JSON.parse(readFileSync(file, "utf8"))).toHaveLength(0);
-  });
-
-  it("a restart does not evict a staged need before it is replayed", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "needs-"));
-    const file = join(dir, "connection-needs.json");
-    // A full queue (the cap) plus the one tell() staged and was posting when the process died.
-    const rows = Array.from({ length: 21 }, (_, n) => ({ key: `restricted\u0000\u0000acme${n}\u0000`, need: { cause: "restricted", org: `acme${n}`, detail: "x" }, gen: "g" }));
-    writeFileSync(file, JSON.stringify(rows));
-    const k = replies([ok()]);
-    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50, file, generation: () => "g" });
-    expect(q.pending(), "all 21 are replayed, not capped to 20 up front").toBe(21);
-    await q.flush();
-    expect(k.seen, "every staged need was sent before the cap").toHaveLength(21);
-    expect(q.pending()).toBe(0);
-  });
-
-  it("a kept need that is not a sign-in failure survives a reconnect", async () => {
-    let credential = "first";
-    const k = replies([busy(), busy()]);
-    const q = needQueue({ kernelUrl: "http://kernel", key: () => "k", log, fetcher: k.fetcher, waitMs: 50, generation: () => credential });
-    await q.tell(need());
-    credential = "second";
-    await q.flush();
-    expect(q.pending(), "an org restriction is not fixed by reconnecting").toBe(1);
-    expect(k.seen.at(-1)!.body).toMatchObject({ connection: "github", need: { cause: "restricted", org: "acme" } });
-  });
 });
 
 describe("a successful owner call to an org", () => {

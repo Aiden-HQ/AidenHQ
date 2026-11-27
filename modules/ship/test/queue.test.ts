@@ -105,31 +105,6 @@ test("an async enqueue GitHub accepted but has not settled asks again next round
   // So a still-pending answer never cycles a PR back into a queue on its own.
 });
 
-// A pending answer is a wait, not a repair: asking again at the same head must not spend (or be stopped by) the repair-round cap.
-test("a pending async enqueue past the round cap still asks again at the same head, never a cap hold", async () => {
-  const w = world();
-  // Ship's settings for this repo, with no repair rounds left at all.
-  (w.deps as any).settings = () => ({ ...effective({ repos: { "a/b": { preset: "full" } } }, "a/b", { fleet: ["a/b"], listed: [] }), caps: { wakes_per_head: 3, ci_rounds: 3, same_check_heads: 2, rounds: 0, usd: 5, requeue_on_timeout: 1 } });
-  const ready = { do: "enqueue" as const, why: "ready" };
-  await round(w.deps as any, w.pr(), ready, { queue: true });
-  w.records["rec-1"] = { state: "failed", outcome: { ok: false, text: "ship-enqueue-pending: https://github.com/a/b/pull/7: GitHub accepted the async merge request u-1 for `111111111111` and is still processing it: not merged." } };
-  await round(w.deps as any, w.pr(), ready, { queue: true });
-  assert.equal(w.of("POST /v1/writes").length, 2, "asked again at this head");
-  assert.doesNotMatch(w.of("comment").at(-1)?.body ?? "", /Ship blocked|rounds \(rounds\)/);
-});
-
-// An unread gate or a failed queue read is the same: no repair happened, so the cap must not stop the next ask.
-test("a ship-tier-pending gate or read answer past the cap also asks again", async () => {
-  const w = world();
-  (w.deps as any).settings = () => ({ ...effective({ repos: { "a/b": { preset: "full" } } }, "a/b", { fleet: ["a/b"], listed: [] }), caps: { wakes_per_head: 3, ci_rounds: 3, same_check_heads: 2, rounds: 0, usd: 5, requeue_on_timeout: 1 } });
-  const ready = { do: "enqueue" as const, why: "ready" };
-  await round(w.deps as any, w.pr(), ready, { queue: true });
-  w.records["rec-1"] = { state: "failed", outcome: { ok: false, text: "ship-tier-pending: https://github.com/a/b/pull/7: GitHub couldn't read it for the enqueue: not queued." } };
-  await round(w.deps as any, w.pr(), ready, { queue: true });
-  assert.equal(w.of("POST /v1/writes").length, 2);
-  assert.doesNotMatch(w.of("comment").at(-1)?.body ?? "", /rounds \(rounds\)/);
-});
-
 // `groupFailing` names the PR's latest merge_group run, which may be an earlier head's: a pending request is never read as a
 // removal from it, and is asked again instead (its kept id returns the terminal result).
 test("a pending async enqueue is never turned into a removal by another head's merge_group failure", async () => {

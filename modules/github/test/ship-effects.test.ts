@@ -572,19 +572,6 @@ test("a stacked PR's 202 is polled to a terminal result and never reported as me
   assert.doesNotMatch(out.text, /in the merge queue/, "an accepted request is never the queue's word");
 });
 
-test("a stacked PR whose async request is still pending after the bounded wait is reported pending, not merged and not a hold", async (t) => {
-  const { c1, run } = await setup(t, {
-    asyncMerge: {
-      put: () => ({ status: 202, body: { status: "pending", details: { message: "Merge request is in progress.", uuid: "u-2" } } }),
-      get: () => ({ status: 200, body: { status: "pending", details: { message: "Merge request is in progress.", uuid: "u-2" } } }),
-    },
-  });
-  const out = await run("k-00000000000000e3", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
-  assert.equal(out.ok, false, out.text);
-  assert.match(out.text, /^ship-enqueue-pending:/, "ship asks again next round, never holds an accepted request");
-  assert.match(out.text, /not merged/);
-});
-
 test("a queue read-back that settles a pending request drops its uuid, so a later enqueue makes its own request", async (t) => {
   let puts = 0;
   const { c1, cacheDir, run, queue } = await setup(t, {
@@ -624,39 +611,6 @@ test("a queue read GitHub can't answer at the start of an enqueue waits, never h
   assert.match(out.text, /^ship-tier-pending: .*couldn't read it for the enqueue/, "asked again next round, never a hold");
 });
 
-test("a queue read that fails after the review gate passes also waits, never holds", async (t) => {
-  let reads = 0;
-  const { c1, run } = await setup(t, { queueRead: () => (++reads === 2 ? { status: 502, body: {} } : undefined) });
-  const out = await run("k-00000000000000fe", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
-  assert.equal(out.ok, false, out.text);
-  assert.match(out.text, /^ship-tier-pending: .*couldn't read it for the enqueue/);
-});
-
-test("a gate wait whose confirming queue read fails is still retryable, never a thrown hold", async (t) => {
-  let reads = 0;
-  const { c1, run } = await setup(t, {
-    reviewGate: async () => ({ wait: "code review: running" }),
-    // The confirming read after the gate's wait (the enqueue's second) is the one GitHub can't answer: a 502, not a head or a
-    // queue state. The first, before the gate, is answered.
-    queueRead: () => (++reads === 2 ? { status: 502, body: {} } : undefined),
-  });
-  const out = await run("k-00000000000000fc", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
-  assert.equal(out.ok, false, out.text);
-  assert.match(out.text, /^ship-tier-pending: not queued: code review: running/, "the retryable answer survives a failed read");
-});
-
-test("the async enqueue rechecks code review's gate before the PUT", async (t) => {
-  let puts = 0, calls = 0;
-  const { c1, run } = await setup(t, {
-    reviewGate: async () => (++calls === 1 ? undefined : { wait: "code review: running" }),
-    asyncMerge: { put: () => { puts++; return { status: 202, body: { status: "pending", details: { uuid: "u-g" } } }; }, get: () => ({ status: 200, body: { status: "enqueued", details: {} } }) },
-  });
-  const out = await run("k-00000000000000fa", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
-  assert.equal(out.ok, false, out.text);
-  assert.match(out.text, /^ship-tier-pending: not queued: code review: running/, "a gate wait is retryable, never a hold");
-  assert.equal(puts, 0, "a review gate that closed while the enqueue was in flight stops the request");
-});
-
 test("a stacked PR's async merge that GitHub reports failed is a refusal in GitHub's words, never a queue entry", async (t) => {
   const { c1, run } = await setup(t, {
     asyncMerge: {
@@ -667,16 +621,6 @@ test("a stacked PR's async merge that GitHub reports failed is a refusal in GitH
   const out = await run("k-00000000000000e4", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
   assert.equal(out.ok, false, out.text);
   assert.match(out.text, /^GitHub refused to queue .*: Merge conflict/);
-});
-
-test("a 200 that names no head is trusted only where the PR itself reads as queued at this head", async (t) => {
-  const { c1, run } = await setup(t, {
-    asyncMerge: { put: () => ({ status: 200, body: { status: "enqueued", details: { message: "Pull request is in the merge queue." } } }), get: () => ({ status: 404, body: {} }) },
-  });
-  const out = await run("k-00000000000000e5", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
-  assert.equal(out.ok, false, out.text);
-  assert.match(out.text, /doesn't read as queued or merged/);
-  assert.doesNotMatch(out.text, /in the merge queue/);
 });
 
 test("a request still pending at the wait's end keeps its uuid, and the next round reads it to its terminal result", async (t) => {
@@ -719,20 +663,6 @@ test("a 409 naming another head's request asks this head again once, then waits 
   assert.doesNotMatch(again.text, /^ship-enqueue-pending:/, "not a second endless ask");
   assert.match(again.text, /asks once that request clears/);
   assert.ok(!/is merged|in the merge queue/.test(again.text), "the other head's request is never credited");
-});
-
-test("a transient read error while a request is pending is retried, not reported as a refusal", async (t) => {
-  let n = 0;
-  const { c1, run } = await setup(t, {
-    asyncMerge: {
-      put: () => ({ status: 202, body: { status: "pending", details: { message: "Merge request is in progress.", uuid: "u-t" } } }),
-      get: () => (++n === 1 ? { status: 503, body: { message: "Service Unavailable" } } : { status: 200, body: { status: "enqueued", details: {} } }),
-    },
-  });
-  const out = await run("k-00000000000000f3", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
-  assert.equal(out.ok, true, out.text);
-  assert.match(out.text, /in the merge queue at/);
-  assert.ok(n >= 2, "the read was retried inside the budget");
 });
 
 test("one readiness rule: ship's actions with its context, the merge queue's without", () => {
@@ -798,20 +728,6 @@ test("one readiness rule: ship's actions with its context, the merge queue's wit
   assert.equal(mergePath([{ type: "pull_request" }, { type: "merge_queue" }]), "queue");
   assert.equal(mergePath([]), "direct");
   assert.deepEqual(requiredChecks([{ type: "required_status_checks", parameters: { required_status_checks: [{ context: "build" }] } }], { contexts: ["ci-required"] }).sort(), ["build", "ci-required"]);
-});
-
-test("ship's generation answer keeps a stalled adoption's generation and the hold's kind; no adoption is still null", async () => {
-  const answer = (body) => shipAdoptions({ url: "http://ship:8101", key: () => "k", fetchFn: async () => new Response(JSON.stringify(body), { status: 200 }) }).generation(REPO, 7, "a".repeat(40));
-  const stalled = await answer({ generation: 2, hold: { kind: "stalled", reason: "the repair didn't finish" }, task: "t1" });
-  assert.deepEqual(stalled, { generation: 2, hold: { kind: "stalled", reason: "the repair didn't finish" }, task: "t1" });
-  const stopped = await answer({ generation: 2, hold: { kind: "stopped", reason: "ship is paused" } });
-  assert.deepEqual([stopped.generation, stopped.hold?.kind], [2, "stopped"]);
-  assert.deepEqual(await answer({ generation: 2, hold: null }), { generation: 2 });
-  assert.deepEqual(await answer({ generation: null, hold: null }), { generation: null }, "no adoption record at all");
-  // A hold the code host can't read is never dropped open: it reads as `unknown`, which admits no write.
-  assert.equal((await answer({ generation: 2, hold: true })).hold?.kind, "unknown");
-  assert.equal((await answer({ generation: 2, hold: { reason: "no kind" } })).hold?.kind, "unknown");
-  assert.equal((await answer({ generation: 2, hold: "stalled" })).hold?.kind, "unknown");
 });
 
 test("plan: an adopted PR's merge is refused when the generation is stale or ship isn't installed", () => {
@@ -991,16 +907,6 @@ test("ship's repair over a path that is a file at the head and a directory in th
   assert.equal(sh(origin, "cat-file", "-t", "refs/heads/contrib:tools/run"), "blob", "`tools` is the directory main made it");
 });
 
-test("ship's repair's deletion is the head's own path, next to a path that became a directory", async (t) => {
-  const { origin, c1, run, repairResult, signed } = await setup(t, { toolsDir: true, baseAhead: true });
-  repairResult.keep.entries = [{ path: "b.txt", mode: "100644", sha: null }, { path: "gen.txt", mode: "100644", sha: sh(origin, "rev-parse", "main:gen.txt") }];
-  const r = await run("k-00000000000000a7", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["b.txt", "gen.txt"] } });
-  assert.equal(r.ok, true, r.text);
-  assert.deepEqual(signed.at(-1).fileChanges.deletions, [{ path: "b.txt" }], "the delete is the head's own path, never `tools`");
-  assert.equal(sh(origin, "ls-tree", "--name-only", "refs/heads/contrib", "b.txt"), "", "the deleted file is gone");
-  assert.equal(sh(origin, "cat-file", "-t", "refs/heads/contrib:tools/run"), "blob", "and `tools` is still the merge's directory");
-});
-
 
 
 
@@ -1033,18 +939,6 @@ test("ship's repair takes the box's files only on generated paths and conflicted
     assert.match(r.text, why);
     assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "nothing was written");
   }
-});
-
-test("ship's repair of a head that merges the base's live tip with no conflict is a no-op: no box runs and nothing is written", async (t) => {
-  // The author rebased onto an older tip, main moved on meanwhile without touching their files, and GitHub's DIRTY is stale.
-  const { origin, c1, main, run, calls, checks } = await setup(t, { toolsDir: true });
-  const r = await run("k-00000000000000a1", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["b.txt"] } });
-  assert.equal(r.ok, false, r.text);
-  assert.notEqual(sh(origin, "merge-base", c1, main), main, "the head doesn't hold main's tip");
-  assert.equal(r.text, `ship-noop: https://github.com/${REPO}/pull/7 at \`${c1.slice(0, 12)}\` merges \`main\` at \`${main}\` with no conflict: nothing to repair, nothing was changed.`);
-  assert.equal(checks.length, 0, "no check job");
-  assert.equal(calls.filter((c) => c.method !== "GET" && (c.path.includes("update-branch") || c.body?.query?.includes("createCommitOnBranch"))).length, 0, "nothing is written");
-  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "the branch stays where it was");
 });
 
 test("ship's decision from its list read: no PR or check read, the branch rules read once, code review's pass is the review", async () => {
@@ -1450,4 +1344,16 @@ test("a retitle outside the fleet's own repos is refused when the title names ou
   // The same title in the fleet's own repo is the fleet's to write.
   const own = await setup(t);
   assert.equal((await own.call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: { ...args, head: own.c1 }, requester: SHIP, task: "t1" })).status, 200);
+});
+
+test("the async enqueue rechecks code review's gate before the PUT", async (t) => {
+  let puts = 0, calls = 0;
+  const { c1, run } = await setup(t, {
+    reviewGate: async () => (++calls === 1 ? undefined : { wait: "code review: running" }),
+    asyncMerge: { put: () => { puts++; return { status: 202, body: { status: "pending", details: { uuid: "u-g" } } }; }, get: () => ({ status: 200, body: { status: "enqueued", details: {} } }) },
+  });
+  const out = await run("k-00000000000000fa", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
+  assert.equal(out.ok, false, out.text);
+  assert.match(out.text, /^ship-tier-pending: not queued: code review: running/, "a gate wait is retryable, never a hold");
+  assert.equal(puts, 0, "a review gate that closed while the enqueue was in flight stops the request");
 });

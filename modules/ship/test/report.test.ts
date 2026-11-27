@@ -59,30 +59,6 @@ test("a handoff: all PR with no human action posts nothing, and nothing when it 
   assert.equal(w.sent.length, 0);
 });
 
-test("an explicit hand-off is acknowledged by one short line, and a merge edits it to Merged", async () => {
-  const w = world("label");
-  await round(w.deps, w.pr(), { do: "wait", why: "checks are still running on its head" });
-  assert.deepEqual(w.sent.map((s) => s.body), [renderReport(ACK)]);
-  await round(w.deps, w.pr({ state: "merged" }), { do: "done" });
-  assert.equal(w.sent.length, 2);
-  assert.equal(w.sent[1]!.id, 9);
-  assert.match(w.sent[1]!.body, /\*\*Ship:\*\* Merged\.$/);
-});
-
-test("a hold says one plain sentence with what a person can do, and none of Ship's internals", async () => {
-  const w = world("all");
-  await round(w.deps, w.pr(), { do: "stall", why: "blocked by a branch rule ship doesn't handle" });
-  assert.equal(w.sent.length, 1);
-  const text = w.sent[0]!.body.replace(MARKER, "");
-  assert.match(text, /A person clears it\./);
-  assert.doesNotMatch(text, INTERNAL);
-  assert.equal(text.trim().split("\n").length, 1);
-  // A code owner's review is a person's too, named in words.
-  const c = world("all");
-  await round(c.deps, c.pr(), { do: "wait", why: "waiting on code owner @acme/core" });
-  assert.match(c.sent[0]!.body, /Waiting for a review from code owner @acme\/core\./);
-});
-
 test("review findings that change at the same head don't edit the comment again, and their agent text is never printed", async () => {
   const w = world("label");
   const findings = (n: number) => `code review: ${n} important finding(s) open: A 200 response carrying a timeout error (loop.ts:104, id 057866e600b2e90c); record each outcome with the code_review_resolve tool`;

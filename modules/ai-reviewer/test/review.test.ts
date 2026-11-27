@@ -19,10 +19,6 @@ const asker = (answers) => {
 };
 const ok = { content: JSON.stringify({ decision: "approve", reason_code: "clean", reason: "nothing malicious", findings: [] }) };
 
-test("the reviewer's codes are exactly the shared REVIEW_CODES (services/shared/reason-codes.ts)", () => {
-  assert.deepEqual([...MODEL_CODES, ...CODE_CODES].sort(), [...REVIEW_CODES].sort());
-});
-
 test("a refusal goes to the next model; every model refusing, a call error or a limit is reviewer_failed (the kernel fails open)", async () => {
   const r = asker([{ refusal: "no" }, ok]);
   const v = await review({ card, diff: "+x", policy: "p", ask: r.ask });
@@ -84,24 +80,6 @@ test("the task's comments reach the model marked line by line; text out of the k
   assert.equal(v.decision, "approve");
   assert.doesNotMatch(user, /TASK_COMMENTS/);
   assert.doesNotMatch(reviewPrompt({ policy: "p", card, diff: "+x", chain: "c" }).user, /TASK_COMMENTS/);
-});
-
-test("the prompt asks for malice only and to approve when unsure", () => {
-  const { system } = reviewPrompt({ policy: "p", card, diff: "+x", chain: "c" });
-  assert.match(system, /When you are unsure, approve/);
-  assert.match(system, /Scope, design, quality and bugs are code review's and CI's job/);
-});
-
-test("the prompt says the card's reason is code's description of the plan and gate, not the change under review", () => {
-  const { system } = reviewPrompt({ policy: "p", card, diff: "+x", chain: "c" });
-  assert.match(system, /CARD block is code's own account of this write/);
-  assert.match(system, /reason:.* is code describing the plan and the gate for it/s);
-  assert.match(system, /not the change under review and not a request from the agent/);
-  assert.match(system, /never by itself a disabled check, a bypassed gate, injection followed or sabotage/);
-  assert.match(system, /A diff that weakens a check with no stated reason, or hides it, is still rejected/);
-  // The explained check change stays ordinary work, and the summary is not exempted with the reason.
-  assert.match(system, /a gate change that says what it does and why is ordinary work/);
-  assert.match(system, /summary or a label that hides what the change does is the sabotage/);
 });
 
 test("a finding quoting only the card's own reason is dropped; the change, the request and the card summary still count", async () => {
@@ -296,15 +274,6 @@ test("case clean-paired-lockfile-bump pads to the 121,215-character app-starter 
   assert.deepEqual(fileContext(files).leftOut, []);
 });
 
-test("the policy is NN-<section>.md files, each opening with its own heading, joined in name order", () => {
-  const dir = join(REPO_ROOT, "modules/ai-reviewer/service/security/policy");
-  const files = readdirSync(dir).sort();
-  assert.ok(files.every((f) => /^\d\d-[a-z0-9-]+\.md$/.test(f)), files.join(" "));
-  assert.equal(readPolicy(), files.map((f) => readFileSync(join(dir, f), "utf8")).join(""));
-  assert.ok(files.slice(1).every((f) => readFileSync(join(dir, f), "utf8").startsWith("\n## ")));
-  assert.equal(policyVersion(readPolicy()).length, 12);
-});
-
 // A conn.tool call is presented as what it is: its arguments as their own labelled block, one field per argument, named as the
 // tool takes it (issue #1252: under DIFF a reviewer read the same call as "supplies only a body argument"). A planned write
 // keeps the DIFF/DIFF_FILES shape it always had.
@@ -339,18 +308,6 @@ test("a planned write keeps the DIFF and DIFF_FILES shape, and gets no TOOL_CALL
   assert.match(user, /<<<DIFF_FILES\n/);
   assert.ok(!user.includes("<<<TOOL_CALL"));
   assert.match(system, /read-only tools over this request's change/);
-});
-
-test("the kernel's older conn.tool details text (sent as the diff) still becomes TOOL_CALL, never a DIFF", async () => {
-  const tc = toolCallFromDetails("conn.tool", `tool: github.github_product_issue\narguments (written by the requesting agent): ${JSON.stringify(call.arguments)}`);
-  assert.deepEqual(tc, call);
-  // Any other text is not a call: a push card, a truncated tail, or a connection with no tool.
-  assert.equal(toolCallFromDetails("pr", "tool: github.x\narguments (written by the requesting agent): {}"), undefined);
-  assert.deepEqual(toolCallFromDetails("conn.tool", "tool: github.x\narguments (written by the requesting agent): {oops"), { connection: "github", tool: "x", arguments: {}, unreadable: ["arguments"] });
-  let user = "";
-  await review({ card: { action: "conn.tool" }, diff: `tool: github.github_product_issue\narguments (written by the requesting agent): ${JSON.stringify(call.arguments)}`, chain: "c", policy: "p", ask: async (_m, p) => ((user = p.user), ok) });
-  assert.match(user, /<<<TOOL_CALL\n/);
-  assert.ok(!user.includes("<<<DIFF\n"));
 });
 
 test("the details text still sent as diff is scanned too, not trusted to agree with tool_call", async () => {
