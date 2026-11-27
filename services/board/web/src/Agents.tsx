@@ -2,7 +2,6 @@ import { useEffect, useState, type CSSProperties, type MouseEvent, type ReactNod
 import { Plan, PlusIcon } from "./components";
 import { AttentionStrip } from "./Attention";
 import { useEvents } from "./events";
-import { useCached } from "./cache";
 import { QUERIES, agentOpenQuery, agentProfileQuery, scorecardQuery, useQuery } from "./queries";
 import { Bone, FleetSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Assignee, Finished, RosterAgent, Session, TaskRef } from "./types";
@@ -300,7 +299,7 @@ const fromRow = (e: MouseEvent, f: () => void) => {
   if (!(e.target as HTMLElement).closest("a, button")) f();
 };
 
-function AgentRow({ a, depth, team, ownModel, assignee, sessions, finished, runsLoaded, now, open, toggle }: { a: RosterAgent; depth: number; team?: TeamLoad; ownModel: string | null; assignee: Assignee; sessions: Session[]; finished: Finished[]; runsLoaded: boolean; now: number; open: boolean; toggle: () => void }) {
+function AgentRow({ a, depth, team, ownModel, sessions, finished, runsLoaded, now, open, toggle }: { a: RosterAgent; depth: number; team?: TeamLoad; ownModel: string | null; assignee: Assignee; sessions: Session[]; finished: Finished[]; runsLoaded: boolean; now: number; open: boolean; toggle: () => void }) {
   const on = sessions.filter((s) => s.state === "working");
   const queued = sessions.filter((s) => s.state === "queued");
   const st = standing(a, now, team);

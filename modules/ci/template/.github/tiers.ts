@@ -28,7 +28,7 @@ export const INSTRUCTIONS = ["**/AGENTS.md", "**/AGENTS.override.md", "**/CLAUDE
 /** The default sensitive paths: what CI's critical-path regex and ship's safe.deny meant, in one list. */
 export const SENSITIVE = [
   ".github/**", "**/Dockerfile*", "**/package.json", ...INSTRUCTIONS, "**/.codex/**", "**/codex.toml", ...RISKY,
-  ...LOCKS, "**/.eslintrc*", "**/eslint.config.*", "**/vitest.config.*", "**/jest.config.*", "**/tsconfig*.json", "**/CODEOWNERS",
+  ...LOCKS, "**/.eslintrc*", "**/eslint.config.*", "**/.oxlintrc*", "**/oxlint.config.*", "**/oxlint-plugin.*", "**/oxlint-suppressions.json", "**/vitest.config.*", "**/jest.config.*", "**/tsconfig*.json", "**/CODEOWNERS",
   "**/migrations/**", "**/*.tf", "infra/**", "**/.env*", "**/config/**", "**/docker-compose*",
 ];
 

@@ -8,7 +8,7 @@ import { askForNotifications, notificationsSupported } from "./notify";
 import { ConnectionsPage, RowsSkeleton } from "./SettingsConnections";
 import { parseInput, shown } from "./settings-format";
 import { ChangePreview, ChangeProgress, Changes, Group, IN_FLIGHT, Page, Row, Toasts, useFiled } from "./settings-ui";
-import type { Advisory, FiledChange, ModuleRow, SettingChange, SettingRow, SettingsData, UpdatesData } from "./types";
+import type { FiledChange, SettingChange, SettingRow, SettingsData, UpdatesData } from "./types";
 import { urlSettingProblem } from "../../src/url-setting";
 import "./settings.css";
 import { Banner, Button, LinkButton, SectionCard, Segmented, StatusDot, Switch, Tag, safeHref } from "./ui";

@@ -1,7 +1,7 @@
 // Shared by the Modules list and a module's page: the on/off switch with its turn-off confirm, the Turn on card, a
 // module's state in one word, its facts, and which modules need setup.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { pairingNext, useFlows, type Flow } from "./SetupButton";
+import { pairingNext, useFlows } from "./SetupButton";
 import { ChangePreview, IN_FLIGHT, useChanges, useFiled } from "./settings-ui";
 import type { Advisory, BrowseModule, FiledChange, ModuleRow } from "./types";
 import { StatusDot, Switch, type StatusTone } from "./ui";

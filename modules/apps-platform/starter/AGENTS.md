@@ -25,7 +25,7 @@ it screenshots from this table.
 
 ```sh
 npm ci                            # once
-npm run lint                      # ESLint, about a second
+npm run lint                      # Oxlint, well under a second
 npx vitest run src/pages/x.test.tsx   # one component test file (seconds, no build)
 node --test test/app.test.mjs     # one server test file
 npm test                          # every test: component tests, then build, serve and check the pages, CSP, health and API
