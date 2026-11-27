@@ -128,6 +128,17 @@ export function parseRepos(raw: string): MaintainedRepo[] {
   });
 }
 
+/**
+ * The one way a repo joins maintainer_repos (the Maintainer page's add and Ship's Add repo both call it): the list with `repo`
+ * appended as an entry carrying `fields` (none = every default). Throws with the owner-readable reason for a malformed or already
+ * listed repo; the caller still runs parseRepos over the result.
+ */
+export function addListed(list: unknown[], repo: string, fields: Record<string, unknown> = {}): unknown[] {
+  if (!/^[\w.-]{1,100}\/[\w.-]{1,100}$/.test(repo)) throw new Error(`${repo.slice(0, 100)} isn't owner/name, for example acme/api`);
+  if (list.some((e) => String(typeof e === "string" ? e : (e as { repo?: unknown })?.repo).toLowerCase() === repo.toLowerCase())) throw new Error(`${repo} is already listed`);
+  return [...list, { repo, ...fields }];
+}
+
 /** Whether `slug` (owner/name, any case) is one of the listed repos. */
 export const inMaintained = (repos: MaintainedRepo[], slug: string): boolean => repos.some((r) => r.repo.toLowerCase() === slug.toLowerCase());
 

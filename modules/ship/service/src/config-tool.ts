@@ -3,6 +3,7 @@
 // result validated, and one typed settings change filed as the calling job (POST /v1/settings/agent).
 // A change that loosens anything (loosens()) is the owner's: the tool refuses it and the owner makes it from the board.
 import { CAP_KEYS, CONTROLS, covers, effective, FIELDS, loosens, PRESETS, removable, TIERS, validate, type Scope } from "./settings.ts";
+import { addListed } from "./aidenhq-sdk/maintained-repos.ts";
 import { status } from "./status.ts";
 import type { State } from "./state.ts";
 import type { Tool } from "./mcp.ts";
@@ -64,7 +65,6 @@ export function applyShipChange(raw: Dict, c: Change): { value: Dict; summary: s
   return { value, summary: [summary], loosens: loosens(raw, value, c.scope) };
 }
 
-const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 const same = (a: unknown, b: string) => String(typeof a === "string" ? a : (a as Dict)?.repo).toLowerCase() === b.toLowerCase();
 
 /**
@@ -74,12 +74,12 @@ const same = (a: unknown, b: string) => String(typeof a === "string" ? a : (a as
  * No `change` is an empty entry: it inherits the defaults and follows their later changes.
  */
 export function addRepo(d: { raw: Dict; scope: Scope; maintainerRepos: unknown[]; codeReview: Dict }, repo: string, change: unknown) {
-  if (!REPO.test(repo)) throw new Error(`${repo.slice(0, 100)} isn't owner/name`);
-  const { value, summary } = applyShipChange(d.raw, { repo, change: change ?? {}, scope: { ...d.scope, listed: [...d.scope.listed, repo] } });
   // A repo the Maintainer already lists (or the fleet covers) keeps its entry and duties: only what is missing is added.
   const listed = covers(repo, d.scope);
+  const maintainerRepos = listed ? undefined : addListed(d.maintainerRepos, repo, { fixes: false, triage: "off" });
+  const { value, summary } = applyShipChange(d.raw, { repo, change: change ?? {}, scope: { ...d.scope, listed: [...d.scope.listed, repo] } });
   const changes: Dict[] = [
-    ...(listed ? [] : [{ kind: "setting", key: "maintainer_repos", value: [...d.maintainerRepos, { repo, fixes: false, triage: "off" }] }]),
+    ...(maintainerRepos ? [{ kind: "setting", key: "maintainer_repos", value: maintainerRepos }] : []),
     { kind: "setting", key: "ship", value: (({ paused: _p, ...ship }) => ship)(value) },
   ];
   return { changes, summary: [`${repo}: added to ship (${listed ? "already listed" : "listed for the Maintainer"}; code review is turned on from the Reviews page), then ${summary[0]!.slice(repo.length + 2)}`] };
