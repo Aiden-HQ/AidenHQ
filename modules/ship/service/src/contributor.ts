@@ -98,8 +98,11 @@ export async function prTick(d: { prs: Prs; firePr: FirePr; store: Kv; log: Log;
   const repos: NonNullable<PrState["repos"]> = {};
   let count = 0;
   for (const b of batch.repos) {
-    const nudged = { ...(state.repos?.[b.repo]?.nudged ?? {}) };
-    repos[b.repo] = { nudged };
+    // Kept by the repo's lower-case name: the same repo spelled differently (the product setting, an entry) is one history.
+    const key = b.repo.toLowerCase();
+    const before = state.repos?.[key] ?? Object.entries(state.repos ?? {}).find(([r]) => r.toLowerCase() === key)?.[1];
+    const nudged = { ...(before?.nudged ?? {}) };
+    repos[key] = { nudged };
     if (b.error || !b.prs) {
       d.log.warn({ repo: b.repo, err: b.error ?? "no PRs" }, "maintainer PRs not read for this repo; the next look asks again");
       continue;

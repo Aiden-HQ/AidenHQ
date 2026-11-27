@@ -68,6 +68,17 @@
   .sf.chg .sn { color: var(--accent); font-weight: 560; }
   .sl .rs { height: auto; padding: 0; border: 0; background: none; color: var(--accent); font-size: 11.5px; }
   .sl .rs:hover { text-decoration: underline; }
+  /* Pull request upkeep: one row per setting (name and a one-line description left, the control right), as the Maintainer page lays them out. */
+  .pr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 16px; align-items: center; padding: 8px 0; border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+  .pr:first-child { border-top: 0; padding-top: 0; }
+  .pr .pn { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; font-weight: 560; }
+  .pr .pn .rs { height: auto; padding: 0; border: 0; background: none; color: var(--accent); font-size: 11.5px; font-weight: 400; }
+  .pr .pd { grid-column: 1; font-size: 12px; color: var(--soft); display: grid; gap: 6px; }
+  .pr .prc { grid-column: 2; grid-row: 1 / span 2; }
+  .pr .prc { display: flex; justify-content: flex-end; } .pr .prc .seg { flex: none; }
+  .pr .days { display: flex; align-items: center; gap: 8px; white-space: nowrap; color: inherit; }
+  .pr .days input { width: 56px; text-align: right; }
+  @media (max-width: 640px) { .pr { grid-template-columns: minmax(0, 1fr); } .pr .prc { grid-column: 1; grid-row: auto; margin-top: 4px; justify-content: flex-start; } }
   .mx .rs { height: 14px; padding: 0; border: 0; }
   .sf .warn { color: var(--color-text-danger, red); font-size: 12px; }
   .sf .checks { gap: 6px; min-height: 0; } .sf .checks label { padding: 2px 8px 2px 6px; border: 1px solid var(--line); border-radius: 5px; font-size: 12px; }
@@ -175,8 +186,8 @@
     "caps.usd": ["Spend (USD)", "The most Ship spends on one PR, in dollars. Blank is unlimited.", null],
     "caps.requeue_on_timeout": ["Requeues on timeout", "How many times a timed-out run is queued again. Blank is unlimited.", null],
     stop_label: ["Stop label", "While a PR carries this label Ship leaves it alone; removing it resumes.", null],
-    dependabot: ["Dependabot updates", "Which dependency bumps an engineer takes through to a merge. Runs even when Ship is off for the repo. All is the owner's call.", { off: "None.", failing: "Only the ones whose checks fail.", all: "Every one, once its checks finish." }],
-    quiet_pr_days: ["Inactive contributor PRs", "Days a person's PR may wait on its author before Ship nudges them; closed after the same wait again (drafts wait twice as long). Blank leaves them alone. Turning it on is the owner's call.", null],
+    dependabot: ["Dependabot updates", "Which dependency bumps an engineer takes through to a merge.", { off: "None.", failing: "Only the ones whose checks fail.", all: "Every one, once its checks finish." }],
+    quiet_pr_days: ["Inactive contributor PRs", "A nudge, then closed after the same wait again. Drafts wait twice as long.", null],
   };
   const STAGES = { conflict: "When a PR conflicts", behind: "When a PR is behind", before_merge: "Before merge" };
   const KIND = { rebase: "seg", dependabot: "seg", fix: "checks", "generated.globs": "chips", "generated.command": "text", protected: "chips", stop_label: "text" };
@@ -305,7 +316,22 @@
       h("div", { className: "grid" }, ...(defaults ? [sf("preset")] : []), sf("enabled"), sf("handoff")), matrix], { text: "What Ship does for each risk tier code review gives a PR, and which PRs it takes on. Which PRs are in which tier is set by the tier rules on the Reviews page.", options: MATRIX_HELP });
     const repair = section("repair", "Rebase and repair", ["rebase", "fix"], [sf("rebase"), sf("fix")]);
     // The pull-request duties of their own (owner, 2026-11-27: pull requests are Ship's, issues the Maintainer's).
-    const prs = section("prs", "Pull request upkeep", ["dependabot", "quiet_pr_days"], [h("div", { className: "grid" }, sf("dependabot"), sf("quiet_pr_days"))]);
+    const prRow = (path, ctl, extra) => {
+      const { label, text } = info(path), { changed } = state(path);
+      return h("div", { className: "pr" }, h("div", { className: "pn" }, h("span", { textContent: label }), changed ? rs(path) : null), h("div", { className: "pd" }, h("span", { textContent: text }), extra ?? null), h("div", { className: "prc" }, ctl));
+    };
+    // Inactive contributor PRs: Leave open or Close, and the days only while Close is picked (the Maintainer page's cleanup rows).
+    const quiet = get(s, "quiet_pr_days"), closing = quiet !== null && quiet !== undefined;
+    const quietSeg = editor({ kind: "seg", label: `Inactive contributor PRs (${key})`, f: `${key}|quiet_pr_days:mode`, value: closing ? "Close" : "Leave open", values: ["Leave open", "Close"],
+      titles: { "Leave open": "Ship leaves quiet PRs alone.", Close: "Ship nudges a PR quiet that many days, then closes it after as many more. Turning it on is the owner's call." },
+      set: (v) => edit(key, "quiet_pr_days", v === "Close" ? (get(base, "quiet_pr_days") ?? 7) : null) });
+    const days = closing ? (() => {
+      const inp = h("input", { type: "text", inputMode: "numeric", value: String(quiet), ariaLabel: `Inactive contributor PRs days (${key})`, autocomplete: "off" });
+      inp.dataset.f = `${key}|quiet_pr_days:days`;
+      inp.addEventListener("change", () => { const n = Number(inp.value.trim()); if (Number.isInteger(n) && n >= 1 && n <= 365) edit(key, "quiet_pr_days", n, true); else inp.value = String(quiet); });
+      return h("label", { className: "days" }, "after", inp, "days");
+    })() : null;
+    const prs = section("prs", "Pull request upkeep", ["dependabot", "quiet_pr_days"], [prRow("dependabot", control("dependabot")), prRow("quiet_pr_days", quietSeg, days)]);
     const set = CAPS.filter((p) => get(s, p) != null).length;
     const limits = section("limits", "Limits", CAPS, [h("div", { className: "grid" }, ...CAPS.map((p) => sf(p)))], { fold: true, summary: set ? `${set} limit${set === 1 ? "" : "s"} set` : "No limits", note: "How many times a PR is re-reviewed (and so fixed) is code review's 'Reviews per push' setting on the Reviews page. A blank limit is unlimited." });
     const advPaths = ["stop_label", "generated.globs", "generated.command", "protected", ...("actions" in base ? Object.keys(STAGES).map((x) => `actions.${x}`) : [])];
