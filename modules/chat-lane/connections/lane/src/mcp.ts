@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { LaneAgent } from "./lane/config.js";
 import type { Lane } from "./lane/lane.js";
 import type { LaneStore, Wake } from "./lane/store.js";
-import { localShort, parseWhen } from "./lane/time.js";
+import { localShort, localStamp, parseWhen } from "./lane/time.js";
 
 /** Who called (the kernel's assertion of this call). */
 export interface Caller {
@@ -79,11 +79,11 @@ export function buildServer(lane: LaneTools, caller?: Caller): McpServer {
             ok: false,
             reason: `you already have ${MAX_WAKES} pending wakes on open tasks`,
             pending: pending.length,
-            wakes: pending.map((w) => ({ task: w.task, chat: Boolean(w.chat), due_local: `${localShort(lane.timezone, w.due_at)} (${lane.timezone})` })),
+            wakes: pending.map((w) => ({ task: w.task, chat: Boolean(w.chat), due_local: `${localStamp(lane.timezone, w.due_at)} (${lane.timezone})` })),
           });
         const id = lane.store.addWake(owner, due, a.note, Boolean(a.chat), a.task ?? null);
         if (a.task) await lane.fileWake(id, a.task, a.note, Math.max(due, Date.now()), caller.id); // a time up to a minute past is filed as now
-        return json({ ok: true, id, due_local: `${localShort(lane.timezone, due)} (${lane.timezone})` });
+        return json({ ok: true, id, due_local: `${localStamp(lane.timezone, due)} (${lane.timezone})` });
       });
     },
   );
@@ -108,7 +108,7 @@ export function buildServer(lane: LaneTools, caller?: Caller): McpServer {
           id: w.id,
           task: w.task,
           chat: Boolean(w.chat),
-          due_local: `${localShort(lane.timezone, w.due_at)} (${lane.timezone})`,
+          due_local: `${localStamp(lane.timezone, w.due_at)} (${lane.timezone})`,
           note: w.note,
           counts: live.has(w.id),
         })),

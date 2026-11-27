@@ -13,10 +13,15 @@ export function localNow(tz: string, now = Date.now()): string {
   return `${date}, ${clock(tz, now)} (${tz})`;
 }
 
-/** "Sat 15 Nov 5:00 PM" in the owner's timezone. */
+/** "Sat 15 Nov 5:00 PM" in the owner's timezone: prose, in the owner's time_format. */
 export function localShort(tz: string, at: number): string {
   const date = new Date(at).toLocaleDateString("en-GB", { timeZone: tz, weekday: "short", day: "numeric", month: "short" }).replace(",", "");
   return `${date} ${clock(tz, at)}`;
+}
+
+/** "Sat 15 Nov 17:00" in the owner's timezone: a structured value (a tool's `due_local`), always 24-hour. */
+export function localStamp(tz: string, at: number): string {
+  return new Date(at).toLocaleString("en-GB", { timeZone: tz, weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false }).replace(",", "");
 }
 
 /** The UTC offset (ms) of `tz` at instant `at`. */
