@@ -9,7 +9,7 @@ import {
   type Family, type Readout,
 } from "./apt.ts";
 import {
-  downloadEstimate, exactList, diskVerdict, installCommand, listHash, parseDownloadBytes, parseSimulation, releaseJumps, SIMULATE_UPGRADE,
+  downloadEstimate, exactList, diskVerdict, estimateCommand, installCommand, listHash, parseSimulation, releaseJumps, SIMULATE_UPGRADE,
   simulationProblems, UPDATE_ARGV, word, type Planned,
 } from "./apt.ts";
 import { parseDf, READ, stateOfError } from "./status.ts";
@@ -133,13 +133,13 @@ export function installedFrom(policy: Map<string, { installed?: string; candidat
  * The revalidation (§11.1) as one read: `apt-get update`, then the upgradable set again, with versions, and the security subset.
  * Pure over its inputs so the fixture tests assert the recomputed list and its hash.
  */
-export function revalidate(i: { os: string; policy: string; simulated: string; holds?: string; units?: string; bootId?: string; rebootRequired?: boolean; freeRootGb?: number | null; freeBootGb?: number | null; unattendedUpgrades?: boolean; securityStatus?: string }, mode: "security" | "full"): { family: Family } | { unsupported: string } | { readout: Readout; list: Planned[]; hash: string; downloaded_bytes: number } {
+export function revalidate(i: { os: string; policy: string; simulated: string; holds?: string; units?: string; bootId?: string; rebootRequired?: boolean; freeRootGb?: number | null; freeBootGb?: number | null; unattendedUpgrades?: boolean; securityStatus?: string }, mode: "security" | "full"): { family: Family } | { unsupported: string } | { readout: Readout; list: Planned[]; hash: string } {
   const d = detect(parseOsRelease(i.os));
   if ("unsupported" in d) return d;
   const holds = parseHolds(i.holds ?? "");
   const sim = i.simulated ?? "";
-  // The simulation's own `Need to get` line is the download estimate; the plan's set is what apt says it would upgrade, read
-  // again against the policy table so the version is the candidate apt would install.
+  // The plan's set is what the simulation says apt would upgrade, read again against the policy table so the version is the
+  // candidate apt would install. The space is a separate read: the simulation prints no `Need to get` line on a real host.
   const planned = new Map(parseSimulatedUpgrade(sim).map((p) => [p.name, p.version]));
   // `ubuntu-security-status` names ESM-apps packages whose candidate is not on a `-security` suite; the read path counts them, so the
   // revalidation must too, or a security plan would omit a package the page showed as a security update (§5, §11.1).
@@ -150,7 +150,6 @@ export function revalidate(i: { os: string; policy: string; simulated: string; h
     readout: { family: d.family, distro: "", upgradable, security, security_known: true, reboot_needed: !!i.rebootRequired, services: parseUnits(i.units ?? ""), holds, disk: { root_free_gb: i.freeRootGb ?? null, boot_free_gb: i.freeBootGb ?? null }, boot_id: i.bootId ?? "", unattended_upgrades: i.unattendedUpgrades ?? false, security_note: "" },
     list,
     hash: hashOf(list),
-    downloaded_bytes: parseDownloadBytes(sim),
   };
 }
 
@@ -231,13 +230,18 @@ export async function runPatch(c: Connection, machine: Machine, rec: PatchArgs):
     // proves the plan is exactly the change — the inventory simulation above is every upgradable package, which is a wider set than a
     // security-only record, and reading it here would refuse every security patch for the packages it correctly left out.
     const exact = await c.exec(installCommand(rec.packages, true), TIMEOUTS.lock);
+    // The space this run needs, from the same words with `--print-uris` instead of `-s` (§11.3): a simulation prints no `Need to get`
+    // line, so reading the estimate off it refused every patch as `disk_unknown`. It takes no lock and is not waited out: it only
+    // reads (the one call with the plain SSH read bound, 120 s), so it can never queue behind the very install this run is proving.
+    const estimate = await c.exec(estimateCommand(rec.packages));
+    const downloaded = downloadEstimate(estimate.stdout);
     const verdict = verifyPatch(rec, {
-      // The estimate is the exact list's own `Need to get`, read once and used for both the verdict and the reported need.
-      list: fresh.list, hash: fresh.hash, downloaded_bytes: downloadEstimate(exact.stdout), disk: fresh.readout.disk, simulation: exact.stdout,
+      // One estimate for the verdict and the reported need: the exact list's own `Need to get`, from `--print-uris`.
+      list: fresh.list, hash: fresh.hash, downloaded_bytes: downloaded, disk: fresh.readout.disk, simulation: exact.stdout,
       installed: installedFrom(parsePolicy(policy.stdout)), audit: audit.code === 0 ? audit.stdout : "", holds: fresh.readout.holds,
       unattended_upgrades: fresh.readout.unattended_upgrades, reboot_needed: fresh.readout.reboot_needed,
     });
-    Object.assign(base, { held: fresh.readout.holds, before: fresh.readout.services, boot_id_before: bootBefore, unattended_upgrades: fresh.readout.unattended_upgrades, disk: fresh.readout.disk, needed_gb: diskNeeded(downloadEstimate(exact.stdout) ?? 0) });
+    Object.assign(base, { held: fresh.readout.holds, before: fresh.readout.services, boot_id_before: bootBefore, unattended_upgrades: fresh.readout.unattended_upgrades, disk: fresh.readout.disk, needed_gb: diskNeeded(downloaded ?? 0) });
     if ("stale" in verdict) throw new StalePatch(machine.name, rec.hash, fresh.hash, fresh.list.map(word));
     if (!verdict.ok) return { ...base, detail: verdict.reason, refused: verdict.code };
     // §11.10: when unattended-upgrades is the one that patches this host, the module stays out of its way. Refreshing and reading

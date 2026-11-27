@@ -97,18 +97,17 @@ test("§14 live smoke: the exact UPDATE_ARGV and installCommand run against real
     assert.match(sim, /^Inst smoke-pkg \[1\.0\] \(2\.0 /m, "the real simulation names the exact move");
     assert.deepEqual(simulationProblems(parseSimulation(sim), [PINNED]), [], "parseSimulation finds nothing outside the approved list");
     // The run's space gate (§11.3) needs the download size of this exact list. Real apt prints no `Need to get` line for `-s`: it
-    // stops before the download summary. That is a fact about apt, and it is why the module's own read of the `-s` output finds no
-    // estimate — the defect reported separately, not fixed here. The test asserts both halves against real apt: the `-s` output
-    // carries no estimate, and the gate refuses on it; and the same list resolved with `--print-uris` (which prints the summary
-    // without fetching) does carry one, which the gate accepts. The package is served over loopback HTTP because a `file:` source
-    // answers `0 B`.
+    // stops before the download summary. The module reads the estimate from `--print-uris` (which prints the summary without
+    // fetching) instead, so `-s` still proves the plan and `--print-uris` answers the space. The test asserts both halves against
+    // real apt: the `-s` output carries no estimate, and the `--print-uris` output of the exact install words parses to a positive
+    // byte count through the module's own `downloadEstimate`, with no text handling here. The package is served over loopback HTTP
+    // because a `file:` source answers `0 B`.
     assert.equal(downloadEstimate(sim), null, "a real `-s` simulation carries no download estimate, so the module's own read of it finds none");
     const estimateText = section(out, "estimate");
-    // apt prints `Need to get 0 B/670 B of archives.` when part of the list is already in its cache, and the total after the slash
-    // is what the run has to fetch. Read that one, through the module's own parser.
-    const need = /Need to get [^\n]* of archives\./.exec(estimateText)?.[0] ?? "";
-    const total = need.includes("/") ? `Need to get ${need.slice(need.indexOf("/") + 1)}` : need;
-    const downloaded = downloadEstimate(total);
+    // apt prints `Need to get 0 B/670 B of archives.` when part of the list is already in its cache; the parser reads the total after
+    // the slash, which is the space the run needs. Passing the raw output is the point: a hand-split line would test the split, not
+    // the module.
+    const downloaded = downloadEstimate(estimateText);
     assert.ok(downloaded != null && downloaded > 0, `real apt reports a positive download size for the exact list (got ${downloaded}):\n${estimateText}`);
 
     // 4. The install: the package moved to the pinned version even though a newer one exists, the payload moved with it, and the

@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { classify, detect, isSecuritySuite, parseAptConfig, parseOsRelease, parsePolicy, parseSecurityStatus, parseSimulatedUpgrade, parseUnits, readoutFrom, unattendedUpgradesOn } from "../service/src/apt.ts";
+import { classify, detect, downloadEstimate, isSecuritySuite, parseAptConfig, parseOsRelease, parsePolicy, parseSecurityStatus, parseSimulatedUpgrade, parseUnits, readoutFrom, unattendedUpgradesOn } from "../service/src/apt.ts";
 
 const dir = fileURLToPath(new URL("./fixtures/", import.meta.url));
 
@@ -79,6 +79,37 @@ test("the effective unattended-upgrades setting wins over the unit's state; the 
   const dump = parseAptConfig('APT "";\nAPT::Periodic "";\nAPT::Periodic::Unattended-Upgrade "0";\nAPT::Periodic::Unattended-Upgrade "1";\n');
   assert.equal(dump.get("APT::Periodic::Unattended-Upgrade"), "0");
   assert.equal(parseAptConfig("garbage\n").size, 0);
+});
+
+// §11.3 — the estimate's source, on real apt output. `apt-get -s` prints the plan and no bytes: not on a full upgrade, not on
+// `install --only-upgrade`, not with `-qq`. `apt-get --print-uris`, the same words with the flag swapped, prints `Need to get`.
+// Both blocks in the fixture are verbatim apt 2.8.4 (Ubuntu 24.04) output, so this fails if either stops being what apt prints.
+test("§11.3 the estimate comes from --print-uris: the recorded -s output carries none, and --print-uris carries the bytes", () => {
+  const section = (name: string) => {
+    const parts = new Map<string, string>();
+    let key = "";
+    for (const line of readFileSync(join(dir, "ubuntu-lts.txt"), "utf8").split("\n")) {
+      const m = /^### (.*)$/.exec(line);
+      if (m) { key = m[1]!; parts.set(key, ""); continue; }
+      if (key) parts.set(key, `${parts.get(key)}${line}\n`);
+    }
+    return (parts.get(name) ?? "").trim();
+  };
+  const sim = section("apt-get -s install --only-upgrade libc6=2.39-0ubuntu8.5 openssl=3.0.13-0ubuntu3.4");
+  // The whole simulation, as recorded: the plan's set and nothing about archives.
+  assert.match(sim, /^Inst libc6 \[2\.39-0ubuntu8\.3\] \(2\.39-0ubuntu8\.5 /m, "the -s plan names the exact move");
+  assert.doesNotMatch(sim, /Need to get/, "apt-get -s prints no download estimate: this was the defect, and the line was invented");
+  assert.equal(downloadEstimate(sim), null, "so -s output yields no estimate, and the guard refuses rather than guess");
+  // The same words with `--print-uris` instead: `Need to get 4219 kB of archives.` is 4219 * 1024 bytes.
+  const uris = section("apt-get --print-uris install --only-upgrade libc6=2.39-0ubuntu8.5 openssl=3.0.13-0ubuntu3.4");
+  assert.match(uris, /^Need to get 4219 kB of archives\.$/m);
+  assert.equal(downloadEstimate(uris), 4219 * 1024);
+  // The full-upgrade inventory is the same shape: `-s` none, `--print-uris` the bytes over the wider set.
+  const invSim = section("apt-get -s upgrade");
+  const invUris = section("apt-get --print-uris upgrade");
+  assert.equal(downloadEstimate(invSim), null);
+  assert.equal(downloadEstimate(invUris), 4639 * 1024);
+  assert.ok(downloadEstimate(invUris)! > downloadEstimate(uris)!, "the wider set downloads more, so its estimate is larger");
 });
 
 test("anything else is unsupported, with the reason, and nothing is read", () => {

@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  classify, diskVerdict, downloadEstimate, exactList, installArgv, installCommand, listHash, LOCKED, neededGb, parseAptConfig, parseDownloadBytes, parseHolds,
+  classify, diskVerdict, downloadEstimate, estimateArgv, estimateCommand, exactList, installArgv, installCommand, listHash, LOCKED, neededGb, parseAptConfig, parseHolds,
   parseOsRelease, parsePolicy, parseSimulatedUpgrade, parseSimulation, releaseJumps, simulationProblems, unattendedUpgradesOn, word, UPDATE_ARGV,
 } from "../service/src/apt.ts";
 import { hashOf, planFrom, revalidate, serviceChange, startSeconds, verifyPatch, installedFrom, DPKG_AUDIT } from "../service/src/execute.ts";
@@ -68,12 +68,32 @@ test("§11.1 the exact argv: install --only-upgrade -y name=version…, never up
   ]);
   const sim = installArgv(["libc6=2.39-0ubuntu8.5"], true);
   assert.deepEqual(sim.slice(0, 3), ["apt-get", "-s", "install"], "the simulation is the same call with -s, before the install");
+  // The estimate is the same call with --print-uris instead: `apt-get -s` prints no `Need to get` line, so the simulation proves the
+  // plan and this call answers the space (§11.3). The `--only-upgrade -y` and both `Dpkg::Options` words are identical.
+  const est = estimateArgv(["libc6=2.39-0ubuntu8.5", "openssl=3.0.13-0ubuntu3.4"]);
+  assert.deepEqual(est, [
+    "apt-get", "--print-uris", "install", "--only-upgrade", "-y",
+    "-o", "DPkg::Lock::Timeout=600", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold",
+    "libc6=2.39-0ubuntu8.5", "openssl=3.0.13-0ubuntu3.4",
+  ]);
+  // The only word that differs from the install is the flag: the list and every `-o` word are the same call.
+  assert.deepEqual(est.filter((w) => w !== "--print-uris"), installArgv(["libc6=2.39-0ubuntu8.5", "openssl=3.0.13-0ubuntu3.4"]));
+  // A plan still simulates: `--print-uris` is not the plan's proof, and `-s` is never the estimate's source.
+  assert.ok(!est.includes("-s") && sim.includes("-s"));
   // The host's own words: passwordless sudo, never a prompt, and the one non-interactive environment apt gets (§11.2).
   const host = installCommand(["libc6=2.39-0ubuntu8.5"]);
   // sudo, the dpkg lock guard (§11.9), the non-interactive environment, then the same core: never a bare `env apt-get`.
   assert.deepEqual(host.slice(0, 6), ["sudo", "-n", "flock", "-w", "600", "-x"]);
   assert.deepEqual(host.slice(7, 11), ["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install"]);
   assert.ok(!host.includes("upgrade") && !host.includes("dist-upgrade") && !host.includes("do-release-upgrade"));
+  // The estimate runs with the same `sudo -n` and the same core words, and pins the C locale so apt prints `Need to get` in English
+  // whatever locale the host's session carries (a localized line would parse as no estimate at all). It takes no `flock`: it only
+  // reads, and on a real host it answers while another patch holds the dpkg lock, so it must not queue behind that patch's install.
+  const estHost = estimateCommand(["libc6=2.39-0ubuntu8.5"]);
+  assert.deepEqual(estHost.slice(0, 2), ["sudo", "-n"]);
+  assert.ok(!estHost.includes("flock"), "the estimate takes no lock: planning must not wait out a running patch");
+  for (const word of ["LC_ALL=C", "LANG=C", "LANGUAGE=C", "DEBIAN_FRONTEND=noninteractive"]) assert.ok(estHost.includes(word), `the estimate pins ${word}`);
+  assert.deepEqual(estHost.slice(estHost.indexOf("apt-get")), estimateArgv(["libc6=2.39-0ubuntu8.5"]), "the estimate's core words are the install's, with --print-uris");
   assert.deepEqual(UPDATE_ARGV, ["sudo", "-n", "flock", "-w", "600", "-x", "/var/lib/dpkg/lock-frontend", "apt-get", "update", "-o", "DPkg::Lock::Timeout=600"], "the refresh waits out the lock too (§11.9)");
 });
 
@@ -129,9 +149,9 @@ test("§11.3 low disk on / and on /boot refuses the run and reports the numbers"
   assert.ok(Math.abs(neededGb(900 * 1024 * 1024) - 1.76) < 0.01);
   // apt groups thousands, and the estimate has to be the real one: 900,000 kB is 0.86 GB, doubled to 1.7 GB, which a host with
   // 1.2 GB free must be refused for.
-  assert.equal(parseDownloadBytes("Need to get 900,000 kB of archives."), 900_000 * 1024, "a thousands separator is part of the number");
+  assert.equal(downloadEstimate("Need to get 900,000 kB of archives."), 900_000 * 1024, "a thousands separator is part of the number");
   assert.equal(diskVerdict({ root_free_gb: 1.2, boot_free_gb: 1.2 }, 900_000 * 1024).ok, false, "1.2 GB free is short of twice a 900 MB download");
-  assert.equal(parseDownloadBytes("Need to get 2.5 GB of archives."), 2.5 * 1024 ** 3);
+  assert.equal(downloadEstimate("Need to get 2.5 GB of archives."), 2.5 * 1024 ** 3);
   // A host with no separate /boot is not a refusal: there is no second filesystem to fill.
   assert.equal(diskVerdict({ root_free_gb: 18.4, boot_free_gb: null }, 0).ok, true);
 });
@@ -156,6 +176,34 @@ test("§11.3 the disk guard uses the exact list's estimate and refuses when apt 
   assert.equal(none.ok === false ? none.code : "", "disk_unknown");
   assert.equal(downloadEstimate("Need to get 0 B of archives."), 0, "a real zero is a number, not an absence");
   assert.equal(downloadEstimate("no summary here"), null);
+});
+
+// §11.3 — a partly or wholly cached list prints `remaining/total`. The bytes the run needs are the archives, cached or not: unpacking
+// a cached package fills the filesystem exactly like a downloaded one, so the total after the slash is the estimate. Reading the
+// remaining-download half would call a fully cached 2 GB upgrade `0 B` and pass a host with no room to unpack it. The captured line
+// is apt 2.8.4's own, over a 2069 kB package already in the archive cache.
+test("§11.3 a cached archive's `0 B/total` estimate reads the total, so a cached upgrade still needs its space", () => {
+  const cached = "Need to get 0 B/2069 kB of archives.\nAfter this operation, 1024 B disk space will be freed.\n";
+  assert.equal(downloadEstimate(cached), 2069 * 1024, "the total after the slash, not the 0 B still to fetch");
+  // A partial cache is the same shape, and still the total.
+  assert.equal(downloadEstimate("Need to get 512 kB/2069 kB of archives."), 2069 * 1024);
+  // Both halves carry their own unit; the total is in its own.
+  assert.equal(downloadEstimate("Need to get 0 B/1.5 GB of archives."), Math.round(1.5 * 1024 ** 3));
+  // A remote line with no slash is unchanged: the single figure is the estimate.
+  assert.equal(downloadEstimate("Need to get 1581 kB of archives."), 1581 * 1024);
+  // Through the guard: a wholly cached 2 MB upgrade is under the 1 GB floor, so 1.2 GB free passes it.
+  const f = fixture("security");
+  const rec = { machine: "vm-one", mode: "security" as const, reboot_policy: "auto" as const, fingerprint: "SHA256:" + "A".repeat(43), packages: f.words, hash: f.hash };
+  const sim = u("apt-get -s install --only-upgrade libc6=2.39-0ubuntu8.5 openssl=3.0.13-0ubuntu3.4");
+  const passed = verifyPatch(rec, { ...f, downloaded_bytes: downloadEstimate(cached), disk: { root_free_gb: 1.2, boot_free_gb: 1.2 }, simulation: sim, installed: installedFrom(f.policy), audit: "", holds: [], unattended_upgrades: false, reboot_needed: false });
+  assert.deepEqual(passed, { ok: true }, "twice 2 MB is under the 1 GB floor, and 1.2 GB free clears the floor");
+  // A cached 900 MB upgrade needs twice that, which 1.2 GB free is short of, so the guard refuses it and quotes the cached total: a
+  // 0 B reading would have passed the same host.
+  const cachedBig = "Need to get 0 B/900,000 kB of archives.";
+  assert.equal(downloadEstimate(cachedBig), 900_000 * 1024, "a cached 900 MB reads as 900 MB, not 0");
+  const short = verifyPatch(rec, { ...f, downloaded_bytes: downloadEstimate(cachedBig), disk: { root_free_gb: 1.2, boot_free_gb: 1.2 }, simulation: sim, installed: installedFrom(f.policy), audit: "", holds: [], unattended_upgrades: false, reboot_needed: false });
+  assert.equal(short.ok === false ? short.code : "", "low_disk", "the guard refuses 1.2 GB free against a cached 900 MB, which a 0 reading would have passed");
+  assert.match(short.ok === false ? short.reason : "", /878\.9 MB download/);
 });
 
 // §5, §11.1 — an ESM-apps security package the suite test cannot see is still in a security plan. `esm.ubuntu.com` serves some

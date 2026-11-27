@@ -473,8 +473,10 @@ Rules `execute.ts` enforces, in order, before it installs anything:
 2. **Non-interactive, bounded.** `DEBIAN_FRONTEND=noninteractive`, `-y`, `-o Dpkg::Options::=--force-confdef`,
    `--force-confold`, and a timeout. A prompt that would still block is a failure, not something to answer.
 3. **Disk first, both places.** Refuse to start if free space on `/` or on `/boot` is under the larger of 1 GB and twice
-   the download estimate from `apt-get -s`. Report the numbers. A full `/boot` turns a kernel update into a machine that
-   does not come back.
+   the download estimate from `apt-get --print-uris` over the identical list. (`apt-get -s` prints no `Need to get` line on
+   a real host — it prints the plan and the summary counts and nothing about bytes — so it proves the plan and never
+   supplies the estimate.) An estimate apt did not print is a refusal, not a zero. Report the numbers. A full `/boot`
+   turns a kernel update into a machine that does not come back.
 4. **A broken state is not patched over.** If `dpkg --audit` reports an interrupted run, `dpkg --configure -a` is itself
    a write: it happens inside this approved run, or the run stops and reports the broken state for the owner to decide.
 5. **Respect pins.** `apt-mark showhold` entries are never upgraded, and are named in the report as held.
