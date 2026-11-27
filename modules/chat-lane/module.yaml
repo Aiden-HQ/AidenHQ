@@ -11,7 +11,7 @@ connections:
     url: http://lane:8089/mcp
     auth: chat_lane_service_key
     tools:
-      # wake_list: your pending wakes, what counts toward wake_at's cap (only wakes on tasks still open).
+      # wake_list: the wakes set with wake_at, what counts toward its cap (only wakes on tasks still open); a task_wait's resume time is in its own result.
       read: [ wake_list ]
       # wake_at: wake yourself later (a reminder or follow-up). chat_send: answer in your own fast-lane chat from a background run.
       write: [ wake_at, chat_send ]
