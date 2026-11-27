@@ -69,7 +69,7 @@ only thing in the fleet that holds a server's private key or talks to a server.
   server-manager, view: "ui://server-manager/page", tools: [ server_manager_config, server_manager_status,
   server_manager_check, server_manager_patch, server_manager_reboot, server_manager_host_key_reset ], settings:
   [ servers_machines ], secret_maps: [ { secret: servers_keys, keys_from: "servers_machines[].key", fields: [ { name:
-  key, label: "Private key", kind: key } ] } ] }`. The page's settings list is what the page may propose; the owner's
+  private_key, label: "Private key", kind: key } ] } ] }`. The page's settings list is what the page may propose; the owner's
   Save outside the frame is the gate. `icon` must be one of the board's own enum (`shield` is), and `view` must start
   `ui://server-manager/`.
 - `contributes.warehouse.sources`: `src_servers`, with a `servers` view (§8).
@@ -164,8 +164,8 @@ updates*, *is a reboot needed*, *which services are running* — and knows how t
 
 | | Detect | Security classification | Reboot needed | Services |
 |---|---|---|---|---|
-| Ubuntu LTS | `ID=ubuntu`, `VERSION_ID` an even-year `.04` | A package is security when its candidate's origin ends `-security` (read per package from `apt-cache policy`); cross-checked with `ubuntu-security-status --format json` when present, which also reports ESM-apps packages the origin filter cannot see | `/var/run/reboot-required` | systemd |
-| Debian stable | `ID=debian`, `VERSION_CODENAME` a released stable | The same `-security` origin filter | `/var/run/reboot-required` | systemd |
+| Ubuntu LTS | `ID=ubuntu`, `VERSION_ID` an even-year `.04` | A package is security when its candidate comes from a security suite — the suite on the candidate's source entry ends `-security` (`jammy-security`), read from `apt-cache policy`; apt's `Origin:` is `Ubuntu` and never ends that way, so origin is not the test. Cross-checked with `ubuntu-security-status --format json` when present, which also reports ESM-apps packages the suite test cannot see | `/var/run/reboot-required` | systemd |
+| Debian stable | `ID=debian`, `VERSION_CODENAME` a released stable | The same suite test (`bookworm-security`, or `stable-security` when the source names the release as `stable`); apt's `Origin:` is `Debian` | `/var/run/reboot-required` | systemd |
 | Anything else | — | Not attempted | — | — |
 
 - **Honest limit, in every report:** a fix backported into a normal archive is not flagged as security. That is a
@@ -257,24 +257,33 @@ So the platform change is four small, specific things, in `modules/board` and th
 private trick inside one module (`modules/AGENTS.md`: a new building block goes in the schema and the board, for every
 module):
 
-1. **A new field kind, `key`, in `modules/board/schemas/pages.json`** (and the panel's `SecretMap` type in
-   `services/board/src/module-views.ts`): a textarea-shaped input, stored like any other text, newlines preserved.
-   `password` and `totp` are unchanged. `key` is not hidden: the value is never read back either way, so hiding buys
-   nothing and makes a bad paste impossible to see.
-2. **A per-field cap.** The entry check reads the declared field's `maxLength` (300 when absent, so nothing else
-   changes; the `key` kind declares 4096) instead of the constant, and `secretFits` follows the same declaration for a
-   whole-secret paste. The map's own JSON is validated against the `setup:` pattern as it is now.
+1. **A new field kind, `key`, in `modules/board/schemas/pages.json`**, with an optional `maxLength` on a field
+   (an integer, 1 to 65536). The panel's `SecretMap` type in `services/board/src/module-views.ts` gains `key` and
+   `maxLength?`, and `services/board/web/src/SecretMaps.tsx` renders `key` as a textarea (`<textarea rows={6}>`,
+   `spellCheck={false}`, `autoComplete="off"`): today it renders every kind but `text` as `type="password"`, so without
+   that line a `key` field is a single-line hidden input and a pasted key cannot be checked by eye. `key` is not
+   hidden: the value is never read back either way, so hiding buys nothing and makes a bad paste impossible to see.
+2. **A per-field cap the kernel can see.** The kernel knows a secret only as `SetupField` (`kernel/src/admin.ts`), so
+   compile (`scripts/modules.ts`) carries each map secret's declared fields — `{ name, kind, maxLength }` from the page's
+   `secret_maps` — into the compiled setup entry. Then `saveKey` caps each entry value at its declared field's
+   `maxLength` (300 when the field is not declared, so every other module is unchanged); a whole-map paste through
+   `save_secret` parses the JSON and applies the same per-field caps, with a 64 KB total; and `auth-api.ts`'s request
+   cap (`value` at most 1000 characters, 4000 when `key` is set) rises to 64 KB for a secret that declares fields,
+   because at 1000 a three-kilobyte private key cannot be pasted at all. The map's own JSON is still validated against
+   the `setup:` pattern.
 3. **The check runs on a clear too.** `saveKey` calls `check` with the key and a null entry when an entry is being
-   removed, and `auth-api.ts` passes that through to the module's `validate:` hook as `{ secret: { name }, key }` with no
-   value. A module that answers `{ ok: false }` refuses the clear; a module with no hook, or one that does not answer,
-   clears as it does today. This is the smallest change that makes "refuse to clear a key in use" expressible at all.
+   removed; `auth-api.ts` passes that through as `{ secret: { name }, key }` with no value; and
+   `kernel/src/module-validate.ts` gains an optional `key` on `ValidateInput` and forwards it, since today it forwards
+   only `secret.name` and `value`. A module that answers `{ ok: false }` refuses the clear; a module with no hook, or one
+   that does not answer, clears as it does today.
 4. **The hook's answer is not a new branch.** `server-manager.validate` answers for `servers_keys`: a clear of a key a
    machine still names is refused with a message naming the machines; a replace is allowed, because that is how a key is
    rotated. The rule stays with the thing that knows what "in use" means, which is the module.
 
 Each of those gets a test in the named-secret PR: a `key` field over 4096 refused, a `key` field with newlines stored
-whole, a clear refused by a module that answers no, a clear allowed when nothing references the key, and a clear still
-working for a module with no `validate:` hook.
+whole, a three-kilobyte key pasted whole is stored and read back, a map paste over 64 KB is refused, a clear refused by
+a module that answers no, a clear allowed when nothing references the key, and a clear still working for a module with
+no `validate:` hook.
 
 **Verified, not assumed.** The two code facts above (`if (entry) await check(...)`, and the 300-character cap in both
 places) were read in the product repo at `main` on 2026-11-27, and they are what the first PR changes. If either has
@@ -358,7 +367,7 @@ plain-language summaries, Advanced collapsed.
     "required": ["name", "address", "user", "key"],
     "properties": {
       "name":         { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$" },
-      "address":      { "type": "string", "pattern": "^[A-Za-z0-9.:\\\\[\\\\]-]{1,253}$" },
+      "address":      { "type": "string", "pattern": "^[A-Za-z0-9.:\\[\\]-]{1,253}$" },
       "port":         { "type": "integer", "minimum": 1, "maximum": 65535, "default": 22 },
       "user":         { "type": "string", "pattern": "^[a-z_][a-z0-9_-]{0,31}$" },
       "key":          { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$" },
@@ -415,10 +424,11 @@ the page; the agent never has it.
 Rules `execute.ts` enforces, in order, before it installs anything:
 
 1. **Refresh, then revalidate into an exact `pkg=version` list.** `apt-get update`, then re-read the upgradable set and
-   recompute the list, **with the versions in it**. For `security` the list is the subset whose candidate origin ends
-   `-security`; for `full` it is every upgradable package. Either way the list is a set of `name=version` pairs, never a
-   category apt would interpret again, and its hash is compared with the record's. A mismatch stops the run and files a
-   new record: what gets installed is what this last read showed, never what the preview showed.
+   recompute the list, **with the versions in it**. For `security` the list is the subset whose candidate comes from a
+   security suite (the suite on its source entry ends `-security`); for `full` it is every upgradable package. Either
+   way the list is a set of `name=version` pairs, never a category apt would interpret again, and its hash is compared
+   with the record's. A mismatch stops the run and files a new record: what gets installed is what this last read
+   showed, never what the preview showed.
 
    **The exact command, and why it is that one.** `apt-get install --only-upgrade -y <name>=<version> …` with the
    revalidated list. Not `apt-get upgrade`, which takes *every* upgradable package and so cannot express "security
@@ -549,8 +559,14 @@ Run 2026-11-27, three passes, on this document. It started as **not build-ready*
   and spells out that `name` identifies the machine while `key` is only the vault lookup.
 
 **Verified against the product, not assumed:** the `saveKey` clear gap, the 300-character cap in `module-secrets.ts` and
-`secretFits`, the `text | password | totp` field kinds, `requireDocs` refusing an official module's undocumented
-setting, and the `read | write | destructive | named` tool tags.
+`secretFits`, the `text | password | totp` field kinds and the panel component that renders them, `requireDocs`
+refusing an official module's undocumented setting, and the `read | write | destructive | named` tool tags.
+
+**Found later, on this spec's own pull request (2026-11-27), and fixed in a follow-up:** the panel's field had to be
+named `private_key`, the name the service reads, not `key`; security classification had to read the candidate's suite
+rather than apt's `Origin:`, which is `Debian` or `Ubuntu` and never ends `-security`, so nothing would ever have
+counted as a security update; and §9's `address` pattern had four backslashes where it needs two, so it did not
+compile.
 
 **Left to the build, not to the review:** the page's icon and order, the exact wording of a failed run's report, and
 whether `expected_fingerprint` should ever default to anything but empty. All three are in §17.
