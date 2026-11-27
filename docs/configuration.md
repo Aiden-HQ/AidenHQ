@@ -313,25 +313,11 @@ Set under `settings:` in `instance.yaml`. The board's Settings page (gear in the
 
 Design: [design/access.md](design/access.md).
 
-- **Members.** `password` mode: an enabled account. `access` mode: everyone the Cloudflare Access policy admits, with or
-  without an account, unless their account is disabled. Users (accounts without the admin role) never get the board.
-- **Roles per app.** `blocked`, `member`, `admin`, plus any the app declares in `aidenhq-app.yaml` (name and meaning),
-  assigned by email. Someone with no assignment gets the app's default: set by its admins, else `share.default_role` in
-  `apps.yaml`, else the manifest's `default_role`, else `blocked` (never `admin`). A role the running manifest no longer
-  declares counts as `blocked`; the assignment is kept for an admin to fix.
-- **Enforced:** only `blocked` (403, and the app is off their My apps list). The app gets a signed identity token
-  (`X-AidenHQ-Identity`: `sub`, email, name, role; [app identity](design/app-identity.md)) and decides the rest.
-- **Admins.** AidenHQ admins are admins of every app and can't be blocked. The owner names each app's admins on the
-  board (Accounts, App admins); an app admin can name other admins of that app and change any role there except an
-  AidenHQ admin's. App admins have no board access and can't create accounts.
-- **Access page:** `https://<my_apps host>/access?app=<name>` (linked from My apps for admins, and `/.aidenhq/access`
-  on the app's host): roles and meanings, the default, assignments and the last 50 changes. Writes need the page's exact
-  origin.
-- **In-app requests:** the app's page posts to `/.aidenhq/request`; the board stores it (20 an hour per person, at most
-  50 open per app) and wakes the DevOps Engineer (routine `app-request`; the text never enters Paperclip). It reads them
-  with `app_requests` and answers with `app_request_reply`; the person sees the reply at `/.aidenhq/requests`. It changes
-  a role (`app_role_set`) only for an open request whose requester is an admin of that app at the time; the owner's own
-  chat words reach it the same way (Aiden's `app_request_from_owner`). Every change is logged on the Access page.
+- **Who may open an app and with which role:** `password` mode takes an enabled account; `access` mode takes everyone the
+  Cloudflare Access policy admits unless their account is disabled. Roles, defaults, admins, the Access page and in-app
+  requests are in [access](design/access.md#per-app-roles) and
+  [In-app requests and roles](design/access.md#in-app-requests-and-roles); what an app must do is
+  [What a shared app must do](design/access.md#what-a-shared-app-must-do).
 - **In-app feedback:** an app that keeps its own intake calls `notifyOwner()` (the app starter's
   `src/lib/notify-owner.ts`) after storing a submission: a body-less `POST /.aidenhq/notify`. With `feedback_to: <agent>` on
   its registry entry, the board runs its `App feedback: <app>` routine (tier0) with only a count: at once, then at most once
@@ -346,7 +332,6 @@ Design: [design/access.md](design/access.md).
 - **Data:** `data/kernel/auth/auth.db` (`app_roles`, `app_defaults`, `app_requests`, `app_access_log`), keyed by app name and
   exported to the gate in `data/gate/accounts.json`. An app that leaves `gate.json` takes its rows with it within a
   minute. A block or demotion returns only once the gate's file has it.
-
 
 ## Host-side `.env`
 
