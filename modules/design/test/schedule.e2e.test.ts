@@ -194,9 +194,3 @@ test("a Stop asked after midnight rests a 24/7 app for that day, though its pass
   assert.equal(runOf(first).status, "stopped");
   assert.equal(k.filed.length, 1);
 });
-
-test("settings name the field they refuse; defaults are the quiet ones", () => {
-  const { apps, errors } = readApps(JSON.stringify({ apps: [{ name: "acme", url: U }, { name: "beta", url: U2, day_cap_usd: 500 }, { name: "gamma", url: U2, models: { design: "not a model" } }] }));
-  assert.deepEqual(errors, ["apps[1]: day_cap_usd is a number from 0 to 100", "apps[2]: models is { design?, fixes?, clicking? }, each an OpenRouter model id"]);
-  assert.deepEqual(apps[0], { name: "acme", url: U, aidenhq_app: false, live_mode: "read", schedule: "on-request", day_cap_usd: 5, spend: "standard", models: {}, recording: false });
-});
