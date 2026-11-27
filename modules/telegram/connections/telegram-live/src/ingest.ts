@@ -68,15 +68,14 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
     cps: db.prepare(`SELECT chat_id AS id FROM checkpoint`),
     seedCp: db.prepare(`INSERT OR IGNORE INTO checkpoint (chat_id, last_message_id) VALUES (?, ?)`),
     advanceCp: db.prepare(`INSERT INTO checkpoint (chat_id, last_message_id) VALUES (?, ?) ON CONFLICT (chat_id) DO UPDATE SET last_message_id = max(last_message_id, excluded.last_message_id)`),
-    maxIngested: db.prepare(`SELECT max(message_id) AS id FROM ingested WHERE chat_id = ?`),
     pending: db.prepare(`SELECT write_id FROM agent_pending WHERE chat_id = ? AND temp_message_id = ?`),
     pendingDone: db.prepare(`UPDATE agent_pending SET final_message_id = ? WHERE chat_id = ? AND temp_message_id = ?`),
     pendingFailed: db.prepare(`UPDATE agent_pending SET error = ? WHERE chat_id = ? AND temp_message_id = ?`),
     agentSent: db.prepare(`SELECT 1 FROM agent_sent WHERE chat_id = ? AND message_id = ?`),
     setAgentSent: db.prepare(`INSERT OR IGNORE INTO agent_sent (chat_id, message_id) VALUES (?, ?)`),
     // An agent's send whose success update a crash lost comes back as a plain outgoing message: its text, in that chat, within
-    // the hour, from the executor's own record, keeps it from firing an event (a stored row either way).
-    agentWrite: db.prepare(`SELECT 1 FROM writes WHERE chat_id = ? AND text = ? AND at > ? AND state <> 'failed' LIMIT 1`),
+    // the hour, from an executor record still sending or unknown, keeps it from firing an event (a stored row either way).
+    agentWrite: db.prepare(`SELECT 1 FROM writes WHERE chat_id = ? AND text = ? AND at > ? AND state IN ('sending', 'unknown') LIMIT 1`),
   };
 
   const chats = new Map<number, ChatState>();
@@ -165,9 +164,10 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
     store.tx(() => pushRow({ t: "chat", row: chatRow(c, v.muted) }, `chat:${c.id}`));
   }
 
+  /** A chat's checkpoint, seeded at its last message on first sight (never at 0: older history is backfill's, not events). */
   function seed(c: ChatState): number {
-    q.seedCp.run(c.id, c.last?.id ?? 0);
-    return checkpoint(c.id)!;
+    if (c.last) q.seedCp.run(c.id, c.last.id);
+    return checkpoint(c.id) ?? 0;
   }
 
   /** One message through the filter and, when kept, into the outbox, exactly once. Lookups first; the transaction is sync. */
@@ -211,7 +211,7 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
         push("kernel", e);
       }
       if (mode !== "backfill") {
-        q.seedCp.run(m.chat_id, c.last?.id ?? 0);
+        q.seedCp.run(m.chat_id, c.last?.id ?? m.id);
         if (!frozen.has(m.chat_id)) q.advanceCp.run(m.chat_id, m.id);
       }
       return true;
@@ -290,8 +290,13 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
           if (last && !last.sending_state) {
             c.last = { id: last.id, date: last.date };
             const cp = checkpoint(c.id);
+            // First sight of its last message (TDLib may send the chat without one): seed, never reconcile.
+            if (cp === undefined) {
+              if (await stores(c)) seed(c);
+              return;
+            }
             // A gap signal: TDLib's newest message for a chat we hold, above its checkpoint, never ingested.
-            if (cp !== undefined && last.id > cp && !isIngested(c.id, last.id) && !frozen.has(c.id) && (await stores(c))) void reconcile([c.id]);
+            if (last.id > cp && !isIngested(c.id, last.id) && !frozen.has(c.id) && (await stores(c))) void reconcile([c.id]);
           }
           return;
         }
@@ -365,10 +370,8 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
       }
       missed.sort((a, b) => a.id - b.id);
       for (const m of missed) await ingestOne(m, "reconcile");
-      store.tx(() => {
-        const max = (q.maxIngested.get(id) as { id: number | null }).id ?? 0;
-        q.advanceCp.run(id, Math.max(cp, max));
-      });
+      // The newest id this read saw, not the newest ingested: a message whose ingest failed meanwhile stays above the mark.
+      q.advanceCp.run(id, newest);
       strikes.delete(id);
       frozen.delete(id);
     } catch (err) {
@@ -460,7 +463,12 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
       busy++;
       chain = chain
         .then(() => process(u))
-        .catch((err) => log.warn({ update: u._, err: String((err as Error)?.message ?? err).slice(0, 300) }, "update not handled"))
+        .catch((err) => {
+          log.warn({ update: u._, err: String((err as Error)?.message ?? err).slice(0, 300) }, "update not handled");
+          // A message whose update failed is read back from history (its chat waits for that, so no later message passes it).
+          const m = (u as { message?: { chat_id?: unknown } }).message;
+          if (typeof m?.chat_id === "number" && !stopped) void reconcile([m.chat_id]);
+        })
         .finally(() => void busy--);
       return chain;
     },

@@ -67,6 +67,16 @@ describe("auth", () => {
     expect(kernel.needs).toEqual([{ cause: "expired", detail: expect.any(String) }]);
     expect(a.status().state).toBe("expired");
 
+    // Telegram ends the session (Closed, not ours): the owner hears of it, then the service restarts idle.
+    const td3 = new FakeTd();
+    td3.on("getMe", user);
+    const c = auth(td3);
+    td3.emit(state({ _: "authorizationStateReady" }));
+    td3.emit(state({ _: "authorizationStateClosed" }));
+    await new Promise((r) => setImmediate(r));
+    expect(c.kernel.notices.map((n) => n.key)).toEqual(["telegram:session"]);
+    expect(c.exits).toEqual([0]);
+
     // A deploy's SIGTERM closes TDLib too: never a notice, never a restart.
     const td2 = new FakeTd();
     td2.on("getMe", user);

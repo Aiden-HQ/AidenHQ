@@ -57,14 +57,17 @@ describe("reconcile", () => {
     expect(wh.messageIds(7)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(checkpoint(db, 7)).toBe(6);
 
-    // 2b. The process dies at an invoke inside an update (the chat lookup of a fresh process): nothing commits.
+    // 2b. An invoke fails inside an update (the chat lookup of a fresh process): nothing of it commits, and the chat is read
+    // back from history at once, so the message lands once.
     methods.push(...p.methods);
     p.crash();
     p = boot(db, [dm], { 7: range(7, [1, 2, 3, 4, 5, 6, 7]) });
+    await p.ingest.reconcile();
     p.td.crashAtInvoke(1);
     p.td.emit(newMessage(msg(7, 7)));
     await p.ingest.idle();
-    expect(outbox(p.store, "kernel")).toEqual([]);
+    await p.ingest.reconcile([7]); // runs after the reconcile the failure queued
+    expect(outbox(p.store, "kernel").map((e) => e.id)).toEqual(["7:7"]);
     methods.push(...p.methods);
     p.crash();
     p = boot(db, [dm], { 7: range(7, [1, 2, 3, 4, 5, 6, 7]) });
@@ -139,6 +142,23 @@ describe("reconcile", () => {
     expect(checkpoint(db, -1003)).toBe(9);
     expect(kernel.ids).toEqual([]);
     expect(p.store.db.prepare(`SELECT count(*) AS n FROM ingested`).get()).toEqual({ n: 0 });
+    p.crash();
+  });
+
+  it("a chat whose last message comes after the chat is seeded there, never at 0", async () => {
+    const db = tmpDb();
+    const bare = chat(-1004, "supergroup"); // TDLib may send the chat without its last message
+    const kernel = fakeKernel();
+    const p = boot(db, [bare], { [-1004]: range(-1004, [1, 2, 3, 4, 5, 6, 7, 8, 9]) });
+    p.td.emit({ _: "updateNewChat", chat: bare });
+    p.td.emit({ _: "updateChatLastMessage", chat_id: -1004, last_message: msg(-1004, 9), positions: [] });
+    await p.ingest.idle();
+    await p.ingest.reconcile();
+    await p.ingest.drain({ warehouse: undefined, kernel });
+    expect(kernel.ids).toEqual([]);
+    expect(p.store.db.prepare(`SELECT count(*) AS n FROM ingested`).get()).toEqual({ n: 0 });
+    expect(checkpoint(db, -1004)).toBe(9);
+    expect(p.ingest.seed(await p.ingest.chat(-1004))).toBe(9); // backfill starts there
     p.crash();
   });
 

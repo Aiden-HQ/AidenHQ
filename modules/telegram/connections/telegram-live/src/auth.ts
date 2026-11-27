@@ -74,13 +74,13 @@ export function createAuth(o: {
   const waiters = new Set<() => void>();
 
   const revokedReason = () => store.getKv("revoked") || undefined;
-  function revoked(why: string): void {
-    if (ours || revokedReason()) return; // once per revoke
+  /** Tells the owner once per revoke; resolves once both reports are sent (each logs its own failure). */
+  function revoked(why: string): Promise<unknown> {
+    if (ours || revokedReason()) return Promise.resolve();
     store.setKv("revoked", why);
     since = new Date(now()).toISOString();
     log.warn({ why }, "telegram session revoked");
-    void kernel.need("expired", "Telegram signed AidenHQ out: reconnect on the board");
-    void kernel.notify(NOTICE, "telegram:session");
+    return Promise.all([kernel.need("expired", "Telegram signed AidenHQ out: reconnect on the board"), kernel.notify(NOTICE, "telegram:session")]);
   }
 
   const wrapped: TdClient = {
@@ -88,7 +88,7 @@ export function createAuth(o: {
       try {
         return await client!.invoke(req);
       } catch (err) {
-        if (err instanceof TdError && REVOKED.test(err.message)) revoked(err.message);
+        if (err instanceof TdError && REVOKED.test(err.message)) void revoked(err.message);
         throw err;
       }
     },
@@ -107,13 +107,13 @@ export function createAuth(o: {
       for (const fn of readyFns) fn(wrapped);
       void wrapped.invoke<Td.user>({ _: "getMe" }).then((u) => void (me = toMe(u)), (err) => log.warn({ err: String(err).slice(0, 200) }, "getMe failed"));
     }
-    if (s._ === "authorizationStateLoggingOut" && !ours) revoked("logged out by Telegram");
+    if (s._ === "authorizationStateLoggingOut" && !ours) void revoked("logged out by Telegram");
     if (s._ === "authorizationStateClosed") {
       client = undefined;
       if (!ours) {
-        revoked("session closed by Telegram");
+        // The owner hears of it before the restart (a fresh client waits for a new sign-in); at most a few seconds' wait.
         log.warn("TDLib closed; restarting idle for a fresh sign-in");
-        exit(0);
+        void Promise.race([revoked("session closed by Telegram"), new Promise((r) => setTimeout(r, 5_000).unref?.())]).finally(() => exit(0));
       }
     }
     for (const w of waiters) w();
@@ -121,7 +121,7 @@ export function createAuth(o: {
 
   function onUpdate(u: TdUpdate): void {
     if (u._ === "updateAuthorizationState") onState((u as unknown as Td.updateAuthorizationState).authorization_state);
-    else if (u._ === "error" && typeof u.message === "string" && REVOKED.test(u.message)) revoked(u.message);
+    else if (u._ === "error" && typeof u.message === "string" && REVOKED.test(u.message)) void revoked(u.message);
   }
 
   function ensureClient(): void {

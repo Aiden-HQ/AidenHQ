@@ -51,6 +51,7 @@ export function startBackfill(o: {
       }
       ids.push(...(await td.invoke<Td.chats>({ _: "getChats", chat_list: list, limit: 100_000 })).chat_ids);
     }
+    await ingest.idle(); // the chats' own updates (their last messages) land before they are seeded
     const rows: { id: number; from: number; order: number }[] = [];
     for (const id of new Set(ids)) {
       const c = await ingest.chat(id);
@@ -80,7 +81,8 @@ export function startBackfill(o: {
       const from = row.from_message_id;
       let page: Td.messages;
       try {
-        page = await td.invoke<Td.messages>({ _: "getChatHistory", chat_id: id, from_message_id: from, offset: 0, limit: PAGE, only_local: false });
+        // offset -1: the page includes from_message_id itself (offset 0 starts below it).
+        page = await td.invoke<Td.messages>({ _: "getChatHistory", chat_id: id, from_message_id: from, offset: -1, limit: PAGE, only_local: false });
       } catch (err) {
         if (err instanceof TdError && err.retryAfterS !== undefined) {
           q.flood.run(now() + err.retryAfterS * 1000, id);

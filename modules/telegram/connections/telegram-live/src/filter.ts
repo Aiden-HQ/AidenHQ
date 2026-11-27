@@ -77,7 +77,8 @@ export function classify(m: Td.message, ctx: FilterCtx): Verdict {
   const r = m.reply_to;
   const replies_to_me = r?._ === "messageReplyToMessage" && r.chat_id === m.chat_id && ctx.isOwnMessage(m.chat_id, r.message_id);
   const outgoing = m.is_outgoing;
-  const event = !ctx.history && !ctx.agentSent &&
+  // Service messages (joins, pins, title changes) have no text or caption: stored, never an event.
+  const event = !ctx.history && !ctx.agentSent && formatted(m.content) !== undefined &&
     (chat.type === "dm" || outgoing || !chat.muted || ctx.setting === "all" || mentions_me || replies_to_me);
   const labels = [chat.type, ...(chat.muted ? ["muted"] : []), ...(mentions_me ? ["mentions_me"] : []), ...(replies_to_me ? ["replies_to_me"] : []), ...(outgoing ? ["outgoing"] : [])];
   return { store: true, event, labels, mentions_me, replies_to_me };
