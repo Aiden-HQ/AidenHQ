@@ -55,7 +55,7 @@
 <body>
 <div class="wrap">
 <div class="bar"><p class="intro">What the Maintainer does on each repo you list. Everything it does on GitHub comes with a comment saying why.</p>
-  <button type="button" class="primary" id="addbtn" aria-expanded="false" aria-controls="adder">+ Add repo</button></div>
+  <button type="button" class="primary" id="addbtn" aria-expanded="false" aria-controls="adder" disabled>+ Add repo</button></div>
 <div class="card adder" id="adder" hidden></div>
 <div id="rows"><div class="card"><div class="empty">Loading the repos…</div></div></div>
 <div class="note" id="note" role="status"></div>
@@ -224,7 +224,7 @@
   }
 
   async function load() {
-    try { cfg = await tool("maintainer_config", {}); drafts = {}; added = []; lastGood = { drafts: {}, removing: null, added: [] }; removing = null; draw(); } catch (e) { say(e.message, true); }
+    try { cfg = await tool("maintainer_config", {}); $("addbtn").disabled = false; drafts = {}; added = []; lastGood = { drafts: {}, removing: null, added: [] }; removing = null; draw(); } catch (e) { say(e.message, true); }
   }
   start("maintainer", load);
 </script>
