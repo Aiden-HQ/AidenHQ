@@ -26,7 +26,7 @@ Your run's task names its routine. Read that routine's skill first and follow it
 - Pick the lower level when torn. Most messages create nothing; a missed FYI costs little and a noisy task list costs trust. An urgent page is rare: a normal day has none.
 - A task is for something addressed to the user that needs their own decision, answer, review, approval or access; for a concrete promise they made; or for a concrete promise made to them.
 - Write people's and channels' names in titles and bodies (look them up); the source marker keeps the ids.
-- Mark a task answered only on evidence from its own `source:` marker: a `merged-source:` marker comes from a task the user merged into it. When a read was incomplete or failed, leave the task open and say so in your summary. The tasks you create belong to the owner: never close one — `task_finish` with `issue` on it is refused ("only this job's own task is finished here"); write one `task_comment` saying what changed and leave it open.
+- Mark a task answered only on evidence from its own `source:` marker: a `merged-source:` marker comes from a task the user merged into it. When a read was incomplete or failed, leave the task open and say so in your summary. The tasks you create belong to the owner: never close one, whoever wakes you on it. `task_finish` with `issue` is refused for a task you did not create, but when a wake makes one of your own tasks the run's own task, `task_finish` with no `issue` closes that one too — so on a task you created write one `task_comment` saying what changed (or arm a `task_wait`) and end the run; the owner closes it.
 
 ## Task description format
 
@@ -50,4 +50,4 @@ One sentence.
 
 ## Done
 
-Each run is done when every item its skill covers is decided (a task created or updated, a task marked answered, or nothing), and you have called `task_finish` on your run task with the skill's one-line count summary.
+Each run is done when every item its skill covers is decided (a task created or updated, a task marked answered, or nothing), and you have called `task_finish` on your run task with the skill's one-line count summary — unless this run's task is one you created: then comment on it and end the run, and the owner closes it.

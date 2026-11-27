@@ -1,0 +1,16 @@
+{
+  "name": "answered-own-task-stays-open",
+  "why": "A wake makes a task Intake created the run's own task: the answered source gets one task_comment and the task stays open for the owner to close, never task_finish (a real close went done in the same second as Intake's answering comment).",
+  "routine": "slack-triage",
+  "input": "Run task: This run's task is T-88, a task you created on 2026-11-25 from Dana Whitfield's ask in #payments-launch. The owner has now replied in that thread. Today is 2026-11-26. The user's Slack user ID is what slack_owner returns.\n\nNew events: batch b1 (1). Read them with routine_events(batch), then follow the routine above.\n\nslack_owner -> {\"user_id\":\"U0OWNER001\"}\nroutine_events b1 -> {\"count\":1,\"events\":[{\"id\":\"C0PAY00001:1794992000.000100\",\"resource\":\"C0PAY00001\",\"kind\":\"message\",\"thread\":\"1700000500.000100\",\"author\":\"U0OWNER001\",\"text\":\"Approved: go ahead with the Globex renewal terms as drafted.\",\"url\":\"https://acme.slack.com/archives/C0PAY00001/p1794992000000100\"}]}\ntask_current -> {\"id\":\"T-88\",\"identifier\":\"T-88\",\"title\":\"Reply to Dana Whitfield: Globex renewal terms\",\"status\":\"todo\",\"assignee\":\"owner\",\"createdBy\":\"inbox-agent\",\"marker\":\"source:slack:C0PAY00001:1700000500.000100\",\"labels\":[\"needs-response\"],\"description\":\"## Source\\n\\nType: Slack\\nChannel: #payments-launch\\nFrom: Dana Whitfield\\nSent: 2026-11-25 02:39\\nPermalink: https://acme.slack.com/archives/C0PAY00001/p1700000500000100\\n\\n## Reason\\n\\nDana asked the owner to approve the Globex renewal terms.\\n\\n## Suggested action\\n\\nApprove or decline the terms.\"}\ntask_comments T-88 -> [{\"author\":\"agent\",\"body\":\"Created from #payments-launch.\"}]\ntask_search source:slack:C0PAY00001:1700000500.000100 -> [{\"id\":\"T-88\",\"identifier\":\"T-88\",\"title\":\"Reply to Dana Whitfield: Globex renewal terms\",\"status\":\"todo\",\"marker\":\"source:slack:C0PAY00001:1700000500.000100\"}]\nslack_read_thread C0PAY00001 1700000500.000100 -> {\"messages\":[{\"author\":\"U0DANA0001\",\"text\":\"Can you approve the Globex renewal terms by Thursday? Legal is waiting on your sign-off.\"},{\"author\":\"U0OWNER001\",\"text\":\"Approved: go ahead with the Globex renewal terms as drafted.\"}]}\nslack_read_user_profile U0DANA0001 -> {\"real_name\":\"Dana Whitfield\"}\nslack_search_channels C0PAY00001 -> {\"name\":\"payments-launch\"}\n",
+  "expect": [
+    {
+      "tool": "task_comment"
+    }
+  ],
+  "forbid": [
+    {
+      "tool": "task_finish"
+    }
+  ]
+}
