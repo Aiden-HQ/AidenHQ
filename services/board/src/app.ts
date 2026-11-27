@@ -1209,6 +1209,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const { issue } = await editableIssue(ref);
     const result = scheduleMove(store, issue, parse(ScheduleSchema, body), opts.timezone, by);
     log.info({ issue: issue.identifier, scheduled: result.scheduled, movedNow: result.movedNow }, "move scheduled");
+    store.events.emit("tasks", issue.id);
     return { identifier: issue.identifier, ...result };
   }
 
@@ -1230,6 +1231,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     if ((store.placements().get(issue.id)?.bucket ?? "triage") !== "triage" || store.schedules().has(issue.id)) throw new HttpError(409, `${issue.identifier} is already placed: the owner's move stands`);
     const result = scheduleMove(store, issue, input, opts.timezone, agent.name || "an agent");
     log.info({ issue: issue.identifier, placed: input.reason }, "task placed");
+    store.events.emit("tasks", issue.id);
     return { identifier: issue.identifier, ...result };
   }
 
