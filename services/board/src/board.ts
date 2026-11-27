@@ -103,6 +103,8 @@ export interface Card {
   priority: string;
   labels: { name: string; color: string }[];
   assignee: string | null;
+  /** The agent that filed it (an assignee key), when an agent did. */
+  filedBy: string | null;
   executor?: { model?: string; effort?: string };
   unread: boolean;
   createdAt: string;
@@ -145,6 +147,7 @@ export function toCard(issue: Issue, list: Assignee[], seenAt: string): Card {
     priority: issue.priority,
     labels: (issue.labels ?? []).map((l) => ({ name: l.name, color: l.color })),
     assignee: assigneeKey(issue, list),
+    filedBy: issue.createdByAgentId && list.some((a) => a.key === issue.createdByAgentId) ? issue.createdByAgentId : null,
     executor: executorOf(issue, list),
     unread: activityAt > seenAt,
     createdAt: issue.createdAt,

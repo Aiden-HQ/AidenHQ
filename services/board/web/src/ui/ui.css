@@ -374,6 +374,10 @@ button.ui-dr-top:hover .ui-dr-q { color: var(--accent); }
   .ui-digest-row:hover .ui-digest-actions, .ui-digest-row:focus-within .ui-digest-actions { opacity: 1; pointer-events: auto; }
 }
 @media (hover: none) { .ui-digest-actions { display: none; } }
+/* Columns (Tasks): the caller's cells in a grid; the text is cut first, the cells keep their width. */
+.ui-digest-row.cols { display: grid; grid-template-columns: var(--cols); gap: 10px; padding: 0 16px 0 14px; min-height: 36px; font-size: var(--text-row); }
+.ui-digest-row.cols .ui-digest-meta { display: contents; text-align: left; font-size: inherit; color: inherit; }
+.ui-digest-row.cols .ui-digest-text { flex: none; }
 .ui-digest-more { align-self: flex-end; padding: 8px 16px 10px; font-size: var(--text-sm); font-weight: 600; text-decoration: none; }
 
 /* Panes (DetailPane.tsx, SidePanel.tsx): slide in from the right, leave faster. On a phone, the whole screen. */

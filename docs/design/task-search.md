@@ -121,7 +121,7 @@ status, routine runs included), with three separate rules:
   meanwhile joins the hits; the older closes are read again as far as the owner had paged and swapped in with them at once. A
   page of older closes is only ever read for the answer to the text in the field.
 - With a lane filter that leaves Done out, no page of older closes is read or offered.
-- My day's Done shows only the older hits its own Done would hold (assigned to the owner or a crew agent: `mine`); Agent work
+- Mine shows only the older hits the owner's tasks would hold (assigned to the owner or a crew agent: `mine`); Delegated
   shows them all.
 - `semantic: false`: a quiet note in the filter row, "Meaning search unavailable; showing keyword matches." The search
   route failing: "Search unavailable right now; showing every task." Never an empty error.

@@ -1,5 +1,9 @@
 # Agent work board (Tasks page, second layout and saved views)
 
+> **Superseded in part (Tasks redesign):** the lane layout, cards and group-by described below are gone. Delegated is a list of
+> sections (Working, Waiting on you, Queued, Done today) in [board-ui.md](board-ui.md) › Tasks. The kernel-state model, saved boards and
+> filters (now on All) are still as written here. The `agent-work-board.html` mockup and its screenshots are removed.
+
 Built on the Tasks page (no separate board); projects that fill themselves in, the single-approval route and richer waiting
 and scheduled cards are below.
 

@@ -113,8 +113,7 @@ describe("Home", () => {
   });
 
   it("writes a Source line's zoned time and date as dates, and a zone-less time as written", async () => {
-    const { sourceDate } = await import("../../web/src/Home");
-    const { when } = await import("../../web/src/util");
+    const { sourceDate, when } = await import("../../web/src/util");
     expect(sourceDate("2026-10-05T13:47Z")).toBe(when("2026-10-05T13:47:00Z"));
     expect(sourceDate("2026-10-05T17:47+0400")).toBe(when("2026-10-05T13:47:00Z"));
     expect(sourceDate("2026-10-09")).toMatch(/Oct/);

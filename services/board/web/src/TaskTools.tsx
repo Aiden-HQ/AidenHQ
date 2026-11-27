@@ -1,4 +1,4 @@
-// The Tasks page's tools, shared by Delegated and All: the page's tabs (My tasks, Delegated, All), saved boards as tabs (a draft until saved; a stale write
+// The Tasks page's tools: the page's tabs (Mine, Delegated, All), saved boards as tabs (a draft until saved; a stale write
 // keeps the draft), and the filter bar (one chip per filter, `+ Filter` to add one). What the page shows is one spec,
 // `{layout, filters, groupBy}`; a saved board stores it (api.views), the unsaved default ("All tasks") keeps its layout here.
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -21,7 +21,7 @@ const savedLayout = (): Layout => {
   }
 };
 
-/** The page's tabs: My tasks (the owner's own list, MyTasks.tsx), Delegated (the "work" layout) and All (the "day" layout, every bucket). */
+/** The page's tabs: Mine (the owner's own list, Tasks.tsx), Delegated (the "work" layout, Tasks.tsx) and All (the "day" layout, every bucket). */
 export type Tab = "mine" | Layout;
 
 export type Conflict = { view: SavedView; current: SavedView | null };
@@ -193,12 +193,12 @@ export function BoardTabs({ tb, ready, mobile, saveSignal, counts }: { tb: TaskB
         value={tb.tab}
         onChange={tb.setTab}
         options={[
-          ["mine", <>My tasks <span className="tt-n">{counts.mine}</span></>],
+          ["mine", <>Mine <span className="tt-n">{counts.mine}</span></>],
           ["work", <>Delegated <span className="tt-n">{counts.work}</span></>],
           ["day", "All"],
         ] as const}
       />
-      {ready && tb.views && tb.tab !== "mine" && (
+      {ready && tb.views && (tb.tab === "day" || tb.view) && (
         // The strip scrolls sideways; its menus sit beside it, outside the scroller, so they never clip.
         <div className={`tt-boards${mobile ? " phone" : ""}`}>
         <div className="tt-tabs" role="tablist" aria-label="Saved boards">

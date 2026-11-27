@@ -64,7 +64,7 @@ and `.ui-split` for the work on the left and a rail of `Card`s with `Facts` on t
 | The parts of one page | `Tabs` |
 | A filter or a choice of two to four values | `Segmented` |
 | An action | `Button` / `LinkButton`: one `primary` per view, `quiet` for the least important, `danger` for removal |
-| A list of tasks | `ListRows` + `ListRow` |
+| A list of tasks | `DigestRow` (`cols`: the same row as Home's, in columns), one card of sections as on Tasks |
 | A collection (modules, apps, connections) | `TileGrid` + `Tile` (one target per tile, its action raised above it) |
 | A number and its trend | `StatBlock` (with `bars`) or `BarChart`; a count or cost that changes: `Ticker` |
 | A few label/value facts | `Card` + `Facts`; a usage bar: `Meter` |
@@ -172,8 +172,8 @@ Reason and Suggested action sections (`## ` headings), the format Intake and the
 fields a row has are shown. Each card lists the **newest ten** (newest first); the greeting and the card's count are the full N.
 **Needs you's "View all N →" expands the card in place**, showing every row the count includes (as Since's "All N" does),
 because the Tasks page filters tasks by lane or label and an approval card has no task to open there; "Fewer" folds it back.
-You're waiting on's "View all N →" (shown past ten) opens Tasks (`#/tasks?show=waiting`: the `waiting-on` label) on the Agent
-work layout, where every one of those tasks is a card. Since is a glance; its "All N" expands in place under the card.
+You're waiting on's "View all N →" (shown past ten) opens Tasks (`#/tasks?show=waiting`: the `waiting-on` label) on Mine,
+where each of those tasks is a row. Since is a glance; its "All N" expands in place under the card.
 **A block with no source or no data is left out**, never shown empty: Needs you too, and the greeting then says only "Good morning,
 <name>." (the greeting counts every row of Needs you, so it never claims "nothing"). A fresh install sees the greeting,
 Next up and the team row.
@@ -189,6 +189,41 @@ Next up and the team row.
 - `#/approvals/<id>` opens that card in the drawer: its row when it is listed, else the card read alone (a decided one shows
   its outcome).
 - Every other write record is on Insight › Decisions; failed and idle tasks are on Team › All agents (`AttentionStrip`).
+
+## Tasks
+
+`Tasks.tsx` (`#/tasks`), one page with a tool row (title, the tabs, Project | Source | Agent, and the keys on a wide screen) over **one card
+of sections**. **Mine | Delegated** are the tabs (with counts; **All**, the old five-column view, and saved boards stay behind
+them, see "Kept" below).
+
+- **Mine** is what is assigned to the owner (`own-tasks.ts mineOf`): **New** (the triage bucket, always first, capped at five with
+  "Show all N"), **Today**, **Upcoming** (Tomorrow's and the week's buckets, grouped by date: a scheduled task under its day,
+  the rest under "Coming up") and **Later** (the backlog). The bucket ids (`triage`, `later`, `backlog`) are unchanged; only the names are.
+  A section has a chevron to collapse, a status glyph, its count and a thin coloured left edge (New amber, Today blue, Upcoming
+  violet, Later grey); there is no column-header row.
+- **Delegated** is the tasks assigned to agents (`delegatedOf`), by the kernel's lane: **Working**, **Waiting on you** (what needs the
+  owner, and what is blocked or failed: both are his to act on), **Queued** and **Done today** (green checks). The tab's count is
+  the first three groups. A row's progress text is the kernel's own words for its state (`progressOf`: the question it asked, "Approval
+  card ready", else `stateWords`); a task with no state row says so.
+- **A row** is Home's `DigestRow` in columns (`cols`): the task id, the section glyph, the source icon, the title, then the source
+  name or an amber waiting line ("Priya is waiting for you · 3d", from Intake's `needs-response` title), the project chip, the agent
+  that filed it (Mine) or holds it (Delegated), and the time (New and Delegated: how long ago; Today: the clock in the owner's
+  `time_format`). On hover **Done**, **Later** and **Dismiss** lie over its right end; **Later** opens Tomorrow, Next week
+  (the next Monday) and Someday. Dismiss cancels the task (it stays in history; the toast has Undo). A phone shows two-line titles,
+  no hover buttons (the drawer has every action) and an amber dot for a waiting task; nothing scrolls sideways at 390px.
+- **The drawer** is Home's (`ui/RowDrawer.tsx`; `tasks-drawer` is 720px wide): the section and id with J/K, the title, the waiting line,
+  the actions (Done, Tomorrow, Next week, Someday, Merge…, Dismiss on the right; Mine only), five facts (Assignee, Project, Filed
+  by, When, Reminder: a recurring task's next run), then Source (the task's Source block, with "Open in Slack…"), About (Why, Suggested),
+  Subtasks (the agents' sub-tasks and their state) and Linked task on the left, Activity (comments and the task's milestones) with the
+  comment box on the right. The comment box is the one way to write on a task. Updated and "Open task" (`#/t/<id>`, the full page) at the
+  foot. A section with no data is left out. `GET /api/issues/<id>` carries `about` (`aboutTask`, as Home's rows do).
+- **Keys** (`Tasks.tsx`): J/K move (and step the open drawer), Enter opens, 1 Today, 2 Upcoming, 3 Later, X Dismiss, E Done. Off while typing
+  or with another layer open.
+- **Filters** are one choice each, kept in the page's filters: Project, Source (the labels that say where a task came from) and Agent
+  (Mine: who filed it; Delegated: who holds it).
+- **Kept for the owner to rule on:** All (the five buckets, drag between them, the Done and Recurring columns, the carried-over bar and
+  quick-add) and saved boards with their filter chips; a saved board whose layout is Delegated shows the same list narrowed by its filters.
+- **New installs:** an empty Mine says "Nothing here." in each section; an empty Delegated says nothing is delegated yet.
 
 ## Teammates
 

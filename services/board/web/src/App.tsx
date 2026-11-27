@@ -39,11 +39,10 @@ import { BUCKETS, BUCKET_NAMES, type Board, type Bucket, type Card, type NeedRow
 import { ago, dayDate, setTimeFormat, keepsSecureCookies, parkBucket, todayIn, clockOpts } from "./util";
 import { panelsOf } from "./sidebar";
 import { BottomBar, Palette, SubNav, TopNav, hrefOf, type NavView } from "./Shell";
-import { AgentWork, AgentWorkLoading } from "./AgentWork";
 import { NOTE_TEXT, useTaskSearch } from "./search";
 import { BoardTabs, ConflictBanner, FilterChips, FilterSheet, SaveButton, useTaskBoard } from "./TaskTools";
-import { MyTasks, TriageDialog } from "./MyTasks";
-import { GROUPS, delegatedOf, hintOf, isMine, mineOf, visibleOf, type Buckets } from "./own-tasks";
+import { TaskFilters, TaskKeys, TasksList } from "./Tasks";
+import { delegatedCount, delegatedOf, hintOf, mineCount, mineOf, type Buckets } from "./own-tasks";
 import { applyFilters, cardMatches, isEmpty } from "./filters";
 import { Banner, Segmented } from "./ui";
 import { Icon } from "./ui/icons";
@@ -320,7 +319,7 @@ export function App() {
   const [items, setItems] = useState<Items | null>(() => cachedBoard()?.buckets ?? null);
   const [error, setError] = useState("");
   const [route, setRoute] = useState<Route>(parseRoute);
-  // Home's badge and the Tasks page's strip and Inbox: what needs the owner (Home's needs rows), from the one Home entry Home itself reads.
+  // Home's badge and notifications: what needs the owner (Home's needs rows), from the one Home entry Home itself reads.
   const [needs, setNeeds] = useState<NeedRow[]>([]);
   const needsCount = needs.length;
   const signInNeeded = useCallback(() => setNeedsSignIn(true), []);
@@ -345,9 +344,6 @@ export function App() {
   const [selected, setSelected] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [tab, setTab] = useState<Bucket>("today");
-  // My tasks: Backlog's "Show all N", and Triage all (the dialog walks the Inbox).
-  const [allBacklog, setAllBacklog] = useState(false);
-  const [triaging, setTriaging] = useState(false);
   // A column's quick-add draft lives here, not in the column: leaving the board unmounts the columns, and the draft stays.
   const [drafts, setDrafts] = useState<Record<Bucket, string>>(() => ({ triage: "", today: "", tomorrow: "", later: "", backlog: "" }));
   const [view, setViewState] = useState<View>(() => viewOf(route) ?? "home");
@@ -409,20 +405,20 @@ export function App() {
   }, []);
   // What Tasks shows: the layout, the filters (the search field is their text) and the saved boards (tabs once the session is confirmed).
   const tb = useTaskBoard({ ready: !!session?.account, routed: route.kind === "tasks" ? route.saved ?? null : undefined, toast, go });
-  // #/tasks?show=waiting: the waiting-on tasks on the Agent work layout, filtered once the board's labels are known; the
+  // #/tasks?show=waiting: the waiting-on tasks on Mine (the owner's own tasks), filtered once the board's labels are known; the
   // address then drops the query, so the filter is the page's own to change.
   const show = route.kind === "tasks" ? route.show : undefined;
   useEffect(() => {
     if (show !== "waiting" || !board) return;
     const wait = board.labels.find((l) => l.name === "waiting-on")?.id;
     location.replace("#/tasks"); // replaces this address, so Back returns to Home
-    tb.select(null, undefined, "work");
+    tb.setTab("mine");
     tb.setFilters({ label: wait ? [wait] : [] });
   }, [show, !!board]);
   const query = tb.filters.text ?? "";
   const setQuery = (text: string) => tb.setFilters((f) => ({ ...f, text }));
   // The search field's answer (search.ts): the hits every filter's text term reads, and the closed hits Done shows.
-  // My day shows only what its own Done would (the owner's and the crew's); Agent work shows every hit.
+  // Mine shows only the owner's and the crew's hits; Delegated shows every hit.
   const found = useTaskSearch(query, (c) => (tb.tab === "work" || c.mine !== false) && cardMatches(c, { ...tb.filters, text: "" }), view === "tasks", !tb.filters.state?.length || tb.filters.state.includes("done"));
   useEffect(() => setDoneShown(DONE_PAGE), [query]);
   const filtering = !isEmpty(tb.filters);
@@ -519,7 +515,7 @@ export function App() {
     };
   }, [refresh]);
 
-  // Mobile starts on Triage when there's something to sort, else Today.
+  // On a phone, All starts on New when there's something to sort, else Today.
   const startedTab = useRef(false);
   useEffect(() => {
     if (items && !startedTab.current) {
@@ -601,6 +597,21 @@ export function App() {
       void refresh();
     } catch (e) {
       toast(`Couldn't update: ${(e as Error).message}`);
+      void refresh(true);
+    }
+  }
+
+  /** Dismiss: the task is cancelled (it stays in history), so it leaves its column. Undo reopens it. */
+  async function dismissCard(card: Card) {
+    const cur = itemsRef.current;
+    const b = bucketOf(card.id);
+    if (cur && b) hold(), setItems({ ...cur, [b]: cur[b].filter((c) => c.id !== card.id) });
+    try {
+      await api.update(card.id, { status: "cancelled" });
+      toast(`${card.identifier} dismissed`, { label: "Undo", run: () => void api.update(card.id, { status: card.status === "in_progress" ? "in_progress" : "todo" }).then(() => refresh(true), (e) => toast(`Couldn't undo: ${(e as Error).message}`)) });
+      void refresh();
+    } catch (e) {
+      toast(`Couldn't dismiss: ${(e as Error).message}`);
       void refresh(true);
     }
   }
@@ -717,16 +728,18 @@ export function App() {
     if (!items) return null;
     return Object.fromEntries(BUCKETS.map((b) => [b, applyFilters(items[b], tb.filters, found.hits)])) as Items;
   }, [items, tb.filters, found.hits]);
-  // My tasks: the owner's own tasks; only the search text narrows them (the filters belong to Delegated and All).
+  // Mine: the owner's own tasks, narrowed by the page's filters (its Agent filter is who filed a task; Delegated's is who holds it).
   const mineTab = tb.tab === "mine";
-  const textOnly = tb.filters.text ? { text: tb.filters.text } : {};
   const mine = useMemo(() => (items ? mineOf(items) : null), [items]);
-  const mineFound = useMemo(() => (mine ? (Object.fromEntries(BUCKETS.map((b) => [b, applyFilters(mine[b], textOnly, found.hits)])) as Buckets) : null), [mine, tb.filters.text, found.hits]);
-  const mineNarrowed = !!tb.filters.text?.trim();
+  const mineFound = useMemo(() => {
+    if (!mine) return null;
+    const { agent, ...rest } = tb.filters;
+    return Object.fromEntries(BUCKETS.map((b) => [b, applyFilters(mine[b], rest, found.hits).filter((c) => !agent?.length || agent.includes(c.filedBy ?? ""))])) as Buckets;
+  }, [mine, tb.filters, found.hits]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (palette || triaging) return;
+      if (palette) return;
       const el = e.target as HTMLElement;
       const typing = el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable;
       if (e.key === "Escape") {
@@ -740,9 +753,9 @@ export function App() {
       }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
       if (!viewOf(route)) return;
-      const lists = mineTab && mineFound ? visibleOf(mineFound, mineNarrowed, allBacklog) : filtered;
+      const lists = filtered;
       if (!lists) return;
-      const cols = mineTab ? [...GROUPS] : visibleBuckets;
+      const cols = visibleBuckets;
       const pos = () => {
         for (const b of cols) {
           const i = lists[b].findIndex((c) => c.id === selected);
@@ -762,29 +775,25 @@ export function App() {
       if (k === "b") return go("#/brief");
       if (k === "?") return go("#/help");
       if (k === "a") return go("#/team");
-      // The lists' own keys (My tasks and All): Delegated binds none.
-      if (view !== "tasks" || tb.tab === "work") return;
-      if (k === "d") return mineTab ? (tb.setTab("day"), setShowDone(true)) : setShowDone((s) => !s);
-      if (k === "r") return mineTab ? (tb.setTab("day"), setShowRecurring(true)) : setShowRecurring((s) => !s);
-      if (k === "t" && mineTab) return mineFound?.triage.length ? (e.preventDefault(), setTriaging(true)) : undefined;
+      // All's own keys: Mine and Delegated have theirs in Tasks.tsx.
+      if (view !== "tasks" || tb.tab !== "day") return;
+      if (k === "d") return setShowDone((s) => !s);
+      if (k === "r") return setShowRecurring((s) => !s);
       if (k === "j" || k === "ArrowDown") {
         e.preventDefault();
         if (e.shiftKey && p) return void reorder(lists[p.b][p.i]!.id, 1, lists[p.b]);
         if (!p) return select(cols.map((b) => lists[b][0]).find(Boolean));
-        // My tasks is one list: Down passes from a group's last task to the next group's first.
-        if (mineTab && p.i + 1 >= lists[p.b].length) return select(cols.slice(cols.indexOf(p.b) + 1).map((x) => lists[x][0]).find(Boolean));
         return select(lists[p.b][p.i + 1]);
       }
       if (k === "k" || k === "ArrowUp") {
         e.preventDefault();
         if (e.shiftKey && p) return void reorder(lists[p.b][p.i]!.id, -1, lists[p.b]);
-        if (p && mineTab && p.i === 0) return select(cols.slice(0, cols.indexOf(p.b)).reverse().map((x) => lists[x].at(-1)).find(Boolean));
         if (p) return select(lists[p.b][p.i - 1]);
         return;
       }
       if (k === "J" && p) return e.preventDefault(), void reorder(lists[p.b][p.i]!.id, 1, lists[p.b]);
       if (k === "K" && p) return e.preventDefault(), void reorder(lists[p.b][p.i]!.id, -1, lists[p.b]);
-      if ((k === "h" || k === "ArrowLeft" || k === "l" || k === "ArrowRight") && !mobile && !mineTab) {
+      if ((k === "h" || k === "ArrowLeft" || k === "l" || k === "ArrowRight") && !mobile) {
         e.preventDefault();
         const dir = k === "h" || k === "ArrowLeft" ? -1 : 1;
         let ci = p ? cols.indexOf(p.b) : 0;
@@ -843,7 +852,7 @@ export function App() {
     ) : (
       <div className={`app boot${mobile ? " mobile" : ""}`} aria-busy="true" aria-label="Loading">
         {!mobile && <div className="topnav" />}
-        <div className="app-main">{view === "tasks" && tb.tab === "work" && <AgentWorkLoading />}</div>
+        <div className="app-main" />
       </div>
     );
 
@@ -865,8 +874,7 @@ export function App() {
   };
   const work = tb.tab === "work";
   const day = tb.tab === "day";
-  const delegated = delegatedOf(board.work);
-  const tabCounts = { mine: mine!.today.length + mine!.tomorrow.length + mine!.later.length, work: delegated.total };
+  const tabCounts = { mine: mineCount(mine!), work: delegatedCount(delegatedOf(board.work, board.timezone)) };
   // The cards the filter menu counts over: the layout's own, unfiltered.
   const filterCards: Card[] = work ? board.work : [...BUCKETS.flatMap((b) => items[b]), ...board.recurring, ...board.done];
   // While a search is on, Done also holds the matching tasks closed before its 48 hours (the board doesn't hold those).
@@ -875,6 +883,7 @@ export function App() {
   const held = new Set([...board.work, ...board.done].map((c) => c.id));
   const older = searching ? found.done.filter((c) => !held.has(c.id)) : [];
   const workCards = applyFilters([...board.work, ...older], tb.filters, found.hits);
+  const delegatedShown = delegatedOf(workCards, board.timezone);
   const doneCards = applyFilters([...board.done, ...older.filter((c) => c.mine !== false && !c.recent)], tb.filters, found.hits);
   // My day's Done column: when asked for, or while a search answer has matches there.
   const doneColumn = showDone || (searching && (doneCards.length > 0 || found.hasMore));
@@ -930,7 +939,9 @@ export function App() {
           <div className="tt-row">
             <h1>Tasks</h1>
             <BoardTabs tb={tb} ready={!!session?.account} mobile={false} saveSignal={saveOpen} counts={tabCounts} />
+            {(mineTab || work) && <TaskFilters filters={tb.filters} onChange={tb.setFilters} board={board} />}
             <span className="spacer" />
+            {(mineTab || work) && <TaskKeys />}
             {work && <AsOf board={board} stale={!!error} />}
             <div className={`search${found.busy ? " busy" : ""}`}>
               <input ref={searchRef} type="search" placeholder="Search tasks" value={query} onChange={(e) => setQuery(e.target.value)} />
@@ -941,8 +952,8 @@ export function App() {
                 Recurring
               </button>
             )}
-            {!work && (
-              <button className={`btn${day && showDone ? " on" : ""}`} aria-pressed={day && showDone} onClick={() => (mineTab ? (tb.setTab("day"), setShowDone(true)) : setShowDone(!showDone))} title="Recently done (d)">
+            {day && (
+              <button className={`btn${showDone ? " on" : ""}`} aria-pressed={showDone} onClick={() => setShowDone(!showDone)} title="Recently done (d)">
                 Done
               </button>
             )}
@@ -950,18 +961,13 @@ export function App() {
               <PlusIcon /> New task
             </button>
           </div>
-          {mineTab ? (
+          {mineTab || work ? (
             found.note && <p className="search-note">{NOTE_TEXT[found.note]}</p>
           ) : (
             <div className="tt-row tt-filters">
               <FilterChips tb={tb} board={board} cards={filterCards} />
               {found.note && <span className="search-note">{NOTE_TEXT[found.note]}</span>}
               <span className="spacer" />
-              {work && (
-                <span className="tt-group">
-                  Group by <Segmented label="Group by" value={tb.groupBy} onChange={tb.setGroupBy} options={[["none", "None"], ["agent", "Agent"]] as const} />
-                </span>
-              )}
               <SaveButton tb={tb} onSave={() => setSaveOpen((n) => n + 1)} />
             </div>
           )}
@@ -973,7 +979,9 @@ export function App() {
             <BoardTabs tb={tb} ready={!!session?.account} mobile saveSignal={saveOpen} counts={tabCounts} />
             {work && <AsOf board={board} stale={!!error} />}
           </div>
-          {!mineTab && (
+          {mineTab || work ? (
+            <div className="tt-row"><TaskFilters filters={tb.filters} onChange={tb.setFilters} board={board} /></div>
+          ) : (
             <div className="tt-row">
               <FilterSheet tb={tb} board={board} cards={filterCards} />
               <SaveButton tb={tb} onSave={() => setSaveOpen((n) => n + 1)} />
@@ -1018,29 +1026,21 @@ export function App() {
       {view === "costs" && <Suspense fallback={<PageLoading />}><CostsView onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && page.kind === "agent" && <Suspense fallback={<PageLoading />}><AgentPage key={page.key} agentKey={page.key} tab={page.tab} go={go} onSignIn={signInNeeded} /></Suspense>}
       {view === "agents" && page.kind !== "agent" && <Suspense fallback={<PageLoading />}><CrewView crew={board.assignees} onSignIn={signInNeeded} /></Suspense>}
-      {view === "tasks" && work && <AgentWork board={board} cards={workCards} groupBy={tb.groupBy} mobile={mobile} filtered={filtering} searching={searching} moreDone={found.hasMore ? found.more : undefined} onClear={() => tb.setFilters({})} />}
-      {view === "tasks" && mineTab && (
-        <MyTasks
+      {view === "tasks" && (mineTab || work) && (
+        <TasksList
+          tab={mineTab ? "mine" : "work"}
           board={board}
           mine={mineFound!}
-          narrowed={mineNarrowed}
-          allBacklog={allBacklog}
-          onAllBacklog={() => setAllBacklog(true)}
-          selected={selected}
-          needs={needs}
-          delegated={delegated}
+          delegated={delegatedShown}
+          narrowed={filtering || !!query.trim()}
           mergeTargets={mergeTargets}
-          drafts={drafts}
-          onDraft={(b, title) => setDrafts((d) => (d[b] === title ? d : { ...d, [b]: title }))}
-          onAdd={addTask}
-          onOpen={openCard}
           onDone={markDone}
+          onDismiss={dismissCard}
           onMove={(c, to) => void moveCard(c.id, to)}
           onSnooze={(c, date) => void snoozeCard(c.id, date)}
           onMerge={(c, into) => void mergeCard(c, into)}
-          onCarried={items.today.every((c) => !c.carried || isMine(c)) ? (action) => void carriedAction(action) : undefined}
-          onTriage={() => setTriaging(true)}
-          onDelegated={() => tb.setTab("work")}
+          onChanged={() => void refresh(true)}
+          toast={toast}
         />
       )}
       {view === "tasks" && day && (
@@ -1146,14 +1146,13 @@ export function App() {
       {route.kind === "run" && <Suspense fallback={null}><RunPage key={route.id} id={route.id} onClose={closeOverlay} onSignIn={signInNeeded} /></Suspense>}
       {route.kind === "help" && <Help onClose={closeOverlay} />}
       {route.kind === "setup" && <SetupFlow key={route.module} module={route.module} change={route.change} onDone={closeOverlay} onSignIn={signInNeeded} />}
-      {triaging && mineTab && mine && <TriageDialog cards={mineFound!.triage} onMove={(c, to) => void moveCard(c.id, to)} onOpen={openCard} onClose={() => setTriaging(false)} />}
       {creating && (
         <NewTask
           board={board}
           onClose={() => setCreating(false)}
           onCreated={(identifier, agent) => {
             setCreating(false);
-            toast(agent ? `Added ${identifier} · ${agent} is on it` : `Added ${identifier} to Triage`);
+            toast(agent ? `Added ${identifier} · ${agent} is on it` : `Added ${identifier} to New`);
             if (mobile) setTab("triage"), go("#/tasks");
             void refresh(true);
           }}
@@ -1334,11 +1333,11 @@ function Help({ onClose }: { onClose: () => void }) {
     ["h / l  ← →", "Previous / next column"],
     ["Enter", "Open task"],
     ["e", "Done"],
-    ["1 – 5", "Move to Triage, Today, Tomorrow, This week, Backlog"],
-    ["t", "Triage all: walk the Inbox one task at a time (My tasks)"],
+    ["1 – 5", "All: move to New, Today, Tomorrow, Upcoming, Later. Mine: 1 Today, 2 Upcoming, 3 Later"],
+    ["x", "Mine: dismiss (cancel; it stays in history)"],
     ["m", "Merge into another task"],
     ["J / K  ⇧↓ ⇧↑", "Move down / up in the column"],
-    ["c", "New task, for you or someone in the crew (lands in Triage)"],
+    ["c", "New task, for you or someone in the crew (lands in New)"],
     ["/", "Search"],
     ["b", "Today's brief"],
     ["d", "Show recently done"],
@@ -1372,7 +1371,7 @@ function Help({ onClose }: { onClose: () => void }) {
 
 /**
  * A new task: just a todo for you, or someone from the crew starts on it with your
- * instructions. Either way it's your task, in Triage.
+ * instructions. Either way it's your task, in New.
  */
 function NewTask({ board, onClose, onCreated, toast }: { board: Board; onClose: () => void; onCreated: (identifier: string, agent?: string) => void; toast: (text: string) => void }) {
   const [title, setTitle] = useState("");
@@ -1423,7 +1422,7 @@ function NewTask({ board, onClose, onCreated, toast }: { board: Board; onClose: 
           />
         )}
         <div className="row-end">
-          <span className="muted small new-where">Lands in Triage</span>
+          <span className="muted small new-where">Lands in New</span>
           <button type="button" className="btn" onClick={onClose}>
             Cancel
           </button>

@@ -57,7 +57,7 @@ import { accountSession, type BoardSession, type SessionOf } from "./session.js"
 import { createTerminals, isSessionPath, loggedPath, sessionAgent, SessionError, type SessionsKernel } from "./sessions.js";
 import { laneAgents, laneMessages, laneSend, type LaneOptions } from "./lane.js";
 import { createTeammates, type HireCatalogRow, type HireGrants, grantsKeyOf, isTeammate, teammateFor, teammateKeys } from "./teammates.js";
-import { buildHome, nextEight, type HomeDeps } from "./home.js";
+import { aboutTask, buildHome, nextEight, type HomeDeps } from "./home.js";
 import { NOTICE_MARKER, askedQuestions, boundQuestions, chatAgent, chatAgentMarker, conversation, foldOutcomeLines, lastWord, pickAgent, replyQuestions, type Message, type Question } from "./chats.js";
 import { isActive, issuesOf, needsOwner, noStates, shown, statesOf, waitsForAnswer, type ShownState, type TaskStates } from "./task-state.js";
 import type { StateRow } from "./aidenhq-sdk/task-state-types.js";
@@ -809,6 +809,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       crew: crew.map((m) => ({ ...m, said: said[m.agent] ?? null })),
       grade: gradeShown(grades, issue.id, facts),
       milestones: milestonesOf(facts),
+      about: aboutTask(issue, parent, issue.assigneeAgentId ? (ctx.assignees.find((a) => a.key === issue.assigneeAgentId)?.name ?? null) : null),
     };
   }
 
