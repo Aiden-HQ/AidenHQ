@@ -170,8 +170,8 @@ export async function assertOwnerWords(pc: Paperclip, store: Pick<Store, "meta">
 }
 
 const pick = <T>(rows: T[], want: string, label: string, names: (r: T) => (string | undefined)[]): T => {
-  const w = want.trim().toLowerCase();
-  const lc = (r: T) => names(r).map((n) => (n ?? "").toLowerCase());
+  const w = words(want);
+  const lc = (r: T) => names(r).map((n) => words(n ?? ""));
   const hits = [rows.filter((r) => lc(r).includes(w)), rows.filter((r) => lc(r).some((n) => n.includes(w)))].find((h) => h.length);
   if (!hits) throw new Refused(`no ${label} matches "${want}" (see fleet_status)`);
   if (hits.length > 1) throw new Refused(`"${want}" matches several ${label}s: ${hits.map((h) => names(h)[0]).join(", ")}`);
