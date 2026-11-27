@@ -30,20 +30,20 @@ export function suitesFor(map: AreaMap, files: string[]): Selection {
 }
 
 /**
- * A test job's shards: the fewest (at most MAX_SHARDS) whose heaviest runs in about TARGET seconds, or in the time of its
- * longest suite when that is longer: a shard's time is its suites' measured `secs` summed over how many of them a 4-CPU
- * runner runs side by side (`parallel`). Filled heaviest first into the lightest shard so they finish together. `secs` are
- * the suites' times as a shared shard ran them on CI (the run's log groups, `##[group]<suite> (exit 0, Ns)`). The packages
- * job's suites are CPU-bound (kernel, the apply tests: together they timed out): one at a time; the modules' small ones
- * overlap about 3 at a time (measured 2026-11-27: a shard took a third of its suites' sum).
+ * A test job's shards: the fewest (at most MAX_SHARDS) whose heaviest runs in about TARGET seconds. Its suites run side by side
+ * on a 4-CPU runner, so a shard's time is its suites' `secs` summed: each is the suite's share of the time a shard took on CI,
+ * its log group's time scaled so a shard's shares add up to the shard's own time (areas.json; the run's `##[group]<suite>
+ * (exit 0, Ns)` lines, 2026-11-27). Filled heaviest first into the lightest shard so they finish together. A split must save
+ * more than a quarter of the longest suite's time (a job costs ~10 s of checkout and install), so a suite longer than the
+ * target is the goal itself.
  */
-// At most 3 (owner, 2026-11-22: fewer runner starts after the test trim; each start costs ~10 s of checkout and install).
+// At most 3 (owner, 2026-11-22: fewer runner starts after the test trim).
 const MAX_SHARDS = 3, TARGET = 35;
 type Test = { name: string; dir: string; run?: string; secs: number };
-export function shard(tests: Test[], parallel: number) {
+export function shard(tests: Test[]) {
   const sorted = [...tests].sort((a, b) => b.secs - a.secs || a.name.localeCompare(b.name));
   if (!sorted.length) return [];
-  const goal = Math.max(TARGET, sorted[0]!.secs);
+  const goal = Math.max(TARGET, sorted[0]!.secs * 1.25);
   let shards: { shard: number; load: number; entries: Test[] }[] = [];
   for (let k = 1; k <= MAX_SHARDS; k++) {
     shards = Array.from({ length: k }, (_, i) => ({ shard: i + 1, load: 0, entries: [] }));
@@ -52,7 +52,7 @@ export function shard(tests: Test[], parallel: number) {
       s.load += t.secs;
       s.entries.push({ name: t.name, dir: t.dir, run: t.run, secs: t.secs });
     }
-    if (Math.max(...shards.map((s) => s.load)) / parallel <= goal) break;
+    if (Math.max(...shards.map((s) => s.load)) <= goal) break;
   }
   return shards;
 }
@@ -77,7 +77,7 @@ function main() {
     .filter((s: Suite) => names.includes(s.name) && (!s.main || env.MAIN))
     .map((s: Suite) => ({ name: s.name, dir: s.dir ?? s.name, run: s.run, secs: s.secs ?? 5, ...(s.job ? { job: s.job } : {}) }));
   // The test jobs' shards; heavy: the jobs that may run on our own runners (ci.yml's `runner` step), the packages shards and board.
-  const pk = shard(tests.filter((t) => t.job == null), 1), md = shard(tests.filter((t) => t.job === "modules"), 3);
+  const pk = shard(tests.filter((t) => t.job == null)), md = shard(tests.filter((t) => t.job === "modules"));
   const plan = { packages: pk, modules: md, heavy: pk.length + (tests.some((t) => t.job === "board") ? 1 : 0) };
   process.stdout.write(`${JSON.stringify({ tests, shards: plan })}\n`);
 }
