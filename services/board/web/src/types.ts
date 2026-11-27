@@ -886,7 +886,7 @@ export type FaceRef = { key: string; name: string; job: string; face: RosterFace
 export type NeedRow =
   | { id: string; kind: "answer"; teammate: FaceRef; since: string; task: { identifier: string; title: string }; question: string; detail?: string; options: string[]; questions: Question[]; waitSince: string }
   | { id: string; kind: "approval"; teammate: FaceRef; since: string; task: { identifier: string; title: string } | null; question: string; card: Approval }
-  | { id: string; kind: "open"; teammate: FaceRef; since: string; task: { identifier: string; title: string }; question: string };
+  | { id: string; kind: "open"; teammate: FaceRef; since: string; task: { identifier: string; title: string }; question: string; reply?: { person: string | null; source: "slack" | "gmail" | null } };
 export type SinceItem = { teammate: FaceRef; text: string; at: string; task: string | null; kind: "done" | "fyi" | "digest" | "closed" };
 export type WorldBlock = {
   waiting_on: { identifier: string; title: string; age_days: number; quiet_days: number }[] | null;

@@ -133,12 +133,18 @@ outside `tokens.css`, and no class the kit replaced (`web/legacy-classes.json`, 
 
 ## Home
 
-`Home.tsx`, one read (`GET /api/home`): Needs you (answers, approval cards and handed-back tasks, oldest first, answered in
-place as `DecisionRow`s), Since you last looked (what the team told the owner and what closed, grouped by teammate, top
-three and "All N"), Your world (who the owner waits on; today's calendar), Your team (teammates with news, and Hire a
-teammate) and one Idea. **A block with no source or no data is left out**, never shown empty: Needs you too, and the
-greeting then says only "Good morning, <name>." (Needs you counts only what teammates ask, so it never claims "nothing").
-A fresh install sees the greeting, Next up and the team row.
+`Home.tsx`, one read (`GET /api/home`), top to bottom: Needs you (full width), Your day, Your world (who the owner waits
+on; today's calendar), then Since you last looked and the Idea side by side (half width each, Since on the left; one alone
+takes the row; stacked on a phone), then Your team (teammates with news, and Hire a teammate). **Needs you holds everything
+waiting on the owner**: first the teammates' asks (answers, approval cards, handed-back tasks), oldest first, answered in
+place as `DecisionRow`s; then the people waiting on his reply, oldest first (open tasks labelled `needs-response`, which
+Intake files from Slack and email: the row shows the person, "Slack" or "Gmail" and how long they have waited, with Open
+(the task), Mark done and Not now). Asks come first because a teammate's work is held on them and a long run of replies
+must not bury a card; at most ten replies are listed. The detail pane or Day-one Next up sits beside Needs you only while
+there is one. Since is a glance, so it sits below the work; its "All N" expands in place under the card. **A block with no
+source or no data is left out**, never shown empty: Needs you too, and the greeting then says only "Good morning,
+<name>." (the greeting counts every row of Needs you, so it never claims "nothing"). A fresh install sees the greeting,
+Next up and the team row.
 
 - **Keyboard** (`needs.ts`): J/K move through Needs you, Enter opens the detail pane, E does the row's main action (approve,
   the recommended option, mark done), S snoozes it. Enter, E and S wait until a row is picked; every key is off while
@@ -146,7 +152,8 @@ A fresh install sees the greeting, Next up and the team row.
 - **Snooze** hides a row until 08:00 the next day, per account. **Receipts** replace an answered row ("Sent: …", "Approved",
   "Tess is sending it"); only a snooze has Undo (an answer or a decision isn't undoable).
 - **The window** of Since is per visit: the first answer's `since_from` goes back with every refetch, and the cursor moves
-  to a snapshot's `as_of` once it has been on screen.
+  to a snapshot's `as_of` once it has been on screen; with a Since digest on the page, once that digest has been in the
+  viewport (an IntersectionObserver), so a digest below the fold is not marked seen unread.
 - `#/approvals/<id>` opens that card in the pane: its row when it is listed, else the card read alone (a decided one shows
   its outcome).
 - Every other write record is on Insight › Decisions; failed and idle tasks are on Team › All agents (`AttentionStrip`).

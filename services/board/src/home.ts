@@ -17,10 +17,12 @@ import { grantsKeyOf, teammateFor, teammateKeys } from "./teammates.js";
 
 export type FaceRef = { key: string; name: string; job: string; face: RosterFace; state: "idle" | "working" | "needs" };
 type TaskRef = { identifier: string; title: string };
+/** A person waiting on the owner's reply (an open task labelled needs-response, which Intake files): who, and where they wrote. */
+export type Reply = { person: string | null; source: "slack" | "gmail" | null };
 export type NeedRow =
   | { id: string; kind: "answer"; teammate: FaceRef; since: string; task: TaskRef; question: string; detail?: string; options: string[]; questions: Question[]; waitSince: string }
   | { id: string; kind: "approval"; teammate: FaceRef; since: string; task: TaskRef | null; question: string; card: object }
-  | { id: string; kind: "open"; teammate: FaceRef; since: string; task: TaskRef; question: string };
+  | { id: string; kind: "open"; teammate: FaceRef; since: string; task: TaskRef; question: string; reply?: Reply };
 export type SinceItem = { teammate: FaceRef; text: string; at: string; task: string | null; kind: "done" | "fyi" | "digest" | "closed" };
 export type Home = {
   as_of: string;
@@ -60,6 +62,8 @@ const DAY = 86_400_000;
 /** The since window's oldest start: the ledger's age. */
 const MAX_WINDOW = 14 * DAY;
 const TODAY_MS = 5 * 60_000;
+/** The most people waiting on a reply that Needs you lists (the oldest first); Intake can file many. */
+const REPLIES = 10;
 /** Kinds of ledger rows Home tells again (decisions and alerts are needs or already seen). */
 const SINCE_KINDS = ["done", "fyi", "digest"];
 /** The most since items one response carries ("All N" says when it shows fewer than the total). */
@@ -162,7 +166,25 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
   }
   const shown = pending.filter((p) => !snoozed.has(p.snooze ?? p.id));
   for (const p of shown) owners.add(teammateFor(p.agentKey, keys));
-  const needs = shown.map((p) => p.build()).sort((a, b) => a.since.localeCompare(b.since));
+  const asks = shown.map((p) => p.build()).sort((a, b) => a.since.localeCompare(b.since));
+  // People waiting on the owner's reply come after the teammates' asks (those hold a teammate's work), oldest first: a long
+  // run of replies never buries a card.
+  // (A task with an ask or a card on it is already a row above.)
+  // (Snoozed asks count too: a snoozed ask hides its task, it does not turn it into a reply.)
+  const asked = new Set(pending.flatMap((p) => { const r = p.build(); return [r.id, ...(r.task ? [r.task.identifier] : [])]; }));
+  const replies = open
+    .filter((i) => labelled(i, "needs-response") && !labelled(i, "idea") && !asked.has(i.id) && !asked.has(i.identifier) && !snoozed.has(i.id))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .slice(0, REPLIES)
+    .map((i): NeedRow => {
+      // Intake's task format: the description opens with `Type:` (Slack, Email) and `From:`; the title is "Reply to <person>: <topic>".
+      const field = (k: string) => new RegExp(`^${k}:[ \\t]*(.+)$`, "im").exec(i.description ?? "")?.[1]?.trim();
+      const type = field("Type")?.toLowerCase() ?? "";
+      const source: Reply["source"] = type.startsWith("slack") ? "slack" : type.startsWith("email") ? "gmail" : /\bsource:(slack|gmail)\b/i.test(i.description ?? "") ? (/\bsource:slack\b/i.test(i.description ?? "") ? "slack" : "gmail") : null;
+      const m = /^Reply to (.+?):\s*(.*)$/i.exec(i.title);
+      return { id: i.id, kind: "open", teammate: face(keyOfAgent(i.assigneeAgentId)), since: i.createdAt, task: ref(i), question: m?.[2] || i.title, reply: { person: field("From") ?? m?.[1] ?? null, source } };
+    });
+  const needs = [...asks, ...replies];
 
   // Since: what the owner was told, and the tasks finished, since the window began; one item per task, the newest.
   const items: SinceItem[] = [];
