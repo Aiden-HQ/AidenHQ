@@ -123,4 +123,4 @@ stay out unless an app needs them (guidelines: the stack).
   `ui-review` can screenshot it. Remove it with the sample data, and give the real app a seed mode instead: `npm run
   preview` serves the app with fixture data (an in-memory store, no database) on port 4173, and `playwright.config.ts`
   starts it for `npm run screens`.
-- A shared app also follows the product's `docs/setup.md`, "What a shared app must do" (the identity check is in place).
+- A shared app also follows the product's `docs/design/access.md`, "What a shared app must do" (the identity check is in place).

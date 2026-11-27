@@ -636,48 +636,7 @@ lives there.
 
 ### What a shared app must do
 
-Every request carries `X-AidenHQ-Identity`, a 5-minute Ed25519 token for this app ([app identity](design/app-identity.md)):
-the gate signs it for people, apps-mcp for agents. The app verifies it with the shared middleware, the product's
-`modules/apps-platform/starter/aidenhq-identity.mjs` copied unchanged, which reads the public keys the platform mounts
-(`/run/secrets/AIDENHQ_IDENTITY_KEYS`) and the app's name (`AIDENHQ_APP`), and refuses anything without a valid token.
-`req.user` is `{ sub, email, name, role, kind }`: `sub` is a stable opaque id (`u_…` for people, `agent:<key>` for
-agents); `role` is `member`, `admin` or one of the app's own roles. The gate refuses only `blocked` people and requires
-same-origin writes; the app decides everything else per role (a `member` can write unless the app says no), keys per-user
-data on `sub`, and treats a role it doesn't know as no more than `member`. Agents arrive as `kind: agent` (`admin` through
-`app_api` by default, for that one method and path; `member` through `app_view`, or through `app_api` with
-`role: "member"` for a signed-in test-user request on a public route, under the same caller grant and access policy).
-
-- **Custom roles:** `aidenhq-app.yaml` at the app's path declares them (`roles: [{ name, meaning }]`, at most 10, and an
-  optional `default_role`). apps-mcp checks it on deploy (an invalid one refuses the deploy) and the board reads it at
-  the running commit. A role the manifest drops makes its holders `blocked` until an admin picks another.
-- **Post-deploy checks:** every deploy (and `app_rollback`, and `app_check` on demand) runs light probes after health:
-  `render` loads a web app's `/` in a headless browser and fails on a CSP block, a failed stylesheet or script, a console
-  error or no stylesheet applied; `agent` GETs `<first api path>/schema` on an app with `api:` and expects 200 with JSON.
-  A failure rolls the deploy back. `checks: { render: [/, /audit], agent: [/api/agent/x/schema] }` in `aidenhq-app.yaml`
-  sets the paths (declared paths are strict; `[]` turns a kind off).
-- **Post-deploy watch:** a healthy auto-deploy that starts failing within 30 minutes, with app-side evidence (a container
-  exited or restarting, or health answering an HTTP error; a probe with no answer never counts) on 3 consecutive probes
-  over at least 5 minutes, is rolled back to the previous good deploy (once; code only, as `app_rollback`) and raised as a
-  `rolled_back` incident saying why. It stays open until a healthy deploy (the fix); the next commit on the branch deploys
-  as usual, and `app_deploy` redeploys the rolled-back one. Stateful apps, and a commit whose message carries a
-  `No-Auto-Rollback: <reason>` trailer (a security fix), are only raised. Data apps stay safe to roll back
-  because their migrations only add (expand now, contract in a later release).
-- **Admin screens:** link to `/.aidenhq/access` (the app's Access page). Settings the app has are its own screen, shown
-  to `admin`.
-- **Requests to the app's agent:** `fetch("/.aidenhq/request", { method: "POST", headers: { "content-type":
-  "application/json" }, body: JSON.stringify({ text, context }) })` from the app's own page (`text` up to 4000
-  characters, `context` up to 500). The gate adds who is asking; `/.aidenhq/requests` shows the person their requests and
-  the replies.
-
-In Node:
-
-```js
-import { createServer } from "node:http";
-import { createIdentity } from "./aidenhq-identity.mjs";
-const { protect } = createIdentity();
-const server = createServer(protect((req, res) => { /* req.user: { sub, email, name, role, kind } */ }, { health: "/api/health" }));
-server.on("upgrade", protect((req, socket, head) => { /* WebSocket, checked once here */ }, { health: "/api/health" }));
-```
+The app verifies the signed identity token and decides per role: [design/access.md](design/access.md#what-a-shared-app-must-do).
 
 ### Verify
 
