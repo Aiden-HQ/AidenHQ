@@ -629,7 +629,12 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   const viewer = () => perRequest.getStore()?.session?.accountId ?? "operator";
   /** The big pages' last good responses (swr.ts), per account; anything the board or Paperclip changes makes the next read look again. */
   const swr = new Swr();
-  store.events.listen((name) => name !== "progress" && swr.touch());
+  store.events.listen((name) => {
+    if (name === "progress") return;
+    // The board's own placement changed (possibly through another app on this store): a read under way would still show the old one.
+    if (name === "board") swr.forget("board:");
+    swr.touch();
+  });
   /** Runs a route; a write (or anything that failed halfway) makes the pages read again, whichever way the route was reached. */
   const handled = async (route: { handle: (m: RegExpMatchArray, body: unknown, url: URL, req: IncomingMessage) => Promise<unknown> }, method: string | undefined, m: RegExpMatchArray, body: unknown, url: URL, req: IncomingMessage) => {
     try {
@@ -1200,6 +1205,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const { issue } = await editableIssue(ref);
     const result = scheduleMove(store, issue, parse(ScheduleSchema, body), opts.timezone, by);
     log.info({ issue: issue.identifier, scheduled: result.scheduled, movedNow: result.movedNow }, "move scheduled");
+    store.events.emit("board");
     store.events.emit("tasks", issue.id);
     return { identifier: issue.identifier, ...result };
   }
@@ -1222,6 +1228,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     if ((store.placements().get(issue.id)?.bucket ?? "triage") !== "triage" || store.schedules().has(issue.id)) throw new HttpError(409, `${issue.identifier} is already placed: the owner's move stands`);
     const result = scheduleMove(store, issue, input, opts.timezone, agent.name || "an agent");
     log.info({ issue: issue.identifier, placed: input.reason }, "task placed");
+    store.events.emit("board");
     store.events.emit("tasks", issue.id);
     return { identifier: issue.identifier, ...result };
   }

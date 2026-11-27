@@ -65,4 +65,13 @@ describe("agent placement reaches the board's pages", () => {
     expect(placed.status).toBe(200);
     expect(await bucketsOf()).toMatchObject({ triage: [], today: ["WOR-1"] });
   });
+
+  it("does not join a board read that began before the placement", async () => {
+    await send(internal, "POST", "/internal/issues/WOR-1/schedule", { host: "board:3122", "content-type": "application/json", authorization: `Bearer ${TOKEN}`, ...asAgent("scout") }, { bucket: "tomorrow", reason: "moved again" }).catch(() => {});
+    store.move("i1", "later");
+    const slow = bucketsOf();
+    store.events.emit("board");
+    expect((await bucketsOf()).later).toEqual(["WOR-1"]);
+    await slow;
+  });
 });
