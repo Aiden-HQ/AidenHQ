@@ -93,6 +93,13 @@ describe("fleet owner-words gate", () => {
     for (const q of ["please run the daily brief now", "go ahead and run the daily brief", "yes, run the daily brief now", "no. run the daily brief now"])
       await expect(gate(pcWith(q), "run_routine", "daily brief", q)).resolves.toBe("c1");
   });
+  it("links the request to its target and ignores an unrelated stop", async () => {
+    const q = "don't run the daily brief, run the weekly brief";
+    await expect(gate(pcWith(q), "run_routine", "daily brief", q)).rejects.toThrow(Refused);
+    await expect(gate(pcWith(q), "run_routine", "weekly brief", q)).resolves.toBe("c1");
+    await expect(gate(pcWith("hold off on pause the slack scout"), "pause_agent", "slack scout", "hold off on pause the slack scout")).rejects.toThrow(Refused);
+    await expect(gate(pcWith("stop it and run the daily brief"), "run_routine", "daily brief", "stop it and run the daily brief")).resolves.toBe("c1");
+  });
   it("reads negation from the whole message, not only the quote", async () => {
     await expect(gate(pcWith("don't run the daily brief now"), "run_routine", "daily brief", "run the daily brief now")).rejects.toThrow(/ask for it|not the owner's own words/);
     await expect(gate(pcWith("Don't forget to run the daily brief now"), "run_routine", "daily brief", "run the daily brief now")).resolves.toBe("c1");

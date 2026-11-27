@@ -107,19 +107,24 @@ export function unfenced(text: string): string {
 
 const VERBS: Record<string, RegExp> = {
   run: /\b(run|start|trigger)\b/i,
-  pause: /\b(pause|stop|hold)\b/i,
+  pause: /\b(pause|stop|hold(?! off))\b/i,
   resume: /\b(resume|restart|unpause)\b/i,
 };
 
 const NEGATION = /\b(don['’]?t|do not|never|no|not|stop|cancel|hold off on|avoid)\b/i;
 
 /**
- * True when a match of `verb` inside `q`, found at `at` in `text` (the owner's whole message), is a request: not negated by a negation word in the 3 words before it within the same clause
- * ("don't run", "never ever run"), looking at the message, not only the quote, so where the caller starts the quote changes nothing. "Don't forget to run" asks.
+ * True when a match of `verb` inside `q` (found at `at` in `text`, the owner's whole message) is a request for `named`: the target is in the words that follow that verb (up to the next verb or sentence
+ * end, so "don't run the daily brief, run the weekly brief" does not run the daily one), and no negation word sits in the 3 words before it within the same clause ("don't run", "never ever run"). Negation is read from the
+ * message, not only the quote, so where the caller starts the quote changes nothing. "Don't forget to run" asks; "stop it and run" asks.
  */
-function asks(text: string, at: number, q: string, verb: RegExp): boolean {
+function asks(text: string, at: number, q: string, verb: RegExp, named: string): boolean {
   for (const m of q.matchAll(new RegExp(verb.source, "gi"))) {
-    const clause = text.slice(0, at + m.index).split(/[.,;:!?\n]/).pop()!.replace(/\b(don['’]?t|do not) (forget|hesitate) to\b/gi, "");
+    const rest = q.slice(m.index + m[0].length);
+    const end = rest.search(new RegExp(`${verb.source}|[.;!?\\n]`, "i"));
+    const seg = m[0] + " " + (end < 0 ? rest : rest.slice(0, end));
+    if (!` ${words(seg)} `.includes(` ${named} `)) continue;
+    const clause = text.slice(0, at + m.index).split(/[.,;:!?\n]|\b(?:and|then|but)\b/i).pop()!.replace(/\b(don['’]?t|do not) (forget|hesitate) to\b/gi, "");
     if (!NEGATION.test(clause.trim().split(/\s+/).slice(-3).join(" "))) return true;
   }
   return false;
@@ -171,7 +176,7 @@ export async function assertOwnerWords(pc: Paperclip, store: Pick<Store, "meta">
   if (task.assigneeAgentId !== caller.id) throw new Refused("refused: the current task is not assigned to you");
   // The quote must occur verbatim in the message at a spot where the action is not negated.
   const asksIn = (text: string) => {
-    for (let i = text.indexOf(q); i >= 0; i = text.indexOf(q, i + 1)) if (asks(text, i, q, verb)) return true;
+    for (let i = text.indexOf(q); i >= 0; i = text.indexOf(q, i + 1)) if (asks(text, i, q, verb, named)) return true;
     return false;
   };
   const owns = (body: string, at: string) =>
