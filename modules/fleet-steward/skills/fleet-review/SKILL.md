@@ -25,10 +25,14 @@ description: "Groups the week's recurring failures into at most 3 rule proposals
    board's usage rollup, which understates — $207.04/day reported for 2026-11-20…26 against $286.85/day billed). On the
    `prometheus` datasource run `query_prometheus`, `queryType: range`, `stepSeconds: 86400`, from `<today−6>T00:00:00Z`
    to `<today>T00:00:00Z`; each point is the previous UTC day's final value (the 00:00Z sample still carries the day that
-   just ended, not the reset).
+   just ended, not the reset). The gauge exports only the current UTC day, and a call in flight at 00:00Z settles onto
+   the day it started, after that day stopped being exported: such a call is in no sample, so state the figure as the
+   gateway day gauge's and expect it to sit a little under the ledger.
    - **Split:** `sum by (kind) (aidenhq_gateway_spend_usd_today)`. Per day, `check` plus `ci-code-review` is CI/check spend,
-     `agent` is agent work, and `reviewer`/`grader`/`advisor`/`source`/`aside` are fleet overhead; the kinds sum to the
+     `agent` is agent work, and `reviewer`/`grader`/`advisor`/`fanout`/`source`/`aside` are fleet overhead; the kinds sum to the
      day's billed total.
+   - **No datasource:** without a `prometheus` grant (no grafana or monitoring module on the instance) say spend is
+     unavailable this week and why; never fall back to the rollup and never report $0.
    - **Cross-check:** `aidenhq_gateway_install_spend_usd{period="day"}` on the same range — the counter the caps enforce.
      It matches the billed total within cents on a quiet boundary; where it is higher, the excess is calls in flight at
      00:00Z, held against the cap but not billed (2026-11-24: counter $516.53, billed $370.14). Report the billed split,

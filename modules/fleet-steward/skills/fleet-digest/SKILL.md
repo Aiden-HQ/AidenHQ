@@ -25,7 +25,8 @@ description: "Works the day's deep-look log lines, gives every owner interruptio
    plus `ci-code-review` is CI/check spend, `agent` is agent work, the rest is fleet overhead. Cross-check yesterday with
    `aidenhq_gateway_install_spend_usd{period="day"}` at the same boundary (the counter the caps enforce; where it is higher,
    the excess is in-flight reservations, not billed spend). One line: "Spend: $X yesterday (check $A / agent $B / other
-   $C), $Y/day over 7 days."
+   $C), $Y/day over 7 days." Without a `prometheus` grant (no grafana or monitoring module) say spend is unavailable and
+   why, never zero and never the rollup.
 5. One `notify` (`kind: digest`): what tripped and was done, open items, rules filed, open product-bug issues, fixes waiting on a
    pin bump, anything waiting on the owner but a card, the spend line, and the day's interruptions (counted, needless ones with their repair).
    Quiet: "Fleet quiet: nothing tripped".
