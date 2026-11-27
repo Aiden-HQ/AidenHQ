@@ -19,7 +19,7 @@ cannot declare `share`, and changing it is a Tier 2 approval.
 
 ## Exposure modes
 
-How admins reach the board is one core setting, `settings.exposure` in `instance.yaml` (unset: `tailscale`). It also
+How admins reach the board is one kernel setting, `settings.exposure` in `instance.yaml` (unset: `tailscale`). It also
 decides what the host firewall (`ops/vm/public-fw.sh`, our own nft table on the public interface, input and forward)
 lets in. Everything else on that interface is dropped, and 80 is closed in every mode.
 
@@ -27,6 +27,7 @@ lets in. Everything else on that interface is dropped, and 80 is closed in every
 |---|---|---|
 | `public` | Caddy with a Let's Encrypt certificate for the host's public IPv4: the board on 443, the admin listener on 8446, the module door on 8447 | tcp 22, 443, 8446, 8447 |
 | `tailscale` | `tailscale serve` to 127.0.0.1:3121 | tcp 22, udp 41641 |
+| `cloudflare` | a Cloudflare tunnel that dials out (`cloudflared`, see Shared apps below): the host opens nothing inbound | tcp 22 |
 | `local` | none: an SSH tunnel to 127.0.0.1:3121 | tcp 22 |
 
 - **Admin and board listeners stay loopback** (the kernel's 3120 and 3129; the board's 3121, 3122); the front door
@@ -35,7 +36,7 @@ lets in. Everything else on that interface is dropped, and 80 is closed in every
 - **443 and 8446 open only once a Caddy front door is compiled** (a `caddy` service in `compose.modules.yaml`). Until
   then `public` keeps the firewall at `local`, and setup says so. An active ufw gets `allow 443/tcp` and `8446/tcp` only
   then.
-- **Choosing a mode.** `ops/setup.sh` (and the installer) take `--exposure public|tailscale|local`. Without it, a new
+- **Choosing a mode.** `ops/setup.sh` (and the installer) take `--exposure public|tailscale|cloudflare|local`. Without it, a new
   install takes `tailscale` on a tailnet (or with `TS_AUTHKEY`), else `public`, else (no public IPv4 of its own: behind
   NAT, a Mac's VM) `local`; a rerun keeps the mode it has.
 - **Switching is a rerun:** `sudo ops/setup.sh --unattended --exposure <mode>` over SSH, which stays open in every mode,
