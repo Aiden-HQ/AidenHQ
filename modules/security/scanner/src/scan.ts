@@ -306,17 +306,29 @@ export function imageRepository(target: string): string | null {
 }
 
 /**
- * Whether the batch tried and failed to scan something that could be an absent image under another name: another target
- * of its repository, or a bare `image:sha256:…` row (a container keyed by its image id names no repository, so its
- * failure is the only thing that can say the repository's old tag may be running under it). Such a failure leaves the
- * absent image unverifiable: its live build's state is unknown.
+ * Whether the batch tried and failed to inventory an image that could be the absent target under another name. The writer
+ * chooses a container's key from the names its image carries (a configured tag wins over the container's own tag), so a
+ * failed row in any repository may be this image listed under the name the writer chose: absence is proof only when every
+ * image row in the complete batch scanned cleanly. A failure leaves the absent image unverifiable, since its live build's
+ * state is unknown.
  */
-function failedAt(batch: Batch, clean: Map<string, Row[]>, repo: string | null): boolean {
-  return batch.targets.some((t) => {
-    if (clean.has(t.target)) return false;
-    const other = imageRepository(t.target);
-    return other == null ? /^image:sha256:/.test(t.target) : other === repo;
-  });
+function failedAt(batch: Batch, clean: Map<string, Row[]>): boolean {
+  return batch.targets.some((t) => t.target.startsWith("image:") && !clean.has(t.target));
+}
+
+/** The locations either of two SBOMs of one target reported for the same finding, deduped and capped like one scan's. */
+const rowLocations = (r: Row): string[] => (Array.isArray(r.locations) ? (r.locations as string[]) : []);
+
+/**
+ * One finding seen by two SBOMs of the same target (two planned units that share a key): the union of their locations and
+ * the highest exploitation data, so neither scan's evidence is dropped when they are reconciled as one inventory.
+ */
+function mergeRow(a: Row, b: Row): Row {
+  return {
+    ...a,
+    locations: [...new Set([...rowLocations(a), ...rowLocations(b)])].sort().slice(0, 20),
+    ...mergeExploitation(a as unknown as Exploitation, b as unknown as Exploitation),
+  };
 }
 
 /**
@@ -389,23 +401,38 @@ async function scanBatch(store: SourceStore, d: PassDeps, batch: Batch, now: () 
   const clean = new Map<string, Row[]>(); // targets scanned cleanly this pass, with the rows that scan wrote
   const synced = await store.scopesByPrefix("");
   const order = [...batch.targets].sort((a, b) => (synced.get(a.target)?.syncedAt ?? 0) - (synced.get(b.target)?.syncedAt ?? 0));
+  // The batch can list more than one SBOM for one target: two planned units share a key when two containers run one image
+  // index on one platform (different manifests, one key) or a configured tag names what a container runs. Those SBOMs are
+  // one inventory, so they are reconciled together; syncing each as a full scan would resolve the other's findings as
+  // gone, and a member that failed leaves the target unverified rather than reconciled from a partial inventory.
+  const groups = new Map<string, Batch["targets"]>();
+  for (const t of order) groups.set(t.target, [...(groups.get(t.target) ?? []), t]);
   let written = 0;
-  for (const t of order) {
+  for (const [target, members] of groups) {
     if (now() - start > (d.deadlineMs ?? 50 * 60_000)) break;
     try {
-      written += await store.run("security", t.target, async () => {
-        if (t.error || !t.file) throw new Skip(`host could not inventory ${t.target}: ${t.error ?? "no SBOM"}`);
-        let rows: Row[];
-        try {
-          rows = parseGrype(t.target, await d.grype(t.file));
-        } catch (err) {
-          throw new Skip(`grype on ${t.target}: ${String((err as Error).message ?? err).slice(0, 300)}`);
+      written += await store.run("security", target, async () => {
+        const byKey = new Map<string, Row>();
+        for (const t of members) {
+          if (t.error || !t.file) throw new Skip(`host could not inventory ${target}: ${t.error ?? "no SBOM"}`);
+          let rows: Row[];
+          try {
+            rows = parseGrype(target, await d.grype(t.file));
+          } catch (err) {
+            throw new Skip(`grype on ${target}: ${String((err as Error).message ?? err).slice(0, 300)}`);
+          }
+          for (const r of rows) {
+            const k = `${r.package}|${r.version}|${r.vuln_id}`;
+            const prev = byKey.get(k);
+            byKey.set(k, prev ? mergeRow(prev, r) : r);
+          }
         }
-        const n = await syncTarget(store, t.target, "grype", rows, new Date(now()));
-        clean.set(t.target, rows);
+        const rows = [...byKey.values()];
+        const n = await syncTarget(store, target, "grype", rows, new Date(now()));
+        clean.set(target, rows);
         return n;
-      }, { commit: t.commit });
-      await store.saveScope(t.target, new Date(now()).toISOString(), true);
+      }, { commit: members.find((t) => t.commit)?.commit });
+      await store.saveScope(target, new Date(now()).toISOString(), true);
     } catch (err) {
       if (!(err instanceof Skip)) throw err;
     }
@@ -418,10 +445,10 @@ async function scanBatch(store: SourceStore, d: PassDeps, batch: Batch, now: () 
   //           one. In any other batch it keeps the absent/unverified row: an image it might have listed must not settle. It retires against the one `image:` target of its own repository that was scanned
   //           cleanly in this pass (a tag renamed in place); with none, or with more than one to choose from, it claims no
   //           replacement. Either way status is "retired", error is null, and its findings settle present = false.
-  //           One exception: when its repository is in the batch but nothing of it scanned cleanly, or a bare
-  //           `image:sha256:…` row failed, the image may be running under another name whose scan failed (an alias, or
-  //           the container's own id), so absence is not proof it is gone: the target keeps the absent/unverified row
-  //           until a pass scans its whole repository cleanly.
+  //           One exception: when any `image:` row the batch listed did not scan cleanly, the image may be running under
+  //           another name whose scan failed (the writer chooses a container's key from a configured tag or its own tag,
+  //           and a bare `image:sha256:…` row names no repository), so absence is not proof it is gone: the target keeps
+  //           the absent/unverified row until a pass inventories every image it listed.
   //           With no clean same-repository target and no such failure, the target retires claiming no replacement: the
   //           writer keys every running container on the image it runs and every configured image on its tag, so a
   //           complete batch that omits the reference proves nothing runs it and no configured image names it. That
@@ -457,12 +484,11 @@ async function scanBatch(store: SourceStore, d: PassDeps, batch: Batch, now: () 
       if (!replacement && target.startsWith("image:")) {
         const repo = imageRepository(target);
         const same = repo ? [...clean.keys()].filter((t) => t.startsWith("image:") && imageRepository(t) === repo) : [];
-        // A same-repository target the batch attempted but did not scan clean: this image may be the one that ran under
-        // that name (an alias, say), so its absence this pass does not prove it retired, and a clean sibling does not
-        // prove it either. Keep the absent row until a pass scans the whole repository cleanly.
-        // So does a bare `image:sha256:…` row the batch attempted and could not scan: it names no repository, so only
-        // its failure says something about this image, and it may be exactly this image under the id its container runs.
-        if (failedAt(batch, clean, repo)) {
+        // An image row the batch attempted but did not scan clean may be this image under the name the writer chose for it
+        // (a configured tag wins over the container's own tag, and a bare `image:sha256:…` row names no repository at
+        // all), so its absence this pass does not prove it retired and a clean sibling of another name does not prove it
+        // either. Keep the absent row until a pass inventories every image it listed.
+        if (failedAt(batch, clean)) {
           await store.run("security", target, async () => { throw new Skip("absent from this pass's SBOM inventory: findings unverified"); }).catch(() => undefined);
           continue;
         }

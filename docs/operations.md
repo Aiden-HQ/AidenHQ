@@ -423,9 +423,11 @@ exact email match only).
   replacement scanned that pass, or, when nothing runs the reference and no configured image names it, with no
   replacement). A batch is complete when every planned image unit has a row; two units that share one key (two containers
   on one image index) are one row, so the marker is written when each planned key is covered, not when the row count
-  equals the unit count. src_docs has two scopes: `drive` (code) and
-  `summaries` (OpenRouter, the root `openrouter_key`; model `DOCS_SUMMARY_MODEL`, default `~deepseek/deepseek-flash-latest`,
-  ZDR). Without the key it stores metadata only.
+  equals the unit count. When the writer does list two SBOMs under one key, the scanner reconciles them as one
+  inventory, and any image row the batch listed that did not scan cleanly leaves every absent image unverified (it may
+  be running under the name the writer chose for it), so only a pass that inventoried every image it listed may retire
+  one. src_docs has two scopes: `drive` (code) and `summaries` (OpenRouter, the root `openrouter_key`; model
+  `DOCS_SUMMARY_MODEL`, default `~deepseek/deepseek-flash-latest`, ZDR). Without the key it stores metadata only.
 - Confluence pages are `src_jira.confluence_pages` (jira-mcp; ingest_run source `jira`, scopes `confluence` and
   `confluence_summaries`, model `CONFLUENCE_SUMMARY_MODEL`, else `DOCS_SUMMARY_MODEL`). To check the Atlassian tool
   parameters it uses: `docker compose exec jira-mcp node dist/src/probe.js` (schemas), or with a tool name and JSON args
