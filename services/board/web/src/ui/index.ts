@@ -27,7 +27,7 @@ export { kitFromSeed, type FaceKit, type FaceState } from "./face-kit";
 export { TeammateChip, faceStateOf } from "./TeammateChip";
 export { DecisionRow } from "./DecisionRow";
 export { DetailPane } from "./DetailPane";
-export { DigestList } from "./DigestList";
+export { DigestList, DigestRow } from "./DigestList";
 export { SidePanel } from "./SidePanel";
 export { Stepper } from "./Stepper";
 export { OptionCard } from "./OptionCard";

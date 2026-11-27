@@ -32,7 +32,7 @@ and type, grids that add columns, never a narrow column in the middle of a big s
 - **Phone**: a bottom bar (Home · Tasks · Ask Aiden · Team · More); More holds Apps, Insight, Settings, module pages and
   app panels.
 - **A page's own tools** go in the page (its header, or a `.page-tools` row like Tasks), never in the top bar.
-- **Routes:** `#/` Home (`#/approvals/<id>` opens that card in Home's pane), `#/tasks[?view=<id>]`,
+- **Routes:** `#/` Home (`#/approvals/<id>` opens that card in Home's drawer), `#/tasks[?view=<id>]`,
   `#/tasks/sessions[/<ref>]`, `#/apps[/<name>]`, `#/team`, `#/team/<key>[/c/<chat>][?text=…]`, `#/team/agents[/<key>[/<tab>]]`,
   `#/team/modules[/<name>[/<tab>]]`, `#/team/m/<page>[/<sub>]`, `#/insight/{costs,flow,decisions}`, `#/settings[/<cat>]`;
   overlays `#/t/<task>`, `#/r/<run>`, `#/brief`, `#/help`, `#/setup/<module>` keep the page under them, and closing one
@@ -133,28 +133,38 @@ outside `tokens.css`, and no class the kit replaced (`web/legacy-classes.json`, 
 
 ## Home
 
-`Home.tsx`, one read (`GET /api/home`), top to bottom: Needs you (full width), Your day, Your world (who the owner waits
-on; today's calendar), then Since you last looked and the Idea side by side (half width each, Since on the left; one alone
-takes the row; stacked on a phone), then Your team (teammates with news, and Hire a teammate). **Needs you holds everything
-waiting on the owner**: first the teammates' asks (answers, approval cards, handed-back tasks), oldest first, answered in
-place as `DecisionRow`s; then the people waiting on his reply, oldest first (open tasks labelled `needs-response`, which
-Intake files from Slack and email: the row shows the person, "Slack" or "Gmail" and how long they have waited, with Open
-(the task), Mark done and Not now). Asks come first because a teammate's work is held on them and a long run of replies
-must not bury a card; at most ten replies are listed. The detail pane or Day-one Next up sits beside Needs you only while
-there is one. Since is a glance, so it sits below the work; its "All N" expands in place under the card. **A block with no
-source or no data is left out**, never shown empty: Needs you too, and the greeting then says only "Good morning,
+`Home.tsx`, one read (`GET /api/home`), top to bottom: the greeting (Day-one Next up under it), Your day, Your world (who the
+owner waits on; today's calendar), then **Needs you on the left and Since you last looked on the right in one row** on Your
+world's columns (1.45fr / 1fr, so the gutters line up), (a lone cell takes the whole row; stacked on a phone: Needs you, Since), then Your team (teammates with news, and Hire a teammate).
+**Needs you holds everything
+waiting on the owner**: the teammates' asks (answers, approval cards, handed-back tasks) and the people waiting on his
+reply (open tasks labelled `needs-response`, which Intake files from Slack and email), each ONE compact row. **One row
+component** (`DigestRow` in `ui/DigestList.tsx`) draws every list on Home (Needs you, You're waiting on, Today, Since you last
+looked): face or monogram, one clamped line of text ("who · what"), the row's buttons inline, the age on the right; the same
+48px rows and paddings everywhere, buttons wrapping under the text on a phone. **The whole row is the click target** (no
+Open button; Enter does the same): Needs rows open a right-hand **drawer** over the page (the board's drawer look: scrim, click outside, Esc or Close dismisses; focus moves in and back to the row; a full-screen sheet on a phone; Home underneath keeps its layout) where the full draft, every option and the card live,
+You're waiting on rows open the task (the row text is a real button or link, so Tab and Enter work). Buttons: an ask shows its single primary answer (the first option, or Approve and
+Reject… for a card) and **Later**; an ask with several questions or options has no inline answer, only Later, and its row
+click opens the drawer. A person waiting (`needs-response`) shows **Done** (closes the task as done), **Later** and **Dismiss** (closes it as
+cancelled; it stays in history); a task handed back to the owner shows Done only. You're waiting on rows have Done, Later and Dismiss with the same meanings (Later hides it
+until 08:00 tomorrow, mouse only: J/K/E/S belong to Needs you). Each card lists the **newest ten** (newest first); the greeting and the card's count are the full N.
+**Needs you's "View all N →" expands the card in place**, showing every row the count includes (as Since's "All N" does),
+because the Tasks page filters tasks by lane or label and an approval card has no task to open there; "Fewer" folds it back.
+You're waiting on's "View all N →" (shown past ten) opens Tasks (`#/tasks?show=waiting`: the `waiting-on` label) on the Agent
+work layout, where every one of those tasks is a card. Since is a glance; its "All N" expands in place under the card.
+**A block with no source or no data is left out**, never shown empty: Needs you too, and the greeting then says only "Good morning,
 <name>." (the greeting counts every row of Needs you, so it never claims "nothing"). A fresh install sees the greeting,
 Next up and the team row.
 
-- **Keyboard** (`needs.ts`): J/K move through Needs you, Enter opens the detail pane, E does the row's main action (approve,
-  the recommended option, mark done), S snoozes it. Enter, E and S wait until a row is picked; every key is off while
+- **Keyboard** (`needs.ts`): J/K move through Needs you, Enter opens the detail drawer, E does the row's main action (approve,
+  the recommended option, Done), S is Later. Enter, E and S wait until a row is picked; every key is off while
   typing, with a modifier, or with focus in Ask Aiden, a pane, a dialog or ⌘K.
-- **Snooze** hides a row until 08:00 the next day, per account. **Receipts** replace an answered row ("Sent: …", "Approved",
+- **Later** (snooze) hides a row until 08:00 the next day, per account. **Receipts** replace an answered row ("Sent: …", "Approved",
   "Tess is sending it"); only a snooze has Undo (an answer or a decision isn't undoable).
 - **The window** of Since is per visit: the first answer's `since_from` goes back with every refetch, and the cursor moves
   to a snapshot's `as_of` once it has been on screen; with a Since digest on the page, once that digest has been in the
   viewport (an IntersectionObserver), so a digest below the fold is not marked seen unread.
-- `#/approvals/<id>` opens that card in the pane: its row when it is listed, else the card read alone (a decided one shows
+- `#/approvals/<id>` opens that card in the drawer: its row when it is listed, else the card read alone (a decided one shows
   its outcome).
 - Every other write record is on Insight › Decisions; failed and idle tasks are on Team › All agents (`AttentionStrip`).
 

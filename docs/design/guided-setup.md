@@ -35,9 +35,9 @@ no key, file or command they have to understand.
 
    Google is a teammate's setup flow when that teammate needs it. A **guided Google setup** (create your own OAuth
    client, then connect) is Google's setup flow.
-4. **It ends on Home** (Part 4): Next up beside Needs you, and Aiden offers one next step at a time as an idea.
+4. **It ends on Home** (Part 4): Next up under the greeting, then Needs you.
 5. **Every module that needs user setup has a setup flow,** one generic component opened at `/setup/<module>`.
-   Onboarding and hiring show the ones a teammate needs inline, Aiden's ideas link to them, and Modules' Turn on opens
+   Onboarding and hiring show the ones a teammate needs inline, and Modules' Turn on opens
    them after install or enable. Skipped ones stay reachable that way. Background work never pings the owner; his own request gets the one Connect link in that conversation.
 6. **No GitHub needed, apps included.** A new on-server code host (`codehost-local`) lets agents build, review, merge
    and deploy apps with git repos on the server. GitHub becomes an optional add-on for syncing off the server.
@@ -279,10 +279,8 @@ one primary button.
 
 ### Part 4: after onboarding
 
-Finishing lands on Home. The board records it, then files one chief-of-staff task (source `welcome`) naming who is on the
-team (a refused filing is logged and never holds the owner in onboarding); Aiden
-answers with his first idea (his `ideas` skill), one question at a time. Later modules and teammates are set up from
-the hiring page (`#/team/hire`), from Home's Next up, or when Aiden's idea links one there.
+Finishing lands on Home. The board records it. Later modules and teammates are set up from
+the hiring page (`#/team/hire`) or from Home's Next up.
 
 ### Part 4b: on-server code host
 
