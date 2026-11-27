@@ -54,6 +54,8 @@ export type CompileDeps = {
    * tarballs the last real apply downloaded, so an offline host can still check a target the apply could install.
    */
   cache?: string;
+  /** The data dir ops/lib/bun.sh keeps the pinned Bun in (XDG_DATA_HOME; default the host's ~/.local/share), for a target on Bun. */
+  bunHome?: string;
   /** The staged compile in the extracted product tree (default: install, then the target's own compiler). */
   run?: (o: RunInput) => Promise<Verdict>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -276,8 +278,19 @@ export function run(cmd: string, args: string[], cwd: string, env: NodeJS.Proces
  * linked, when the target's lockfile is byte-identical; otherwise `npm ci` installs the target's own. A failed install is
  * operational (an offline host), so the caller retries: never a refusal of the target.
  */
-async function installCompiler(o: RunInput, cache?: string) {
+async function installCompiler(o: RunInput, cache?: string, bunHome?: string) {
   for (const d of ["scripts", "kernel"]) {
+    // A target on Bun (a bun.lock, from the Bun move on) installs with the pinned Bun the running checkout's ops/lib/bun.sh
+    // fetches (checksummed, once, into the host's data dir), with no install scripts: the kernel running before that move can
+    // check it, so the release train can file the bump to it.
+    if (existsSync(join(o.productDir, d, "bun.lock"))) {
+      // Bun's own package cache stays the host's (~/.bun/install/cache), not the staged HOME's, so checks reuse what was fetched.
+      const env = { ...installEnv(o.env), BUN_INSTALL_CACHE_DIR: join(process.env.HOME ?? "/root", ".bun/install/cache"), ...(bunHome ? { XDG_DATA_HOME: bunHome } : {}) };
+      const script = '. "$1" && ensureBun && exec bun install --cwd "$2" --frozen-lockfile --ignore-scripts --silent';
+      const installed = await run("bash", ["-c", script, "install", join(o.repo, "ops/lib/bun.sh"), d], o.productDir, env, left(o.until ?? Number.POSITIVE_INFINITY, 240_000));
+      if (!installed.ok) throw new Error(`the target product's ${d} deps didn't install: ${firstDiagnostic(installed.stderr) || "bun install failed"}`);
+      continue;
+    }
     const lock = join(o.productDir, d, "package-lock.json");
     const running = join(o.repo, d, "package-lock.json");
     const modules = join(o.repo, d, "node_modules");
@@ -391,7 +404,7 @@ export function createCompileCheck(d: CompileDeps) {
       if (old !== undefined) env.AIDENHQ_OLD_BUNDLE = old;
       mkdirSync(join(dir, "home"), { recursive: true });
       const o = { productDir, instanceDir, repo: d.repo, env, until };
-      const r = d.run ? await d.run(o) : await stagedCompile(o, d.install ?? ((x) => installCompiler(x, d.cache)), d.cache);
+      const r = d.run ? await d.run(o) : await stagedCompile(o, d.install ?? ((x) => installCompiler(x, d.cache, d.bunHome)), d.cache);
       log("compile check", { product, instance: base, ok: r.ok, ms: Date.now() - t0 });
       return { ...r, base };
     } finally {
