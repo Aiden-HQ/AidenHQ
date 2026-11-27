@@ -20,5 +20,9 @@ boot 0.9
 ### boot id
 00000000-0000-0000-0000-000000000000
 
+### apt-config dump
+APT "";
+APT::Periodic::Unattended-Upgrade "0";
+
 ### unattended-upgrades
 disabled

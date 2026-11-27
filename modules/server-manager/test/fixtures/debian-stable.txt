@@ -71,5 +71,11 @@ boot 1.8
 ### boot id
 aa11bb22-cc33-dd44-ee55-ff6677889900
 
+### apt-config dump
+APT "";
+APT::Periodic "";
+APT::Periodic::Unattended-Upgrade "0";
+APT::Periodic::Update-Package-Lists "1";
+
 ### unattended-upgrades
-disabled
+enabled

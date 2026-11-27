@@ -11,6 +11,7 @@ import { StatusStore } from "./status-store.ts";
 import { configTools } from "./tools.ts";
 import { validate, type ValidateInput } from "./validate.ts";
 import { readKeys, type Transport } from "./ssh.ts";
+import { ensureSchema } from "./status.ts";
 
 const env = process.env;
 const log = (msg: string, f?: Record<string, unknown>) => console.log(new Date().toISOString(), msg, JSON.stringify(f ?? {}));
@@ -55,4 +56,8 @@ createServer(async (req, res) => {
     log("request failed", { err: String((e as Error).message).slice(0, 200) });
     if (!res.headersSent && res.writable) res.writeHead(400).end();
   }
-}).listen(8103, "0.0.0.0", () => log("server-manager listening", { port: 8103, machines: (() => { try { return JSON.parse(machines()).length; } catch { return 0; } })() }));
+}).listen(8103, "0.0.0.0", () => {
+  log("server-manager listening", { port: 8103, machines: (() => { try { return JSON.parse(machines()).length; } catch { return 0; } })() });
+  // The advertised src_servers views exist from the first boot, before any machine is checked (spec §8).
+  void ensureSchema(log);
+});

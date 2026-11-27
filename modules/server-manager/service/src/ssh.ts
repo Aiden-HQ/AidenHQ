@@ -100,23 +100,27 @@ export class Connection {
     this.pinFile = join(t.config.stateDir, "known_hosts", machine.name);
   }
 
-  /** Where a machine's SSH target is spelled: always user@address with -p port, never parsed out of a string. */
+  /**
+   * Where a machine's SSH target is spelled: always user@address with -p port, never parsed out of a string. An IPv6 literal is
+   * passed bare: the port is its own flag, and ssh does not strip brackets from a `user@[addr]` destination (it would try to
+   * resolve the brackets themselves).
+   */
   private target(): string {
-    const a = this.machine.address;
-    return `${this.machine.user}@${a.includes(":") && !a.startsWith("[") ? `[${a}]` : a}`;
+    const a = this.machine.address.startsWith("[") && this.machine.address.endsWith("]") ? this.machine.address.slice(1, -1) : this.machine.address;
+    return `${this.machine.user}@${a}`;
   }
 
-  private baseArgs(strict: "accept-new" | "yes" = "yes"): string[] {
+  private baseArgs(strict: "accept-new" | "yes" = "yes", pinFile = this.pinFile, withKey = true): string[] {
     const args = [
       // Batch, always: no password prompt, no agent forwarding, no X11, no port forwarding, and no TTY (§4).
       "-o", "BatchMode=yes", "-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-o", "ClearAllForwardings=yes",
       "-o", "RequestTTY=no", "-o", `ConnectTimeout=${TIMEOUTS.connect}`, "-o", "LogLevel=ERROR",
-      "-o", "UserKnownHostsFile=" + this.pinFile, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "IdentitiesOnly=yes",
+      "-o", "UserKnownHostsFile=" + pinFile, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "IdentitiesOnly=yes",
       // Every connection checks the pin: the first may record what the host presents, the rest must match it exactly (§4).
       "-o", `StrictHostKeyChecking=${strict}`,
       "-p", String(this.machine.port), "-l", this.machine.user,
     ];
-    if (this.keyFile) args.push("-i", this.keyFile);
+    if (withKey && this.keyFile) args.push("-i", this.keyFile);
     return args;
   }
 
@@ -148,13 +152,38 @@ export class Connection {
     });
   }
 
-  /** Runs the local ssh-keygen over this machine's pin file: the fingerprints it holds, as SHA256 strings. */
-  private async pinned(): Promise<string[]> {
-    try { if (statSync(this.pinFile).size === 0) return []; } catch { return []; }
-    const r = await this.spawnKeygen(["-l", "-E", "sha256", "-f", this.pinFile]);
+  /** Runs the local ssh-keygen over a known_hosts file: the fingerprints it holds, as SHA256 strings. */
+  private async fingerprints(file: string): Promise<string[]> {
+    try { if (statSync(file).size === 0) return []; } catch { return []; }
+    const r = await this.spawnKeygen(["-l", "-E", "sha256", "-f", file]);
     if (r.code !== 0) return [];
-    // `<bits> SHA256:… <comment> (<type>)`, one line per pinned key.
+    // `<bits> SHA256:… <comment> (<type>)`, one line per key.
     return r.stdout.split("\n").flatMap((l) => { const m = /\b(SHA256:[A-Za-z0-9+/]{43})\b/.exec(l); return m ? [m[1]!] : []; });
+  }
+
+  /** The fingerprints already pinned for this machine (empty for a machine nobody has connected to yet). */
+  private pinned(): Promise<string[]> {
+    return this.fingerprints(this.pinFile);
+  }
+
+  /**
+   * The key a host presents right now, read *without* authenticating: ssh does its key exchange and records the host key before
+   * any user authentication, and `PreferredAuthentications=none` stops it there, so the private key is never offered to a host
+   * whose key has not been checked yet (§4, §10).
+   */
+  private async presented(): Promise<{ fingerprints: string[]; knownHosts: string }> {
+    const dir = mkdtempSync(join(this.t.config.tmpDir ?? tmpdir(), "sm-scan-"));
+    chmodSync(dir, 0o700);
+    const tmp = join(dir, "known_hosts");
+    try {
+      // No `-i`: the key's file is not even written yet, so the scan cannot offer it whatever the host asks for.
+      await this.spawnRun([...this.baseArgs("accept-new", tmp, false), "-o", "PreferredAuthentications=none", "-o", "PasswordAuthentication=no", this.target(), "true"], TIMEOUTS.connect * 1000);
+      let knownHosts = "";
+      try { knownHosts = readFileSync(tmp, "utf8"); } catch { knownHosts = ""; }
+      return { fingerprints: await this.fingerprints(tmp), knownHosts };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 
   private spawnKeygen(args: string[]): Promise<ExecResult> {
@@ -169,40 +198,44 @@ export class Connection {
   }
 
   /**
-   * Opens the connection and pins (or verifies) the host key, before anything runs. The first connection records whatever key
-   * the host presents (trust-on-first-use, §4) unless the entry names an `expected_fingerprint`, which must match. After that a
-   * changed key refuses the run.
+   * Opens the connection, and decides the host key before anything runs or authenticates (§4, §10):
+   *   - the first connection records what the host presents (trust-on-first-use, stated plainly in the spec) — unless the entry
+   *     names an `expected_fingerprint`, which must match or the run refuses with nothing pinned;
+   *   - a machine already pinned must present one of its pinned keys, or the run refuses and the owner's reset is the only way on.
+   * The presented key is read before authentication (PreferredAuthentications=none), so a key the owner did not expect is never
+   * authenticated against, and a refusal names the key the host actually presented.
    */
   async open(): Promise<{ fingerprint: string; firstPinned: boolean }> {
     mkdirSync(dirname(this.pinFile), { recursive: true, mode: 0o700 });
-    this.writeKey();
     const before = await this.pinned();
+    const seen = await this.presented();
+    const presented = seen.fingerprints;
+    if (!presented.length) throw new Error(`${this.machine.name}: unreachable (the host presented no host key)`);
+    // The key is written only once the host key is known to be the one expected: it is never on a command line for a host whose
+    // identity has not been checked.
+    this.writeKey();
     const first = before.length === 0;
-    const args = [
-      ...this.baseArgs(first ? "accept-new" : "yes"),
-      this.target(), "true",
-    ];
-    const r = await this.spawnRun(args, TIMEOUTS.connect * 1000);
+    if (this.machine.expected_fingerprint || !first) {
+      const expected = this.machine.expected_fingerprint ? [this.machine.expected_fingerprint] : before;
+      if (!presented.some((f) => expected.includes(f))) {
+        // Nothing is pinned from a host that is not the one the owner expected: the next run refuses too, until a reset.
+        if (first) rmSync(this.pinFile, { force: true });
+        throw new HostKeyChanged(this.machine.name, expected.join(", "), presented.join(", "));
+      }
+    }
+    if (first) {
+      // Trust-on-first-use: pin exactly the key checked a moment ago, and the connection below must match it.
+      writeFileSync(this.pinFile, seen.knownHosts, { mode: 0o600 });
+      if (!(await this.pinned()).length) throw new Error(`${this.machine.name}: could not pin the host key: nothing ran`);
+    }
+    const r = await this.spawnRun([...this.baseArgs("yes"), this.target(), "true"], TIMEOUTS.connect * 1000);
     if (r.code !== 0) {
       const msg = scrub(r.stderr || r.stdout, this.secret).trim();
-      if (HOST_KEY_CHANGED.test(msg)) {
-        const seen = await this.pinned();
-        throw new HostKeyChanged(this.machine.name, before.join(", "), seen.join(", "));
-      }
+      if (HOST_KEY_CHANGED.test(msg)) throw new HostKeyChanged(this.machine.name, before.join(", "), presented.join(", "));
       throw new Error(`${this.machine.name}: ${this.reason(msg)}`);
     }
     const after = await this.pinned();
-    if (!after.length) throw new Error(`${this.machine.name}: the host presented no key to pin: nothing ran`);
-    const fingerprint = after.join(", ");
-    if (first && this.machine.expected_fingerprint && !after.includes(this.machine.expected_fingerprint)) {
-      // The pin is wrong: drop it so the next run refuses rather than silently keeping a key the owner did not expect.
-      rmSync(this.pinFile, { force: true });
-      throw new HostKeyChanged(this.machine.name, this.machine.expected_fingerprint, fingerprint);
-    }
-    if (!first && this.machine.expected_fingerprint && !after.includes(this.machine.expected_fingerprint)) {
-      throw new HostKeyChanged(this.machine.name, this.machine.expected_fingerprint, fingerprint);
-    }
-    return { fingerprint, firstPinned: first };
+    return { fingerprint: (after.length ? after : presented).join(", "), firstPinned: first };
   }
 
   /** A plain failure's one-line reason, scrubbed: the readout never quotes a shell's page of output. */
@@ -230,11 +263,15 @@ export class Connection {
   /**
    * Runs one fixed argv and returns its exit status instead of throwing: a read that answers yes or no by exit code (a file's
    * presence, whether a unit is enabled) is not a failure when it answers no. Same word check as `exec`.
+   *
+   * ssh itself exits 255 when the connection or the session fails, so 255 is rethrown as a failure: a dropped connection must not
+   * read as "the file is not there" (which would say a reboot is not needed on a host nobody could reach).
    */
   async probe(argv: string[], timeoutMs = TIMEOUTS.read): Promise<ExecResult> {
     if (!this.keyFile) throw new Error("the connection was not opened");
     for (const a of argv) if (!SAFE_WORD.test(a)) throw new Error(`${this.machine.name}: refused a command word outside the allowed characters`);
     const r = await this.spawnRun([...this.baseArgs(), this.target(), ...argv.map(quote)], timeoutMs);
+    if (r.code === 255 || HOST_KEY_CHANGED.test(r.stderr)) throw new Error(`${this.machine.name}: ${this.reason(scrub(r.stderr || r.stdout, this.secret))}`);
     return { code: r.code, stdout: scrub(r.stdout, this.secret), stderr: scrub(r.stderr, this.secret) };
   }
 

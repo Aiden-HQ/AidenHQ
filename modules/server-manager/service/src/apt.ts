@@ -79,7 +79,9 @@ export function parsePolicy(text: string): Map<string, { installed?: string; can
   let pkg: { installed?: string; candidate?: string; versions: Map<string, string[]> } | undefined;
   let version: string | undefined;
   for (const raw of text.split("\n")) {
-    const head = /^([^:\s][^:]*):\s*$/.exec(raw);
+    // A package header: `libc6:` and, for a foreign architecture, `libc6:i386:`. It is matched before the version line below,
+    // because `libc6:i386:` would otherwise read as a version. The qualifier is kept, so the name is the package apt knows.
+    const head = /^([A-Za-z0-9][A-Za-z0-9+._-]*(?::[a-z0-9][a-z0-9-]*)?):\s*$/.exec(raw);
     if (head) { pkg = { versions: new Map() }; version = undefined; out.set(head[1]!, pkg); continue; }
     if (!pkg) continue;
     const inst = /^\s+Installed:\s*(\S+)/.exec(raw);
@@ -109,13 +111,20 @@ export function parseSimulatedUpgrade(text: string): Upgradable[] {
 
 /** `ubuntu-security-status --format json`: ESM-apps packages the suite test cannot see. */
 export function parseSecurityStatus(text: string): { esm_apps: string[]; total: number } | undefined {
-  type Pkg = { name?: string; is_esm_app?: boolean };
+  /** One package entry, in any of the shapes the Ubuntu tools print. */
+  type Pkg = { name?: string; package?: string; is_esm_app?: boolean; service_name?: string };
   try {
-    // The tool's own shape has `packages` as a summary object and the per-package list under `packages_detail`; a build that
-    // writes the list as `packages` is read the same way. Anything else is "no answer", never a crash inside a read.
+    // Three shapes, all read: the Ubuntu Pro client's `packages` list (`package`, `service_name: "esm-apps"`), the older
+    // `packages_detail` list (`name`, `is_esm_app`), and a list written as `packages` in that second shape. Anything else is
+    // "no answer", never a crash inside a read.
     const v = JSON.parse(text) as { packages?: unknown; packages_detail?: unknown; summary?: { packages?: { security?: number } } };
-    const list: Pkg[] = [v.packages_detail, v.packages].flatMap((x) => (Array.isArray(x) ? (x as Pkg[]) : []));
-    const esm = list.flatMap((p) => (p?.is_esm_app && p.name ? [p.name] : []));
+    const list: Pkg[] = [v.packages, v.packages_detail].flatMap((x) => (Array.isArray(x) ? (x as Pkg[]) : []));
+    const name = (p: Pkg) => p?.package ?? p?.name;
+    const esm = list.flatMap((p) => {
+      const n = name(p);
+      const isEsm = p?.is_esm_app === true || p?.service_name === "esm-apps" || p?.service_name === "esm-infra";
+      return isEsm && n ? [n] : [];
+    });
     return { esm_apps: esm, total: Number(v.summary?.packages?.security ?? esm.length) };
   } catch {
     return undefined;
@@ -140,6 +149,27 @@ export function parseUnits(text: string): string[] {
 /** `apt-mark showhold`: packages the owner pinned; never upgraded, and named in the report. */
 export function parseHolds(text: string): string[] {
   return text.split("\n").map((l) => l.trim()).filter(Boolean).sort();
+}
+
+/** `apt-config dump` as key -> value (`APT::Periodic::Unattended-Upgrade "1";` is `1`). First listing of a key wins. */
+export function parseAptConfig(text: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const line of text.split("\n")) {
+    const m = /^([A-Za-z0-9_:/-]+)\s+"([^"]*)";\s*$/.exec(line.trim());
+    if (m && !out.has(m[1]!)) out.set(m[1]!, m[2]!);
+  }
+  return out;
+}
+
+/**
+ * Whether unattended upgrades are actually on. The effective APT setting decides: an owner who sets
+ * `APT::Periodic::Unattended-Upgrade "0"` has turned it off even while the unit is enabled and `20auto-upgrades` is still there.
+ * The unit's state is only the fallback for a host whose `apt-config dump` does not carry the key.
+ */
+export function unattendedUpgradesOn(config: Map<string, string>, unitState = ""): boolean {
+  const v = config.get("APT::Periodic::Unattended-Upgrade");
+  if (v !== undefined) return Number(v) > 0;
+  return !/^disabled|^masked|^not-found/i.test(unitState.trim());
 }
 
 /** What one read pass saw, as the report and the status row use it. */

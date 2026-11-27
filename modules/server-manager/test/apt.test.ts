@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { classify, detect, isSecuritySuite, parseOsRelease, parsePolicy, parseSecurityStatus, parseSimulatedUpgrade, parseUnits, readoutFrom } from "../service/src/apt.ts";
+import { classify, detect, isSecuritySuite, parseAptConfig, parseOsRelease, parsePolicy, parseSecurityStatus, parseSimulatedUpgrade, parseUnits, readoutFrom, unattendedUpgradesOn } from "../service/src/apt.ts";
 
 const dir = fileURLToPath(new URL("./fixtures/", import.meta.url));
 
@@ -33,7 +33,8 @@ function fixture(name: string) {
     freeRootGb: num("free") === null ? null : Number((parts.get("free") ?? "").split("\n")[0]!.split(" ")[1]),
     freeBootGb: num("free") === null ? null : Number((parts.get("free") ?? "").split("\n")[1]!.split(" ")[1]),
     bootId: g("boot id"),
-    unattendedUpgrades: g("unattended-upgrades") === "enabled",
+    // The effective APT setting decides; the unit's state is only the fallback when the key is absent.
+    unattendedUpgrades: unattendedUpgradesOn(parseAptConfig(parts.get("apt-config dump") ?? ""), g("unattended-upgrades")),
   };
 }
 
@@ -65,6 +66,19 @@ test("Debian stable: the same suite test, a normal-archive candidate is not secu
   assert.deepEqual(r.security, ["ca-certificates", "libc6"]);
   assert.equal(r.reboot_needed, false);
   assert.deepEqual(r.services, ["postgresql@15-main.service", "ssh.service", "systemd-journald.service"]);
+  // The unit is enabled but `APT::Periodic::Unattended-Upgrade` is "0": unattended upgrades are off, and the row says so.
+  assert.equal(r.unattended_upgrades, false);
+});
+
+test("the effective unattended-upgrades setting wins over the unit's state; the unit is only the fallback", () => {
+  assert.equal(unattendedUpgradesOn(new Map([["APT::Periodic::Unattended-Upgrade", "0"]]), "enabled"), false);
+  assert.equal(unattendedUpgradesOn(new Map([["APT::Periodic::Unattended-Upgrade", "1"]]), "disabled"), true);
+  assert.equal(unattendedUpgradesOn(new Map(), "enabled"), true);
+  assert.equal(unattendedUpgradesOn(new Map(), "masked"), false);
+  // An `apt-config dump` line is `KEY "value";`, nested and repeated keys included; the first listing wins.
+  const dump = parseAptConfig('APT "";\nAPT::Periodic "";\nAPT::Periodic::Unattended-Upgrade "0";\nAPT::Periodic::Unattended-Upgrade "1";\n');
+  assert.equal(dump.get("APT::Periodic::Unattended-Upgrade"), "0");
+  assert.equal(parseAptConfig("garbage\n").size, 0);
 });
 
 test("anything else is unsupported, with the reason, and nothing is read", () => {
@@ -115,6 +129,30 @@ test("ubuntu-security-status is read in its own shape (packages is a summary, pa
   const other = JSON.stringify({ packages: [{ name: "tzdata", is_esm_app: true }] });
   assert.deepEqual(parseSecurityStatus(other), { esm_apps: ["tzdata"], total: 1 });
   assert.equal(parseSecurityStatus("not json"), undefined);
+});
+
+test("the Ubuntu Pro client's own packages list is read: package + service_name, not only name + is_esm_app", () => {
+  const pro = JSON.stringify({
+    packages: [
+      { package: "tzdata", version: "2024b", service_name: "esm-apps", status: "pending" },
+      { package: "libc6", version: "2.39", service_name: "esm-infra", status: "pending" },
+      { package: "openssl", version: "3.0", service_name: "standard-security", status: "pending" },
+    ],
+    summary: { packages: { security: 3 } },
+  });
+  assert.deepEqual(parseSecurityStatus(pro), { esm_apps: ["tzdata", "libc6"], total: 3 });
+});
+
+test("an architecture-qualified policy header is kept as its own package, never folded into the unqualified one", () => {
+  const text =
+    "libc6:\n  Installed: 2.39-0ubuntu8.3\n  Candidate: 2.39-0ubuntu8.5\n  Version table:\n     2.39-0ubuntu8.5 500\n        500 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages\n" +
+    "libc6:i386:\n  Installed: 2.39-0ubuntu8.2\n  Candidate: 2.39-0ubuntu8.5\n  Version table:\n     2.39-0ubuntu8.5 500\n        500 http://security.ubuntu.com/ubuntu noble-security/main i386 Packages\n";
+  const p = parsePolicy(text);
+  assert.deepEqual([...p.keys()], ["libc6", "libc6:i386"]);
+  assert.equal(p.get("libc6")!.installed, "2.39-0ubuntu8.3");
+  assert.equal(p.get("libc6:i386")!.installed, "2.39-0ubuntu8.2");
+  const planned = new Map([["libc6", "2.39-0ubuntu8.5"], ["libc6:i386", "2.39-0ubuntu8.5"]]);
+  assert.deepEqual(classify(p, [], [], planned).security, ["libc6", "libc6:i386"]);
 });
 
 test("what apt would upgrade decides the set; the policy table only says where each candidate comes from", () => {

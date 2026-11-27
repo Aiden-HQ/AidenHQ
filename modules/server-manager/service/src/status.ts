@@ -4,7 +4,7 @@
 //
 // The read half also lives here: the fixed argument lists this module runs on a host to answer §5's four questions, and the pure
 // function that turns one read pass into a row. Every command is a constant of this file; nothing a caller sends becomes argv.
-import { classify, detect, parseHolds, parseOsRelease, parsePolicy, parseSimulatedUpgrade, readoutFrom, type Readout } from "./apt.ts";
+import { classify, detect, parseAptConfig, parseHolds, parseOsRelease, parsePolicy, parseSimulatedUpgrade, readoutFrom, unattendedUpgradesOn, type Readout } from "./apt.ts";
 import type { Machine } from "./config.ts";
 import type { StatusRow } from "./status-store.ts";
 import { TIMEOUTS, type Connection } from "./ssh.ts";
@@ -21,6 +21,7 @@ export const READ = {
   units: ["systemctl", "list-units", "--type=service", "--state=running", "--no-legend", "--plain"],
   disk: ["df", "-Pk", "/", "/boot"],
   bootId: ["cat", "/proc/sys/kernel/random/boot_id"],
+  aptConfig: ["apt-config", "dump"],
 } as const;
 
 /** `df -Pk / /boot` as free space per mount (POSIX output: `Filesystem 1024-blocks Used Available Capacity Mounted on`). */
@@ -77,10 +78,12 @@ export async function readHost(c: Connection, pin?: { fingerprint: string; first
     const bootId = (await c.exec([...READ.bootId], TIMEOUTS.read)).stdout.trim();
     const reboot = await c.probe(["test", "-f", "/var/run/reboot-required"]);
     const rebootPkgs = await c.probe(["cat", "/var/run/reboot-required.pkgs"]);
-    // `systemctl is-enabled` answers "enabled" with exit 0, "disabled"/"masked" with a non-zero code: both are answers.
+    // The effective setting decides, not the unit's state: `apt-config dump` shows what APT will do after every drop-in and
+    // override. `systemctl is-enabled` is only the fallback when the key is absent, and it answers "enabled" with exit 0,
+    // "disabled"/"masked" with a non-zero code: both are answers.
+    const aptConfig = await c.exec([...READ.aptConfig], TIMEOUTS.read);
     const ua = await c.probe(["systemctl", "is-enabled", "unattended-upgrades"]);
-    const uaConf = await c.probe(["test", "-f", "/etc/apt/apt.conf.d/20auto-upgrades"]);
-    const uaOn = ua.code === 0 ? !/^disabled|^masked|^not-found/i.test(ua.stdout.trim()) : uaConf.code === 0;
+    const uaOn = unattendedUpgradesOn(parseAptConfig(aptConfig.stdout), ua.stdout);
     const securityStatus = await c.probe(["ubuntu-security-status", "--format", "json"]);
     const disk = parseDf(df.stdout);
     const r = readoutFromChecked({
@@ -158,6 +161,9 @@ export const SERVERS: Table = {
   tracked: ["state", "pending", "security", "reboot_needed"],
 };
 
+/** The statement that retires machines the owner removed: every published row whose name is not in the saved list. */
+export const retireSql = (schema: string) => `DELETE FROM ${schema}.server WHERE NOT (name = ANY($1::text[]))`;
+
 export const DDL = `CREATE TABLE IF NOT EXISTS src_servers.server (
   name text PRIMARY KEY,
   distro text,
@@ -191,14 +197,18 @@ CREATE OR REPLACE VIEW src_servers.fleet AS
     count(*) FILTER (WHERE reboot_needed)::integer AS reboot_needed,
     coalesce(sum(security), 0)::integer AS security,
     coalesce(sum(pending), 0)::integer AS pending,
-    max(checked_at) AS updated_at
+    max(checked_at) AS updated_at,
+    max(seq) AS seq,
+    false AS baseline
   FROM src_servers.server;
-COMMENT ON VIEW src_servers.fleet IS 'The whole fleet in one row: how many machines are listed, checked and failing, how many need a reboot, and the totals of security and other upgradable packages. updated_at = when the newest check ran.';
+COMMENT ON VIEW src_servers.fleet IS 'The whole fleet in one row: how many machines are listed, checked and failing, how many need a reboot, and the totals of security and other upgradable packages. updated_at = when the newest check ran; seq = the newest row it counted, so source_new can follow it like any other view.';
 GRANT SELECT ON src_servers.servers, src_servers.fleet TO agents_open;`;
 
 /** One row as the source table holds it; the readout's own parts are flattened so a change log line names one field. */
 export function publishRow(machine: Machine, checked: Checked, at: string): Record<string, unknown> {
-  if (!checked.ok) return { name: machine.name, distro: null, family: null, state: checked.state, pending: null, security: null, security_known: null, reboot_needed: null, root_free_gb: null, boot_free_gb: null, boot_id: null, unattended_upgrades: null, security_note: checked.detail, checked_at: at };
+  // A failure publishes its controlled state and nothing else: the detail (an ssh message, a key's name, a connection detail) is
+  // for the owner's own check response, never for a row every agent with the warehouse may read (§8).
+  if (!checked.ok) return { name: machine.name, distro: null, family: null, state: checked.state, pending: null, security: null, security_known: null, reboot_needed: null, root_free_gb: null, boot_free_gb: null, boot_id: null, unattended_upgrades: null, security_note: null, checked_at: at };
   const r = checked.readout;
   return {
     name: machine.name, distro: r.distro, family: r.family, state: "ok", pending: r.upgradable.length, security: r.security.length,
@@ -208,13 +218,30 @@ export function publishRow(machine: Machine, checked: Checked, at: string): Reco
 }
 
 /**
- * Publishes one run's rows (at most once per run, after it). A missing password (the warehouse module off) or any error is
- * logged once and skipped: nothing in a run waits on this.
+ * Creates the table and the two advertised views. Run at service start, not on a check: a fresh install with no machines still
+ * has `src_servers.servers` and `src_servers.fleet`, empty, for a reader to query. A missing password (the warehouse module off) or
+ * any error is logged once and skipped: the service works without the warehouse.
  */
-export async function publish(rows: Record<string, unknown>[], log: (msg: string, f?: Record<string, unknown>) => void): Promise<void> {
-  if (!rows.length) return;
+export async function ensureSchema(log: (msg: string, f?: Record<string, unknown>) => void): Promise<void> {
   try {
     // Loaded lazily: pg is the container's dependency, and a test that imports this file's pure functions never needs it.
+    const { SourceStore } = await import("./source-store.ts");
+    const store = SourceStore.fromEnv("servers");
+    if (!store) return log("no warehouse password yet (warehouse module or warehouse_src_servers_password missing); src_servers not created");
+    await store.migrate(DDL);
+  } catch (e) {
+    log("src_servers schema setup failed; the service is unaffected", { err: String((e as Error).message ?? e).slice(0, 200) });
+  }
+}
+
+/**
+ * Publishes one run's rows (at most once per run, after it). `inventory` is every machine the settings list now: a row for a
+ * machine the owner removed is deleted, so the aggregate never counts a retired machine. A missing password (the warehouse module
+ * off) or any error is logged once and skipped: nothing in a run waits on this.
+ */
+export async function publish(rows: Record<string, unknown>[], inventory: string[], log: (msg: string, f?: Record<string, unknown>) => void): Promise<void> {
+  if (!rows.length && !inventory.length) return;
+  try {
     const { SourceStore } = await import("./source-store.ts");
     const store = SourceStore.fromEnv("servers");
     if (!store) return log("no warehouse password yet (warehouse module or warehouse_src_servers_password missing); status not published");
@@ -225,6 +252,8 @@ export async function publish(rows: Record<string, unknown>[], log: (msg: string
         await store.upsert(SERVERS, row, { baseline: false });
         n++;
       }
+      // Every row is keyed by machine name: one that is not in the saved list any more is gone from the fleet.
+      await store.pool.query(retireSql(store.schema), [inventory]);
       return n;
     });
   } catch (e) {

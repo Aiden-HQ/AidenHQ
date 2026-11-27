@@ -23,8 +23,14 @@ export function ownerOnly(who: { kind?: string }): void {
   if (who.kind !== "owner") throw new Error("this action is the owner's: it is taken from the Servers page, and no agent may file it");
 }
 
-export function configTools(d: { machines: () => string; status: StatusStore; keys?: () => Keys; transport?: Transport; log?: (msg: string, f?: Record<string, unknown>) => void }): Tool[] {
+export function configTools(d: {
+  machines: () => string; status: StatusStore; keys?: () => Keys; transport?: Transport;
+  log?: (msg: string, f?: Record<string, unknown>) => void;
+  /** The warehouse publish, overridable so a test can hold it open and see the check answer regardless. */
+  publishRows?: typeof publish;
+}): Tool[] {
   const log = d.log ?? (() => undefined);
+  const publishRows = d.publishRows ?? publish;
   /** One machine's target for the transport: only the fields ssh.ts may see, and never the key's value. */
   const target = (m: Machine): SshMachine => ({ name: m.name, address: m.address, port: m.port, user: m.user, key: m.key, expected_fingerprint: m.expected_fingerprint });
   /**
@@ -104,6 +110,9 @@ export function configTools(d: { machines: () => string; status: StatusStore; ke
         if (!transport) throw new Error("the SSH transport isn't configured in this build");
         const { machines } = readMachines(d.machines());
         const name = typeof a.name === "string" ? a.name : undefined;
+        // Every machine the settings still list, enabled or not, and including an entry that fails its own check: the warehouse
+        // keeps only the machines that are still saved, and a bad field is the owner's to fix, not a removal.
+        const inventory = [...new Set([...machines.map((m) => m.name), ...(savedList(d.machines()) ?? []).flatMap((e) => (typeof e.name === "string" && e.name ? [e.name] : []))])];
         const list = machines.filter((m) => m.enabled && (!name || m.name === name));
         if (name && !list.length) return { problem: `no enabled machine called ${name}` };
         const results = [];
@@ -119,7 +128,8 @@ export function configTools(d: { machines: () => string; status: StatusStore; ke
               : { detail: checked.detail }),
           });
         }
-        await publish(rows, log);
+        // Not awaited: the warehouse is never in the execution path, so a slow or unreachable Postgres can't hold the answer.
+        void publishRows(rows, inventory, log).catch((e) => log("status publish failed; the run is unaffected", { err: String((e as Error).message ?? e).slice(0, 200) }));
         return { checked: results };
       },
     },

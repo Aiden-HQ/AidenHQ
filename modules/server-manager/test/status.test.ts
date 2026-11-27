@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseDf, publishRow, rowOf, stateOfError } from "../service/src/status.ts";
+import { DDL, parseDf, publishRow, retireSql, rowOf, stateOfError } from "../service/src/status.ts";
 import { StatusStore } from "../service/src/status-store.ts";
 import { configTools } from "../service/src/tools.ts";
 import { createMcp } from "../service/src/mcp.ts";
@@ -56,12 +56,31 @@ test("a successful check's row carries counts, disk and the time, and no package
   for (const secret of ["vm-one-key", "PRIVATE KEY", "libc6"]) assert.ok(!JSON.stringify(pub).includes(secret), `the published row never carries ${secret}`);
 });
 
-test("a failure's row keeps the state and says nothing else; an unsupported host is its own state", () => {
+test("a failure's row keeps the state and says nothing else; its detail never reaches the shared row", () => {
   const row = rowOf(machine, { ok: false, state: "host-key-changed", detail: "the host key of vm-one changed" }, "2026-11-27T10:00:00Z");
   assert.deepEqual(row, { name: "vm-one", distro: null, state: "host-key-changed", pending: null, security: null, security_known: null, reboot_needed: null, disk: null, updated_at: "2026-11-27T10:00:00Z" });
-  const pub = publishRow(machine, { ok: false, state: "unsupported", detail: "Fedora 41: only Ubuntu LTS and Debian stable are supported" }, "2026-11-27T10:00:00Z");
+  // §8: the shared row carries the controlled state only. A vault key's name or a connection detail stays in the direct answer.
+  const detail = "vm-one: the key \"vm-one-key\" has no private key in the Sign-ins panel";
+  const pub = publishRow(machine, { ok: false, state: "unsupported", detail }, "2026-11-27T10:00:00Z");
   assert.equal(pub.state, "unsupported");
-  assert.match(String(pub.security_note), /only Ubuntu LTS and Debian stable/);
+  assert.equal(pub.security_note, null);
+  assert.ok(!JSON.stringify(pub).includes("vm-one-key"), "the published row never carries the key's name");
+  assert.ok(!JSON.stringify(pub).includes(detail), "the published row never carries the ssh detail");
+});
+
+test("the advertised src_servers views are created by the DDL itself, and the fleet view carries what source_new needs", () => {
+  assert.match(DDL, /CREATE TABLE IF NOT EXISTS src_servers\.server/);
+  assert.match(DDL, /CREATE OR REPLACE VIEW src_servers\.servers AS/);
+  assert.match(DDL, /CREATE OR REPLACE VIEW src_servers\.fleet AS/);
+  // source_new orders by seq and skips baseline rows on every view: the one-row aggregate must expose both.
+  const fleet = DDL.slice(DDL.indexOf("VIEW src_servers.fleet"));
+  assert.match(fleet, /max\(seq\) AS seq/);
+  assert.match(fleet, /false AS baseline/);
+  assert.match(fleet, /GRANT SELECT ON src_servers\.servers, src_servers\.fleet TO agents_open/);
+});
+
+test("a machine the owner removed is deleted from the published table, not left in the fleet", () => {
+  assert.equal(retireSql("src_servers"), "DELETE FROM src_servers.server WHERE NOT (name = ANY($1::text[]))");
 });
 
 test("each transport failure maps to its own plain state", () => {
@@ -89,6 +108,7 @@ function fakeHost(fixture: string) {
     "cat /proc/sys/kernel/random/boot_id": { out: g("boot id") },
     "test -f /var/run/reboot-required": { code: g("reboot") === "yes" ? 0 : 1 },
     "cat /var/run/reboot-required.pkgs": { code: 1 },
+    "apt-config dump": { out: g("apt-config dump") },
     "systemctl is-enabled unattended-upgrades": { out: g("unattended-upgrades") },
     "test -f /etc/apt/apt.conf.d/20auto-upgrades": { code: 1 },
   };
@@ -198,4 +218,65 @@ test("one machine's failure does not stop the fleet: every enabled machine is ch
   assert.deepEqual(out.checked.map((c: { name: string; state: string }) => [c.name, c.state]), [["vm-one", "failed"], ["vm-two", "ok"]]);
   assert.equal(status.get("vm-one")!.state, "failed");
   assert.equal(status.get("vm-two")!.state, "ok");
+});
+
+test("the check answers while the warehouse publish is still open, and hands it every listed machine", async () => {
+  const { root, transport } = fakeHost("ubuntu-lts");
+  const status = new StatusStore(join(root, "data"));
+  let resolve!: () => void;
+  let inventory: string[] = [];
+  const never = new Promise<void>((r) => (resolve = r));
+  const tools = configTools({
+    machines: () => JSON.stringify([{ name: "vm-one", address: "vm-one", user: "user", key: "vm-one-key" }]),
+    status, transport, keys: () => ({ "vm-one-key": { private_key: KEY } }),
+    // A publish that never settles, as a down or locked warehouse would be: the answer must not wait on it.
+    publishRows: (_rows, inv) => { inventory = inv; return never; },
+  });
+  const r = (await Promise.race([
+    createMcp("server-manager", tools)({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "server_manager_check", arguments: {} } } as never, owner as never),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("the check waited on the warehouse")), 5000)),
+  ])) as any;
+  assert.equal(JSON.parse(r.result.content[0].text).checked[0].state, "ok");
+  assert.deepEqual(inventory, ["vm-one"], "the whole saved list is the publish's inventory");
+  resolve();
+});
+
+test("a failed probe (ssh exit 255) is a failure, never 'no': a dropped connection does not say a reboot isn't needed", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sm-probe-"));
+  mkdirSync(join(dir, "tmp"));
+  // The scan and the opening connect succeed; every later command on the session dies at 255.
+  const ssh = join(dir, "ssh");
+  const script = [
+    `#!${process.execPath}`,
+    'const fs = require("node:fs");',
+    "const args = process.argv.slice(2);",
+    'const pinned = args.find((a) => a.startsWith("UserKnownHostsFile="))?.split("=")[1];',
+    'if (pinned && !fs.existsSync(pinned)) fs.writeFileSync(pinned, "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" + String.fromCharCode(10));',
+    "const cmd = args[args.length - 1];",
+    'if (cmd === "true") process.exit(0);',
+    'if (cmd.includes("os-release")) { process.stdout.write(\'PRETTY_NAME="Ubuntu 24.04.3 LTS"\' + String.fromCharCode(10) + \'ID=ubuntu\' + String.fromCharCode(10) + \'VERSION_ID="24.04"\' + String.fromCharCode(10) + \'VERSION_CODENAME=noble\' + String.fromCharCode(10)); process.exit(0); }',
+    'process.stderr.write("Connection reset by peer" + String.fromCharCode(10));',
+    "process.exit(255);",
+    "",
+  ].join("\n");
+  writeFileSync(ssh, script);
+  chmodSync(ssh, 0o755);
+  const keygen = join(dir, "ssh-keygen");
+  writeFileSync(keygen, `#!${process.execPath}
+const fs = require("node:fs");
+try { if (!fs.readFileSync(process.argv[process.argv.length - 1], "utf8").trim()) process.exit(1); } catch { process.exit(1); }
+process.stdout.write("256 SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA host (ED25519)\\n");
+`);
+  chmodSync(keygen, 0o755);
+  const status = new StatusStore(join(dir, "data"));
+  const tools = configTools({
+    machines: () => JSON.stringify([{ name: "vm-one", address: "vm-one", user: "user", key: "vm-one-key" }]),
+    status, transport: { config: { stateDir: join(dir, "state"), tmpDir: join(dir, "tmp"), sshBin: ssh, keygenBin: keygen, env: {} } },
+    keys: () => ({ "vm-one-key": { private_key: KEY } }),
+  });
+  const r = (await createMcp("server-manager", tools)({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "server_manager_check", arguments: {} } } as never, owner as never)) as any;
+  const out = JSON.parse(r.result.content[0].text);
+  assert.equal(out.checked[0].state, "unreachable");
+  assert.equal(out.checked[0].reboot_needed, null);
+  assert.equal(status.get("vm-one")!.state, "unreachable");
 });

@@ -25,12 +25,12 @@ const args = process.argv.slice(2);
 const pinned = args.find((a) => a.startsWith("UserKnownHostsFile="))?.split("=")[1];
 fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args }) + "\\n");
 const mode = ${JSON.stringify(mode)};
+// The host key is exchanged and recorded before authentication, so the scan (and any failing login) leaves it pinned.
+if (pinned && !fs.existsSync(pinned)) fs.writeFileSync(pinned, "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\\n");
 if (mode === "changed") { process.stderr.write("@@@@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@@@@\\n"); process.exit(255); }
 if (mode === "denied") { process.stderr.write("user@host: Permission denied (publickey).\\n"); process.exit(255); }
 if (mode === "timeout") { setTimeout(() => {}, 60000); }
 else {
-  // The pin file is what ssh would write on a first accept-new: write it when it is missing.
-  if (pinned && !fs.existsSync(pinned)) fs.writeFileSync(pinned, "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\\n");
   const cmd = args[args.length - 1];
   if (cmd === "true") process.exit(0);
   if (cmd.includes("os-release")) process.stdout.write('PRETTY_NAME="Ubuntu 24.04.3 LTS"\\nID=ubuntu\\nVERSION_ID="24.04"\\nVERSION_CODENAME=noble\\n');
@@ -72,14 +72,19 @@ test("batch, a pinned host file, fixed timeouts, and the key by path only", asyn
     return out.stdout;
   });
   assert.match(r, /Ubuntu 24.04.3 LTS/);
-  const [open, run] = f.calls();
-  const args = [...open!, ...run!];
+  // The host key is read without authenticating first, then the connection itself, then the command on it.
+  const [scan, open, run] = f.calls();
+  assert.equal(f.calls().length, 3);
+  const args = [...scan!, ...open!, ...run!];
   for (const o of ["BatchMode=yes", "ForwardAgent=no", "ForwardX11=no", "ClearAllForwardings=yes", "RequestTTY=no", `ConnectTimeout=${TIMEOUTS.connect}`, "IdentitiesOnly=yes"])
     assert.ok(args.includes(o), `ssh runs with -o ${o}`);
   assert.ok(args.some((a) => /UserKnownHostsFile=.*known_hosts\/vm-one$/.test(a)), "the pin is per machine");
-  assert.ok(open!.includes("StrictHostKeyChecking=accept-new"), "the first connection pins what the host presents");
-  assert.ok(run!.includes("StrictHostKeyChecking=yes"), "after that a changed key refuses");
-  assert.equal(args.filter((a) => a === "user@vm-one").length, 2, "user@address with -p and -l, once per connection");
+  assert.ok(scan!.includes("PreferredAuthentications=none"), "the host key is read without offering the private key");
+  assert.ok(scan!.includes("StrictHostKeyChecking=accept-new"), "the scan records what the host presents, in a throwaway file");
+  assert.ok(!scan!.some((a) => /UserKnownHostsFile=.*known_hosts\/vm-one$/.test(a)), "the scan never writes the machine's pin before it is checked");
+  assert.ok(open!.includes("StrictHostKeyChecking=yes"), "the connection must present exactly the key just checked");
+  assert.ok(run!.includes("StrictHostKeyChecking=yes"), "every later connection refuses a changed key");
+  assert.equal(args.filter((a) => a === "user@vm-one").length, 3, "user@address with -p and -l, once per connection");
   assert.ok(run!.slice(-3).join(" ").includes("user@vm-one"), "the command and target are the last words");
   assert.ok(!JSON.stringify(f.calls()).includes("BEGIN OPENSSH PRIVATE KEY"), "the key's text is never on a command line");
   assert.ok(!JSON.stringify(f.calls()).includes("b3BlbnNzaC1rZXk"), "not even the key's body is on a command line");
@@ -91,7 +96,9 @@ test("the key's file is 0600 inside the tmpfs and gone after the run", async () 
   const { transport: t, f } = transport(dir);
   let keyPath = "";
   await withConnection(t, machine, keys(), async (c) => {
-    keyPath = f.calls()[0]!.find((a, i, all) => all[i - 1] === "-i")!;
+    // The key is named only on the connection after the scan: the scan is given no `-i` at all.
+    assert.ok(!f.calls()[0]!.some((a, i, all) => all[i - 1] === "-i"), "the host-key scan never names the key");
+    keyPath = f.calls()[1]!.find((a, i, all) => all[i - 1] === "-i")!;
     const mode = (await import("node:fs")).statSync(keyPath).mode & 0o777;
     assert.equal(mode, 0o600);
     assert.ok(keyPath.startsWith(join(dir, "tmp")), "the key is written in the tmpfs");
@@ -151,7 +158,7 @@ test("a command word outside the allowed characters is refused before ssh runs",
   mkdirSync(join(dir, "tmp"));
   const { transport: t, f } = transport(dir);
   await assert.rejects(() => withConnection(t, machine, keys(), async (c) => c.exec(["apt-get", "install", "a;reboot"])), /outside the allowed characters/);
-  assert.equal(f.calls().length, 1, "only the opening connection ran");
+  assert.equal(f.calls().length, 2, "the scan and the opening connection ran, and the refused command did not");
 });
 
 test("every error string is scrubbed of the key, whole and line by line", () => {
@@ -176,7 +183,7 @@ test("the connection is closed even when the work throws", async () => {
   const { transport: t, f } = transport(dir);
   let keyPath = "";
   await assert.rejects(() => withConnection(t, machine, keys(), async (c) => {
-    keyPath = f.calls()[0]!.find((a, i, all) => all[i - 1] === "-i")!;
+    keyPath = f.calls()[1]!.find((a, i, all) => all[i - 1] === "-i")!;
     throw new Error("boom");
   }), /boom/);
   assert.equal(existsSync(keyPath), false);
@@ -188,4 +195,16 @@ test("a connection built without opening writes no key at all", () => {
   const c = new Connection(machine, t, keys());
   c.close();
   assert.equal(existsSync(join(dir, "tmp")), false);
+});
+
+test("an IPv6 address is passed bare, with the port on its own flag: never user@[addr] which ssh cannot resolve", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sm-ssh-"));
+  mkdirSync(join(dir, "tmp"));
+  const { transport: t, f } = transport(dir);
+  await withConnection(t, { ...machine, address: "[2001:db8::1]", port: 2222 }, keys(), async (c) => c.exec(["true"]));
+  const target = f.calls().at(-1)!.find((a) => a === "user@2001:db8::1");
+  assert.equal(target, "user@2001:db8::1", "the literal is passed without brackets");
+  const args = f.calls().at(-1)!;
+  assert.deepEqual(args.slice(args.indexOf("-p"), args.indexOf("-p") + 2), ["-p", "2222"]);
+  assert.ok(!f.calls().flat().some((a) => a.includes("[2001")), "the bracketed form is never passed");
 });
