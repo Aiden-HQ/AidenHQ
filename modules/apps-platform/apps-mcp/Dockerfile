@@ -11,9 +11,10 @@ RUN bun run build && rm -rf node_modules && bun install --frozen-lockfile --igno
 
 FROM docker:29.10.0-cli@sha256:34507eb5069d8be82c95dd3b6987d4250fd5fee49b82e2509b7d7a7030740d6d AS docker
 
-# The compose plugin docker:29.10.0-cli ships is compose v5.7.1, whose x/net v0.60.0 still carries GO-2026-6860 and
-# whose klauspost/compress v1.20.0 carries GO-2026-6865 (no published compose tag clears either). So the same v5.7.1 is
-# built here with two pins above its own (go.mod, go.sum next to this file): x/net v0.62.0 and compress v1.20.2.
+# The compose plugin docker:29.10.0-cli ships is compose v5.7.1, whose x/net v0.60.0 fixes the HTTP/2 advisories older
+# tags carried (GO-2026-6612/6603/6611/6617) but still carries GO-2026-6860, and whose klauspost/compress v1.20.0 carries
+# GO-2026-6865. It is built here from compose v5.7.1 with two pins above its own (go.mod, go.sum next to this file), so
+# the binary carries x/net v0.62.0 and compress v1.20.2.
 FROM golang:1.27.4-bookworm@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea AS compose
 WORKDIR /src
 COPY compose-plugin/go.mod compose-plugin/go.sum ./
