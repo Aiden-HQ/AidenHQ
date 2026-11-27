@@ -1,14 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Bash(bun run test)",
+      "Bash(npm test)",
       "Bash(git fetch)",
       "Bash(git fetch *)",
-      "Bash(bunx vitest run)",
-      "Bash(bunx tsc -p tsconfig.build.json --noEmit)",
-      "Bash(bunx tsc --noEmit -p .)",
-      "Bash(bun run typecheck)",
-      "Bash(bun run lint)"
+      "Bash(npx tsc -p tsconfig.build.json --noEmit)",
+      "Bash(npx tsc --noEmit -p .)",
+      "Bash(npm run typecheck)",
+      "Bash(npm run lint)"
     ]
   }
 }

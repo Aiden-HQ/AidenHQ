@@ -1225,7 +1225,7 @@ kernelTimeoutWhy() {
 # connections granted since the previous config; its own ERROR lines, naming the connection and its detail, become the
 # reason).
 health() {
-  local base="$1" prev="$2" deadline name regress out rc=0 err why="" answer krc=0
+  local base="$1" prev="$2" deadline name regress newmod out rc=0 err why="" answer krc=0
   local kurl="${AIDENHQ_KERNEL_HEALTH_URL:-http://10.231.0.1:3130/healthz}" every="${AIDENHQ_HEALTH_INTERVAL_S:-10}"
   HEALTH_WHY=""
   deadline=$(( $(date +%s) + ${AIDENHQ_KERNEL_DEADLINE_S:-120} ))
@@ -1237,12 +1237,15 @@ health() {
     deadline=$(( $(date +%s) + ${AIDENHQ_HEALTH_DEADLINE_S:-600} ))
     while :; do
       out="$(scripts/healthcheck.sh 2>&1 || true)"
-      regress=""
+      regress=""; newmod=""
       while IFS= read -r name; do
         [ -n "$name" ] || continue
         grep -qF -- "  FAIL  $name  " <<< "$out" && regress+="${regress:+, }$name"
       done <<< "$(sed -n 's/^  ok    //p' "$base")"
-      # The apply installs these units itself: a mismatch after the switch is never excused by a baseline that had one too.
+      # The apply installs these units itself, and starts the module services it enables: a mismatch after the switch is never
+      # excused by a baseline that had one too. A module service this apply starts for the first time has no line in the
+      # baseline at all, so its failure is neither a regression nor a pass (WOR-14006: server-manager landed that way); it is
+      # hard here, named as such.
       local hard
       for hard in "host metrics timer runs the applied checkout" "security sbom timer runs the applied checkout"; do
         if grep -qF -- "  FAIL  $hard  " <<< "$out"; then
@@ -1250,9 +1253,25 @@ health() {
           return 1
         fi
       done
-      [ -n "$regress" ] || break
-      [ "$(date +%s)" -lt "$deadline" ] || { HEALTH_WHY="checks that passed before the apply fail now: $regress"; return 1; }
-      echo "health: waiting on $regress"
+      # A module service the baseline never mentions did not exist before this apply: it has no earlier verdict to compare
+      # with, so it gets the same deadline as a regression instead of being excused. (A container takes a few seconds to
+      # start, and its HEALTHCHECK a moment after that; the baseline has no line for it until one exists.)
+      # The baseline is matched by the whole check name, never by a substring: `module service monitoring/grafana-mcp` is not
+      # `module service monitoring/grafana`, and treating the prefix as the same service would excuse a container this apply
+      # started. The name carries the module too, so two modules' `api` services stay two services.
+      local mfail mname
+      while IFS= read -r mfail; do
+        [ -n "$mfail" ] || continue
+        mname="${mfail#  FAIL  }"; mname="${mname%%  *}"
+        grep -qxF -- "  ok    $mname" "$base" || grep -qF -- "  FAIL  $mname  " "$base" || newmod+="${newmod:+, }${mfail#  FAIL  }"
+      done <<< "$(grep -F '  FAIL  module service ' <<< "$out" || true)"
+      [ -n "$regress$newmod" ] || break
+      [ "$(date +%s)" -lt "$deadline" ] || {
+        [ -z "$newmod" ] || HEALTH_WHY="module services this apply started are not healthy: $newmod"
+        [ -z "$regress" ] || HEALTH_WHY="${HEALTH_WHY:+$HEALTH_WHY; }checks that passed before the apply fail now: $regress"
+        return 1
+      }
+      echo "health: waiting on $(printf '%s%s%s' "$regress" "$([ -n "$regress" ] && [ -n "$newmod" ] && printf ', ')" "$newmod")"
       sleep "$every"
     done
   fi

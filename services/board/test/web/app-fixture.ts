@@ -2,8 +2,9 @@
 // request is recorded (path, method, body) so a test can assert what the page sent.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { vi } from "vitest";
+import { vi } from "bun:test";
 import { App } from "../../web/src/App";
+import { stubGlobal, unstubAllGlobals } from "../stubs";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -42,7 +43,7 @@ export const answer = (body: unknown, status = 200) => ({ ok: status < 400, stat
 export async function mountApp(hash: string, routes: (path: string, method: string, body: unknown) => unknown = () => undefined) {
   location.hash = hash;
   const sent: Sent[] = [];
-  vi.stubGlobal(
+  stubGlobal(
     "fetch",
     vi.fn(async (path: string, init?: { method?: string; body?: string }) => {
       const method = init?.method ?? "GET";
@@ -85,7 +86,7 @@ export function unmountApp() {
   act(() => root?.unmount());
   root = undefined;
   document.body.innerHTML = "";
-  vi.unstubAllGlobals();
+  unstubAllGlobals();
 }
 export const key = async (k: string, opts: KeyboardEventInit = {}) => {
   const at = (document.activeElement as HTMLElement | null) ?? document.body;

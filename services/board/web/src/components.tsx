@@ -3,7 +3,6 @@ import { CSS } from "@dnd-kit/utilities";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ConnectButton } from "./Connect";
-import { api } from "./api";
 import { BUCKETS, BUCKET_NAMES, type Assignee, type Board, type Bucket, type Card, type CrewMember, type CrewState, type PlanItem, type SignInStatus, type Working } from "./types";
 import { Face, faceProps, type FaceState } from "./ui";
 import { TaskState } from "./ui/TaskState";

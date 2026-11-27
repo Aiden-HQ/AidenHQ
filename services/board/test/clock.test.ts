@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { clockWords, hhmmWords, timeFormatOf } from "../src/clock.js";
 
 describe("time_format", () => {

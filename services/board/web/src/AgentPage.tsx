@@ -8,7 +8,7 @@ import { agentOpenQuery, agentProfileQuery, QUERIES, scorecardQuery, useQuery } 
 import { AgentHandbook } from "./AgentHandbook";
 import { AgentSettings } from "./AgentSettings";
 import { SkeletonLines } from "./Skeleton";
-import type { AgentProfile, Scorecard, TaskRow } from "./types";
+import type { Scorecard, TaskRow } from "./types";
 import { ago, agoLabel, stampOpts } from "./util";
 import { EmptyState } from "./ui/EmptyState";
 import { hueClass } from "./ui/hue";
@@ -30,7 +30,7 @@ const TABS: [AgentTab, string][] = [["overview", "Overview"], ["activity", "Acti
 /** When the agent last finished a task (the newest done task), for the idle status line. */
 const lastDoneQuery = (key: string) => ({ key: `agents.${key}.last-done`, fetch: () => api.agentHistory(key, { status: "done" }).then((r) => r.rows.reduce<string | null>((a, x) => (!a || x.updatedAt > a ? x.updatedAt : a), null)), persist: false as const });
 
-export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; tab: AgentTab; go: (hash: string) => void; onSignIn: () => void }) {
+export function AgentPage({ agentKey, tab, onSignIn }: { agentKey: string; tab: AgentTab; go: (hash: string) => void; onSignIn: () => void }) {
   const profileQ = useQuery(agentProfileQuery(agentKey), onSignIn);
   const open = useQuery(agentOpenQuery(agentKey), onSignIn);
   const lastDone = useQuery(lastDoneQuery(agentKey), onSignIn).data;

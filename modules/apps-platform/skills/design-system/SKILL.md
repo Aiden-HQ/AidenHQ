@@ -39,7 +39,7 @@ mockup, build from the starter's patterns and say so in your reply.
   violations and horizontal overflow, runs `e2e/`, and writes to `.aidenhq/out/` (20 attached: name the pages you changed).
   Add an `e2e/` flow for your change (`e2e/flows.spec.ts` is the pattern), open every screenshot, fix what looks wrong and
   rerun; name the screenshots in your report.
-- Component logic gets a Vitest test next to it (`src/test/dialog-form.test.tsx`).
+- Component logic gets a `bun test` test next to it (`src/test/dialog-form.test.tsx`).
 - With a mockup, screenshot at its width and mode, compare, fix visible differences and report what still differs.
 - Every page has its own URL that renders on a link click, Back/Forward and reload: use the starter's `src/lib/navigation.tsx` (`useLocation`, `Link`, `navigate`, `useUrlState` for filters and `?item=`) and list each route in the server's `PAGES`. Click each nav link you added and reload its path: same page.
 - Read your code against the checklist's "Self-review".

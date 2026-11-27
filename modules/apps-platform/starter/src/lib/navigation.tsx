@@ -70,7 +70,10 @@ export function useUrlState() {
 
 function write(changes: Record<string, string | null>, replace: boolean) {
   const params = new URLSearchParams(location.search)
-  for (const [k, v] of Object.entries(changes)) (v ? params.set(k, v) : params.delete(k))
+  for (const [k, v] of Object.entries(changes)) {
+    if (v) params.set(k, v)
+    else params.delete(k)
+  }
   const qs = params.toString()
   move(`${location.pathname}${qs ? `?${qs}` : ""}${location.hash}`, replace, false)
 }

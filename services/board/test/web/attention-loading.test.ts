@@ -1,15 +1,15 @@
-// @vitest-environment happy-dom
 // Team › All agents' fleet strip (web/src/Attention.tsx): one line of counts that opens its list on a click. Before the counts
 // arrive it renders that same line, marked busy, so the board below lands in place instead of being pushed down.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, mock } from "bun:test";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
-vi.mock("../../web/src/events", () => ({ useLive: () => {} }));
-const query = vi.hoisted(() => ({ data: undefined as unknown, error: "" }));
-vi.mock("../../web/src/queries", () => ({ QUERIES: { needsYou: { key: "needs-you" } }, useQuery: () => ({ ...query, reload: () => {} }) }));
+mock.module("../../web/src/events", () => ({ useLive: () => {} }));
+const query = { data: undefined as unknown, error: "" };
+mock.module("../../web/src/queries", () => ({ QUERIES: { needsYou: { key: "needs-you" } }, useQuery: () => ({ ...query, reload: () => {} }) }));
 
-import { AttentionStrip } from "../../web/src/Attention";
+// Imported after the mocks: static imports would load Attention first.
+const { AttentionStrip } = await import("../../web/src/Attention");
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

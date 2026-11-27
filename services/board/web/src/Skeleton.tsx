@@ -1,6 +1,6 @@
 // Loading placeholders shaped like the content they stand for, built from the same layout classes (.fleet,
 // .activity-day, .approval-card), so nothing shifts when the data lands. A subtle sheen, off with reduced motion.
-import { Fragment, type CSSProperties } from "react";
+import type { CSSProperties } from "react";
 
 /** One placeholder block: `w` is a width (px or a CSS length), `h` a height. */
 export function Bone({ w, h, round, className = "" }: { w?: number | string; h?: number | string; round?: boolean; className?: string }) {

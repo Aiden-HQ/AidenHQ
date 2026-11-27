@@ -66,19 +66,19 @@ line here. Docs say how the product works now: no history notes; history goes to
 
 ## Build and test
 
-Everything runs offline; no live instance or paid key is needed. Node 24 and Bun 1.4.5 (`. ops/lib/bun.sh && ensureBun` puts the pinned one on your shell's PATH). Install each package once with `bun install --frozen-lockfile --ignore-scripts`.
+Everything runs offline; no live instance or paid key is needed. Node 24 (the board's tests also need Bun 1.4.5, `bun test`). Install each package once with `npm ci`.
 Before pushing, run `node scripts/ci-local.ts`: it runs what CI would run for your diff.
 
 ```sh
-cd scripts && bun run test && bun run typecheck  # compiler, setup, sync-shared drift; types of the converted scripts and modules
+cd scripts && npm test && npm run typecheck  # compiler, setup, sync-shared drift; types of the converted scripts and modules
 cd services/computer && node --test test/*.test.ts
-cd modules/apps-platform/gate && bun run test && bun run typecheck
-cd services/board && bunx vitest run && bunx tsc -p tsconfig.build.json --noEmit && bun run typecheck && bun run lint && bun run build
+cd modules/apps-platform/gate && npm test && npm run typecheck
+cd services/board && npm test && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run lint && npm run build
 # kernel, modules/apps-platform/apps-mcp, modules/*/connections/*, modules/security/scanner:
-bun run test && bun run typecheck
+npm test && npm run typecheck
 ```
 
-The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. After
+The board's Docker build is stricter than the tests: always run `tsc -p tsconfig.build.json` for board changes. After
 editing any file `scripts/sync-shared.ts` lists (SDK helpers, vendored code, the app starter and design system, the page kit,
 the CI template's supply-chain scripts), run `node scripts/sync-shared.ts` (a test fails on drift, the copies under
 `modules/` included). The official modules are this repo's `modules/` (MIT by folder:
@@ -87,7 +87,7 @@ runs the suites a PR touches (map: `.github/ci/areas.json`, read from the base: 
 whose paths list what it imports; a path under no suite runs everything) and all of them on main. The `scripts/test` files are grouped
 into `scripts/*` suites; a new test file goes in exactly one suite's `run` (`scripts/test/ci-suites.test.ts` fails otherwise).
 
-The app starter (`modules/apps-platform/starter/`) is Vite + shadcn: `bun install --frozen-lockfile --ignore-scripts && bun run build` before serving it (apps-mcp's
+The app starter (`modules/apps-platform/starter/`) is Vite + shadcn: `npm ci && npm run build` before serving it (apps-mcp's
 render test skips without `dist/`). Copying files from macOS with `tar`, set `COPYFILE_DISABLE=1` (else `._*` files break
 the reviewer eval's case loader).
 
@@ -105,6 +105,12 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
 - **TypeScript.** New code is TypeScript (`.ts`/`.tsx`), run directly by Node 24 with `.ts` import specifiers. The only JavaScript
   left is files something loads by a fixed `.js`/`.mjs` name (Paperclip's plugin entry points, a git credential helper, linter configs, the
   app starter's runtime files).
+  Typechecking is TypeScript 7 (native, pinned in every package; `tsc` runs in about a second). It ships no programmatic API: code
+  that must import `typescript` as a library needs `@typescript/typescript6` (nothing here does; the code-review reviewer's
+  language server runs on its own pinned TypeScript 6 in `modules/ci/template/.github/workflows/ci.yml`).
+- **Lint is Oxlint** (Stylelint for the board's CSS). Project rules (design-system tokens, the app starter's navigation, header,
+  colour, craft, focus, emoji and effect checks) are small JS-plugin rules in `oxlint-plugin.mjs` beside each `.oxlintrc.json`
+  (`services/board`, `modules/apps-platform/starter`); a recurring correction becomes a rule there, with the fix in its message.
 - **One way to do each thing.** Every concern has exactly one path:
   - No fallbacks, no compatibility shims, no "until X" second path.
   - A change that replaces a path deletes the old one in the same PR, or in the follow-up its body names. A half-finished

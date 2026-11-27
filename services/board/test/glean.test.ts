@@ -1,6 +1,6 @@
 import type { AddressInfo } from "node:net";
 import pino from "pino";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { createApp } from "../src/app.js";
 import { McpAuth } from "../src/mcpauth.js";
 import { signInPoints } from "../src/config.js";
@@ -52,7 +52,8 @@ describe("Glean sign-in routes", () => {
   it("finishes the sign-in and returns to the board, or to its page with why not", async () => {
     expect(await get(`${localBase}/callback?state=s&code=good`, "127.0.0.1:3121")).toMatchObject({ status: 302, location: "/#/settings/connections?connected=glean" });
     const bad = await get(`${localBase}/callback?state=s&code=bad`, "127.0.0.1:3121");
-    expect(bad).toMatchObject({ status: 302, location: expect.stringMatching(/^\/#\/settings\/connections\?connect=glean&error=/) });
+    expect(bad.status).toBe(302);
+    expect(bad.location).toMatch(/^\/#\/settings\/connections\?connect=glean&error=/);
     expect(decodeURIComponent(bad.location!)).toContain("invalid_grant");
     const denied = await get(`${localBase}/callback?state=s&error=access_denied`, "127.0.0.1:3121");
     expect(denied).toMatchObject({ status: 302, location: expect.stringContaining("declined") });

@@ -1,6 +1,6 @@
 // Mine, Delegated and Home's Your day count with the same functions: a task assigned to an agent is never "mine", and the
 // delegated groups follow the kernel's lanes.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { delegatedCount, delegatedOf, mineCount, mineOf, upcomingGroups, waitingOf } from "../../web/src/own-tasks";
 import type { Card, WorkCard } from "../../web/src/types";
 

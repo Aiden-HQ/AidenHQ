@@ -128,7 +128,7 @@ inputs are 16px (no zoom).
 
 ## Rules the lint enforces
 
-`bun run lint` in `services/board` (ESLint and stylelint, config only; CI runs it): no raw colours or px font sizes
+`npm run lint` in `services/board` (Oxlint with the board's JS plugin `oxlint-plugin.mjs`, and stylelint; CI runs it): no raw colours or px font sizes
 outside `tokens.css`, and no class the kit replaced (`web/legacy-classes.json`, each with what to use instead).
 
 ## Home
@@ -327,6 +327,6 @@ module: it asks for a read by id, and leaves its block out when the read is abse
 ## Working on the UI without an instance
 
 `node web/dev/mock-api.ts` answers the board's reads on :3120 (`PORT=` to move it) with neutral fixtures, and
-`bun run dev:web` serves the UI against it on :5173. `GET /__mock?welcome=1` shows the first-run wizard, `?empty=1` empties
+`npm run dev:web` serves the UI against it on :5173. `GET /__mock?welcome=1` shows the first-run wizard, `?empty=1` empties
 the lists (Home as a fresh install sees it), `?nocal=1` drops Home's calendar, `?slow=800` delays every answer (loading
 states). Check a change at 1512, 1920, 2560 and 390 wide, light and dark, Home first.

@@ -1,10 +1,10 @@
-// @vitest-environment happy-dom
 // A phone's task drawer (web/src/App.tsx, Drawer.tsx): #1866, the bottom tab bar painted over the drawer's composer and
 // the header wrapped Done onto a second row. The drawer's route takes the whole screen, so no bottom bar is drawn over it.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { App } from "../../web/src/App";
+import { stubGlobal, unstubAllGlobals } from "../stubs";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -49,7 +49,7 @@ const fetchFor = (failIssue = false) =>
 let root: Root | undefined;
 const mount = async (hash: string, failIssue = false) => {
   location.hash = hash;
-  vi.stubGlobal("fetch", fetchFor(failIssue));
+  stubGlobal("fetch", fetchFor(failIssue));
   const el = document.createElement("div");
   document.body.append(el);
   root = createRoot(el);
@@ -68,7 +68,7 @@ afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   document.body.innerHTML = "";
-  vi.unstubAllGlobals();
+  unstubAllGlobals();
 });
 
 describe("a phone's task drawer", () => {

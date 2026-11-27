@@ -81,7 +81,12 @@ test("batch, a pinned host file, fixed timeouts, and the key by path only", asyn
   const args = [...scan!, ...open!, ...run!];
   for (const o of ["BatchMode=yes", "ForwardAgent=no", "ForwardX11=no", "ClearAllForwardings=yes", "RequestTTY=no", `ConnectTimeout=${TIMEOUTS.connect}`, "IdentitiesOnly=yes"])
     assert.ok(args.includes(o), `ssh runs with -o ${o}`);
-  assert.ok(args.some((a) => /UserKnownHostsFile=.*known_hosts\/vm-one$/.test(a)), "the pin is per machine");
+  assert.ok(args.some((a) => /UserKnownHostsFile=/.test(a)), "the pin is a file, never the default known_hosts");
+  // Every connection in the run — the opening one and each command after it — checks the run's private copy of the pin, taken once
+  // from the machine's file, so a re-pin mid-run cannot move the trust anchor under a write already in flight (§4).
+  for (const [i, a] of [["opening", open!], ["later", run!]] as const)
+    assert.ok(a.some((x) => /UserKnownHostsFile=.*sm-[^/]+\/known_hosts$/.test(x)), `the ${i} connection checks the run's frozen copy`);
+  assert.ok(![...open!, ...run!].some((a) => /UserKnownHostsFile=.*known_hosts\/vm-one$/.test(a)), "never the live file a re-pin could rewrite");
   assert.ok(scan!.includes("PreferredAuthentications=none"), "the host key is read without offering the private key");
   assert.ok(scan!.includes("StrictHostKeyChecking=accept-new"), "the scan records what the host presents, in a throwaway file");
   assert.ok(!scan!.some((a) => /UserKnownHostsFile=.*known_hosts\/vm-one$/.test(a)), "the scan never writes the machine's pin before it is checked");
@@ -135,6 +140,17 @@ test("a first connection whose key is not the expected fingerprint refuses, befo
   assert.equal(f.calls().length, 1, "the connection is tried once, and nothing runs on it");
 });
 
+test("§10 a re-pinned key connects even where a stale expected_fingerprint is still set: the pin is the authority", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sm-ssh-"));
+  mkdirSync(join(dir, "tmp"));
+  const { transport: t } = transport(dir);
+  // The owner re-pinned the host's current key (a pin file exists); the setting still names the old one, which only the owner can edit.
+  mkdirSync(join(dir, "state", "known_hosts"), { recursive: true });
+  writeFileSync(join(dir, "state", "known_hosts", "vm-one"), `host ssh-ed25519 ${PIN}\n`);
+  const ran = await withConnection(t, { ...machine, expected_fingerprint: OLD_PIN }, keys(), async () => "ran");
+  assert.equal(ran, "ran", "the first connection's expectation is not enforced forever");
+});
+
 test("a refused login says so in plain words and never echoes the key", async () => {
   const dir = mkdtempSync(join(tmpdir(), "sm-ssh-"));
   mkdirSync(join(dir, "tmp"));
@@ -166,6 +182,50 @@ test("a command word outside the allowed characters is refused before ssh runs",
   const { transport: t, f } = transport(dir);
   await assert.rejects(() => withConnection(t, machine, keys(), async (c) => c.exec(["apt-get", "install", "a;reboot"])), /outside the allowed characters/);
   assert.equal(f.calls().length, 2, "the scan and the opening connection ran, and the refused command did not");
+});
+
+// §11.1, §5 — the Debian version separators `~` and `:`. A `name=version` word with them is a legal, permissively quoted word: the
+// host's shell expands neither, so the version reaches apt exactly as the record wrote it.
+test("a Debian name=version with ~ and : reaches the host intact and is never shell-expanded", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sm-ssh-"));
+  mkdirSync(join(dir, "tmp"));
+  const { transport: t, f } = transport(dir);
+  const words = ["apt-get", "install", "--only-upgrade", "openssl=3.0.11-1~deb12u2", "libssl3=1:3.0.11-1~deb12u2"];
+  await withConnection(t, machine, keys(), async (c) => { await c.exec(words); });
+  const opened = f.calls().find((a) => a.join(" ").includes("apt-get install"));
+  assert.ok(opened, "the connection ran a command");
+  const sent = opened!.join(" ");
+  assert.ok(sent.includes("openssl=3.0.11-1~deb12u2"), "the version reaches the host unchanged");
+  assert.ok(sent.includes("libssl3=1:3.0.11-1~deb12u2"));
+  // And each is one shell word, so `~` cannot become a home directory: it is single-quoted, not left bare.
+  assert.ok(` ${sent} `.includes(" 'openssl=3.0.11-1~deb12u2' "), "a word with a shell-special character is quoted");
+});
+
+// §4, §10 — a run keeps the pin it verified. The owner re-pinning the machine while a write is in flight is a *future* run's
+// trust anchor, never the one a command already past the check is judged by.
+test("a re-pin during a run does not move the key that run's later commands are checked against", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sm-ssh-"));
+  mkdirSync(join(dir, "tmp"));
+  const { transport: t, f } = transport(dir);
+  const live = join(dir, "state", "known_hosts", "vm-one");
+  await withConnection(t, machine, keys(), async (c) => {
+    await c.exec(["cat", "/etc/os-release"]);
+    // The owner re-pins a replacement host: the live file now holds a different key.
+    writeFileSync(live, "replacement ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIReplaceReplaceReplaceReplaceReplaceRE\n");
+    await c.exec(["apt-get", "--version"]);
+    // Asserted while the run is open: the run's directory is unlinked when it closes.
+    const commands = f.calls().filter((a) => a.includes("apt-get") || a.join(" ").includes("os-release"));
+    assert.equal(commands.length, 2);
+    for (const a of commands) {
+      const kh = a.find((x) => x.startsWith("UserKnownHostsFile="))!;
+      assert.ok(!kh.endsWith("known_hosts/vm-one"), "no command reads the live file a re-pin rewrites");
+      assert.match(kh, /sm-[^/]+\/known_hosts$/, "each checks the run's own frozen copy");
+      // It is a copy, not a symlink to the live file: the run's key is what it checked, whatever the live file says now.
+      const copy = kh.split("=")[1]!;
+      assert.ok(readFileSync(copy, "utf8").includes("ssh-ed25519"), "the frozen copy holds the key the run verified");
+      assert.ok(!readFileSync(copy, "utf8").includes("Replace"), "and not the key the owner pinned mid-run");
+    }
+  });
 });
 
 test("every error string is scrubbed of the key, whole and line by line", () => {

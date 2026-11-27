@@ -1,7 +1,6 @@
-// @vitest-environment happy-dom
 // Ask Aiden (web/src/AskAiden.tsx): ⌘J opens a non-modal panel with focus in its composer, Escape closes it and gives focus
 // back, and "@Max …" starts a chat the server routes (no agent field).
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "bun:test";
 import { act } from "react";
 import { key, mountApp, settle, unmountApp } from "./app-fixture";
 
