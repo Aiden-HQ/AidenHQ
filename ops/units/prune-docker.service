@@ -1,5 +1,5 @@
 [Unit]
-Description=AidenHQ Docker cleanup (build cache, images unused for two days, one-off containers stopped over a day)
+Description=AidenHQ Docker cleanup (build cache capped at the disk-sized ceiling, images unused for two days, one-off containers stopped over a day)
 
 [Service]
 # Every deploy rebuilds images; old ones and the build cache filled the VM disk. Keep two days of images for rollbacks;
@@ -12,19 +12,15 @@ Description=AidenHQ Docker cleanup (build cache, images unused for two days, one
 # also has its own `timeout`, well under TimeoutStartSec, so a daemon that hangs one prune cannot stop systemd from
 # reaching the later steps and the verification.
 #
-# The prune is unbounded: neither form carries a size flag. Buildx's `--max-used-space` counts only unshared records and
-# returns early when that total is under the budget; on the containerd image store records stay shared while their base
-# image exists, so it deletes nothing (moby/buildkit#7352). `--keep-storage` is a deprecated alias for `--reserved-space`,
-# a floor rather than a cap. With no size flag keepBytes=0 and no early return, so `-a` deletes unused records including
-# shared ones. The accepted trade-off is that the build cache starts cold every four hours.
+# The prune keeps the cache at the shared ceiling (ops/lib/build-cache.sh: 15% of the Docker disk, 20-60 GB), least
+# recently used first, through ops/prune-docker-builder.sh. An unbounded `-a` prune emptied the cache every four hours and
+# made every deploy rebuild the module images from scratch.
 #
-# `-a` on both is what lets the prune reach internal/frontend and shared-with-image records. Without it they survive and
-# `docker system df` still counts them in Size and Reclaimable, so the cache never falls to the ceiling.
 # Each records its status through the same wrapper as the other steps: one failing is expected (`unknown flag` on a CLI
 # that lacks that form), but both failing means no form capped the cache, and the verification must see that even when a
 # cache under its ceiling would otherwise read clean.
-ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-buildx /usr/bin/timeout 15m /usr/bin/docker builder prune -af
-ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-classic /usr/bin/timeout 15m /usr/bin/docker builder prune -af
+ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-buildx /usr/bin/timeout 15m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-builder.sh --max-used-space
+ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-classic /usr/bin/timeout 15m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-builder.sh --keep-storage
 # The cache as it is once the two builder prunes have finished, read here — before the image and container prunes, which
 # take minutes on a large host — so the verification judges the ceiling on the result of pruning, not on a snapshot a build
 # started since has grown. Prefixed like every other step; its status and rows are what the verification reads.

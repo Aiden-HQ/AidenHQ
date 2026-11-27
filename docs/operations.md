@@ -180,7 +180,7 @@ vault and the notes vault are not included. The backup holds `auth.secret`, so i
 unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a full root disk crashes Paperclip's
 Postgres). Each successful apply prunes unused images older than 48 hours and caps the build cache at 15% of the Docker disk, clamped to 20-60 GB (`ops/lib/build-cache.sh`, one number shared with the verification below; least recently used
 first; both the buildx `--max-used-space` and the classic builder's `--keep-storage` form are tried, since which one the CLI
-knows depends on the buildx plugin). Each prune is its own `-`-prefixed `ExecStart=`, so every one runs whatever the ones
+knows depends on the buildx plugin). The timer's two builder prunes (`ops/prune-docker-builder.sh`, one per flag form) cap the cache at that same ceiling, so it is no longer emptied every four hours. Each prune is its own `-`-prefixed `ExecStart=`, so every one runs whatever the ones
 before it did; a last, unprefixed step (`ops/prune-docker-verify.sh`) re-reads the host — daemon answering, build cache under
 its ceiling (the same 15%-of-disk number), no one-off left — and fails the unit when a prune did nothing. `prune-docker.timer` runs the unit every four hours
 (not once a night: the peak between prunes is what crossed the alert line), so the space peak between prunes stays under

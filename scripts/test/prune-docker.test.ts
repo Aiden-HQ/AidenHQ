@@ -52,12 +52,10 @@ test("every prune ExecStart is `-`-prefixed, and the last step reports whether t
   const ceiling = Number(/^TimeoutStartSec=(\d+)min$/m.exec(service)?.[1]);
   const sum = execs.slice(0, -1).map((e) => Number(/(\d+)m\b/.exec(e)?.[1] ?? 0)).reduce((a, b) => a + b, 0);
   assert.ok(ceiling > sum, `TimeoutStartSec ${ceiling}min must exceed the per-command timeouts (${sum}min)`);
-  // The prune is unbounded in both forms: buildx's --max-used-space misses shared records and --keep-storage is a floor,
-  // so neither carries a size flag. Each goes through the step wrapper so its status is recorded: one failing is expected,
-  // both failing is a prune that ran nothing, and the verification has to see that even when the cache under its ceiling
-  // would read clean.
-  assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-buildx /usr/bin/timeout 15m /usr/bin/docker builder prune -af"), `buildx builder prune: ${execs.join(" | ")}`);
-  assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-classic /usr/bin/timeout 15m /usr/bin/docker builder prune -af"), `classic-builder prune: ${execs.join(" | ")}`);
+  // Both forms cap the cache at the shared ceiling (an unbounded `-a` prune emptied it every four hours). Each goes through
+  // the step wrapper so its status is recorded: one failing is expected, both failing is a prune that ran nothing.
+  assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-buildx /usr/bin/timeout 15m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-builder.sh --max-used-space"), `buildx builder prune: ${execs.join(" | ")}`);
+  assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh builder-classic /usr/bin/timeout 15m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-builder.sh --keep-storage"), `classic-builder prune: ${execs.join(" | ")}`);
   // The image and container prunes go through the step wrapper, which records their status for the verification: the `-`
   // keeps a failure from skipping the next step, and the record is how it still fails the unit.
   assert.ok(execs.some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr/bin/timeout 10m /usr/bin/docker image prune -af --filter until=48h --filter label!=aidenhq.keep=true"), `48h image retention kept: ${execs.join(" | ")}`);
@@ -70,7 +68,7 @@ test("every prune ExecStart is `-`-prefixed, and the last step reports whether t
   // snapshot.
   assert.ok(execs.slice(0, -1).some((e) => e === "-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh build-cache /usr/bin/timeout 30 /usr/bin/docker system df --format '{{json .}}'"), `cache snapshot: ${execs.join(" | ")}`);
   const cacheAt = execs.findIndex((e) => /prune-docker-step\.sh build-cache/.test(e));
-  const lastBuilder = execs.map((e) => /docker builder prune/.test(e)).lastIndexOf(true);
+  const lastBuilder = execs.map((e) => /builder prune|prune-docker-builder/.test(e)).lastIndexOf(true);
   const firstLater = execs.findIndex((e) => /docker image prune|prune-docker-containers\.sh/.test(e));
   assert.ok(cacheAt === lastBuilder + 1, `the snapshot must directly follow the builder prunes: ${execs.join(" | ")}`);
   assert.ok(cacheAt < firstLater, `the snapshot must precede the image and container prunes: ${execs.join(" | ")}`);
@@ -238,8 +236,8 @@ exit 0
   return {
     bin,
     calls: () => readFileSync(calls, "utf8"),
-    run: (script, extraEnv = {}) => {
-      const r = spawnSync("bash", [join(repo, script)], { env: { PATH: "/usr/bin:/bin", DOCKER: join(bin, "docker"), DF: join(bin, "df"), ...extraEnv }, encoding: "utf8" });
+    run: (script, extraEnv = {}, ...args) => {
+      const r = spawnSync("bash", [join(repo, script), ...args], { env: { PATH: "/usr/bin:/bin", DOCKER: join(bin, "docker"), DF: join(bin, "df"), ...extraEnv }, encoding: "utf8" });
       return { status: r.status, out: `${r.stdout}${r.stderr}`, calls: readFileSync(calls, "utf8") };
     },
   };
@@ -743,4 +741,14 @@ esac
   const r = spawnSync("bash", [join(dir, "ops/prune-computer-images.sh")], { env: { PATH: `${join(dir, "bin")}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin`, CALLS: calls }, encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(readFileSync(calls, "utf8"), "rm sha256:dangling\nrm sha256:old\n".repeat(3));
+});
+
+test("the timer's builder prune caps the cache at the shared ceiling in both flag forms", () => {
+  const d = fakeDocker();
+  for (const flag of ["--max-used-space", "--keep-storage"]) {
+    const r = d.run("ops/prune-docker-builder.sh", { PATH: "/usr/bin:/bin" }, flag);
+    assert.equal(r.status, 0, r.out);
+  }
+  assert.match(d.calls(), /^builder prune -f --max-used-space 40GB$/m);
+  assert.match(d.calls(), /^builder prune -f --keep-storage 40GB$/m);
 });
