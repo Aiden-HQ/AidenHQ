@@ -36,7 +36,7 @@ lets in. Everything else on that interface is dropped, and 80 is closed in every
 - **443 and 8446 open only once a Caddy front door is compiled** (a `caddy` service in `compose.modules.yaml`). Until
   then `public` keeps the firewall at `local`, and setup says so. An active ufw gets `allow 443/tcp` and `8446/tcp` only
   then.
-- **Choosing a mode.** `ops/setup.sh` (and the installer) take `--exposure public|tailscale|cloudflare|local`. Without it, a new
+- **Choosing a mode.** `ops/setup.sh` (and the installer) take `--exposure public|tailscale|local` (`cloudflare` is set as `settings.exposure: cloudflare` in `instance.yaml`; `ops/vm/setup.sh` then renders its firewall). Without it, a new
   install takes `tailscale` on a tailnet (or with `TS_AUTHKEY`), else `public`, else (no public IPv4 of its own: behind
   NAT, a Mac's VM) `local`; a rerun keeps the mode it has.
 - **Switching is a rerun:** `sudo ops/setup.sh --unattended --exposure <mode>` over SSH, which stays open in every mode,

@@ -59,7 +59,7 @@ folder but not a stolen disk.
 
 Tailscale is optional. A new install without a tailnet serves the board over HTTPS on
 the server's public IP (tcp 443, 8446 and 8447 open, password and authenticator), or on loopback through an SSH tunnel
-behind NAT: `--exposure public|tailscale|cloudflare|local` picks one, and running setup again with another switches
+behind NAT: `--exposure public|tailscale|local` picks one, and running setup again with another switches
 ([design/access.md](design/access.md#exposure-modes)).
 
 ### Option A: any hypervisor or cloud (recommended path)

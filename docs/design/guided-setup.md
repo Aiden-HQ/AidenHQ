@@ -288,7 +288,7 @@ the hiring page (`#/team/hire`), from Home's Next up, or when Aiden's idea links
 
 A fresh install with no GitHub builds, reviews, merges and deploys agent-made apps, with every repository on the server.
 A code host is a role a module `provides: [ codehost ]`; `engineering` requires `codehost`, not a particular provider. The
-default bundle carries `codehost-local` and `github`; GitHub stays idle until connected, then new repositories go to GitHub
+default bundle carries `codehost-local` and `github`; GitHub stays idle until connected and **Fleet repos** (`github_fleet_org`) is set; then new repositories go to GitHub
 and local ones stay local. The design is [codehost-local.md](codehost-local.md).
 
 ### Part 5: the "Getting started" page

@@ -31,8 +31,7 @@ The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui
   head it was given and ship's own commits; any other new commit holds it until handed off again. Ship pushes to a fork only
   where the author allows maintainer edits; otherwise the PR holds.
 - **One decision per pass.** Merge-gate's `decide` returns `wait`, `repair`, `fix_ci`, `fix_review`, `approve`, `enqueue`,
-  `merge`, `done`, `stall` or `fail`, and each writer re-decides right before it writes. Nothing moves on a draft, a `ship:stop`
-  label, a person assigned to the PR, or a hold.
+  `merge`, `done`, `stall` or `fail`, and each writer re-decides right before it writes. Nothing moves on a draft, a stop label (`stop_label`, default `ship:stop`), a person assigned to the PR, or a hold.
 - **Repair.** The repo's own `actions` (slash commands, workflows) run first, then GitHub's update-branch, then on a conflict
   the `ship-repair` check job: a credential-free box merges the base in, takes the base side of generated paths and lockfiles,
   runs the discovered generator (`.gitattributes` `linguist-generated`, known lockfiles, generated-file headers; the `generated`

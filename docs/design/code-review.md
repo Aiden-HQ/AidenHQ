@@ -394,7 +394,7 @@ nothing changes.
   sign-in state; an App 401 retries once with a fresh token.
 - **Threads.** A thread is ours when its first comment carries our marker and its author is the owner or the App, compared by kind
   (REST `type`, GraphQL `__typename`). Threads are read as the writer, and one the writer can't resolve (`viewerCanResolve`
-  false) is skipped with a reason. On a PR whose review or acknowledgement the owner posted earlier, the App posts its own and the
+  false) is skipped with a reason; the service also resolves only threads it recorded as its own. On a PR whose review or acknowledgement the owner posted earlier, the App posts its own and the
   service records the new acknowledgement id.
 - **Setup.** The kernel writes `<vault>/modules/github/github-app/{app_id,key.pem,slug}`; the github process reads them at
   `/state/github-app/` when needed (no restart). The manifest asks for `pull_requests`, `statuses` and `contents` write and
