@@ -14,7 +14,7 @@ import { readNeed, servedSignedIn, SIGNED_IN, type Need } from "../sdk/src/vendo
 import type { ConnectionState } from "./connection-state.ts";
 import type { Asserter } from "./assert.ts";
 import { laneCaller, NoGrants, type Connection, type Grant, type Identity, type Whoami } from "./identity.ts";
-import type { Resolver } from "./net.ts";
+import type { Resolver, Target } from "./net.ts";
 import type { Rec, Requester } from "./records.ts";
 import { CONN_TOOL, MAX_RESULT, oversized, type Writes } from "./writes.ts";
 
@@ -106,21 +106,59 @@ export function pendingText(r: Rec): string {
   return `${JSON.stringify({ approval: r.id, tier: r.tier, state: r.state })}\nFiled for approval (${r.kind}): ${r.tier === 1 ? "the AI reviewer decides" : "the AI reviewer, then the owner, decide"}. It runs once approved, and the outcome lands on your task. Don't say it is done until then.`;
 }
 
+/** The socket errors a connect-level failure reports: the request never reached the module. */
+const CONNECT_FAILURES = new Set(["ECONNREFUSED", "EPIPE", "ECONNRESET", "EHOSTUNREACH", "ENOTFOUND"]);
+
+/**
+ * Whether a request failed before the module could have taken it: one of the connect-level errors, raised while the socket was
+ * connecting or before the whole body was written. Anything else, a timeout above all (its error carries a `status`), or an
+ * error after the body was written, may have run: that is never sent again, because a write tool must not be replayed.
+ */
+function connectFailure(out: http.ClientRequest, e: unknown): boolean {
+  if (typeof (e as { status?: unknown }).status === "number") return false;
+  return CONNECT_FAILURES.has(String((e as { code?: unknown }).code ?? "")) && !out.writableFinished;
+}
+
+/** A request that failed before the module could have taken it: the same call may be sent once more, at a fresh address. */
+class ConnectFailure extends Error {
+  readonly cause: NodeJS.ErrnoException;
+  constructor(cause: NodeJS.ErrnoException) { super(cause.message); this.cause = cause; }
+}
+
+/**
+ * One call to a connection's module, sent at most twice: a connect-level failure (a replaced container whose old address the
+ * resolver still caches, or the new one before it listens) forgets that address and sends the same call once more, freshly
+ * resolved. Anything else is thrown as it is, without a second send.
+ */
+async function sendWithResend<T>({ conn, resolver, name, log, send, failed, resolveFailed = (e) => e, first }: {
+  conn: Connection; resolver: Resolver; name: string; log?: Log; send: (to: Target) => Promise<T>; failed: (e: NodeJS.ErrnoException) => Error; resolveFailed?: (e: Error) => Error;
+  /** The address already resolved for the first attempt (the caller's session setup names it); the resend resolves its own. */
+  first?: Target;
+}): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    const to = attempt === 0 && first ? first : await resolver.resolve(conn.url).catch((e: Error) => { throw resolveFailed(e); });
+    try { return await send(to); } catch (e) {
+      if (attempt === 0 && e instanceof ConnectFailure) { log?.("proxy resend", { connection: name, err: e.cause.code }); continue; }
+      throw e instanceof ConnectFailure ? failed(e.cause) : e;
+    }
+  }
+}
+
 /**
  * One JSON-RPC request (id 1) to a connection's module, outside any session: its service key, and the caller assertion `caller`.
  * The answer as it came (bounded); the caller reads it with mapMessages. The kernel's own calls (callAs, views.ts) go this way.
  */
-export async function postOnce({ conn, name, resolver, secret, caller, method, params }: { conn: Connection; name: string; resolver: Resolver; secret: (name: string) => string; caller: string; method: string; params: unknown }): Promise<{ status: number; sse: boolean; text: string }> {
-  const to = await resolver.resolve(conn.url);
+export async function postOnce({ conn, name, resolver, secret, caller, method, params, timeoutMs }: { conn: Connection; name: string; resolver: Resolver; secret: (name: string) => string; caller: string; method: string; params: unknown; timeoutMs?: number }): Promise<{ status: number; sse: boolean; text: string }> {
   const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }));
-  return new Promise((resolve, reject) => {
-    const out = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: ((conn.tool_timeout_s ?? 300) + 30) * 1000, headers: { host: new URL(conn.url).host, authorization: `Bearer ${secret(conn.auth_secret)}`, "x-aidenhq-caller": caller, accept: "application/json, text/event-stream", "content-type": "application/json", "content-length": body.length } }, async (ur) => {
+  return sendWithResend({ conn, resolver, name, send: (to) => new Promise((resolve, reject) => {
+    const out = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: timeoutMs ?? ((conn.tool_timeout_s ?? 300) + 30) * 1000, headers: { host: new URL(conn.url).host, authorization: `Bearer ${secret(conn.auth_secret)}`, "x-aidenhq-caller": caller, accept: "application/json, text/event-stream", "content-type": "application/json", "content-length": body.length } }, async (ur) => {
       try { resolve({ status: ur.statusCode ?? 502, sse: String(ur.headers["content-type"] ?? "").includes("text/event-stream"), text: (await readAll(ur, MAX_ANSWER)).toString("utf8") }); } catch (e) { reject(e); }
     });
-    out.on("timeout", () => out.destroy(new Error(`${name} didn't answer in time`)));
-    out.on("error", (e) => { resolver.forget(conn.url); reject(e); });
+    let timedOut = false;
+    out.on("timeout", () => { timedOut = true; out.destroy(new Error(`${name} didn't answer in time`)); });
+    out.on("error", (e) => { resolver.forget(conn.url); reject(!timedOut && connectFailure(out, e) ? new ConnectFailure(e as NodeJS.ErrnoException) : e); });
     out.end(body);
-  });
+  }), failed: (e) => e });
 }
 
 /** The account a served answer named (SIGNED_IN), if it named one. */
@@ -129,13 +167,15 @@ const servedAccount = (r: unknown) => {
   return typeof v === "string" && v ? v : undefined;
 };
 
-export function createProxy({ whoami, grants = () => ({}), connections, asserter, resolver, secret, writes, needs = () => undefined, log = () => {} }: {
+export function createProxy({ whoami, grants = () => ({}), connections, asserter, resolver, secret, writes, needs = () => undefined, socketTimeoutMs, log = () => {} }: {
   whoami: Whoami; connections: () => Record<string, Connection>; asserter: Asserter; resolver: Resolver; secret: (name: string) => string; writes?: Writes;
   /** The grants table's agents: whom the fast chat lane may speak for (identity.ts laneCaller). */
   grants?: () => Record<string, Grant>;
   /** The connection state (late-bound: main.ts builds it after the proxy): needs_owner answers, and a success that clears one. */
   needs?: () => Pick<ConnectionState, "hit" | "ok" | "down"> | undefined;
   log?: Log;
+  /** The module's socket deadline, in ms (a test's short one): by default the tool timeout plus 30 s. */
+  socketTimeoutMs?: (conn: Connection) => number;
 }) {
   // Session setup is the same for every caller of a deployment: the module's real initialize result (per requested protocol)
   // and its upstream tools/list (per protocol and cursor) are kept, and each hit is answered with the caller's own id and, for a
@@ -322,10 +362,12 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
       asserter.begin(jti, { credential: who.credential, ...(who.job ? { bearer: callerToken, job: who.job } : {}), aud: conn.module, kind: who.kind, ...(who.run ? { run: who.run } : {}) }, timeout + 30);
     }
     headers.host = new URL(conn.url).host;
-    const timeoutMs = (timeout + 30) * 1000;
+    const timeoutMs = socketTimeoutMs?.(conn) ?? (timeout + 30) * 1000;
       forwarded = Date.now();
-      await new Promise<void>((resolve, reject) => {
-        const out = http.request({ host: to.host, port: to.port, path: to.path, method: req.method, headers, timeout: timeoutMs }, async (ur) => {
+      await sendWithResend({ conn, resolver, name: connection, log, send: (target) => new Promise<void>((resolve, reject) => {
+        // The address this attempt actually uses: a resend after a replaced container re-keys the deployment.
+        if (setupCall) { deploy = deployment(connection, conn, target, key); setupKey = `${deploy}\0${method}\0${method === "initialize" ? proto : String(req.headers["mcp-protocol-version"] ?? "")}\0${cursor}`; }
+        const out = http.request({ host: target.host, port: target.port, path: target.path, method: req.method, headers, timeout: timeoutMs }, async (ur) => {
           try {
             const status = ur.statusCode ?? 502;
             const hdrs = Object.fromEntries(Object.entries(ur.headers).filter(([k]) => !HOP.has(k)));
@@ -435,10 +477,16 @@ export function createProxy({ whoami, grants = () => ({}), connections, asserter
             resolve();
           } catch (e) { reject(e); }
         });
-        out.on("timeout", () => out.destroy(fail(504, "timeout", `${connection} didn't answer in time`)));
-        out.on("error", (e) => { resolver.forget(conn.url); forgetSetup(connection); reject((e as { status?: number }).status ? e : fail(502, "bad_upstream", `${connection} is unreachable (${e.message})`)); });
+        let timedOut = false;
+        out.on("timeout", () => { timedOut = true; out.destroy(fail(504, "timeout", `${connection} didn't answer in time`)); });
+        out.on("error", (e) => {
+          resolver.forget(conn.url); forgetSetup(connection);
+          if (!timedOut && connectFailure(out, e)) reject(new ConnectFailure(e as NodeJS.ErrnoException));
+          else reject((e as { status?: number }).status ? e : fail(502, "bad_upstream", `${connection} is unreachable (${e.message})`));
+        });
         out.end(body);
-      });
+      }), failed: (e) => fail(502, "bad_upstream", `${connection} is unreachable (${e.message})`),
+        resolveFailed: (e) => { done(false, e.message); return fail(502, "bad_upstream", e.message); }, first: to });
       outcome("ok");
     } catch (e) {
       done(false, (e as Error).message);

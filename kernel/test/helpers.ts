@@ -75,7 +75,7 @@ export const readBody = (req) => new Promise((r) => { let b = ""; req.on("data",
  * agents: { alias: {id, name, task?} }: each alias stands for a running kernel job of that agent on its task (TASK-1 by default; its authority frozen from
  * its grants); `call`, `v1` and `token(alias)` turn the alias into the job's real token. grants: the grants table's agents; connections(urls): config/kernel/connections.json from the fake servers' URLs.
  */
-export async function kernel(t, { agents = {}, grants = {}, settings = {}, connections, jobcaps = {}, secrets = {}, onControl, writes: kinds = {}, closed = [], modules = {}, board = async () => ({ status: 404, json: {} }), reviewer, native = {}, parents = {}, issues = {}, repos = {}, jobs: jobsApi, admission, outcomes, checks: checkTable, checkResolver, checkJobs, localChanges, job, routing, graderToken = () => "", connect = false, settingsChange, planners, projects, testSessions } = {}) {
+export async function kernel(t, { agents = {}, grants = {}, settings = {}, connections, jobcaps = {}, secrets = {}, onControl, writes: kinds = {}, closed = [], modules = {}, board = async () => ({ status: 404, json: {} }), reviewer, native = {}, parents = {}, issues = {}, repos = {}, jobs: jobsApi, admission, outcomes, checks: checkTable, checkResolver, checkJobs, localChanges, job, routing, graderToken = () => "", connect = false, settingsChange, planners, projects, testSessions, socketTimeoutMs, resolver: proxyResolver } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "kernel-"));
   const control = [];
   const cpServer = await serve(async (req, res) => {
@@ -131,7 +131,8 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
     taskIdentifier: createTaskIdentifier(async (method, path) => { const r = await fetch(new URL(path, cpServer.url), { method, headers: { authorization: "Bearer board-key" } }); return { status: r.status, json: await r.json().catch(() => ({})) }; }) });
   // `connect`: connect on first use wired as main.ts wires it (facts, the wake inbox, waits, the connection state).
   let connectionState;
-  const proxy = createProxy({ whoami, grants: () => grantsTable().agents ?? {}, connections: connectionsTable, asserter, resolver: createResolver(), secret, writes, needs: () => connectionState, log: logf });
+  // `moduleResolver`: a test's resolver (one that hands back a dead address first), in place of the docker one.
+  const proxy = createProxy({ whoami, grants: () => grantsTable().agents ?? {}, connections: connectionsTable, asserter, resolver: proxyResolver ?? createResolver(), secret, writes, needs: () => connectionState, socketTimeoutMs, log: logf });
   replay = proxy.replay;
   // The control plane as the owner (board key) and the board's internal listener (a fake: `board(method, path, body)`).
   const owner = async (method, path, body) => { const r = await fetch(new URL(path, cpServer.url), { method, headers: { authorization: "Bearer board-key", "content-type": "application/json" }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }); return { status: r.status, json: await r.json().catch(() => ({})) }; };

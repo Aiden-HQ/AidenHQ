@@ -36,7 +36,9 @@ AidenHQ keeps off.
 MCP server that holds one login, so credentials are connected once and never given to agents. Every tool is tagged
 read or write. On each call the service asks who the caller is (Paperclip's run key, or a launcher-issued token inside
 an agent computer) and checks that agent's grant in `config/grants/grants.json`. Grants are written by setup from the
-module and agent definitions; the check lives in `kernel/src/proxy.ts`. Roles gate a few extra capabilities
+module and agent definitions; the check lives in `kernel/src/proxy.ts`. A call that fails before the module could take it
+(the cached address of a replaced container refusing the connection) is sent once more at a freshly resolved address; a
+timeout, or a failure after the request went through, is never replayed. Roles gate a few extra capabilities
 (for example the board's fleet tools, or changing any app with an open incident).
 
 **Engineers.** The kernel runs each Engineer turn as a job in the Engineer's agent computer (a gVisor box from the computer
