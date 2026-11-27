@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MergeMenu, Popover } from "./components";
 import { api } from "./api";
 import { Markdown } from "./markdown";
-import { DELEGATED, NEW_ROWS, SECTIONS, SOURCES, nextWeekOf, progressOf, sourceOf, upcomingGroups, waitingOf, chipOf, type Buckets, type DelegatedGroup, type Section } from "./own-tasks";
+import { DELEGATED, NEW_ROWS, SECTIONS, SOURCES, nextWeekOf, progressOf, sourceOf, upcomingGroups, waitingOf, type Buckets, type DelegatedGroup, type Section } from "./own-tasks";
 import type { Assignee, Board, Bucket, Card, CommentView, Filters, IssueView, Milestone, WorkCard } from "./types";
 import { Button, Kbd, Monogram, RowDrawer, DigestRow, buttonClass, safeHref } from "./ui";
 import type { DigestItem } from "./ui/DigestList";
@@ -37,9 +37,12 @@ export interface TasksProps {
   moreDone?: () => void;
 }
 
+/** Rows a Delegated section shows before "Show all N". */
+const DELEGATED_ROWS = 10;
+
 type Glyph = "new" | "today" | "upcoming" | "later" | "working" | "waiting" | "queued" | "done";
 type Item = { card: Card; glyph: Glyph; group: string; mine: boolean };
-type Block = { id: string; name: string; glyph: Glyph; edge: string; count: number; note?: React.ReactNode; groups: { label?: string; items: Item[] }[]; cap?: number };
+type Block = { id: string; name: string; glyph: Glyph; edge: string; count: number; note?: React.ReactNode; groups: { label?: string; items: Item[] }[]; /** Rows shown before "Show all N". */ limit?: number; cap?: number };
 
 const EDGE: Record<Glyph, string> = { new: "var(--triage)", today: "var(--today)", upcoming: "var(--tomorrow)", later: "var(--later)", working: "var(--working)", waiting: "var(--warn)", queued: "var(--later)", done: "var(--working)" };
 
@@ -65,7 +68,8 @@ const KIND_ICON: Record<string, IconName> = { chat: "chat", mail: "mail", calend
 const person = (assignees: Assignee[], key: string | null | undefined) => (key ? assignees.find((a) => a.key === key) : undefined);
 
 /** The rows of the sections: Mine's, or Delegated's. */
-function blocksOf(p: TasksProps, allNew: boolean): Block[] {
+function blocksOf(p: TasksProps, open: Set<string>): Block[] {
+  const cap = (id: string, limit: number) => (open.has(id) || p.narrowed ? undefined : limit);
   if (p.tab === "work") {
     return DELEGATED.map(({ id, name }) => ({
       id,
@@ -73,7 +77,9 @@ function blocksOf(p: TasksProps, allNew: boolean): Block[] {
       glyph: id,
       edge: EDGE[id],
       count: p.delegated[id].length,
-      groups: [{ items: p.delegated[id].map((card) => ({ card, glyph: id, group: id, mine: false })) }],
+      groups: [{ items: [...p.delegated[id]].sort((a, b) => b.activityAt.localeCompare(a.activityAt)).map((card) => ({ card, glyph: id, group: id, mine: false })) }],
+      limit: DELEGATED_ROWS,
+      cap: cap(id, DELEGATED_ROWS),
     }));
   }
   const tag = (id: Section, glyph: Glyph) => (card: Card): Item => ({ card, glyph, group: id, mine: true });
@@ -81,7 +87,7 @@ function blocksOf(p: TasksProps, allNew: boolean): Block[] {
   const of = (id: Section) => SECTIONS.find((s) => s.id === id)!.buckets.flatMap((b) => p.mine[b]);
   const news = of("new");
   return [
-    { id: "new", name: "New", glyph: "new", edge: EDGE.new, count: news.length, note: <><span className="tk-tag">Triage</span><span className="tk-note">filed by agents and Intake</span></>, groups: [{ items: news.map(tag("new", "new")) }], cap: allNew || p.narrowed ? undefined : NEW_ROWS },
+    { id: "new", name: "New", glyph: "new", edge: EDGE.new, count: news.length, note: <><span className="tk-tag">Triage</span><span className="tk-note">filed by agents and Intake</span></>, groups: [{ items: news.map(tag("new", "new")) }], limit: NEW_ROWS, cap: cap("new", NEW_ROWS) },
     { id: "today", name: "Today", glyph: "today", edge: EDGE.today, count: of("today").length, groups: [{ items: of("today").map(tag("today", "today")) }] },
     { id: "upcoming", name: "Upcoming", glyph: "upcoming", edge: EDGE.upcoming, count: of("upcoming").length, groups: upcomingGroups(p.mine, p.board).map((g) => ({ label: g.label, items: g.cards.map(tag("upcoming", "upcoming")) })) },
     { id: "later", name: "Later", glyph: "later", edge: EDGE.later, count: of("later").length, groups: [{ items: of("later").map(tag("later", "later")) }] },
@@ -128,10 +134,11 @@ function LaterMenu({ timezone, tomorrow, onTomorrow, onWeek, onSomeday, size }: 
 export function TasksList(p: TasksProps) {
   const { board } = p;
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [allNew, setAllNew] = useState(false);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const flip = (id: string) => setExpanded((s) => { const n = new Set(s); if (!n.delete(id)) n.add(id); return n; });
   const [at, setAt] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
-  const blocks = useMemo(() => blocksOf(p, allNew), [p.tab, p.mine, p.delegated, p.closed, p.moreDone, p.narrowed, p.board.rollsOn, allNew]);
+  const blocks = useMemo(() => blocksOf(p, expanded), [p.tab, p.mine, p.delegated, p.closed, p.moreDone, p.narrowed, p.board.rollsOn, expanded]);
   // Every row on screen in order: what J and K walk and the drawer steps through.
   const rows = useMemo(() => blocks.flatMap((b) => (collapsed.has(b.id) ? [] : b.groups.flatMap((g) => g.items)).slice(0, b.cap ?? Infinity)), [blocks, collapsed]);
   const cardOf = (id: string | null) => rows.find((r) => r.card.id === id);
@@ -216,7 +223,7 @@ export function TasksList(p: TasksProps) {
       meta: (
         <>
           <span className={`tk-ctx${wait || it.group === "waiting" ? " warn" : ""}`}>{ctx}</span>
-          <span className="tk-chip">{chipOf(c, board.projects) && <ProjectChip name={chipOf(c, board.projects)!} />}</span>
+          <span className="tk-chip">{board.projects?.find((x) => x.id === c.projectId) && <ProjectChip name={board.projects.find((x) => x.id === c.projectId)!.name} />}</span>
           <span className="tk-by">{agent && <><Monogram name={agent.name} size={18} /><span className="tk-byn">{shortName(agent)}</span></>}</span>
           <span className="tk-when">{timeOf(it, board)}</span>
         </>
@@ -254,8 +261,8 @@ export function TasksList(p: TasksProps) {
                   ) : null;
                 })}
                 {b.id === "done" && p.moreDone && <button type="button" className="tk-more" onClick={p.moreDone}>Show more</button>}
-                {b.cap && b.count > b.cap && <button type="button" className="tk-more" onClick={() => setAllNew(true)}>Show all {b.count}</button>}
-                {allNew && b.id === "new" && b.count > NEW_ROWS && !p.narrowed && <button type="button" className="tk-more" onClick={() => setAllNew(false)}>Show fewer</button>}
+                {b.cap && b.count > b.cap && <button type="button" className="tk-more" onClick={() => flip(b.id)}>Show all {b.count}</button>}
+                {expanded.has(b.id) && b.limit && b.count > b.limit && !p.narrowed && <button type="button" className="tk-more" onClick={() => flip(b.id)}>Show fewer</button>}
               </>
             )}
           </section>

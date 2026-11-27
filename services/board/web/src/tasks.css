@@ -1,7 +1,7 @@
 /* Tasks › Mine and Delegated (Tasks.tsx): one card of sections, each a thin coloured edge, a header and the board's compact rows in columns
  * (ui/DigestList.tsx `cols`). Layout only: colours, type and motion come from the kit's tokens. */
 .tk { flex: none; display: grid; align-content: start; padding: 14px clamp(16px, 1.4vw, 28px) 40px; }
-.tk-card { --cols: 4.6rem 16px 14px minmax(0, 3fr) minmax(0, 1.5fr) minmax(8.5rem, 0.8fr) minmax(6.6rem, 0.55fr) minmax(5.4rem, 0.4fr); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); overflow: clip; }
+.tk-card { --cols: 4.6rem 16px 14px minmax(0, 3fr) minmax(0, 1.3fr) minmax(8.5rem, 0.8fr) minmax(9rem, 0.65fr) minmax(5.4rem, 0.4fr); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); overflow: clip; }
 .tk-grp { border-left: 3px solid var(--e); }
 .tk-grp + .tk-grp { border-top: 1px solid var(--border); }
 .tk-sh { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 16px 0 9px; background: var(--surface-2); font-size: var(--text-md); cursor: pointer; user-select: none; }
