@@ -72,8 +72,11 @@ export interface LedgerDeps {
   spend: () => Promise<SpendSummary | null>;
   /** Tasks' identifiers, titles and statuses by id, in one read (the kernel's issue mirror); without it the task figures are left out. */
   issues?: (ids: string[]) => Promise<Map<string, TaskNames>>;
-  /** OpenRouter's models as the gateway lists them (their prices feed the cache savings); without them the savings are left out. */
-  catalog?: () => Promise<CatalogModel[] | null>;
+  /**
+   * OpenRouter's models as the gateway lists them (their prices feed the cache savings), from a read the board already made:
+   * a cold gateway catalog must never hold the ledger back, so this never waits. Without them the savings are left out.
+   */
+  catalog?: () => CatalogModel[] | null;
 }
 
 export async function ledgerSummary(d: LedgerDeps, r: LedgerRange, now = Date.now()) {
@@ -219,7 +222,7 @@ async function ledgerInsights(d: LedgerDeps, r: LedgerRange, cube: ReturnType<St
 
   // Cache: hit rate over the range and what it saved at list prices.
   const total = rollup(cube, () => "", all)[0]?.[1] ?? ZERO;
-  const catalog = await d.catalog?.().catch(() => null);
+  const catalog = d.catalog?.() ?? null;
   const cache = {
     hit: total.input + total.cached ? total.cached / (total.input + total.cached) : null,
     cached: total.cached,

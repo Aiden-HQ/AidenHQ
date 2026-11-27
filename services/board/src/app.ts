@@ -35,7 +35,7 @@ import { CommitUnreadable, agentGrants, browseModules, createResolver, marketpla
 import { connectionsView, readSources, readUpdates, settingsView, type Probe, type Wakes } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, SharePreviewSchema, changesOf, checkChange, settingsByModule, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
-import { UsageSchema, keyUsage, modelCatalog, spendSummary } from "./costs.js";
+import { UsageSchema, keyUsage, modelCatalog, modelCatalogCached, spendSummary } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
@@ -2198,7 +2198,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     {
       method: "GET",
       path: /^\/api\/costs\/ledger$/,
-      handle: async (_m, _b, url) => ledgerSummary({ store, agents: () => pc.agents(), key: keyUsage, spend: () => spendSummary(opts.gateway), issues: (ids) => issuesOf(taskStates, ids), catalog: () => modelCatalog(opts.gateway) }, ledgerRange(url.searchParams)),
+      handle: async (_m, _b, url) => ledgerSummary({ store, agents: () => pc.agents(), key: keyUsage, spend: () => spendSummary(opts.gateway), issues: (ids) => issuesOf(taskStates, ids), catalog: () => modelCatalogCached(opts.gateway) }, ledgerRange(url.searchParams)),
     },
     {
       method: "GET",
