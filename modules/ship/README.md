@@ -66,8 +66,9 @@ Without ship, no PR is watched: Engineers merge their own green PRs (`aidenhq me
 
 Sam (the `ship` agent) is ship's teammate: he answers the owner about a PR's merge state, holds and the queue, and changes
 the settings when asked. The `ship` connection. Read: `ship_config`, `ship_status`. Write: `ship_configure`. Both need the
-`ship-admin` role (Sam, the Maintainer and Aiden hold it); the owner's own Fleet page calls them too, and `ship_configure` then only returns the typed settings change (the board files it on his Save). A repo ship doesn't cover yet is the owner's to add from the Fleet page, as one change covering its `maintainer_repos` and `ship` entries. Code review is separate: adding a repo to ship never turns it on (the owner does that from the Reviews page), and a repo it doesn't watch merges by the `unwatched` setting. A change that loosens anything (more hand-off, a higher or removed cap, a tier's approve or merge raised) is the owner's, made from the
-Fleet page.
+`ship-admin` role (Sam, the Maintainer and Aiden hold it); the owner's own Fleet page calls them too, and `ship_configure` then only returns the typed settings change (the board files it on his Save). A repo ship doesn't cover yet is the owner's to add from the Fleet page, as one change covering its `maintainer_repos` and `ship` entries. Code review is separate: adding a repo to ship never turns it on (the owner does that from the Reviews page), and a repo it doesn't watch merges by the `unwatched` setting. A change that loosens anything (more hand-off, a higher or removed cap, a tier's approve or merge raised, a login added to
+`ignore_authors`: its comments stop gating a merge) is the owner's, made from the Fleet page; removing an `ignore_authors` login is
+not.
 
 ## New installs
 

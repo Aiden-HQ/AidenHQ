@@ -56,11 +56,11 @@ test("loosens names each loosened field by repo, and the same policy spelled dif
   assert.deepEqual(loosens(gen(["gen/**"]), gen(["gen/**"], "npm run gen")), []);
   // The repo's CI regenerating (command null) runs nothing and writes only the base's blobs: an ordinary change.
   assert.deepEqual(loosens(gen(["gen/**"]), gen(["gen/**"], null)), []);
-  // Ignored accounts: adding narrows what ship acts on; dropping one (any case) widens it.
+  // Ignored accounts: adding one (its comments stop gating a merge) is the owner's; the same login in another case, or dropping one, isn't.
   const ign = (l: string[]) => ({ repos: { "a/b": { preset: "cautious", ignore_authors: l } } });
-  assert.deepEqual(loosens(ign([]), ign(["acme-bot"])), []);
+  assert.deepEqual(loosens(ign([]), ign(["acme-bot"])), ["a/b.ignore_authors"]);
   assert.deepEqual(loosens(ign(["acme-bot"]), ign(["ACME-bot"])), []);
-  assert.deepEqual(loosens(ign(["acme-bot"]), ign([])), ["a/b.ignore_authors"]);
+  assert.deepEqual(loosens(ign(["acme-bot"]), ign([])), []);
 });
 
 test("repo hooks are workflows naming the PR with {pr}; comment steps and bad logins are refused", () => {

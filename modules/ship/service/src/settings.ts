@@ -239,9 +239,10 @@ export function loosens(before: unknown, after: unknown, scope: Scope = ALL): st
     if (x.generated && !y.generated) add("generated");
     // `command: null` (the repo's CI regenerates) is no loosening: the repair then runs nothing and writes only the base's own
     // blobs on those paths, which the globs already bound.
-    // Fewer ignored accounts: more comments become requests ship acts on.
+    // A new ignored account: its comments no longer gate a merge (an agent could name a person), so it is the owner's. Dropping
+    // one is free.
     const ignored = (l: string[]) => new Set(l.map((x) => x.toLowerCase()));
-    if ([...ignored(x.ignore_authors)].some((l) => !ignored(y.ignore_authors).has(l))) add("ignore_authors");
+    if ([...ignored(y.ignore_authors)].some((l) => !ignored(x.ignore_authors).has(l))) add("ignore_authors");
     // A new step of the repo's own (a workflow it dispatches with the owner's credentials) is the owner's.
     const count = (l: ActionStep[] | undefined, v: string) => (l ?? []).filter((u) => JSON.stringify(u) === v).length;
     for (const st of STAGES) if ((y.actions[st] ?? []).some((v) => count(y.actions[st], JSON.stringify(v)) > count(x.actions[st], JSON.stringify(v)))) add(`actions.${st}`);
