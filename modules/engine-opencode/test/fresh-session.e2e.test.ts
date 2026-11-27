@@ -1,6 +1,6 @@
 // A fresh session: opencode 1.19.6 started by the engine from a job spec alone lists the gateway's models, configures no
 // connection tools (they are code: the tool index is an instruction), and loads every plugin in plugins.json. Runs where opencode 1.19.6 is on
-// PATH (the session image: `docker run --rm -v "$PWD":/m -w /m aidenhq/computer-session bun test test/fresh-session.e2e.test.ts`);
+// PATH (the session image: `docker run --rm -v "$PWD":/m -w /m aidenhq/computer-session node --test test/fresh-session.e2e.test.ts`);
 // elsewhere it is skipped. AIDENHQ_OPENCODE_PLUGINS defaults to the image's /opt/opencode.
 import { test } from "node:test";
 import assert from "node:assert/strict";

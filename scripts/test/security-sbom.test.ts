@@ -1368,5 +1368,9 @@ test("security-sbom: an app checkout with no git of its own still scans and reco
 });
 
 describe.concurrent("security-sbom", () => {
-  for (const args of tests) nodeTest(...args);
+  // Bun ignores the options node:test takes, so a `{ skip }` option becomes `.skip`.
+  for (const [name, a, b] of tests) {
+    const fn = b ?? a;
+    (b && a?.skip ? nodeTest.skip : nodeTest)(name, fn);
+  }
 });
