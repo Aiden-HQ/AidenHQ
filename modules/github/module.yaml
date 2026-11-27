@@ -89,7 +89,7 @@ settings:
     pattern: '^[\w.-]+/[\w.-]+$'
   # Paths the churn pass ignores (service/src/churn.ts; kernel/sdk/src/churn.ts): globs, one per entry.
   churn_exclude:
-    default: [ "**/package-lock.json", "**/dist/**", "**/vendor/**", "**/*.min.*" ]
+    default: [ "**/package-lock.json", "**/bun.lock", "**/dist/**", "**/vendor/**", "**/*.min.*" ]
   # The org the fleet's repositories live in: bare create_repo names and `@agents` grants resolve to it. Chosen once from the
   # orgs the owner can create repos in; unset, the fleet's repos live in `local`. It survives a disconnect (create_repo then
   # refuses "GitHub isn't connected" rather than switching to `local`).

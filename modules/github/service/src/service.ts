@@ -139,7 +139,7 @@ const MAX_TEXT = 1 << 20, MAX_TOTAL = 8 << 20, MAX_FILES = 200;
 /** How long a repair waits for ship's check job: its recipe's 30-minute limit and a few minutes for a free computer. */
 const REPAIR_WAIT_MS = 40 * 60_000;
 /** The lockfiles a repair may rewrite besides the plan's generated globs (ship's recipe regenerates them). */
-const REPAIR_LOCKS = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
+const REPAIR_LOCKS = ["bun.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
 /** A glob (`**` any folders, `*` within one) as a whole-path pattern. */
 const globRe = (glob: string) => new RegExp(`^${String(glob).split("**/").map((part) => part.split("**").map((p) => p.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")).join(".*")).join("(?:.*/)?")}$`);
 /** A git run that keeps stdout as git wrote it: a tree path may start with whitespace, which a trim would eat. */

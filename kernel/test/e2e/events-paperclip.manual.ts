@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// V3 (manual, outside `npm test`): the event router (kernel/src/events.ts) against the pinned Paperclip image. Run once by hand
+// V3 (manual, outside `bun run test`): the event router (kernel/src/events.ts) against the pinned Paperclip image. Run once by hand
 // before a PR that changes event delivery, never on a live host:
 //   node kernel/test/e2e/events-paperclip.manual.ts
 // It starts a throwaway Paperclip container (the image pinned in compose.yaml, its own temp volume, local_trusted on loopback),

@@ -6,7 +6,7 @@
 //              Makefile `generate` target, a package.json `generate` script, `go:generate` directives (go generate ./...)
 //   ambiguous: what discovery couldn't settle (the Engineer proposes the command with ship_configure; the setting wins from then on)
 //   suggest:   the repo's own regenerate workflow, as an `actions` step for the report to propose (never enabled here)
-export const LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
+export const LOCKFILES = ["bun.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
 
 // The `github.repair` request's limits (modules/github/schemas/repair.json, plan).
 const MAX_GLOBS = 200, MAX_GLOB_LEN = 300, MAX_COMMANDS = 20, MAX_DIR_LEN = 300, MAX_CMD_LEN = 500;

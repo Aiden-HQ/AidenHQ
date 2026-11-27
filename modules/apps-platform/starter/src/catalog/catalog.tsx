@@ -44,7 +44,7 @@ import { toast } from "@/hooks/use-toast"
 import { useUrlState } from "@/lib/navigation"
 import { MoreBlocks, MoreComponents, PresetGallery, PRESETS, ShellGallery, Variants } from "./more"
 
-// Every building block and component the starter has, themed, in one page (dev-only: `npm run catalog`). ?palette= and
+// Every building block and component the starter has, themed, in one page (dev-only: `bun run catalog`). ?palette= and
 // ?mode= pick the theme (the pickers set them), so `ui-review capture <dev url>/catalog.html --palettes neutral,crisp` covers any
 // palette or preset. Nothing here is required: apps import what they need.
 
