@@ -45,7 +45,7 @@
 /* Your world and your team: fluid grids that add columns as the screen grows. */
 .home-h2 { margin: 0; font-size: var(--text-lg); font-weight: 650; letter-spacing: -0.01em; }
 .home-world, .home-team { display: grid; gap: 12px; }
-.home-world-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--stack); align-items: stretch; }
+.home-world-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--stack); align-items: start; }
 @media (min-width: 1100px) { .home-world-grid:has(> :nth-child(2)) { grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); } }
 .home-time { flex: none; min-width: 3.2em; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--muted); }
 .home-team-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
