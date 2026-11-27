@@ -20,7 +20,8 @@ export interface PrRow {
 export interface MaintainerPrBatch {
   repos: { repo: string; quiet_pr_days: number; prs?: PrRow[]; error?: string }[];
 }
-type Prs = () => Promise<MaintainerPrBatch>;
+/** The read of every repo with `quiet_pr_days` set, or only the ones named (a close's fresh look). */
+type Prs = (only?: string[]) => Promise<MaintainerPrBatch>;
 /** What is due on one PR: a nudge, or the close that follows a nudge the author never answered. */
 export interface PrTask {
   number: number;
@@ -32,15 +33,18 @@ export interface PrTask {
   /** The author's latest activity: part of the task's source, so a later quiet spell is a new nudge. */
   activity: string;
 }
-type FirePr = (repo: string, task: PrTask) => Promise<boolean>;
+/** Does a nudge or close: `done`, `noted` (the close's comment posted, the close itself not: a retry only closes), or false. */
+type FirePr = (repo: string, task: PrTask, o?: { noted?: boolean }) => Promise<"done" | "noted" | false>;
 interface Nudge {
   at: string;
   author_activity_at: string;
   /** The date the nudge promised the PR closes (a draft's window at the time it was posted), so a later change to the repo's
    * `quiet_pr_days` never moves a deadline the author was told. */
   close_at?: string;
-  /** The close task was filed: it is not filed twice. */
+  /** The PR was closed: it is not closed twice. */
   closed?: true;
+  /** The close's comment is posted: a retry after a failed close only closes. */
+  close_noted?: true;
 }
 
 /**
@@ -63,7 +67,8 @@ export function prDue(pr: PrRow, nudge: Nudge | undefined, staleDays: number, no
 /** The date a nudge filed now promises the PR closes: the window in force when it is posted. */
 export const nudgeDeadline = (now: number, staleDays: number, draft: boolean) => now + staleDays * DAY * (draft ? 2 : 1);
 
-const PR_STATE_KEY = "maintainer_prs";
+// Its own key: a nudge recorded under the Maintainer's old key was a task filed, not a comment known posted, so none carries over.
+const PR_STATE_KEY = "ship_quiet_prs";
 /** The PR pass runs at most this often: the quiet windows are days, and each human PR costs several GitHub reads. */
 const PR_EVERY = 60 * MIN;
 interface PrState {
@@ -104,12 +109,22 @@ export async function prTick(d: { prs: Prs; firePr: FirePr; store: Kv; log: Log;
     for (const pr of b.prs) {
       const before = nudged[pr.number];
       if (before && Date.parse(pr.last_author_activity) > Date.parse(before.author_activity_at)) delete nudged[pr.number];
-      const due = prDue(pr, nudged[pr.number], b.quiet_pr_days, now);
+      let due = prDue(pr, nudged[pr.number], b.quiet_pr_days, now);
       if (!due) continue;
+      // A close reads the PR again first: the author may have acted, or a review been asked, since the batch was read.
+      if (due === "close") {
+        const fresh = (await d.prs([b.repo]).catch(() => undefined))?.repos.find((x) => x.repo === b.repo)?.prs?.find((p) => p.number === pr.number);
+        if (!fresh) continue; // gone, or unread: the next look decides
+        if (Date.parse(fresh.last_author_activity) > Date.parse(nudged[pr.number]!.author_activity_at)) { delete nudged[pr.number]; continue; }
+        due = prDue(fresh, nudged[pr.number], b.quiet_pr_days, now);
+        if (due !== "close") continue;
+      }
       const deadline = due === "nudge" ? nudgeDeadline(now, b.quiet_pr_days, pr.draft) : Date.parse(nudged[pr.number]!.close_at ?? "") || Date.parse(nudged[pr.number]!.at) + b.quiet_pr_days * DAY * (pr.draft ? 2 : 1);
       const task = { number: pr.number, kind: due, waiting: pr.waiting_on_author, close_by: new Date(deadline).toISOString().slice(0, 10), activity: pr.last_author_activity };
-      if (!(await d.firePr(b.repo, task).catch(() => false))) {
-        d.log.warn({ repo: b.repo, pr: pr.number, kind: due }, "maintainer PR task not filed; the next look retries it");
+      const did = await d.firePr(b.repo, task, { noted: nudged[pr.number]?.close_noted }).catch(() => false as const);
+      if (did !== "done") {
+        if (did === "noted") nudged[pr.number] = { ...nudged[pr.number]!, close_noted: true };
+        d.log.warn({ repo: b.repo, pr: pr.number, kind: due }, "quiet PR not nudged or closed; the next look retries it");
         continue;
       }
       nudged[pr.number] = due === "nudge" ? { at: new Date(now).toISOString(), author_activity_at: pr.last_author_activity, close_at: new Date(deadline).toISOString() } : { ...nudged[pr.number]!, closed: true };
@@ -120,14 +135,21 @@ export async function prTick(d: { prs: Prs; firePr: FirePr; store: Kv; log: Log;
   return count;
 }
 
-/** github-mcp's internal read of each repo's open PRs (Ship's entries with `quiet_pr_days` set, which `repos` names), as this module. */
+/** github-mcp's internal read of each repo's open PRs (the repos with `quiet_pr_days` set, which `repos` names), as this module,
+ * at most 50 a request: a batch that fails is each of its repos' `error`, the others still read. */
 export function contributorPrs(o: { url: string; token: () => string; repos: () => { repo: string; quiet_pr_days: number }[] }): Prs {
-  return async () => {
-    const repos = o.repos();
-    if (!repos.length) return { repos: [] };
-    const res = await fetch(o.url, { method: "POST", headers: { authorization: `Bearer ${o.token()}`, "content-type": "application/json" }, body: JSON.stringify({ repos }), signal: AbortSignal.timeout(120_000) });
-    if (!res.ok) throw new Error(`github-mcp: ${res.status} ${(await res.text()).slice(0, 200)}`);
-    return (await res.json()) as MaintainerPrBatch;
+  return async (only) => {
+    const repos = o.repos().filter((r) => !only || only.includes(r.repo));
+    const out: MaintainerPrBatch["repos"] = [];
+    for (let i = 0; i < repos.length; i += 50) {
+      const batch = repos.slice(i, i + 50);
+      try {
+        const res = await fetch(o.url, { method: "POST", headers: { authorization: `Bearer ${o.token()}`, "content-type": "application/json" }, body: JSON.stringify({ repos: batch }), signal: AbortSignal.timeout(120_000) });
+        if (!res.ok) throw new Error(`github-mcp: ${res.status} ${(await res.text()).slice(0, 200)}`);
+        out.push(...((await res.json()) as MaintainerPrBatch).repos);
+      } catch (e) { out.push(...batch.map((r) => ({ ...r, error: String((e as Error).message).slice(0, 300) }))); }
+    }
+    return { repos: out };
   };
 }
 
@@ -140,5 +162,9 @@ export const closeText = (repo: string) => `Closed for inactivity. Reopen it if 
  * allow on the repos ship covers): a nudge is one comment; a close is a comment, then the PR closed. Answers whether it was done.
  */
 export function contributorPrAct(o: { comment: (repo: string, n: number, text: string) => Promise<boolean>; close: (repo: string, n: number) => Promise<boolean> }): FirePr {
-  return async (repo, t) => t.kind === "nudge" ? o.comment(repo, t.number, nudgeText(t)) : (await o.comment(repo, t.number, closeText(repo))) && o.close(repo, t.number);
+  return async (repo, t, opt) => {
+    if (t.kind === "nudge") return (await o.comment(repo, t.number, nudgeText(t))) ? "done" : false;
+    if (!opt?.noted && !(await o.comment(repo, t.number, closeText(repo)))) return false;
+    return (await o.close(repo, t.number)) ? "done" : "noted";
+  };
 }

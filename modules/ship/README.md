@@ -18,7 +18,9 @@ owner is told: a task's PR wakes whoever asked for the task, a member's PR gets 
 push resumes it. Checks whose jobs never started, and check runs wedged after their job finished, are re-run for any PR. Ship
 also closes a cancelled, superseded or finished task's leftover PR, files a Dependabot PR's task on repos whose entry sets `dependabot`
 (off, failing, all), and nudges, then closes, a quiet contributor PR on repos whose entry sets `quiet_pr_days` (both in fixed
-words, as the owner, with the Ship footer). Pull requests are Ship's: the Maintainer does issues only. The pause stops all of it, merges already filed included.
+words, as the owner, with the Ship footer; a close reads the PR again first). Both run on the product repo (which may
+take them from Defaults) and on every repo with an entry, whether or not Ship works the repo's PRs. Pull requests are Ship's:
+the Maintainer does issues only. The pause stops all of it, merges already filed included.
 The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui://ship/page`) is where it is set: Add repo (a draft panel: the name, a start from Defaults, Cautious, Full or a copy of a listed repo, and the same settings editor; a repo that starts from Defaults follows later changes to them) and, per repo, on or off, preset, which PRs to adopt (`handoff`), Dependabot updates, inactive contributor PRs, `by_tier` (per risk tier: whether the App approves and whether ship merges), a global pause, and the holds. The module's settings are for the advanced options only.
 
 ## How a PR moves

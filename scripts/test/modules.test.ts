@@ -513,6 +513,8 @@ test("listed repos: the Maintainer's list and Ship's, the Maintainer's only whil
   const listed = (modules) => { const r = compile(product, pinst(modules, settings)); return [r.kernelModules.repos.listed, r.compose.services["github-github"].environment.GITHUB_LISTED_REPOS]; };
   assert.deepEqual(listed(["github", "maintainer", "ship"]), [["acme/app", "globex/lib", "initech/api"], "acme/app,globex/lib,initech/api"]);
   assert.deepEqual(listed(["github", "ship"])[0], ["globex/lib", "initech/api"], "the Maintainer off: its list grants nothing");
+  // A Ship entry its own editor would refuse grants nothing: the compile fails naming it.
+  assert.throws(() => compile(product, pinst(["github", "ship"], { ...owner, ship: { repos: { "x/y": null } } })), /settings.ship: x\/y: a preset name or a map of fields/);
 });
 
 test("code review: every watched repo asks its verdict; the kernel skips the AI reviewer only where every selectable tier gates; old shapes fail", () => {

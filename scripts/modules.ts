@@ -22,7 +22,7 @@ import { browseMarketplaces, checkout, forkBase, forksOf, hostFetch, marketplace
 import { effective } from "./compiler/release.ts";
 import { compilePoints } from "./compiler/points.ts";
 import { gateMode } from "../kernel/src/gates.ts";
-import { oldShape } from "../modules/ship/service/src/settings.ts";
+import { oldShape, validate as validateShip } from "../modules/ship/service/src/settings.ts";
 import { parseRepos } from "../kernel/sdk/src/maintained-repos.ts";
 import { KINDS as CHECK_KINDS } from "../kernel/src/checkjobs.ts";
 import { KERNEL_KINDS, KERNEL_ROLES, repoKey } from "../kernel/src/kinds.ts";
@@ -897,6 +897,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   ].filter((r) => /^[\w.-]+\/[\w.-]+$/.test(r)).map((r) => [r.toLowerCase(), r])).values()];
   settings.listed_repos = listedRepos.join(",");
   // An old per-repo shape (approve, merge or safe) fails the compile before anything is written, never half-read (docs/design/code-review.md, Risk tiers).
+  // Ship's entries grant listed-repo authority (listed_repos, above): a value Ship's own editor would refuse fails here too.
+  if (enabled.includes("ship") && !oldShape(settings.ship).length && validateShip(settings.ship).length) fail(`settings.ship: ${validateShip(settings.ship).join("; ")}`);
   if (enabled.includes("ship") && oldShape(settings.ship).length) fail(`settings.ship: ${oldShape(settings.ship).join(", ")}: approve and merge are per tier now: by_tier.<tier>.approve / merge; safe is gone: code review's tier rules say what is small and safe`);
 
   // What the board's Settings shows (services/board/src/settings.ts): every setting an enabled module declares or the instance

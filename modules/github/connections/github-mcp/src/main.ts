@@ -604,7 +604,7 @@ async function serve(req: IncomingMessage, res: ServerResponse) {
     return;
   }
   // Ship's quiet-PR pass (modules/ship/service/src/contributor.ts): the repos its entries give quiet_pr_days ({ repos: [{ repo,
-  // quiet_pr_days }] }, each a listed repo: GITHUB_LISTED_REPOS), their open PRs (author kind, the author's latest activity and
+  // quiet_pr_days }] }, each a listed repo (GITHUB_LISTED_REPOS) or the product repo), their open PRs (author kind, the author's latest activity and
   // what waits on them). Read-only, no model call.
   if (url.pathname === "/internal/ship/contributor-prs") {
     { const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "ship"); if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end(); }
@@ -612,8 +612,12 @@ async function serve(req: IncomingMessage, res: ServerResponse) {
     try {
       let raw = "";
       for await (const c of req) { raw += c; if (raw.length > 100_000) return void res.writeHead(413).end(); }
-      const listed = (process.env.GITHUB_LISTED_REPOS ?? "").split(",").map((r) => r.trim()).filter(Boolean);
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(await maintainer.prRepos((JSON.parse(raw || "{}") as { repos?: unknown }).repos, listed)));
+      const listed = [...(process.env.GITHUB_LISTED_REPOS ?? "").split(",").map((r) => r.trim()).filter(Boolean), ...(PRODUCT_REPO ? [PRODUCT_REPO] : [])];
+      let asked: unknown;
+      try { asked = (JSON.parse(raw || "{}") as { repos?: unknown }).repos; } catch { throw new GitHubRefused("the body is { repos }"); }
+      // The answer is read whole before the status goes out: a refusal is a 400, never a second set of headers.
+      const out = await maintainer.prRepos(asked, listed);
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(out));
     } catch (err) {
       const refused = err instanceof GitHubRefused;
       log.warn({ err: (err as Error).message.slice(0, 200) }, "contributor PRs read failed");

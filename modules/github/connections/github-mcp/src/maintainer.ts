@@ -372,7 +372,7 @@ export class Maintainer {
 
   /**
    * Ship's read: each repo its entries give `quiet_pr_days` (`asked`), that window and its open PRs (one repo's failure is its
-   * `error`). Only repos in `listed` (the listed repos: Ship's and the Maintainer's) are read; any other is refused whole.
+   * `error`). Only repos in `listed` (the listed repos: Ship's and the Maintainer's, and the product repo) are read; any other is refused whole.
    */
   async prRepos(asked: unknown, listed: string[]) {
     const ok = (x: unknown): x is { repo: string; quiet_pr_days: number } => !!x && typeof x === "object" && typeof (x as any).repo === "string" && /^[\w.-]{1,100}\/[\w.-]{1,100}$/.test((x as any).repo) && Number.isInteger((x as any).quiet_pr_days) && (x as any).quiet_pr_days >= 1;
