@@ -1,11 +1,11 @@
 name: intake
-description: "Intake: turns what needs you in your inbox, Slack and Primer comments into deduplicated tasks."
+description: "Intake: turns what needs you in your inbox, Slack, Telegram and Primer comments into deduplicated tasks."
 requires:
   - slack
   - google
 agents:
   inbox-agent:
-    skills: [ intake.triage-email, intake.triage-slack, intake.look-back, primer.primer-digest, tasks.delegate-work, tasks.owner-triage ]
+    skills: [ intake.triage-email, intake.triage-slack, intake.triage-telegram, intake.look-back, primer.primer-digest, tasks.delegate-work, tasks.owner-triage ]
     # Intake: everything that comes in for the owner (live Slack, the inbox, the Primer digest), one routine and one skill each (design §4.5).
     department: intake
     model: ~deepseek/deepseek-flash-latest
@@ -23,6 +23,8 @@ agents:
       slack: read
       # The owner's Slack user id, for the live events it triages (the slack-triage routine) and the Slack DM page for an urgent one (slack, when installed).
       slack_live?: [ slack_owner ]
+      # The owner's Telegram identity and message lookups for the live events it triages (the telegram-triage routine, telegram when installed). Reads only.
+      telegram_account?: read
       # gmail_inbox_new/ack: the inbox since its cursor, automated mail set aside in code (skill triage-email). gmail_label: clears
       # `Aiden` from a thread whose task is closed; the owner's own labels only, checked in code.
       google_workspace: [ gmail_inbox_new, gmail_inbox_ack, gmail_search, gmail_read_thread, gmail_label ]
@@ -48,6 +50,16 @@ routines:
       Follow your triage-slack skill: triage each event into nothing, a task (task_create) or, rarely, an alert (notify, kind alert); you never post
       to Slack. Then close this task with one line saying what you did.
     event: { connection: slack, resource: "*", filter: { kind: [message, app_mention, reaction_added, reaction_removed], bot: false } } # the kernel's event router fires it once a minute at most
+  # Exists only while the telegram module is enabled.
+  telegram-triage:
+    title: Telegram triage
+    agent: inbox-agent
+    when: { module: telegram }
+    description: |
+      Today is {{date}}. The user's Telegram identity is what telegram_owner returns. Follow your triage-telegram skill: triage each
+      event into nothing, a task (task_create) or, rarely, an alert (notify, kind alert); you never send on Telegram. Then close this
+      task with one line saying what you did.
+    event: { connection: telegram_account, resource: "*", filter: { kind: message } } # the kernel's event router fires it once a minute at most
   # Run once when the owner sets up a teammate that needs Intake (trial: the board's setup runs it; no schedule, no event).
   inbox-lookback:
     title: Inbox look-back
