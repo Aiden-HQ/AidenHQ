@@ -17,8 +17,8 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 const lint = (as, source) => {
   mkdirSync(dirname(join(dir, as)), { recursive: true });
   writeFileSync(join(dir, as), source);
-  const r = spawnSync(join(root, "node_modules/.bin/oxlint"), ["-f", "unix", "--deny-warnings", as], { cwd: dir, encoding: "utf8" });
-  return { status: r.status, out: r.stdout, hits: r.stdout.split("\n").filter((l) => /^\S+:\d+:\d+: /.test(l)).map((l) => l.replace(/^\S+?:(\d+):\d+: /, "$1: ")) };
+  const r = spawnSync(join(root, "node_modules/.bin/oxlint"), ["--deny-warnings", as], { cwd: dir, encoding: "utf8" });
+  return { status: r.status, out: r.stdout, hits: r.stdout.split("\n").filter((l) => /^\S+:\d+:\d+: /.test(l)).map((l) => l.replace(/^\S+?:(\d+):\d+: (error|warning) \S+?: /, "$1: ")) };
 };
 
 test("lint: a hand-rolled header fails with the fix", () => {
