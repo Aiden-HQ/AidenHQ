@@ -32,13 +32,15 @@ The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui
   where the author allows maintainer edits; otherwise the PR holds.
 - **One decision per pass.** Merge-gate's `decide` returns `wait`, `repair`, `fix_ci`, `fix_review`, `approve`, `enqueue`,
   `merge`, `done`, `stall` or `fail`, and each writer re-decides right before it writes. Nothing moves on a draft, a stop label (`stop_label`, default `ship:stop`), a person assigned to the PR, or a hold.
-- **Repair.** The repo's own `actions` run first: each a workflow with `workflow_dispatch`, dispatched on the repo's default branch
-  whatever the PR's base (the repo's own trusted copy, so neither a PR nor a release branch changes what runs with its secrets) with the PR's number as an input
+- **Repair** (PRs into the default branch: the merge gate waits on any other base before a conflict is looked at). The repo's own
+  `actions` run first: each a workflow with `workflow_dispatch`, dispatched on the default branch (the repo's own trusted copy, so
+  a PR doesn't change what runs with its secrets) with the PR's number as an input
   (`inputs: { pr: "{pr}" }`); ship follows the run GitHub names, and a failed run moves on to the next step, then to ship's own.
   Then GitHub's update-branch, then on a conflict the `ship-repair` check job: a credential-free box merges the base's live tip in
   (none when the head already holds it), takes the base side of generated paths and lockfiles, runs the discovered generator
   (`.gitattributes` `linguist-generated`, known lockfiles, generated-file headers; the `generated` setting overrides; with
-  `generated.command: null` the repo's CI regenerates them and the box runs nothing) and returns the files, which github commits
+  `generated.ci: <check>` a check in the repo's own CI regenerates them: the box takes their base side and runs nothing, and ship
+  merges a head its repair made that way only once that check passed on it, holding the PR after 30 minutes without it) and returns the files, which github commits
   as the App. A leftover conflict or a failed generator wakes the
   Engineer once per head. A stacked PR waits on the PR it stands on, then github's `retarget` moves it to the default branch.
 - **Fixes.** The task is woken for red required checks (a failure that is red on the base too is a wait), unanswered review

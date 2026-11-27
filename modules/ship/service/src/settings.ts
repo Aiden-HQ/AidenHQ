@@ -24,8 +24,9 @@ export interface ShipSettings {
   enabled: boolean;
   handoff: (typeof HANDOFF)[number];
   rebase: (typeof REBASE)[number];
-  /** `command: null`: the repo's own CI regenerates these paths (the repair takes the base side and runs no generator for them). */
-  generated: { globs: string[]; command: string | null } | null;
+  /** `ci`: the check (job) name in which the repo's own CI regenerates these paths, instead of a `command`: the repair takes their
+   * base side and runs no generator, and ship merges such a repair's head only once that check passed on it (rounds.ts). */
+  generated: { globs: string[]; command: string; ci?: string } | null;
   fix: (typeof FIX)[number][];
   protected: string[];
   caps: Caps;
@@ -92,7 +93,7 @@ function resolve(preset: "cautious" | "full", over: Dict): ShipSettings {
     if (k === "caps" && isMap(v)) s.caps = { ...s.caps, ...(v as Partial<Caps>) };
     else if (k === "by_tier" && isMap(v)) for (const t of TIERS) s.by_tier[t] = { ...s.by_tier[t], ...(isMap(v[t]) ? v[t] : {}) } as ShipSettings["by_tier"][Tier];
     else if (k === "unwatched" && isMap(v)) s.unwatched = { ...s.unwatched, ...v } as ShipSettings["unwatched"];
-    else if (k === "generated") s.generated = isMap(v) ? { globs: (v.globs as string[]) ?? [], command: v.command === null ? null : (v.command as string) ?? "" } : null;
+    else if (k === "generated") s.generated = isMap(v) ? { globs: (v.globs as string[]) ?? [], command: (v.command as string) ?? "", ...(typeof v.ci === "string" ? { ci: v.ci } : {}) } : null;
     else s[k] = v;
   }
   return s;
@@ -171,8 +172,13 @@ function checkEntry(errors: string[], at: string, e: unknown) {
   if ("stop_label" in e && (typeof e.stop_label !== "string" || !e.stop_label || e.stop_label.length > 50)) errors.push(`${at}.stop_label: a label name`);
   if ("generated" in e && e.generated !== null) {
     const g = e.generated;
-    if (!isMap(g) || Object.keys(g).some((k) => !["globs", "command"].includes(k))) errors.push(`${at}.generated: { globs, command }`);
-    else { strings(errors, `${at}.generated.globs`, g.globs ?? []); if (g.command !== undefined && g.command !== null && (typeof g.command !== "string" || g.command.length > 500)) errors.push(`${at}.generated.command: text, or null when the repo's CI regenerates these paths`); }
+    if (!isMap(g) || Object.keys(g).some((k) => !["globs", "command", "ci"].includes(k))) errors.push(`${at}.generated: { globs, command } or { globs, ci }`);
+    else {
+      strings(errors, `${at}.generated.globs`, g.globs ?? []);
+      if (g.command !== undefined && (typeof g.command !== "string" || g.command.length > 500)) errors.push(`${at}.generated.command: text (when the repo's CI regenerates these paths, set generated.ci to that check's name instead)`);
+      if (g.ci !== undefined && (typeof g.ci !== "string" || !/^[^`\r\n]{1,100}$/.test(g.ci))) errors.push(`${at}.generated.ci: the name of the check in which the repo's CI regenerates these paths`);
+      if (g.ci !== undefined && g.command) errors.push(`${at}.generated: a command or a ci check, not both`);
+    }
   }
   if ("actions" in e) {
     if (!isMap(e.actions)) errors.push(`${at}.actions: a map of stage to steps`);
@@ -237,8 +243,8 @@ export function loosens(before: unknown, after: unknown, scope: Scope = ALL): st
     if ((y.generated?.globs ?? []).some((g) => !(x.generated?.globs ?? []).includes(g))) add("generated.globs");
     // Back from an explicit list to discovery: the discovered paths may reach past the list, so that is a loosening too.
     if (x.generated && !y.generated) add("generated");
-    // `command: null` (the repo's CI regenerates) is no loosening: the repair then runs nothing and writes only the base's own
-    // blobs on those paths, which the globs already bound.
+    // `ci` (the repo's CI regenerates) is no loosening: the repair then runs nothing and writes only the base's own blobs on those
+    // paths, which the globs already bound, and such a head merges only once that check passed on it.
     // A new ignored account: its comments no longer gate a merge (an agent could name a person), so it is the owner's. Dropping
     // one is free.
     const ignored = (l: string[]) => new Set(l.map((x) => x.toLowerCase()));

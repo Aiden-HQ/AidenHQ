@@ -25,7 +25,8 @@ type Json = any;
 const REPO = "([\\w.-]+/[\\w.-]+)";
 /** The GitHub calls the loop makes, and nothing else: [method, path, body check]. The repo is the path's first group. */
 const CALLS: [string, RegExp, ((b: Json) => boolean)?][] = [
-  ["GET", new RegExp(`^/repos/${REPO}/commits/[0-9a-f]{4,40}/check-runs\\?[\\w=&]*$`)],
+  // `check_name` (ship's generated.ci check) is percent-encoded.
+  ["GET", new RegExp(`^/repos/${REPO}/commits/[0-9a-f]{4,40}/check-runs\\?[\\w=&%.-]*$`)],
   ["GET", new RegExp(`^/repos/${REPO}/actions/jobs/\\d+$`)],
   ["POST", new RegExp(`^/repos/${REPO}/actions/jobs/\\d+/rerun$`)],
   ["POST", new RegExp(`^/repos/${REPO}/actions/runs/\\d+/rerun-failed-jobs$`)],

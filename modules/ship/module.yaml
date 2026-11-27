@@ -49,8 +49,9 @@ codehost:
   comment: { repos: [ "@agents/*", "@product", "@maintained" ] }
 settings:
   # The per-repo ship settings: { defaults: cautious | full | { preset, …fields }, repos: { owner/name: cautious | full | { preset?,
-  # handoff: none|label|all, rebase: conflict|behind, generated: { globs, command: a command, or null when the repo's CI
-  # regenerates those paths (the repair takes their base side and runs nothing) }, ignore_authors: [logins] (automation accounts
+  # handoff: none|label|all, rebase: conflict|behind, generated: { globs, command } or { globs, ci: <check name> } (a check
+  # in the repo's CI regenerates those paths: the repair takes their base side and runs nothing, and its head merges only once that
+  # check passed on it), ignore_authors: [logins] (automation accounts
   # whose comments are never a member's request),
   # fix: [conflicts, ci, review], protected: [globs], caps: { wakes_per_head, ci_rounds, same_check_heads,
   # rounds, usd, requeue_on_timeout: a number, or null for unlimited },

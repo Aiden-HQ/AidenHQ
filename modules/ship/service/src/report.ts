@@ -43,6 +43,7 @@ export const HOLD = {
   pushRefused: (why: string) => `Ship's fix for this PR didn't go through (${why.replace(/[\r\n]+/g, " ")}). A person pushes the fix, or changes the rule that refused it.`,
   repair: "Ship couldn't repair this PR on its own. A person needs to resolve it.",
   steps: "A step the repo asks Ship to run before merging didn't pass. A person needs to look at it.",
+  ciRegen: (check: string) => `Ship resolved a conflict by taking the base side of generated files, and the repo's ${check.replace(/[\r\n`]+/g, " ")} check, which regenerates them, didn't pass on that commit. A person checks the generated files.`,
   failed: "Ship's merge or approval for the latest commit was refused or didn't go through. A person decides what happens next.",
   refused: (why: string) => `GitHub refused to queue this PR (${why.replace(/[\r\n]+/g, " ")}). A person clears it, or pushes a fix.`,
   stall: "GitHub blocks the merge on a rule Ship doesn't handle, such as review threads to resolve. A person clears it.",

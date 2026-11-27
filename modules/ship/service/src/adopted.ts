@@ -327,10 +327,10 @@ export function adoptedPass(o: AdoptedOptions) {
         else { const { stack: _, ...rest } = a; a = rest as Kept; o.state.put(a); }
       }
       const cs = o.settings(repo);
-      const commentsFor = cs?.fix.includes("review") ? { since: a.trigger.at, ...(a.owner?.kind === "task" || view.authorBot ? {} : { author: view.author }), ...(cs.ignore_authors.length ? { ignore: cs.ignore_authors } : {}) } : undefined;
+      const commentsFor = cs?.fix.includes("review") ? { since: a.trigger.at, ...(a.owner?.kind === "task" || view.authorBot ? {} : { author: view.author }) } : undefined;
       // Kept for github's recheck right before ship's approve, enqueue or merge executes (/v1/generation).
       if (JSON.stringify(a.commentsFor) !== JSON.stringify(commentsFor)) { const { commentsFor: _, ...rest } = a; a = (commentsFor ? { ...rest, commentsFor } : rest) as Kept; o.state.put(a); }
-      const v = await o.decision(repo, pr.number, view.head, { pr, main, ...(ctx.stackedOn ? { stackedOn: ctx.stackedOn.number } : {}), ...(commentsFor ? { comments: commentsFor } : {}) });
+      const v = await o.decision(repo, pr.number, view.head, { pr, main, ...(ctx.stackedOn ? { stackedOn: ctx.stackedOn.number } : {}), ...(commentsFor ? { comments: { ...commentsFor, ...(cs!.ignore_authors.length ? { ignore: cs!.ignore_authors } : {}) } } : {}) });
       // Red checks whose jobs never started are being re-run (ci-recover.ts): no fix is asked for a failure CI never ran.
       if (v.do === "fix_ci" && recovery?.envRed) Object.assign(v, { do: "wait", why: "re-running required checks whose jobs never started" });
       // A check run still pending well after its job finished and was re-run: no push fixes it, so its owner is told once per head.

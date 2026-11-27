@@ -1,8 +1,8 @@
 // The repo's own tooling (the `actions` setting) and zero-config discovery, read and run through GitHub (`gh`, the owner's calls
 // through github's /internal/ship/gh).
 //   Actions: per stage (conflict, behind, before_merge) a list of steps, each one of the repo's workflows, dispatched on the repo's
-//   default branch whatever the PR's base (the repo's own trusted copy of the workflow: neither a PR nor a release branch changes
-//   what runs with the repo's secrets, and a branch made before the workflow took `workflow_dispatch` needn't have it) with the PR
+//   default branch, the base of every PR ship repairs (the repo's own trusted copy of the workflow: a PR doesn't change what runs
+//   with the repo's secrets, and a branch made before the workflow took `workflow_dispatch` needn't have it) with the PR
 //   named by an input (`{pr}`), and `return_run_details` so GitHub answers the run's id. A step runs before ship's own step for that stage and only
 //   when the round needs that stage, on an adopted PR. Ship then reads that run: success ends the stage; any other conclusion, or no
 //   end within STEP_WAIT_MS, moves on to the next step, and past the last ship's own step follows on the same pass (before_merge:

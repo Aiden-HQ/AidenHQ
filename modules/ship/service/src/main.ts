@@ -137,7 +137,9 @@ createServer(async (req, res) => {
       gen = generationOf(state, paused() || !settingsOf(repo), repo, n, q.get("at") ?? undefined);
     }
     // Members' comments are read again by github right before an approve, an enqueue or a merge goes on.
-    const comments = (what === "approve" || what === "merge") && s?.fix.includes("review") && gen.generation !== null && !gen.hold ? (state.get(repo, n) as Kept | undefined)?.commentsFor : undefined;
+    // The ignored accounts are the settings' now, never the ones the round last saw.
+    const kept = (what === "approve" || what === "merge") && s?.fix.includes("review") && gen.generation !== null && !gen.hold ? (state.get(repo, n) as Kept | undefined)?.commentsFor : undefined;
+    const comments = kept ? { ...kept, ...(s!.ignore_authors.length ? { ignore: s!.ignore_authors } : {}) } : undefined;
     return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ...gen, ...(comments ? { comments } : {}), ...(refused ? { refused: refused.why, ...(refused.retry ? { retry: true } : {}) } : {}) }));
   }
   res.writeHead(req.url === "/healthz" ? 200 : 404).end();

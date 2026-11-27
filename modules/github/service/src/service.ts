@@ -1128,6 +1128,9 @@ export function createService(o: Options) {
 
     const tmp = mkdtempSync(join(o.cacheDir, "repair-"));
     let final: string, made: string | undefined;
+    // The generated paths whose base side the repair kept for the repo's CI to regenerate (`ci_regenerates`): said in the outcome,
+    // so ship waits for that CI on the head this writes.
+    let forCi = 0;
     try {
       const env = { ...ENV, GIT_INDEX_FILE: join(tmp, "index"), ...identityEnv(await access.identity()) };
       const g = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--literal-pathspecs", "--git-dir", dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
@@ -1164,6 +1167,7 @@ export function createService(o: Options) {
         taken.add(e.path);
       }
       const left = conflicted.filter((p) => !taken.has(p));
+      if (a.plan?.ci_regenerates === true) forCi = conflicted.filter((p) => taken.has(p) && globs.some((re: RegExp) => re.test(p))).length;
       if (left.length) return refuse(`left conflicts on paths it may not write (${left.length})`);
       final = await g(["write-tree"]);
       // A merge and kept files that leave every path at the head's have nothing to record.
@@ -1190,7 +1194,7 @@ export function createService(o: Options) {
     const tip = made!;
     flow.pushed(s.slug, n, tip, String(a.head), false, who.login, undefined, undefined);
     flow.checksStarted(s.slug, n, tip, undefined, undefined);
-    return { ok: true, text: `Repaired ${url}: merged \`${a.base}\` and regenerated (${result.changed} file(s)) at \`${tip.slice(0, 12)}\`, as ${who.login}${fork ? ` (pushed to ${into})` : " (commits GitHub signs)"}.`, objects: [`github:${into.toLowerCase()}@${tip}`] };
+    return { ok: true, text: `Repaired ${url}: merged \`${a.base}\` and regenerated (${result.changed} file(s)) at \`${tip.slice(0, 12)}\`, as ${who.login}${fork ? ` (pushed to ${into})` : " (commits GitHub signs)"}.${forCi ? ` It took the base side of ${forCi} generated file(s) for the repo's CI to regenerate.` : ""}`, objects: [`github:${into.toLowerCase()}@${tip}`] };
   }
 
   /**

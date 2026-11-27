@@ -62,7 +62,7 @@ function world(entry: unknown, repo = "a/b") {
   return { state, calls, records, runs, deps, pr, adopt, of, report: () => report };
 }
 
-test("a conflict dispatches the repo's workflow on the base with the PR's number; a failed run moves straight on to ship's own repair", async () => {
+test("a conflict dispatches the repo's workflow on the default branch with the PR's number; a failed run moves straight on to ship's own repair", async () => {
   const w = world({ preset: "cautious", generated: { globs: ["gen/**"], command: "" }, actions: { conflict: [{ workflow: "pr-rebase.yml", inputs: { pr: "{pr}" } }] } });
   await w.adopt();
   await round(w.deps, w.pr(), { do: "repair" }, { dirty: true });
@@ -129,15 +129,43 @@ test("a generator whose tool the box lacks holds loudly and points at an actions
   assert.equal(w.of("POST /v1/wakes").length + w.of("POST /v1/tasks").filter((c) => !String(c.body.source).endsWith(":records")).length, 0, "no Engineer: its computer has the same tools");
 });
 
-test("generated.command null: the repair plan says the repo's CI regenerates, and the leftover wake says take the base side without regenerating", async () => {
-  const w = world({ preset: "cautious", generated: { globs: ["gen/**"], command: null } });
+test("generated.ci: the repair plan says the repo's CI regenerates, and the leftover wake says take the base side without regenerating", async () => {
+  const w = world({ preset: "cautious", generated: { globs: ["gen/**"], ci: "regenerate" } });
   await w.adopt();
   await round(w.deps, w.pr(), { do: "repair" }, { dirty: true });
   assert.deepEqual(w.of("POST /v1/writes")[0]!.body.args.plan, { globs: ["gen/**"], commands: [], ci_regenerates: true });
   w.records["rec-1"] = { state: "failed", outcome: { text: "ship-leftovers: merging `main` into … leaves conflicts no generator rewrites:\nleftover: src/a.ts" } };
   await round(w.deps, w.pr(), { do: "repair" }, { dirty: true });
   const wake = String(w.of("POST /v1/tasks").find((c) => /conflicts with/.test(String(c.body.description)))?.body.description);
-  assert.match(wake, /take the base side of the generated files \(`gen\/\*\*`\) and don't regenerate them: the repo's CI does/);
+  assert.match(wake, /take the base side of the generated files \(`gen\/\*\*`\) and don't regenerate them: the repo's CI does, in its `regenerate` check/);
+});
+
+test("generated.ci: a head ship's repair made with the base side of generated files merges only once that check passed on it, and holds after 30 minutes", async () => {
+  const H3 = "3".repeat(40);
+  const setup = async () => {
+    const w = world({ preset: "cautious", generated: { globs: ["gen/**"], ci: "regenerate" } });
+    const checks: any[] = [];
+    const kernel = w.deps.kernel, gh = w.deps.gh;
+    (w.deps as any).kernel = { call: async (m: string, path: string, body?: any) => (path.startsWith("/v1/objects") ? { ours: true, record: "rec-1" } : kernel.call(m, path, body)) };
+    (w.deps as any).gh = async (m: string, path: string, body?: unknown) => (path.includes("/check-runs") ? { status: 200, body: { check_runs: checks } } : gh(m, path, body));
+    await w.adopt();
+    await round(w.deps, w.pr(), { do: "repair" }, { dirty: true });
+    w.records["rec-1"] = { state: "done", outcome: { text: "Repaired …: merged `main` and regenerated (1 file(s)) at `333333333333`, as owner1 (commits GitHub signs). It took the base side of 1 generated file(s) for the repo's CI to regenerate." } };
+    return { w, checks };
+  };
+  const { w, checks } = await setup();
+  checks.push({ name: "regenerate", status: "in_progress", conclusion: null });
+  assert.equal(await round(w.deps, w.pr({ head: H3 }), { do: "merge" }), "nothing");
+  assert.equal(w.of("POST /v1/writes").filter((c) => c.body.kind === "github.merge").length, 0, "waits for the repo's regenerate check");
+  checks[0] = { name: "regenerate", status: "completed", conclusion: "success" };
+  await round(w.deps, w.pr({ head: H3 }), { do: "merge" });
+  assert.equal(w.of("POST /v1/writes").filter((c) => c.body.kind === "github.merge").length, 1, "merged once it passed");
+
+  const late = await setup();
+  await round(late.w.deps, late.w.pr({ head: H3 }), { do: "merge" });
+  late.w.state.put({ ...(late.w.state.get("a/b", 7) as any), ciRegen: { head: H3, at: "2026-01-01T00:00:00Z" } });
+  await round(late.w.deps, late.w.pr({ head: H3 }), { do: "merge" });
+  assert.match(String((late.w.state.get("a/b", 7) as any).hold.reason), /`regenerate` check didn't pass on ship's repair head .* within 30 minutes \(it never appeared\)/);
 });
 
 test("a repair with no conflict to resolve wakes nobody and isn't filed again at the same head and base; a new base tip is repaired again", async () => {
@@ -155,22 +183,3 @@ test("a repair with no conflict to resolve wakes nobody and isn't filed again at
   assert.equal(w.of("POST /v1/writes")[1]!.body.args.attempt, undefined, "a fresh repair, not a retry");
 });
 
-test("a no-op on a release branch is keyed on that branch's own tip: its hook runs on the default branch, and the branch moving re-files", async () => {
-  const w = world({ preset: "cautious", generated: { globs: ["gen/**"], command: "" }, actions: { conflict: [{ workflow: "pr-rebase.yml", inputs: { pr: "{pr}" } }] } });
-  const R1 = "d".repeat(40), R2 = "e".repeat(40);
-  let tip = R1;
-  const gh = w.deps.gh;
-  (w.deps as any).gh = async (method: string, path: string, body?: unknown) => (path === "/repos/a/b/git/ref/heads/release/1.x" ? { status: 200, body: { object: { sha: tip } } } : gh(method, path, body));
-  const rel = () => w.pr({ base: "release/1.x" });
-  await w.adopt();
-  await round(w.deps, rel(), { do: "repair" }, { dirty: true });
-  assert.equal(w.of("POST /repos/a/b/actions/workflows/pr-rebase.yml/dispatches")[0]!.body.ref, "main", "the repo's trusted copy, never the release branch's");
-  w.runs[0] = { status: "completed", conclusion: "failure" };
-  await round(w.deps, rel(), { do: "repair" }, { dirty: true });
-  w.records["rec-1"] = { state: "failed", outcome: { text: `ship-noop: https://github.com/a/b/pull/7 at \`${H1.slice(0, 12)}\` merges \`release/1.x\` at \`${R1}\` with no conflict: nothing to repair, nothing was changed.` } };
-  assert.equal(await round(w.deps, rel(), { do: "repair" }, { dirty: true }), "nothing");
-  assert.equal(w.of("POST /v1/writes").length, 1);
-  tip = R2;
-  await round(w.deps, rel(), { do: "repair" }, { dirty: true });
-  assert.equal(w.of("POST /v1/writes").length, 2, "the release branch moved: repaired again");
-});

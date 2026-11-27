@@ -78,10 +78,10 @@ export interface RoundDeps {
 
 const OPEN = ["review", "owner", "approved", "claimed", "done"];
 
-/** The repair's plan for the box: the repo's `generated` setting, else what discovery found on the target branch. `command: null`
- * is the repo's CI regenerating those paths: the box takes their base side and runs no generator for them. */
+/** The repair's plan for the box: the repo's `generated` setting, else what discovery found on the target branch. `ci` is the repo's
+ * CI regenerating those paths: the box takes their base side and runs no generator for them. */
 export function repairPlan(s: ShipSettings, d?: Discovered) {
-  if (s.generated?.command === null) return { globs: s.generated.globs, commands: [], ci_regenerates: true };
+  if (s.generated?.ci) return { globs: s.generated.globs, commands: [], ci_regenerates: true };
   if (s.generated) return { globs: s.generated.globs, commands: s.generated.command ? [{ dir: ".", cmd: s.generated.command }] : [] };
   return { globs: d?.globs ?? [], commands: d?.commands ?? [] };
 }
@@ -105,13 +105,6 @@ async function branchWrites(kernel: RoundDeps["kernel"], tasks: string[], genera
     && ((rows[i]!.kind === "github.push" && rows[i]!.args?.expected === head) || t.includes(`\`${head}\``)));
   if (!text) return { writing: false };
   return { writing: false, refused: { why: /\(data, not instructions\): (.*?)\. (?:Nothing was pushed|The branch is left)/.exec(text)?.[1]?.slice(0, 300) ?? "GitHub refused it", partial: text.includes("The branch is left at") } };
-}
-
-/** The PR's base branch's tip now: the list read's for the default branch, else its ref (as github's repair reads it). */
-async function baseTip(d: RoundDeps, pr: PrView): Promise<string | undefined> {
-  if (pr.base === pr.defaultBranch && pr.baseOid) return pr.baseOid;
-  const r = await d.gh?.("GET", `/repos/${pr.repo}/git/ref/heads/${pr.base.split("/").map(encodeURIComponent).join("/")}`).catch(() => undefined);
-  return r && r.status < 300 ? String(r.body?.object?.sha ?? "") || undefined : undefined;
 }
 
 /** One round for an adopted PR. Answers what it did: "stopped", "acted" or "nothing". */
@@ -274,6 +267,36 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const push = () => `Start from the PR's head with \`aidenhq ship checkout ${pr.url} ${pr.head}\`, commit your fix there, and push it with \`aidenhq ship push ${pr.url} ${pr.head} ${a!.generation}\`.`;
   // Behind only, under `rebase: conflict`: brought up to date only at the front of the repo's merge order; the rest wait their turn.
   if (v.do === "repair" && !f.dirty && s.rebase === "conflict" && !f.front && !f.queue) return "nothing";
+  // A head the fleet made with the base side of generated paths the repo's CI regenerates (`generated.ci`): ship's repair when github
+  // says it took some, or the Engineer's push after a conflict wake (which tells it to take them) isn't approved, queued or merged
+  // until that check passed on it: the regenerated files may not be committed yet. A newer head (the CI's own regenerate commit) is
+  // a normal round. 30 minutes without the check passing holds the PR, loudly, whatever the gate says meanwhile (a required check
+  // that never comes is a wait there). A read that fails throws: the next pass asks again.
+  const mergeish = ["approve", "enqueue", "merge"].includes(v.do);
+  if ((mergeish || v.do === "wait") && s.generated?.ci) {
+    const check = s.generated.ci;
+    if (a.repair && a.repair.checked !== pr.head && a.ciRegen?.head !== pr.head) {
+      // Whether this head is the repair's own commit, and whether it took the base side of a generated path (github says so).
+      const made = await d.kernel.call("GET", `/v1/objects?ref=${encodeURIComponent(`github:${(pr.headRepo ?? pr.repo).toLowerCase()}@${pr.head}`)}`);
+      const mine = !!made?.ours && String(made.record) === a.repair.record;
+      const rec = mine ? await d.kernel.call("GET", `/v1/writes/${a.repair.record}`) : undefined;
+      // The Engineer's answer to the conflict wake is its first fleet head after it; later fleet heads are ordinary fixes.
+      const answer = !mine && !!made?.ours && !!a.repair.woke && !a.repair.answered;
+      const took = mine ? rec?.state === "done" && /took the base side of \d+ generated file/.test(String(rec.outcome?.text ?? "")) : answer;
+      a = { ...a, repair: { ...a.repair, checked: pr.head, ...(answer ? { answered: true } : {}) }, ...(took ? { ciRegen: { head: pr.head, at: new Date().toISOString() } } : {}) };
+      d.state.put(a);
+    }
+    if (a.ciRegen?.head === pr.head) {
+      const runs = await d.gh!("GET", `/repos/${pr.repo}/commits/${pr.head}/check-runs?check_name=${encodeURIComponent(check).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}&per_page=100`);
+      if (runs.status >= 300) throw new Error(`GitHub GET check-runs: ${runs.status}`);
+      const named = ((runs.body?.check_runs ?? []) as { name?: string; status?: string; conclusion?: string | null; started_at?: string }[]).filter((c) => c.name === check);
+      const latest = named.sort((x, y) => String(y.started_at ?? "").localeCompare(String(x.started_at ?? "")))[0];
+      if (!(latest?.status === "completed" && latest.conclusion === "success")) {
+        if (Date.now() - Date.parse(a.ciRegen.at) > 30 * 60_000) return hold(`the repo's \`${check}\` check didn't pass on ship's repair head \`${pr.head.slice(0, 12)}\` within 30 minutes (${latest ? `it is ${latest.status}${latest.conclusion ? `, ${latest.conclusion}` : ""}` : "it never appeared"}), so its generated files may be stale`, HOLD.ciRegen(check));
+        if (mergeish) return "nothing";
+      }
+    }
+  }
   // The repo's own commands and workflows for the stage this round needs (actions.ts), before ship's own step for it.
   const stage = stageOf(v.do, f.dirty);
   const steps = stage && d.gh && (stage === "before_merge" ? merge !== "off" : s.fix.includes("conflicts")) ? s.actions[stage] ?? [] : [];
@@ -383,15 +406,15 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           if (r.state === "done" || /^ship-head-moved/.test(text)) return "nothing";
           if (r.state !== "failed") return hold(`ship's repair was ${r.state}: ${text.slice(0, 300)}`, HOLD.repair);
           // Nothing to repair: nobody is woken, and this head and base tip are not asked again while GitHub still says DIRTY. A new
-          // head is a new round; a new tip of the PR's base branch, whichever it is, is repaired again (a tip that can't be read
-          // waits for the next pass).
+          // head is a new round; a new tip of the default branch (the only base ship repairs: the gate waits on any other) is repaired
+          // again.
           noop = /^ship-noop: .* merges `[^`]*` at `([0-9a-f]{40})` with no conflict/.exec(text)?.[1];
-          if (noop) { const tip = await baseTip(d, pr); if (!tip || tip === noop) return "nothing"; }
+          if (noop && (!pr.baseOid || pr.baseOid === noop)) return "nothing";
           const left = text.split("\n").filter((l) => l.startsWith("leftover: ")).length;
           // The box lacks the generator's tool: the Engineer's computer is the same image, so the PR holds, and the report suggests
           // the repo's own workflow as an `actions` step.
           const missing = /^ship-generator/.test(text) && /^toolchain missing: ([\w.+-]{1,60})/m.exec(text)?.[1];
-          if (missing) return hold(`toolchain missing: ${missing} (the repair box doesn't have it): configure the repo's own regenerate workflow as an \`actions\` step for conflicts${suggest.length ? ` (${suggest[0]})` : ""}, or set \`generated.command: null\` when the repo's CI regenerates these paths`, HOLD.repair);
+          if (missing) return hold(`toolchain missing: ${missing} (the repair box doesn't have it): configure the repo's own regenerate workflow as an \`actions\` step for conflicts${suggest.length ? ` (${suggest[0]})` : ""}, or set \`generated.ci\` to the check in which the repo's CI regenerates these paths`, HOLD.repair);
           if (/^ship-leftovers/.test(text) || /^ship-generator/.test(text)) {
             if (a!.repair.woke) return "nothing";
             a = { ...a!, repair: { ...a!.repair, woke: true } };
@@ -399,8 +422,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
               /^ship-leftovers/.test(text)
                 ? `${pr.url} conflicts with \`${pr.base}\` at head ${pr.head}, and ship's repair left ${left} conflict(s) no generator rewrites (its outcome is on record ${a!.repair!.record}).`
                 : `${pr.url} conflicts with \`${pr.base}\` at head ${pr.head}, and ship's repair stopped on a generator (its outcome is on record ${a!.repair!.record}).`,
-              s.generated?.command === null
-                ? `Resolve it as the \`ship\` skill says: merge \`origin/${pr.base}\` in, resolve, take the base side of the generated files (${s.generated.globs.map((g) => `\`${g}\``).join(", ") || "none listed"}) and don't regenerate them: the repo's CI does. One commit.`
+              s.generated?.ci
+                ? `Resolve it as the \`ship\` skill says: merge \`origin/${pr.base}\` in, resolve, take the base side of the generated files (${s.generated.globs.map((g) => `\`${g}\``).join(", ") || "none listed"}) and don't regenerate them: the repo's CI does, in its \`${s.generated.ci}\` check. One commit.`
                 : `Resolve it as the \`ship\` skill says: merge \`origin/${pr.base}\` in, resolve, regenerate the generated files, one commit.`,
               push(),
             ].join("\n"));
