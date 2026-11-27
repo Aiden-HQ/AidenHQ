@@ -888,8 +888,6 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   settings.code_review_gated = reviewGated.watched.join(",");
   // Derived: whether the ship module is on, for the github module's adopted-PR writes (absent: every write naming an adoption is refused).
   settings.ship_enabled = enabled.includes("ship") ? "1" : "";
-  // Derived: whether the maintainer module is on, for ship's loop, which runs the Maintainer's Dependabot duty only then.
-  settings.maintainer_enabled = enabled.includes("maintainer") ? "1" : "";
   // Derived: the listed repos, where the fleet's work may merge, close and push outside the agents org and the product repo: the
   // repos the owner listed for the Maintainer (maintainer_repos) and for Ship (the keys of ship.repos), each while its module is on.
   // Each module keeps its own list; this union is the only place they meet. Code review's list isn't one: it never merges.

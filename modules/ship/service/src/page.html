@@ -175,9 +175,11 @@
     "caps.usd": ["Spend (USD)", "The most Ship spends on one PR, in dollars. Blank is unlimited.", null],
     "caps.requeue_on_timeout": ["Requeues on timeout", "How many times a timed-out run is queued again. Blank is unlimited.", null],
     stop_label: ["Stop label", "While a PR carries this label Ship leaves it alone; removing it resumes.", null],
+    dependabot: ["Dependabot updates", "Which dependency bumps an engineer takes through to a merge. Runs even when Ship is off for the repo. All is the owner's call.", { off: "None.", failing: "Only the ones whose checks fail.", all: "Every one, once its checks finish." }],
+    quiet_pr_days: ["Inactive contributor PRs", "Days a person's PR may wait on its author before Ship nudges them; closed after the same wait again (drafts wait twice as long). Blank leaves them alone. Turning it on is the owner's call.", null],
   };
   const STAGES = { conflict: "When a PR conflicts", behind: "When a PR is behind", before_merge: "Before merge" };
-  const KIND = { rebase: "seg", fix: "checks", "generated.globs": "chips", "generated.command": "text", protected: "chips", stop_label: "text" };
+  const KIND = { rebase: "seg", dependabot: "seg", fix: "checks", "generated.globs": "chips", "generated.command": "text", protected: "chips", stop_label: "text" };
   const get = (o, path) => path.split(".").reduce((x, k) => x?.[k], o);
   const put = (o, path, v) => { const ks = path.split("."); const last = ks.pop(); const t = ks.reduce((x, k) => (x[k] ??= {}), o); t[last] = v; };
   const eq = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -236,6 +238,8 @@
     if (/^by_tier\..*\.approve$/.test(path)) return ["off", "observe", "on"].indexOf(b) > ["off", "observe", "on"].indexOf(a);
     if (/\.merge$/.test(path)) return b === "ready" && a !== "ready";
     if (path === "rebase") return b === "behind" && a !== "behind";
+    if (path === "dependabot") return b === "all" && a !== "all";
+    if (path === "quiet_pr_days") return b !== null && b !== undefined && (a === null || a === undefined);
     if (path === "fix" || path === "generated.globs") return (b ?? []).some((x) => !(a ?? []).includes(x));
     if (path === "protected") return (a ?? []).some((x) => !(b ?? []).includes(x));
     return false;
@@ -271,9 +275,9 @@
     };
     const control = (path, extra = {}) => {
       const { stage, kind, label, options, head } = info(path), { v } = state(path);
-      const values = path === "enabled" ? ["on", "off"] : path === "preset" ? controls.preset.values : head ? controls[path].values : /^(by_tier|unwatched)\./.test(path) ? Object.keys(path.endsWith(".approve") ? APPROVE_OPTS : MERGE_OPTS) : path === "rebase" ? ["conflict", "behind"] : ["conflicts", "ci", "review"];
+      const values = path === "enabled" ? ["on", "off"] : path === "preset" ? controls.preset.values : head ? controls[path].values : /^(by_tier|unwatched)\./.test(path) ? Object.keys(path.endsWith(".approve") ? APPROVE_OPTS : MERGE_OPTS) : path === "rebase" ? ["conflict", "behind"] : path === "dependabot" ? ["off", "failing", "all"] : ["conflicts", "ci", "review"];
       const cur = path === "preset" ? presetFor(key) : show(path, v);
-      return editor({ kind, label: `${label} (${key})`, f: `${key}|${path}`, value: stage ? (v ?? []).map(showAction) : cur, values, titles: options, placeholder: kind === "num" ? "no limit" : stage ? "comment: text, or workflow: file.yml" : kind === "chips" ? "glob, then Enter" : undefined, dups: !!stage, ...extra,
+      return editor({ kind, label: `${label} (${key})`, f: `${key}|${path}`, value: stage ? (v ?? []).map(showAction) : cur, values, titles: options, placeholder: kind === "num" ? (path === "quiet_pr_days" ? "off" : "no limit") : stage ? "comment: text, or workflow: file.yml" : kind === "chips" ? "glob, then Enter" : undefined, dups: !!stage, ...extra,
         set: (x, live) => edit(key, path, stage ? x.map((t) => (v ?? []).find((a) => showAction(a) === t) ?? readAction(t)) : path === "enabled" ? x === "on" : x, live) });
     };
     const rs = (path) => { const { d } = state(path), b = h("button", { type: "button", className: "rs", textContent: "Reset", title: `Back to the ${resetTo(path)}: ${fmt(path, show(path, d))}` });
@@ -300,12 +304,14 @@
     const merging = section("merge", "Merging", ["enabled", "handoff"], [
       h("div", { className: "grid" }, ...(defaults ? [sf("preset")] : []), sf("enabled"), sf("handoff")), matrix], { text: "What Ship does for each risk tier code review gives a PR, and which PRs it takes on. Which PRs are in which tier is set by the tier rules on the Reviews page.", options: MATRIX_HELP });
     const repair = section("repair", "Rebase and repair", ["rebase", "fix"], [sf("rebase"), sf("fix")]);
+    // The pull-request duties of their own (owner, 2026-11-27: pull requests are Ship's, issues the Maintainer's).
+    const prs = section("prs", "Pull request upkeep", ["dependabot", "quiet_pr_days"], [h("div", { className: "grid" }, sf("dependabot"), sf("quiet_pr_days"))]);
     const set = CAPS.filter((p) => get(s, p) != null).length;
     const limits = section("limits", "Limits", CAPS, [h("div", { className: "grid" }, ...CAPS.map((p) => sf(p)))], { fold: true, summary: set ? `${set} limit${set === 1 ? "" : "s"} set` : "No limits", note: "How many times a PR is re-reviewed (and so fixed) is code review's 'Reviews per push' setting on the Reviews page. A blank limit is unlimited." });
     const advPaths = ["stop_label", "generated.globs", "generated.command", "protected", ...("actions" in base ? Object.keys(STAGES).map((x) => `actions.${x}`) : [])];
     const changedN = advPaths.filter((p) => state(p).changed).length;
     const adv = section("adv", "Advanced", advPaths, [h("div", { className: "grid" }, sf("stop_label")), ...advPaths.slice(1).map((p) => sf(p, true))], { fold: true, summary: [get(s, "generated")?.globs?.length || get(s, "generated")?.command ? "" : "No generator set", changedN ? `${changedN} changed` : ""].filter(Boolean).join(" \u00b7 ") || "Defaults", note: "Extra steps Ship takes at a stage (actions): comment: text, or workflow: file.yml key=value." });
-    return h("div", { className: "sd", id: `drawer-${key}` }, h("div", { className: "sdc" }, merging), h("div", { className: "sdc" }, repair, limits), h("div", { className: "sdc" }, adv));
+    return h("div", { className: "sd", id: `drawer-${key}` }, h("div", { className: "sdc" }, merging), h("div", { className: "sdc" }, repair, prs, limits), h("div", { className: "sdc" }, adv));
   }
   const LOOSE = new Set(["generated.globs"]);
   const open = new Set();

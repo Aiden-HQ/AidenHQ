@@ -5,12 +5,12 @@ import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
-import { parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
 import { adoptedPass, ended } from "./adopted.ts";
 import type { Kept } from "./handoff.ts";
 import { ciRecover } from "./ci-recover.ts";
 import { configTools } from "./config-tool.ts";
-import { contributorPrs, contributorPrWake, prTick } from "./contributor.ts";
+import { contributorPrAct, contributorPrs, prTick } from "./contributor.ts";
+import { withFooter } from "./aidenhq-sdk/attribution.ts";
 import { shipEffects } from "./effects.ts";
 import { effectRefusal } from "./safe.ts";
 import { followFeed, startLoop, watchSet } from "./loop.ts";
@@ -62,12 +62,11 @@ const gh = async (method: string, path: string, body?: unknown, o?: { deadline?:
   return r as { status: number; body: any };
 };
 
-let unreadable = false;
-const maintained = (() => { try { return parseRepos(env.SHIP_MAINTAINER_REPOS ?? ""); } catch (e) { unreadable = true; log("maintainer_repos unreadable: no Dependabot task is filed", { err: String((e as Error).message).slice(0, 200) }); return []; } })();
 const dataDir = dirname(stateFile);
+// The repos the loop watches, from Ship's own entries (loop.ts watchSet): no other module's list is read.
 const repos = watchSet({
-  product: env.SHIP_PRODUCT_REPO, entries: Object.keys((raw().repos as Record<string, unknown>) ?? {}), maintained, maintainerOn: env.SHIP_MAINTAINER === "1", unreadable,
-  works: (repo) => !!settingsOf(repo),
+  repos: [...(env.SHIP_PRODUCT_REPO ? [env.SHIP_PRODUCT_REPO] : []), ...Object.keys((raw().repos as Record<string, unknown>) ?? {})],
+  settings: (repo) => effective(raw(), repo, scope()),
   // Whether the loop still tracks a Dependabot task it filed on this repo (its loop.json).
   tracked: (repo) => { try { return Object.keys(JSON.parse(readFileSync(join(dataDir, "loop.json"), "utf8"))[repo.toLowerCase()]?.dependabot ?? {}).length > 0; } catch { return false; } },
 });
@@ -89,7 +88,7 @@ const loop = startLoop({
 });
 // What changed on GitHub: the change feed's events (module.yaml subscribes:), with this module's token. No GitHub timer.
 followFeed(loop, { feed: (after) => kernel.call("GET", `/v1/events/log?connection=github&limit=200${after === undefined ? "" : `&after=${after}`}`), paused: () => paused() || !token(), log });
-log("ship watch loop", { repos: [...repos].map(([r, v]) => `${r}:${v.duties}:${v.dependabot ?? "all"}`) });
+log("ship watch loop", { repos: [...repos].map(([r, v]) => `${r}:${v.duties}:${v.dependabot}`) });
 
 // The quiet-PR pass (contributor.ts): its one state value in data/contributor-prs.json, checked every five minutes (at most
 // hourly reads).
@@ -99,8 +98,14 @@ const prStore = {
   setMeta(k: string, v: string) { mkdirSync(dataDir, { recursive: true }); writeFileSync(`${prFile}.tmp`, JSON.stringify({ [k]: v })); renameSync(`${prFile}.tmp`, prFile); },
 };
 const prLog = { info: (o: object, m: string) => log(m, o as Record<string, unknown>), warn: (o: object, m: string) => log(m, o as Record<string, unknown>) };
-const prs = contributorPrs({ url: env.SHIP_CONTRIBUTOR_PRS_URL ?? "http://github:8086/internal/ship/contributor-prs", token });
-const firePr = contributorPrWake(async (t) => (await kernel.raw("POST", "/v1/tasks", t)).status < 300);
+const prs = contributorPrs({
+  url: env.SHIP_CONTRIBUTOR_PRS_URL ?? "http://github:8086/internal/ship/contributor-prs", token,
+  repos: () => Object.keys((raw().repos as Record<string, unknown>) ?? {}).flatMap((repo) => { const d = effective(raw(), repo, scope())?.quiet_pr_days; return d ? [{ repo, quiet_pr_days: d }] : []; }),
+});
+const firePr = contributorPrAct({
+  comment: async (repo, n, text) => (await gh("POST", `/repos/${repo}/issues/${n}/comments`, { body: withFooter(text, "Ship") })).status < 300,
+  close: async (repo, n) => (await gh("PATCH", `/repos/${repo}/pulls/${n}`, { state: "closed" })).status < 300,
+});
 setInterval(() => { if (!paused() && token()) void prTick({ prs, firePr, store: prStore, log: prLog }).catch((e) => log("contributor PR pass failed", { err: String(e) })); }, 5 * 60_000).unref();
 
 createServer(async (req, res) => {

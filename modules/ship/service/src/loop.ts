@@ -1,4 +1,4 @@
-// Ship's watch: the open PRs of the product repo and of every repo ship works, and of every maintained repo with Dependabot on
+// Ship's watch: the open PRs of the product repo and of every repo ship works, and of every other repo whose entry has Dependabot on
 // (those get only the Dependabot task), read with one GraphQL list read per repo (github's OPEN_PRS_QUERY) when something changed:
 // followFeed() reads the github change feed's events (the kernel's log) and passes each repo an event names.
 // - A Dependabot PR whose checks have finished becomes one task for the platform-engineer role (kernel POST /v1/tasks), closed
@@ -21,9 +21,9 @@ type Gh = (method: string, path: string, body?: unknown, o?: { background?: bool
 export type Main = { name: string; oid?: string; rollup: Json };
 export type LoopOptions = {
   /**
-   * The repos to watch, owner/name: `all` for the ones ship works, `dependabot` for a maintained repo elsewhere, where only the
+   * The repos to watch, owner/name: `all` for the ones ship works, `dependabot` for a repo ship doesn't work, where only the
    * Dependabot duty runs (no rounds, no recoveries). `dependabot`: which bumps get an Engineer task: `all` once their
-   * checks finish (the default), none (`off`), or only `failing` ones, those with a check that finished red (the repo's maintainer_repos entry).
+   * checks finish (the default), none (`off`), or only `failing` ones, those with a check that finished red (the repo's ship entry).
    */
   repos: { repo: string; duties: "all" | "dependabot"; dependabot?: "off" | "failing" | "all" }[]; kernelUrl: string; /** Ship's own token (kernel.tasks). */ key: string; cacheDir: string;
   gh: Gh; log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -206,25 +206,20 @@ export function startLoop(o: LoopOptions) {
   return { tick, pass, repos: o.repos.map((r) => r.repo) };
 }
 
-type Duty = { duties: "all" | "dependabot"; dependabot?: "off" | "failing" | "all" };
+type Duty = { duties: "all" | "dependabot"; dependabot: "off" | "failing" | "all" };
 /**
- * The repos the loop watches: the product repo, every repo with its own ship entry and every Maintainer repo ship works (all
- * duties, while `works`), and the Maintainer's other repos with Dependabot on (that duty only: the Maintainer's, run here while its
- * module is on). maintainer_repos never adds a repo to Ship: a repo it names gets the full watch only where Ship already covers it.
- * Which bumps get a task comes from the repo's maintainer_repos entry: the product repo, unlisted, takes every one (`all`); any other
- * repo the Maintainer doesn't list (or every one while its module is off) gets none. An unreadable list files none while the Maintainer is on.
+ * The repos the loop watches, from Ship's own settings only: the product repo and every repo with a ship entry. One ship works
+ * (`enabled`) gets every duty; one it doesn't still gets its Dependabot duty while `dependabot` is on, or while a task it filed
+ * is open (`off` is polled only to close those tasks once their PR is gone).
  */
-export function watchSet(o: { product?: string; entries: string[]; maintained: { repo: string; dependabot: "off" | "failing" | "all" }[]; maintainerOn: boolean; unreadable: boolean; works: (repo: string) => boolean; tracked: (repo: string) => boolean }): Map<string, Duty> {
-  const product = (o.product ?? "").toLowerCase();
-  const bumps = (repo: string) => o.unreadable && o.maintainerOn ? "off" as const : (o.maintainerOn ? o.maintained.find((m) => m.repo.toLowerCase() === repo.toLowerCase())?.dependabot : undefined) ?? (repo.toLowerCase() === product ? undefined : "off" as const);
+export function watchSet(o: { repos: string[]; settings: (repo: string) => { enabled: boolean; dependabot: "off" | "failing" | "all" } | null; tracked: (repo: string) => boolean }): Map<string, Duty> {
   const repos = new Map<string, Duty>();
-  const watch = (repo: string, v: Duty) => { if (![...repos.keys()].some((r) => r.toLowerCase() === repo.toLowerCase())) repos.set(repo, v); };
-  if (o.product && o.works(o.product)) watch(o.product, { duties: "all", dependabot: bumps(o.product) });
-  for (const r of o.entries) if (o.works(r)) watch(r, { duties: "all", dependabot: bumps(r) });
-  for (const m of o.maintained) {
-    if (o.works(m.repo)) watch(m.repo, { duties: "all", dependabot: bumps(m.repo) });
-    // `off` is polled only while tasks it filed are still open: the loop closes them once their PR is gone and files no new ones.
-    else if (o.maintainerOn && (m.dependabot !== "off" || o.tracked(m.repo))) watch(m.repo, { duties: "dependabot", dependabot: m.dependabot });
+  for (const repo of o.repos) {
+    if ([...repos.keys()].some((r) => r.toLowerCase() === repo.toLowerCase())) continue;
+    const s = o.settings(repo);
+    if (!s) continue;
+    if (s.enabled) repos.set(repo, { duties: "all", dependabot: s.dependabot });
+    else if (s.dependabot !== "off" || o.tracked(repo)) repos.set(repo, { duties: "dependabot", dependabot: s.dependabot });
   }
   return repos;
 }

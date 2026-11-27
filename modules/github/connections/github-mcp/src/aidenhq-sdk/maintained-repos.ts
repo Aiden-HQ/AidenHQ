@@ -1,5 +1,5 @@
-// `maintainer_repos`, the one list of repos the fleet looks after: the setting as compiled, parsed once here for github-mcp (the
-// Maintainer's tools and watcher read), and for the code host's PR watch and merge rules. Each entry's duties are opt-in.
+// `maintainer_repos`, the Maintainer's own list of repos (issues only: pull requests are Ship's): the setting as compiled, parsed
+// once here for github-mcp (the Maintainer's tools and watcher read) and the Maintainer's page. Each entry's duties are opt-in.
 export const AGENT_FIX = "agent-fix";
 // The labels of the feature flow, fixed names (not per-repo settings): a feature request awaiting the owner's word, and the
 // owner's word that it may be built. Trust is a collaborator's role (maintainer.ts); the owner's login is an admin.
@@ -9,7 +9,6 @@ export const BUILD_LABEL = "agent-build";
 // from it (default admin and maintain); triage, read and custom roles never count.
 export const TRUST_ROLES = ["admin", "maintain", "write"] as const;
 const DEFAULT_TRUSTED = ["admin", "maintain"];
-export const DEPENDABOT = ["off", "failing", "all"] as const;
 export const TRIAGE = ["off", "new", "new+backlog"] as const;
 /** What happens to an issue triage (or the resolved-check) finds a duplicate, not a bug or request, or already fixed: always a comment
  * saying why; `label` adds the verdict's label (its name, below) and leaves the issue open; `close` closes it. */
@@ -24,14 +23,16 @@ export const PROTECTED_LABELS = ["roadmap", "wip", "blocked"];
 export const TRIAGE_CAP_PER_AUTHOR_DAY = 5;
 export const RESOLVED_CLOSES_PER_RUN = 10;
 export const INACTIVE_GRACE_DAYS = 14;
-const KEYS = ["repo", "fixes", "triage", "features", "dependabot", "quiet_pr_days", "actions", "no_reply_days", "inactive_issue_days", "fix_label", "trusted", "protected_labels"];
+const KEYS = ["repo", "fixes", "triage", "features", "actions", "no_reply_days", "inactive_issue_days", "fix_label", "trusted", "protected_labels"];
 const SHAPE = `{ ${KEYS.join(", ")} }`;
 /** Keys an older entry may still carry, with what replaced each: named in the refusal. */
 const REMOVED: Record<string, string> = {
   label: "it is now fix_label", issues: "it is now fixes", preset: "removed: set triage and features", triage_labels: "removed",
   close: "removed: see actions", triage_cap_per_author_day: "removed: 5 a day is fixed", resolved_check: "removed: see actions.fixed and protected_labels",
-  needs_info_close_days: "it is now no_reply_days", stale_issues: "it is now inactive_issue_days", contributor_prs: "it is now quiet_pr_days",
-  stale_days: "it is now quiet_pr_days",
+  needs_info_close_days: "it is now no_reply_days", stale_issues: "it is now inactive_issue_days", contributor_prs: "moved to Ship: quiet_pr_days on the repo's ship.repos entry",
+  stale_days: "moved to Ship: quiet_pr_days on the repo's ship.repos entry",
+  // Pull-request duties are Ship's (owner, 2026-11-27): each is a field of the repo's ship entry now.
+  dependabot: "moved to Ship: dependabot on the repo's ship.repos entry", quiet_pr_days: "moved to Ship: quiet_pr_days on the repo's ship.repos entry",
 };
 
 export interface MaintainedRepo {
@@ -44,10 +45,6 @@ export interface MaintainedRepo {
   triage: (typeof TRIAGE)[number];
   /** Triage feature requests, and build the ones carrying BUILD_LABEL (default off). */
   features: boolean;
-  /** Which Dependabot PRs get an Engineer task: none, only the ones whose checks fail, or all of them (default off). */
-  dependabot: (typeof DEPENDABOT)[number];
-  /** Nudge a quiet human PR after this many days, close it after as many more (drafts double); null leaves them alone (default). */
-  quiet_pr_days: number | null;
   /** What each verdict does (default label for all three). */
   actions: Record<(typeof VERDICTS)[number], (typeof ACTIONS)[number]>;
   /** Close an issue this many days after asking its reporter for details with no reply; null leaves it open (default). */
@@ -106,7 +103,7 @@ export function parseRepos(raw: string): MaintainedRepo[] {
     };
     const one = <T extends string>(k: string, v: unknown, values: readonly T[], dflt: T): T => {
       if (v === undefined) return dflt;
-      if (!values.includes(v as T)) throw new Error(`${where}: ${k} must be one of ${values.join(", ")}${typeof v === "boolean" ? ` (${v} is ${v ? "all" : "off"})` : ""}`);
+      if (!values.includes(v as T)) throw new Error(`${where}: ${k} must be one of ${values.join(", ")}`);
       return v as T;
     };
     const days = (k: string) => {
@@ -120,7 +117,7 @@ export function parseRepos(raw: string): MaintainedRepo[] {
     return {
       repo: `${m[1]}/${m[2]}`, owner: m[1]!, name: m[2]!,
       fixes: bool("fixes", true), triage: one("triage", e.triage, TRIAGE, "new"), features: bool("features", false),
-      dependabot: one("dependabot", e.dependabot, DEPENDABOT, "off"), quiet_pr_days: days("quiet_pr_days"), actions,
+      actions,
       no_reply_days: days("no_reply_days"), inactive_issue_days: days("inactive_issue_days"),
       fix_label, trusted: [...new Set(trusted as string[])],
       protected_labels: e.protected_labels === undefined ? PROTECTED_LABELS : labelList(where, "protected_labels", e.protected_labels),

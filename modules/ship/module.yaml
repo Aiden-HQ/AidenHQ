@@ -1,5 +1,5 @@
 name: ship
-description: "Ship: owns every pull request's lifecycle on the repos it covers (the fleet's own, and the ones you add to Ship): per-repo settings and presets (cautious, full), one round engine for every PR, a task's own and a member's hand-off alike (repair, update-branch, wakes for red checks and code review's findings, holds that tell their owner, the merge on code review's pass, App approval), CI re-runs, Dependabot tasks and quiet contributor PRs."
+description: "Ship: owns every pull request's lifecycle on the repos it covers (the fleet's own, and the ones you add to Ship): per-repo settings and presets (cautious, full), one round engine for every PR, a task's own and a member's hand-off alike (repair, update-branch, wakes for red checks and code review's findings, holds that tell their owner, the merge on code review's pass, App approval), CI re-runs, and per repo Dependabot tasks and quiet contributor PRs (nudged, then closed). Pull requests are Ship's; the Maintainer does issues."
 license: MIT
 # Design: modules/ship/README.md. The service (service/) holds the per-repo settings (`ship`), the
 # adoption records (data/ship/state.json, holds only: the rest is derived from the PR) and the watch loop (service/src/loop.ts, moved
@@ -19,7 +19,7 @@ contributes:
 roles:
   # kernel.settings: the config tool's settings changes (writers below). kernel.tasks and kernel.wake: a hand-off's one Engineer
   # task (module-task source ship:<repo>/<n>:<generation>) and its wakes (handoff.ts, rounds.ts); the watch loop's Dependabot
-  # tasks, the Maintainer's contributor-PR tasks and the wakes of a fleet PR's task (loop.ts). kernel.work-read: a fleet PR's
+  # tasks and the wakes of a fleet PR's task (loop.ts). kernel.work-read: a fleet PR's
   # task's status and records (a cancelled task's PR is left open for a successor; a merge already open isn't filed twice).
   requests: [ kernel.settings, kernel.tasks, kernel.wake, kernel.work-read ]
   declares:
@@ -54,7 +54,9 @@ settings:
   # rounds, usd, requeue_on_timeout: a number, or null for unlimited },
   # by_tier: { skip|trivial|standard|sensitive: { approve: off|observe|on (not skip), merge: off|ready } } (the risk tier code review gives
   # each PR head; a tier or field omitted takes the preset's), unwatched: { merge: off|ready } (a repo code review doesn't watch has no
-  # tier), enabled: true|false, stop_label,
+  # tier), enabled: true|false, stop_label, dependabot: off|failing|all (which Dependabot PRs get an Engineer task; `all` is the
+  # owner's), quiet_pr_days: null | days (nudge a human's PR quiet that long, close it after as many more; drafts wait twice as
+  # long; turning it on is the owner's): those two duties run whether or not `enabled` is,
   # actions: { conflict|behind|before_merge: [ { comment: "/cmd" } | { workflow: "file.yml", inputs? } ] } (the repo's own commands
   # and workflows, run before ship's own step; before_merge takes workflows only; service/src/actions.ts) } } }. Ship works the fleet org's repos and the product repo, and every repo with an entry here: `repos` is Ship's own list (adding one is the owner's; quiet until enabled), apart from the Maintainer's and code review's. The Fleet page
   # edits it; this is the advanced form. Read by the service (service/src/settings.ts).
@@ -112,10 +114,6 @@ services:
         SHIP_PAUSED: "${settings.ship_paused}"
         SHIP_FLEET_ORG: "${settings.github_fleet_org}"
         SHIP_PRODUCT_REPO: "${settings.product_repo}"
-        # The Maintainer's list, read only for its Dependabot duty (run in this loop, only while the maintainer module is on): never
-        # Ship's coverage.
-        SHIP_MAINTAINER_REPOS: "${settings.maintainer_repos}"
-        SHIP_MAINTAINER: "${settings.maintainer_enabled}"
         # github's routes for ship (service/src/ship-routes.ts) and github-mcp's contributor-PR read.
         SHIP_GITHUB_URL: http://github:8100
         SHIP_CONTRIBUTOR_PRS_URL: http://github:8086/internal/ship/contributor-prs

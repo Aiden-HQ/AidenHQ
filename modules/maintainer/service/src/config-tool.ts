@@ -2,12 +2,12 @@
 // `maintainer_config` reads each maintained repo's settings, `maintainer_configure` proposes one change.
 // The change is the owner's own call: it comes back as a typed settings change for the board to show and file on his Save
 // (structuredContent._aidenhq.settings_change), the same as ship's. Nothing is filed here.
-import { ACTIONS, DEPENDABOT, addListed, INACTIVE_GRACE_DAYS, TRIAGE, TRUST_ROLES, parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
+import { ACTIONS, addListed, INACTIVE_GRACE_DAYS, TRIAGE, TRUST_ROLES, parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
 import type { Tool } from "./mcp.ts";
 
 type Dict = Record<string, unknown>;
 /** The entry fields the page edits (everything but `repo`, which `add` sets); parseRepos checks each value. */
-export const FIELDS = ["fixes", "triage", "features", "dependabot", "quiet_pr_days", "actions", "no_reply_days", "inactive_issue_days", "fix_label", "trusted", "protected_labels"] as const;
+export const FIELDS = ["fixes", "triage", "features", "actions", "no_reply_days", "inactive_issue_days", "fix_label", "trusted", "protected_labels"] as const;
 
 /** maintainer_repos as the instance holds it: its entries, a bare "owner/name" or a map. */
 export function rawRepos(text: string): Dict[] {
@@ -42,7 +42,7 @@ export function applyRepoChange(list: Dict[], c: { fields?: Record<string, Dict>
 /** What every field is when an entry says nothing, and the choices the page offers. */
 export function defaults() {
   const { repo: _r, owner: _o, name: _n, ...base } = parseRepos("x/y")[0]!;
-  return { base, dependabot: DEPENDABOT, triage: TRIAGE, actions: ACTIONS, roles: TRUST_ROLES, inactive_grace_days: INACTIVE_GRACE_DAYS };
+  return { base, triage: TRIAGE, actions: ACTIONS, roles: TRUST_ROLES, inactive_grace_days: INACTIVE_GRACE_DAYS };
 }
 
 export function configTools(d: { repos: () => string }): Tool[] {
@@ -50,7 +50,7 @@ export function configTools(d: { repos: () => string }): Tool[] {
   return [
     {
       name: "maintainer_config",
-      description: "What the Maintainer does on each repo in maintainer_repos: the entry as the instance sets it (`set`), what applies (`effective`: fixes, triage, features, Dependabot, quiet PR days, what each verdict does, no-reply and inactive-issue days, fix label, trusted roles, protected labels), and the defaults (`defaults`).",
+      description: "What the Maintainer does on each repo in maintainer_repos: the entry as the instance sets it (`set`), what applies (`effective`: fixes, triage, features, what each verdict does, no-reply and inactive-issue days, fix label, trusted roles, protected labels), and the defaults (`defaults`).",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       run: async (_a, who) => {
         ownerOnly(who.kind);

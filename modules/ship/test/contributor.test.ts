@@ -1,7 +1,7 @@
 // The quiet_pr_days duty (moved from the Maintainer's watcher): a quiet human PR is nudged, then closed after another quiet spell.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { prTick } from "../service/src/contributor.ts";
+import { contributorPrAct, prTick } from "../service/src/contributor.ts";
 
 const kv = () => {
   const m = new Map();
@@ -50,4 +50,20 @@ test("a nudge keeps the deadline it promised when the repo's quiet window is low
   assert.deepEqual(tasks.map((t) => t.kind), ["nudge", "close"]);
   assert.equal(tasks[1].close_by, new Date(NOW + 14 * DAY).toISOString().slice(0, 10));
   // Had the close recomputed from the lowered window it would already have been filed at NOW + 8 days.
+});
+
+test("Ship nudges and closes a quiet PR itself, in fixed words: a nudge is one comment; a close is a comment, then the close", async () => {
+  const calls: string[] = [];
+  const act = contributorPrAct({ comment: async (repo, n, text) => (calls.push(`comment ${repo}#${n}: ${text}`), true), close: async (repo, n) => (calls.push(`close ${repo}#${n}`), true) });
+  assert.equal(await act("acme/app", { number: 7, kind: "nudge", waiting: "failing checks (1)", close_by: "2026-12-10", activity: "x" }), true);
+  assert.deepEqual(calls, ["comment acme/app#7: This pull request is waiting on its author: failing checks (1). Still working on this? Push or reply by 2026-12-10 to keep it open."]);
+  calls.length = 0;
+  assert.equal(await act("acme/app", { number: 7, kind: "close", waiting: null, close_by: "2026-12-10", activity: "x" }), true);
+  assert.equal(calls.length, 2);
+  assert.match(calls[0]!, /^comment acme\/app#7: Closed for inactivity\. .*github\.com\/acme\/app\/issues\/new/);
+  assert.equal(calls[1], "close acme/app#7");
+  // A comment that didn't post closes nothing (the next look retries it).
+  const none = contributorPrAct({ comment: async () => false, close: async () => (calls.push("closed anyway"), true) });
+  assert.equal(await none("acme/app", { number: 8, kind: "close", waiting: null, close_by: "2026-12-10", activity: "x" }), false);
+  assert.ok(!calls.includes("closed anyway"));
 });

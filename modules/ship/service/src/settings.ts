@@ -12,6 +12,8 @@ export const TIERS = ["skip", "trivial", "standard", "sensitive"] as const;
 export type Tier = (typeof TIERS)[number];
 export const MERGE = ["off", "ready"] as const;
 export const FIX = ["conflicts", "ci", "review"] as const;
+/** Which Dependabot PRs get an Engineer task: none, only the ones whose checks fail, or all of them. */
+export const DEPENDABOT = ["off", "failing", "all"] as const;
 /** The stages a repo's own commands and workflows run at (actions.ts): before ship's repair of a conflict, before it brings a
  * branch up to date, and before it merges. */
 export const STAGES = ["conflict", "behind", "before_merge"] as const;
@@ -34,6 +36,11 @@ export interface ShipSettings {
   stop_label: string;
   /** The repo's own commands and workflows per stage (actions.ts). An ordinary setting: they are the repo's own CI. */
   actions: Partial<Record<(typeof STAGES)[number], ActionStep[]>>;
+  /** Dependabot PRs that get an Engineer task (loop.ts); a duty of its own: it runs whether or not `enabled` is. */
+  dependabot: (typeof DEPENDABOT)[number];
+  /** Nudge a human's PR quiet this many days, close it after as many more (drafts double; contributor.ts); null leaves them
+   * alone. A duty of its own, like `dependabot`. */
+  quiet_pr_days: number | null;
 }
 
 // Protected paths bind the model's fixes only: the deterministic repair may regenerate lockfiles.
@@ -43,7 +50,7 @@ const CAUTIOUS: ShipSettings = {
   enabled: true, handoff: "label", rebase: "conflict", generated: null, fix: ["conflicts", "ci", "review"], protected: PROTECTED,
   caps: { wakes_per_head: 3, ci_rounds: 3, same_check_heads: 2, rounds: 30, usd: 5, requeue_on_timeout: 1 },
   by_tier: { skip: { approve: "off", merge: "ready" }, trivial: { approve: "on", merge: "ready" }, standard: { approve: "observe", merge: "ready" }, sensitive: { approve: "off", merge: "ready" } },
-  unwatched: { merge: "ready" }, stop_label: "ship:stop", actions: {},
+  unwatched: { merge: "ready" }, stop_label: "ship:stop", actions: {}, dependabot: "off", quiet_pr_days: null,
 };
 const FULL: ShipSettings = {
   // Unguarded at ship's own policy layer. Host rules, human code-owner reviews and kernel authority still apply.
@@ -62,7 +69,7 @@ export const PRESETS: Record<"cautious" | "full", ShipSettings> = { cautious: CA
 const clone = <T>(v: T): T => structuredClone(v);
 
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
-export const FIELDS = ["preset", "enabled", "handoff", "rebase", "generated", "fix", "protected", "caps", "by_tier", "unwatched", "stop_label", "actions"];
+export const FIELDS = ["preset", "enabled", "handoff", "rebase", "generated", "fix", "protected", "caps", "by_tier", "unwatched", "stop_label", "actions", "dependabot", "quiet_pr_days"];
 const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 
 /** The fleet's own repos (the agents org as `org/*`, the product repo): ship works them with no entry of their own. Any other
@@ -141,6 +148,8 @@ function checkEntry(errors: string[], at: string, e: unknown) {
   if ("enabled" in e && typeof e.enabled !== "boolean") errors.push(`${at}.enabled: true or false`);
   if ("handoff" in e) oneOf(errors, `${at}.handoff`, e.handoff, HANDOFF);
   if ("rebase" in e) oneOf(errors, `${at}.rebase`, e.rebase, REBASE);
+  if ("dependabot" in e) oneOf(errors, `${at}.dependabot`, e.dependabot, DEPENDABOT);
+  if ("quiet_pr_days" in e && e.quiet_pr_days !== null && !(Number.isInteger(e.quiet_pr_days) && (e.quiet_pr_days as number) >= 1 && (e.quiet_pr_days as number) <= 365)) errors.push(`${at}.quiet_pr_days: a whole number of days (1-365), or null for off`);
   // The old per-repo shape is refused with its way out, never read (risk tiers spec §11).
   for (const k of OLD) if (k in e) errors.push(`${at}.${k}: approve and merge are per tier now: by_tier.<tier>.approve / merge; safe is gone: code review's tier rules say what is small and safe`);
   if ("by_tier" in e) {
@@ -214,6 +223,9 @@ export function loosens(before: unknown, after: unknown, scope: Scope = ALL): st
     if (y.enabled && !x.enabled) add("enabled");
     if (rank(HANDOFF, y.handoff) > rank(HANDOFF, x.handoff)) add("handoff");
     if (y.rebase === "behind" && x.rebase !== "behind") add("rebase");
+    // The owner's gates the Maintainer's entries carried for these duties: every Dependabot PR, and closing quiet human PRs.
+    if (y.dependabot === "all" && x.dependabot !== "all") add("dependabot");
+    if (y.quiet_pr_days !== null && x.quiet_pr_days === null) add("quiet_pr_days");
     for (const t of TIERS) {
       if (rank(APPROVE, y.by_tier[t].approve) > rank(APPROVE, x.by_tier[t].approve)) add(`by_tier.${t}.approve`);
       if (y.by_tier[t].merge === "ready" && x.by_tier[t].merge !== "ready") add(`by_tier.${t}.merge`);

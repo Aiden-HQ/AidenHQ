@@ -1,7 +1,6 @@
-// The quiet_pr_days duty (moved from the Maintainer's watcher, lane C): on each maintained repo with `quiet_pr_days` set,
-// `prTick` (at most hourly) reads its open PRs through github-mcp and files a nudge task for a quiet human PR, then a close task
-// once it stayed quiet after the nudge (`prDue`); an author's activity in between clears the nudge. The tasks go to the
-// Maintainer's role (its handbook's "A nudge task" and "A close task"); ship only decides when they are due.
+// The quiet_pr_days duty (a field of a repo's ship entry): on each repo whose entry sets it, `prTick` (at most hourly) reads its
+// open PRs through github-mcp and nudges a quiet human PR, then closes it once it stayed quiet after the nudge (`prDue`); an
+// author's activity in between clears the nudge. Ship posts both itself (contributorPrAct), in fixed words.
 const MIN = 60_000;
 const DAY = 24 * 60 * MIN;
 /** The PR pass's one state value (main.ts keeps it in a file). */
@@ -22,7 +21,7 @@ export interface MaintainerPrBatch {
   repos: { repo: string; quiet_pr_days: number; prs?: PrRow[]; error?: string }[];
 }
 type Prs = () => Promise<MaintainerPrBatch>;
-/** What the Maintainer is asked about one PR: a nudge, or the close that follows a nudge the author never answered. */
+/** What is due on one PR: a nudge, or the close that follows a nudge the author never answered. */
 export interface PrTask {
   number: number;
   kind: "nudge" | "close";
@@ -121,26 +120,25 @@ export async function prTick(d: { prs: Prs; firePr: FirePr; store: Kv; log: Log;
   return count;
 }
 
-/** github-mcp's internal read of each repo's open PRs (the repos with `quiet_pr_days` set), as this module. */
-export function contributorPrs(o: { url: string; token: () => string }): Prs {
+/** github-mcp's internal read of each repo's open PRs (Ship's entries with `quiet_pr_days` set, which `repos` names), as this module. */
+export function contributorPrs(o: { url: string; token: () => string; repos: () => { repo: string; quiet_pr_days: number }[] }): Prs {
   return async () => {
-    const res = await fetch(o.url, { headers: { authorization: `Bearer ${o.token()}` }, signal: AbortSignal.timeout(120_000) });
+    const repos = o.repos();
+    if (!repos.length) return { repos: [] };
+    const res = await fetch(o.url, { method: "POST", headers: { authorization: `Bearer ${o.token()}`, "content-type": "application/json" }, body: JSON.stringify({ repos }), signal: AbortSignal.timeout(120_000) });
     if (!res.ok) throw new Error(`github-mcp: ${res.status} ${(await res.text()).slice(0, 200)}`);
     return (await res.json()) as MaintainerPrBatch;
   };
 }
 
+/** The nudge's words: fixed text naming only what waits and the date (a PR's title, body and comments are a stranger's words). */
+export const nudgeText = (t: PrTask) => `This pull request is waiting on its author: ${t.waiting ?? "it is still a draft"}. Still working on this? Push or reply by ${t.close_by} to keep it open.`;
+export const closeText = (repo: string) => `Closed for inactivity. Reopen it if you pick it back up. If the change is still wanted, [file an issue](https://github.com/${repo}/issues/new) describing it.`;
+
 /**
- * A quiet PR's nudge or close task, for the Maintainer's role: the text names the repo, the PR and the dates only (a PR's title,
- * body and comments are a stranger's words, read by the Maintainer itself). Keyed by source so a PR is never two tasks of one
- * kind for one quiet spell. `file` posts the kernel's POST /v1/tasks (role kernel.tasks) and answers whether it was filed.
+ * Ship's own nudge and close of a quiet PR, as the owner through github's ship routes (the comment and the close those routes
+ * allow on the repos ship covers): a nudge is one comment; a close is a comment, then the PR closed. Answers whether it was done.
  */
-export function contributorPrWake(file: (task: { title: string; description: string; role: string; source: string }) => Promise<boolean>): FirePr {
-  return (repo, t) => file(t.kind === "nudge"
-    ? { role: "maintainer", title: `Maintainer: nudge ${repo}#${t.number}`, description: `${repo}#${t.number}
-
-This pull request's author has been quiet, and what waits on them is: ${t.waiting ?? "nothing is named"}. Nudge it, as "A nudge task" in your instructions says, with the date it closes if they stay quiet: ${t.close_by}.`, source: `maintainer-pr-nudge:${repo}#${t.number}@${t.activity}` }
-    : { role: "maintainer", title: `Maintainer: close quiet ${repo}#${t.number}`, description: `${repo}#${t.number}
-
-This pull request was nudged and its author stayed quiet since. Close it, as "A close task" in your instructions says: read its author's activity and review requests again first, and close only if the author is still quiet and no review is waiting.`, source: `maintainer-pr-close:${repo}#${t.number}@${t.activity}` });
+export function contributorPrAct(o: { comment: (repo: string, n: number, text: string) => Promise<boolean>; close: (repo: string, n: number) => Promise<boolean> }): FirePr {
+  return async (repo, t) => t.kind === "nudge" ? o.comment(repo, t.number, nudgeText(t)) : (await o.comment(repo, t.number, closeText(repo))) && o.close(repo, t.number);
 }

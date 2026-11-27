@@ -318,12 +318,13 @@ export class Maintainer {
   }
 
   /**
-   * A maintained repo's open pull requests (newest first, at most PR_CAP), each with who wrote it (bot, the fleet, or a
-   * human) and, for a human's, the author's latest activity and what is waiting on them. Titles and bodies are a stranger's
-   * words and are not returned.
+   * A repo's open pull requests (newest first, at most PR_CAP), each with who wrote it (bot, the fleet, or a human) and, for a
+   * human's, the author's latest activity and what is waiting on them. Titles and bodies are a stranger's words and are not
+   * returned. Ship's quiet-PR read (prRepos) is its only caller: `slug` is one of the repos it asked for, already checked.
    */
-  async prList(repo: string | undefined): Promise<{ repo: string; prs: MaintainerPr[] }> {
-    const r = this.target(repo);
+  private async prList(slug: string): Promise<{ repo: string; prs: MaintainerPr[] }> {
+    const [owner, name] = slug.split("/") as [string, string];
+    const r = { repo: slug, owner, name } as MaintainedRepo;
     const listed = (await this.readAll(r, "/pulls?state=open&sort=created&direction=desc")).slice(0, PR_CAP);
     const prs: MaintainerPr[] = [];
     for (const p of listed) {
@@ -369,11 +370,17 @@ export class Maintainer {
     return { repo: r.repo, prs };
   }
 
-  /** Ship's read: each repo with `quiet_pr_days` set, that window and its open PRs (one repo's failure is its `error`). */
-  async prRepos() {
-    if (this.repos instanceof Error) throw new GitHubRefused(`maintainer_repos is invalid: ${this.repos.message}`);
+  /**
+   * Ship's read: each repo its entries give `quiet_pr_days` (`asked`), that window and its open PRs (one repo's failure is its
+   * `error`). Only repos in `listed` (the listed repos: Ship's and the Maintainer's) are read; any other is refused whole.
+   */
+  async prRepos(asked: unknown, listed: string[]) {
+    const ok = (x: unknown): x is { repo: string; quiet_pr_days: number } => !!x && typeof x === "object" && typeof (x as any).repo === "string" && /^[\w.-]{1,100}\/[\w.-]{1,100}$/.test((x as any).repo) && Number.isInteger((x as any).quiet_pr_days) && (x as any).quiet_pr_days >= 1;
+    if (!Array.isArray(asked) || asked.length > 50 || !asked.every(ok)) throw new GitHubRefused("repos is a list of up to 50 { repo: owner/name, quiet_pr_days }");
+    const outside = asked.filter((x) => !listed.some((l) => same(l, x.repo)));
+    if (outside.length) throw new GitHubRefused(`${outside.map((x) => x.repo).join(", ")} isn't a listed repo`);
     const out: { repo: string; quiet_pr_days: number; prs?: MaintainerPr[]; error?: string }[] = [];
-    for (const r of this.repos.filter((x) => x.quiet_pr_days !== null)) {
+    for (const r of asked) {
       try {
         out.push({ repo: r.repo, quiet_pr_days: r.quiet_pr_days!, prs: (await this.prList(r.repo)).prs });
       } catch (err) {

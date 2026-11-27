@@ -64,3 +64,13 @@ test("clearing an explicit generated list back to discovery is a loosening", () 
   assert.ok(loosens(before, after, scope).includes("acme/app.generated"));
   assert.ok(!loosens(after, before, scope).includes("acme/app.generated"));
 });
+
+test("the pull-request duties are fields of a repo's entry: validated, and switching dependabot to all or quiet-PR closing on is the owner's", () => {
+  assert.deepEqual(validate({ repos: { "a/b": { dependabot: "failing", quiet_pr_days: 7 } } }), []);
+  assert.match(validate({ repos: { "a/b": { dependabot: true, quiet_pr_days: 0 } } }).join("|"), /dependabot: one of off, failing, all.*quiet_pr_days: a whole number/);
+  const e = effective({ repos: { "a/b": { dependabot: "failing" } } }, "a/b", scope)!;
+  assert.deepEqual([e.dependabot, e.quiet_pr_days, effective({}, "acme/product", scope)!.dependabot], ["failing", null, "off"]);
+  assert.deepEqual(loosens({ repos: { "a/b": {} } }, { repos: { "a/b": { dependabot: "failing", quiet_pr_days: 7 } } }, scope), ["a/b.quiet_pr_days"]);
+  assert.deepEqual(loosens({ repos: { "a/b": { dependabot: "failing", quiet_pr_days: 7 } } }, { repos: { "a/b": { dependabot: "all", quiet_pr_days: 3 } } }, scope), ["a/b.dependabot"]);
+  assert.deepEqual(loosens({ repos: { "a/b": { dependabot: "all", quiet_pr_days: 7 } } }, { repos: { "a/b": { dependabot: "off", quiet_pr_days: null } } }, scope), []);
+});
