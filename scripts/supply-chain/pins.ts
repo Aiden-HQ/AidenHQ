@@ -8,7 +8,7 @@
 //   compose       every `image:` by digest, unless its service has a `build:`;
 //   modules       modules/<name>/module.yaml: every `services.run.<service>.image` by digest (a `build:` service is this
 //                 repository's own image, and the agent-level `image:` lines name a computer image: neither is a pin);
-//   workflows     every `uses:` by a 40-character commit SHA with its tag in a comment (`# v1.2.3`), local ./ aside;
+//   workflows     (and .github/actions/*/action.yml) every `uses:` by a 40-character commit SHA with its tag in a comment (`# v1.2.3`), local ./ aside;
 //   commands      (Dockerfile RUN, *.sh, workflow lines) `npm i -g` and `npx -y` at an exact version, `pip install`
 //                 at `==`, no `curl | sh`, and after a script adds an apt repository (sources.list.d) every apt install
 //                 is `pkg=version`. Distro packages installed before that ride on the base image's digest; a
@@ -60,7 +60,8 @@ const hasRepo = (s: State) => [...s.entries.values()].some((v) => v.length > 0) 
 
 const DOCKERFILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
 const COMPOSE = /(^|\/)(docker-)?compose[^/]*\.ya?ml$/;
-const WORKFLOW = /(^|\/)\.github\/workflows\/[^/]+\.ya?ml$/;
+// A workflow, or a local composite action one runs (`uses: ./.github/actions/<name>`): both pin every `uses:`.
+const WORKFLOW = /(^|\/)\.github\/(workflows\/[^/]+|actions\/[^/]+\/action)\.ya?ml$/;
 const SHELL = /\.sh$/;
 const CODE = /\.(m?js|ts)$/;
 const HOST_PINS = /(^|\/)ops\/vm\/pins\.json$/;

@@ -2,13 +2,13 @@
 # separate and not held by the cooldown. Add an entry per extra package directory (and `docker` if there is a Dockerfile).
 version: 2
 updates:
-  - package-ecosystem: npm
+  - package-ecosystem: bun
     directory: /
     schedule: { interval: weekly }
     cooldown: { default-days: 7 }
     open-pull-requests-limit: 5
     groups:
-      npm: { patterns: ["*"] }
+      bun: { patterns: ["*"] }
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
