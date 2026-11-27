@@ -269,8 +269,9 @@ module):
    `maxLength` (300 when the field is not declared, so every other module is unchanged); a whole-map paste through
    `save_secret` parses the JSON and applies the same per-field caps, with a 64 KB total; and `auth-api.ts`'s request
    cap (`value` at most 1000 characters, 4000 when `key` is set) rises to 64 KB for a secret that declares fields,
-   because at 1000 a three-kilobyte private key cannot be pasted at all. The map's own JSON is still validated against
-   the `setup:` pattern.
+   because 4000 characters of JSON is below the field's own 4096 once escaping is counted (a PEM key's newlines each
+   double), and 1000 cannot hold a whole-map paste at all. The map's own JSON is still validated against the `setup:`
+   pattern.
 3. **The check runs on a clear too.** `saveKey` calls `check` with the key and a null entry when an entry is being
    removed; `auth-api.ts` passes that through as `{ secret: { name }, key }` with no value; and
    `kernel/src/module-validate.ts` gains an optional `key` on `ValidateInput` and forwards it, since today it forwards
