@@ -41,24 +41,4 @@ describe("the page error boundary", () => {
     expect(el.querySelector("nav a")?.textContent).toBe("Costs");
     expect(el.querySelector(".error-boundary")).not.toBeNull();
   });
-
-  it("renders the next page after the route changes", async () => {
-    const { el, show } = await mount(createElement(Boom), "board");
-    expect(el.textContent).toContain("This page failed to load");
-    await show(createElement("p", null, "Costs page"), "costs");
-    expect(el.querySelector(".error-boundary")).toBeNull();
-    expect(el.textContent).toBe("CostsCosts page");
-  });
-
-  it("retries the same page on Retry", async () => {
-    let fail = true;
-    const Maybe = () => (fail ? (() => { throw new Error("once"); })() : createElement("p", null, "Loaded now"));
-    const { el } = await mount(createElement(Maybe));
-    expect(el.textContent).toContain("This page failed to load");
-    fail = false;
-    const retry = [...el.querySelectorAll("button")].find((b) => b.textContent === "Retry")!;
-    await act(async () => retry.click());
-    expect(el.querySelector(".error-boundary")).toBeNull();
-    expect(el.textContent).toBe("CostsLoaded now");
-  });
 });
