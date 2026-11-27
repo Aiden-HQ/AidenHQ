@@ -2,13 +2,14 @@
 // quiet holder task that keeps a machine's records (so a Tier 2 card still has a task to land on), and the wake the agent gets
 // when a run needs a judgement. The token is read fresh per call, so a token written after start works.
 import { kernelClient, KernelError } from "./aidenhq-sdk/kernel-client.ts";
+import { fence } from "./aidenhq-sdk/fence.ts";
 
 export interface Filed { id: string; tier: number; state: string }
 
 export class KernelWrites {
   private readonly client: () => ReturnType<typeof kernelClient>;
   private readonly log: (msg: string, f?: Record<string, unknown>) => void;
-  private holder = new Map<string, string>();
+  private readonly holders = new Map<string, string>();
 
   constructor(i: { url: string; token: () => string; log?: (msg: string, f?: Record<string, unknown>) => void }) {
     this.client = () => kernelClient(i.url, i.token());
@@ -33,14 +34,14 @@ export class KernelWrites {
    * and this is that place — never a task the owner is asked to act on.
    */
   async holder(machine: string, agent: string): Promise<string> {
-    const had = this.holder.get(machine);
+    const had = this.holders.get(machine);
     if (had) return had;
     const r = (await this.client().call("POST", "/v1/tasks", {
       title: `Server Manager records: ${machine}`,
       description: `Holds the write records for ${machine} (its patch and reboot runs). It is filed quiet on purpose: the owner's cards and the run outcomes land here, and it wakes nobody. Its records are on the kernel, one per run.`,
       agent, source: `server-manager:records:${machine}`, quiet: true,
     })) as { id: string };
-    this.holder.set(machine, r.id);
+    this.holders.set(machine, r.id);
     return r.id;
   }
 
@@ -49,7 +50,8 @@ export class KernelWrites {
     try {
       await this.client().call("POST", "/v1/tasks", {
         title: i.title.slice(0, 200),
-        description: `${i.body}\n\nRead your maintenance skill: report what happened on ${i.machine} in plain words, say what was not done and why, and stop on that machine.`,
+        // What a host printed (an apt error, a unit's log) is data: fenced, so it can never read as an instruction in the task.
+        description: `${fence(i.body, `${i.source}`)}\n\nRead your maintenance skill: report what happened on ${i.machine} in plain words, say what was not done and why, and stop on that machine.`,
         agent: i.agent, source: i.source.slice(0, 200),
       });
     } catch (e) {

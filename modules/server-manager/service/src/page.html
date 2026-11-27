@@ -227,12 +227,11 @@
       act(st && st.reboot_needed ? "Reboot now" : "Reboot", () => rebootNow(name), `reboot:${name}`),
       act("Install security now", () => patchNow(name, "security"), `security:${name}`),
       act("Full update now", () => patchNow(name, "full"), `full:${name}`),
-      ...(st && st.state === "host-key-changed" && st.fingerprint ? [act("Re-pin the key shown", () => repinNow(name, st.fingerprint), `repin:${name}`)] : []),
     ];
     const acts = gone ? [btn("Keep", () => { removing.delete(name); redraw(); propose(); })]
       : open && fresh ? [btn("Discard", () => { added = added.filter((x) => x !== name); delete drafts[name]; redraw(); propose(); })]
       : open ? [btn("Remove", () => { removing.add(name); redraw(); propose(); }), checkBtn()]
-      : [btn("Edit", () => { openName = name; redraw(); }), ...writeActs()];
+      : [btn("Edit", () => { openName = name; redraw(); }), ...writeActs(), ...(repinAct ? [repinAct] : [])];
     const stTags = st ? [
       h("span", { className: `tag ${st.security ? "needs" : st.reboot_needed ? "needs" : "ok"}`, textContent: st.distro ?? st.state }),
       st.security != null ? h("span", { className: `tag ${st.security ? "needs" : "ok"}`, textContent: `${st.security} security` }) : null,
@@ -241,8 +240,13 @@
       // Disk on / and /boot (§9, beside the other state): a full /boot turns a kernel update into a machine that does not come back.
       st.disk && st.disk.root_free_gb != null ? h("span", { className: `tag ${st.disk.root_free_gb < 1 ? "needs" : ""}`, textContent: `${st.disk.root_free_gb} GB free on /` }) : null,
       st.disk && st.disk.boot_free_gb != null ? h("span", { className: `tag ${st.disk.boot_free_gb < 1 ? "needs" : ""}`, textContent: `${st.disk.boot_free_gb} GB free on /boot` }) : null,
+      // §10: the exact key a re-pin would trust, shown beside the button that does it — on a reload the earlier check's message is
+      // gone, so the state line is what tells the owner which fingerprint they are accepting.
+      st.state === "host-key-changed" && st.fingerprint ? h("span", { className: "tag needs", textContent: `presented ${st.fingerprint}`, title: st.fingerprint }) : null,
       st.last_check ? h("span", { className: "tag", textContent: `checked ${ago(st.last_check)}` }) : h("span", { className: "tag", textContent: st.state }),
     ].filter(Boolean) : [];
+    // §10: the re-pin sits with the fingerprint it accepts, so the owner reads the key and the button together.
+    const repinAct = st && st.state === "host-key-changed" && st.fingerprint ? act("Re-pin the key shown", () => repinNow(name, st.fingerprint), `repin:${name}`) : null;
     return h("div", { className: `card mc${open && !gone ? " open" : ""}${drawn ? " seen" : ""}` }, h("div", { className: "top" }, h("div", { className: "who" }, h("div", { className: "name" }, h("span", { textContent: name }), ...tags.filter(Boolean)), h("div", { className: "sum", textContent: summaryOf(d) }), stTags.length ? h("div", { className: "state" }, ...stTags) : null), h("div", { className: "acts" }, ...acts)), ...(open && !gone ? body(name) : []));
   }
   const summaryOf = (m) => {

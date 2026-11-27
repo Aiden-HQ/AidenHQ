@@ -107,6 +107,10 @@ test("the page's write actions file the typed kinds, never a command: patch, reb
   assert.match(html, /patchNow\(name, "full"\)/);
   assert.match(html, /st\.state === "host-key-changed" && st\.fingerprint/, "the re-pin is offered only with a fingerprint the page was shown");
   assert.match(html, /repinNow\(name, st\.fingerprint\)/);
+  // §10: the fingerprint is on the card, in the state line, before the button — on a reload the earlier check's message is gone, so a
+  // click that accepted an unseen key would be the whole defect.
+  assert.match(html, /presented \$\{st\.fingerprint\}/, "the state line names the fingerprint the host presented");
+  assert.ok(html.indexOf("presented ${st.fingerprint}") < html.indexOf('act("Re-pin the key shown"'), "it is drawn before the re-pin action is offered");
   // Nothing the page sends is a shell word: the only arguments are a machine name, a mode and a fingerprint.
   assert.ok(!/command|argv|shell/i.test(html), "the page sends no command, argv or shell word");
   // The buttons read the machine's last readout, so it is declared before the closure that draws them: a `const` used above its

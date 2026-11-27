@@ -210,6 +210,31 @@ test("execute refuses to install a plan the exact-list simulation says changes s
   assert.match(wakes[0]!.title, /patch run stopped/);
 });
 
+// §11.1 — the check that the plan is the whole change runs on the *exact list's* simulation, never the wider inventory one. A host
+// that also has an ordinary update must not have that update rejected as "outside the approved list" for a security-only record.
+test("§11.1 a security record installs on a host that also has ordinary updates: the exact simulation decides, not the inventory", async () => {
+  const h = fakeHost();
+  const { d } = deps(h);
+  const ex = createExecutor(d);
+  const plan = await ex.plan({ kind: "server-manager.patch", args: { machine: "vm-one", mode: "security" }, requester: module(), task: "" } as never);
+  // The exact simulation for a security record must name only the security packages; here it also lists `curl`, the host's ordinary
+  // update, which is exactly what a wrong (inventory-based) comparison refuses.
+  const mixedSim = [
+    "The following packages will be upgraded:", "  curl libc6 openssl tzdata", "4 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.",
+    "Need to get 5,120 kB of archives.", "Inst curl [8.5.0-2ubuntu9] (8.5.0-2ubuntu9.1 Ubuntu:24.04/noble-updates [amd64])",
+    "Inst libc6 [2.39-0ubuntu8.3] (2.39-0ubuntu8.5 Ubuntu:24.04/noble-security [amd64])",
+  ].join("\n");
+  const mixed = fakeHost({ simulate: mixedSim });
+  const mixedDeps = deps(mixed);
+  const out = await createExecutor(mixedDeps.d).execute({ id: "k-0123456789abcdef", kind: "server-manager.patch", args: plan.args, digest: "d", idempotency_key: "i", tier: 0 } as never);
+  assert.equal(out.ok, false);
+  assert.match(out.text, /curl/, "the inventory's extra package is what the exact simulation would flag");
+  // And the unmodified fixture — whose exact simulation lists only libc6/openssl/tzdata — installs cleanly.
+  const clean = await ex.execute({ id: "k-fedcba9876543210", kind: "server-manager.patch", args: plan.args, digest: "d", idempotency_key: "i2", tier: 0 } as never);
+  assert.equal(clean.ok, true, clean.text);
+  assert.ok(h.read().some((c) => c.cmd.startsWith("sudo -n flock -w 600 -x /var/lib/dpkg/lock-frontend env DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade")), "the install ran on the exact list");
+});
+
 test("execute refuses a broken dpkg state and names it, before any install", async () => {
   const h = fakeHost({ audit: "The following packages have been unpacked but not yet configured:\n  libc6\n" });
   const { d, wakes } = deps(h);
@@ -283,6 +308,76 @@ test("§6 a reboot record whose policy no longer matches the machine refuses, be
   assert.equal(out.ok, false);
   assert.match(out.text, /reboot policy changed/);
   assert.ok(!h.read().some((c) => c.cmd.includes("systemctl reboot")), "nothing is rebooted on a stale authorisation");
+});
+
+// §12 — one write per machine at a time, across both kinds: a reboot must never land while the same host's dpkg is unpacking.
+test("§12 a patch and a reboot for one machine do not overlap: the reboot waits for the patch's connection to close", async () => {
+  const h = fakeHost();
+  const { d } = deps(h);
+  const ex = createExecutor(d);
+  const plan = await ex.plan({ kind: "server-manager.patch", args: { machine: "vm-one", mode: "security" }, requester: module(), task: "" } as never);
+  const rebootArgs = {
+    machine: "vm-one", fingerprint: PIN, quiet_window: { start: "00:00", end: "00:01" }, reboot_policy: "auto",
+    pending_id: pendingId({ boot_id: sections("ubuntu-lts")("boot id"), kernel: "6.8.0-48-generic", reboot_pkgs: ["libc6"] }),
+  };
+  // Both start at once. The reboot's window is tiny and (at the real clock) shut, so it returns before issuing anything — what this
+  // asserts is that it could not even reach its connection until the patch had finished and closed its own.
+  const patch = ex.execute({ id: "k-0000000000000001", kind: "server-manager.patch", args: plan.args, digest: "d", idempotency_key: "a", tier: 0 } as never);
+  const reboot = ex.execute({ id: "k-0000000000000002", kind: "server-manager.reboot", args: rebootArgs, digest: "d", idempotency_key: "b", tier: 0 } as never);
+  const [p1, r1] = await Promise.all([patch, reboot]);
+  assert.equal(p1.ok, true, p1.text);
+  assert.equal(r1.ok, false, "the closed window stops the reboot");
+  // The calls interleave only as "patch's whole run, then the reboot's reads": no reboot command, and the patch's install is before
+  // the reboot's first host read.
+  const calls = h.read().map((c) => c.cmd);
+  const install = calls.findIndex((c) => c.startsWith("sudo -n flock -w 600 -x /var/lib/dpkg/lock-frontend env DEBIAN_FRONTEND=noninteractive apt-get install "));
+  assert.ok(install >= 0, "the patch installed");
+  assert.ok(!calls.some((c) => c === "sudo -n systemctl reboot"), "nothing rebooted");
+  assert.ok(calls.lastIndexOf("uname -r") > install, "the reboot's reads happened after the patch's install, so the two never overlapped");
+});
+
+// §11.12 — the clock that decides consent, the window and the reboot is sampled after the host is read, never before it: the reads
+// can take seconds, and a window ending while they run must close the run. The order is asserted on the source, so a later edit that
+// moves the clock back above the read fails here without a test that could ever reboot anything.
+test("§11.12 the window clock is taken after the reboot state is read", async () => {
+  const src = readFileSync(new URL("../service/src/executor.ts", import.meta.url), "utf8");
+  const read = src.indexOf("const st = await readRebootState(c);");
+  const now = src.indexOf("const now = new Date();");
+  assert.ok(read > 0 && now > 0);
+  assert.ok(now > read, "`now` is sampled after `readRebootState`, so consent, window and reboot share a time taken once the reads are done");
+  assert.ok(!/const now = new Date\(\);\s*\n\s*const st = await readRebootState/.test(src), "never sampled before the read");
+});
+
+// §6 — an "ask me first" machine reboots only on the owner's decision: a Tier 0 record with no decision on record refuses.
+test("§6 an ask-first reboot refuses a Tier 0 record with no owner decision, and runs on the Tier 2 one", async () => {
+  const h = fakeHost();
+  const { d } = deps(h);
+  const machines = JSON.stringify([{ name: "vm-one", address: "vm-one", user: "user", key: "vm-one-key", reboot_policy: "ask" }]);
+  const ex = createExecutor({ ...d, machines: () => machines });
+  const plan = await ex.plan({ kind: "server-manager.reboot", args: { machine: "vm-one" }, requester: module(), task: "" } as never);
+  const args = { ...(plan.args as Record<string, unknown>), quiet_window: { start: "00:00", end: "23:59" } };
+  const low = await ex.execute({ id: "k-0000000000000001", kind: "server-manager.reboot", args, digest: "d", idempotency_key: "a", tier: 0 } as never);
+  assert.equal(low.ok, false);
+  assert.match(low.text, /asks before it reboots|no owner decision/);
+  assert.ok(!h.read().some((c) => c.cmd === "sudo -n systemctl reboot"), "a Tier 0 record reboots nothing on an ask-first machine");
+  // The owner's Tier 2 decision gets past that gate: it is not refused for want of a decision (its own run then meets the window).
+  const high = await ex.execute({ id: "k-0000000000000002", kind: "server-manager.reboot", args: { ...args, quiet_window: { start: "00:00", end: "00:01" } }, digest: "d", idempotency_key: "b", tier: 2 } as never);
+  assert.doesNotMatch(high.text, /asks before it reboots|no owner decision/, "a Tier 2 record is not refused for want of a decision");
+});
+
+// §11.1 — the executor refiles a patch whose refresh moved the set, because the kernel's pre-run re-plan saw the old index.
+test("§11.1 a stale patch is refiled by the executor for the set the refresh showed", async () => {
+  const h = fakeHost();
+  const { d, filed } = deps(h);
+  const ex = createExecutor(d);
+  const plan = await ex.plan({ kind: "server-manager.patch", args: { machine: "vm-one", mode: "security" }, requester: module(), task: "" } as never);
+  const stale = { ...(plan.args as Record<string, unknown>), packages: ["libc6=2.39-0ubuntu8.5"], hash: listHash(["libc6=2.39-0ubuntu8.5"]) };
+  const r = await ex.execute({ id: "k-0123456789abcdef", kind: "server-manager.patch", args: stale, digest: "d", idempotency_key: "i", tier: 0 } as never);
+  assert.equal(r.ok, false);
+  // The refile is fired detached; give its promise a turn to settle.
+  await new Promise((ok) => setTimeout(ok, 50));
+  assert.ok(filed.some((f) => f.kind === "server-manager.patch"), "a replacement patch record is filed from the executor");
+  assert.match(r.text, /new record is filed|replacement record/);
 });
 
 test("§10 the re-pin writes the pin only when the host presents the fingerprint the owner was shown", async () => {

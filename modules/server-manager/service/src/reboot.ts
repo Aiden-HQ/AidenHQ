@@ -38,7 +38,16 @@ export function pendingId(i: { boot_id: string; kernel: string; reboot_pkgs: str
 /** Consent lasts 12 hours from when it was granted (§6); after that the pending reboot is dropped and reported, never held. */
 export const CONSENT_MS = 12 * 60 * 60 * 1000;
 
-export interface Consent { pending: string; granted_at: string; /** The pending id a record was last filed for, so a deferred reboot is filed once per window, not every minute. */ filed?: string }
+export interface Consent {
+  pending: string;
+  granted_at: string;
+  /** The pending id a record was last filed for, so a deferred reboot is filed once per window, not every minute. */
+  filed?: string;
+  /** The host key the decision was taken over: a re-pin after it is a different identity, so the consent no longer applies. */
+  fingerprint?: string;
+  /** When the kernel actually decided the record (the owner's approval on an ask-first machine), never when it was planned. */
+  decided_at?: string;
+}
 
 /**
  * Consent, per machine, in the data dir: the pending id a plan was raised for and when. It is written from the plan (so a card the
@@ -78,6 +87,52 @@ export class ConsentStore {
     this.save();
     return this.map[machine]!;
   }
+  /**
+   * Record the kernel's decision for a pending id — the moment `execute` is called, which is only after the kernel has decided the
+   * record. Consent is written here, never at plan time: a card the owner never answers, or rejects, authorises nothing, and a plan
+   * the kernel never runs must not be able to leave a reboot the scheduler could pick up. A decision for the same pending id and pin
+   * keeps its original clock (a run that defers to a later window is the same decision, not a new one); a new one starts fresh.
+   */
+  decide(machine: string, pending: string, fingerprint: string, at = new Date(), prior?: Consent): Consent {
+    this.map = this.load();
+    const had = prior ?? this.map[machine];
+    if (had && had.pending === pending && had.decided_at && at.getTime() - Date.parse(had.decided_at) <= CONSENT_MS) {
+      this.map[machine] = { pending, granted_at: had.granted_at, decided_at: had.decided_at, fingerprint: had.fingerprint ?? fingerprint, ...(had.filed ? { filed: had.filed } : {}) };
+      this.save();
+      return this.map[machine]!;
+    }
+    this.map[machine] = { pending, granted_at: at.toISOString(), decided_at: at.toISOString(), fingerprint };
+    this.save();
+    return this.map[machine]!;
+  }
+
+  /**
+   * Re-arm a live decision's window refile. A run that found its window already closed reports it and leaves the owner's decision
+   * standing; the scheduler files it once more when the window opens, because the "already filed for this pending id" mark is
+   * cleared here. The 12 hours are unchanged: this is the same decision, resumed.
+   */
+  rearm(machine: string, pending: string): void {
+    this.map = this.load();
+    const c = this.map[machine];
+    if (!c || c.pending !== pending || c.filed === undefined) return;
+    const { filed: _filed, ...rest } = c;
+    this.map[machine] = rest;
+    this.save();
+  }
+
+  /**
+   * The owner's decision that a live consent still rests on: the same pending id, the same pinned host key, decided inside its 12
+   * hours, and not yet spent by a run. A deferred reboot the owner already approved can be filed again for the window that opens
+   * without asking a second time — one decision, one reboot of that exact pending id (§6).
+   */
+  decided(machine: string, pending: string, fingerprint: string, at = new Date()): Consent | undefined {
+    this.map = this.load();
+    const c = this.map[machine];
+    if (!c || c.pending !== pending || !c.decided_at) return undefined;
+    if (c.fingerprint && fingerprint && c.fingerprint !== fingerprint) return undefined;
+    if (at.getTime() - Date.parse(c.decided_at) > CONSENT_MS) return undefined;
+    return c;
+  }
   /** Records that a reboot record was filed for this pending id (the scheduler's deferral guard); the approval is still live. */
   markFiled(machine: string, pending: string): void {
     this.map = this.load();
@@ -93,11 +148,12 @@ export class ConsentStore {
     this.save();
   }
   /** A consent still inside its 12 hours, or the reason it is not (expired, or not the pending id this run re-derived). */
-  check(machine: string, pending: string, at = new Date()): { ok: true; consent: Consent } | { ok: false; reason: string } {
+  check(machine: string, pending: string, at = new Date(), fingerprint?: string): { ok: true; consent: Consent } | { ok: false; reason: string } {
     this.map = this.load();
     const c = this.map[machine];
     if (!c) return { ok: false, reason: "no consent is recorded for this reboot: it was dropped, or the record predates this run" };
-    if (new Date(at.getTime() - Date.parse(c.granted_at)).getTime() > CONSENT_MS) return { ok: false, reason: `the consent expired (granted ${c.granted_at}, more than 12 hours ago): the pending reboot is dropped and must be asked for again` };
+    if (fingerprint && c.fingerprint && c.fingerprint !== fingerprint) return { ok: false, reason: "the host key was re-pinned after this consent was given: it authorises the machine it was decided for, not this one" };
+    if (at.getTime() - Date.parse(c.decided_at ?? c.granted_at) > CONSENT_MS) return { ok: false, reason: `the consent expired (decided ${c.decided_at ?? c.granted_at}, more than 12 hours ago): the pending reboot is dropped and must be asked for again` };
     if (c.pending !== pending) return { ok: false, reason: "what the machine needs has changed since it was approved (a different boot ID, kernel or package set): this approval is for another reboot" };
     return { ok: true, consent: c };
   }
@@ -136,6 +192,9 @@ export async function readRebootState(c: Connection): Promise<RebootState> {
 export function rebootDue(i: { quiet_start: string; quiet_end: string }, consent: Consent | undefined, at: Date, timeZone: string): string | undefined {
   if (!consent) return undefined;
   if (consent.filed === consent.pending) return undefined;
+  // A consent past its 12 hours is dropped and reported by the sweep, never filed: the scheduler must not resurrect one it finds
+  // expired after being offline, because planning a record would otherwise start a fresh clock for it.
+  if (at.getTime() - Date.parse(consent.granted_at) > CONSENT_MS) return undefined;
   if (!inWindow(i.quiet_start, i.quiet_end, at, timeZone)) return undefined;
   return consent.pending;
 }

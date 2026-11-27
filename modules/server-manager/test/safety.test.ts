@@ -9,11 +9,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  classify, diskVerdict, exactList, installArgv, installCommand, listHash, LOCKED, neededGb, parseAptConfig, parseDownloadBytes, parseHolds,
+  classify, diskVerdict, downloadEstimate, exactList, installArgv, installCommand, listHash, LOCKED, neededGb, parseAptConfig, parseDownloadBytes, parseHolds,
   parseOsRelease, parsePolicy, parseSimulatedUpgrade, parseSimulation, releaseJumps, simulationProblems, unattendedUpgradesOn, word, UPDATE_ARGV,
 } from "../service/src/apt.ts";
 import { hashOf, planFrom, revalidate, serviceChange, startSeconds, verifyPatch, installedFrom, DPKG_AUDIT, DPKG_CONFIGURE } from "../service/src/execute.ts";
 import { inWindow, pendingId, ConsentStore, CONSENT_MS, rebootDue, rebootAndProve } from "../service/src/reboot.ts";
+import { TIMEOUTS } from "../service/src/ssh.ts";
 import { parseDf, READ } from "../service/src/status.ts";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -135,6 +136,28 @@ test("§11.3 low disk on / and on /boot refuses the run and reports the numbers"
   assert.equal(diskVerdict({ root_free_gb: 18.4, boot_free_gb: null }, 0).ok, true);
 });
 
+// 4b. §11.3 — the estimate is the *approved set's*, and an absent one is not zero.
+test("§11.3 the disk guard uses the exact list's estimate and refuses when apt printed none", () => {
+  const f = fixture("security");
+  const rec = { machine: "vm-one", mode: "security" as const, reboot_policy: "auto" as const, fingerprint: "SHA256:" + "A".repeat(43), packages: f.words, hash: f.hash };
+  const exactSim = "The following packages will be upgraded:\n  libc6 openssl\nNeed to get 900,000 kB of archives.\n";
+  const outside = verifyPatch(rec, {
+    ...f, downloaded_bytes: downloadEstimate(exactSim), disk: { root_free_gb: 1.2, boot_free_gb: 1.2 }, simulation: exactSim,
+    installed: installedFrom(f.policy), audit: "", holds: [], unattended_upgrades: false, reboot_needed: false,
+  });
+  assert.equal(outside.ok, false);
+  assert.equal(outside.ok === false ? outside.code : "", "low_disk", "1.2 GB free is short of twice the exact list's 900 MB");
+  // No `Need to get` line at all: the guard refuses instead of falling back to the 1 GB floor it could not justify.
+  const none = verifyPatch(rec, {
+    ...f, downloaded_bytes: downloadEstimate("The following packages will be upgraded:\n  libc6 openssl\n"), disk: { root_free_gb: 18.4, boot_free_gb: 2.2 }, simulation: exactSim,
+    installed: installedFrom(f.policy), audit: "", holds: [], unattended_upgrades: false, reboot_needed: false,
+  });
+  assert.equal(none.ok, false);
+  assert.equal(none.ok === false ? none.code : "", "disk_unknown");
+  assert.equal(downloadEstimate("Need to get 0 B of archives."), 0, "a real zero is a number, not an absence");
+  assert.equal(downloadEstimate("no summary here"), null);
+});
+
 // §5, §11.1 — an ESM-apps security package the suite test cannot see is still in a security plan. `esm.ubuntu.com` serves some
 // packages from a `noble-apps-security` suite (caught by the suite test) and others from a plain pinned origin (not): this policy
 // is the second shape, which only the `ubuntu-security-status` read names.
@@ -179,6 +202,9 @@ test("§11.9 the lock is waited out by apt's own 600 s timeout and held by flock
   // §11.9's other half: both the refresh and the install (and its simulation) hold the dpkg lock file with the same bound.
   assert.deepEqual(LOCKED, ["flock", "-w", "600", "-x", "/var/lib/dpkg/lock-frontend"]);
   for (const argv of [UPDATE_ARGV, installCommand(["libc6=x"]), installCommand(["libc6=x"], true)]) assert.deepEqual(argv.slice(2, 2 + LOCKED.length), LOCKED, "flock guards every apt call that takes the lock");
+  // §11.9's own budget: the SSH deadline outlasts the 600 s lock wait, so a patch is not killed for a lock it was told to wait out.
+  assert.ok(TIMEOUTS.lock > 600_000, "the lock-waiting calls are given more than the 600 s they may wait");
+  assert.ok(TIMEOUTS.lock < TIMEOUTS.install, "and still less than the install's own bound");
   assert.ok(!LOCKED.join(" ").includes("unattended-upgrades"), "flock takes the lock, it never stops the other holder");
 });
 
@@ -256,6 +282,27 @@ test("§6 a reboot deferred to the window is due once the window opens, once per
   assert.equal(rebootDue(window, store.get("vm-one"), new Date("2026-11-27T03:30:00Z"), "UTC"), id, "inside the window it is due");
   store.markFiled("vm-one", id);
   assert.equal(rebootDue(window, store.get("vm-one"), new Date("2026-11-27T03:31:00Z"), "UTC"), undefined, "a filed pending id is not filed again");
+  // The case the sweep below drops: a consent from before a long outage, still unfiled, and the service comes back inside the
+  // window. It is past its 12 hours, so it is not due — a record must not resurrect it, and planning would otherwise start a clock.
+  const stale = mkdtempSync(join(tmpdir(), "sm-consent-"));
+  const old = new ConsentStore(stale);
+  old.note("vm-one", id, new Date("2026-11-26T20:00:00Z"));
+  assert.equal(rebootDue(window, old.get("vm-one"), new Date("2026-11-27T03:30:00Z"), "UTC"), id, "inside 12 h, an unfiled consent is due");
+  assert.equal(rebootDue(window, old.get("vm-one"), new Date("2026-11-27T22:30:00Z"), "UTC"), undefined, "past 12 h it is never due, even inside the window");
+});
+
+// §6 — only the kernel's decision is a consent; a plan that was never decided leaves nothing the scheduler can act on.
+test("§6 a plan alone records no consent, and a decision carries its own 12 hours and its pin", () => {
+  const d = mkdtempSync(join(tmpdir(), "sm-consent-"));
+  const store = new ConsentStore(d);
+  const id = pendingId({ boot_id: "boot-1", kernel: "6.8.0", reboot_pkgs: ["libc6"] });
+  assert.equal(store.get("vm-one"), undefined, "planning leaves no consent: `decide` is the only writer of a live one");
+  const decided = new Date("2026-11-27T21:00:00Z");
+  const pin = "SHA256:" + "A".repeat(43);
+  store.decide("vm-one", id, pin, decided);
+  assert.equal(store.decided("vm-one", id, pin, decided) !== undefined, true, "the decision is live for its own pending id and pin");
+  assert.equal(store.decided("vm-one", id, "SHA256:" + "B".repeat(43), decided), undefined, "a re-pin is a different machine identity, so the decision does not carry");
+  assert.equal(store.check("vm-one", id, new Date(decided.getTime() + CONSENT_MS + 1), pin).ok, false, "it expires 12 h after the decision, not the plan");
 });
 
 // 11. §6 — consent is bound and expires.

@@ -61,6 +61,27 @@ test("a weekly pass and a check in one slot are one run, as the larger (full)", 
   assert.equal(store.start(due!, new Date("2026-11-30T03:05:00Z")), true);
   // The next check an hour later is the hourly one, not another weekly pass.
   assert.deepEqual(dueFor(m(), new Date("2026-11-30T04:05:00Z"), "UTC", store), { machine: "vm-one", kind: "security", slot: "2026-11-30@04:00" });
+  // Same hour of the *next* day is its own slot: Monday's completed full pass must not swallow Tuesday's 03:00 check.
+  assert.deepEqual(dueFor(m(), new Date("2026-12-01T03:05:00Z"), "UTC", store), { machine: "vm-one", kind: "security", slot: "2026-12-01@03:00" }, "the date is part of the slot, so a week-ago full pass covers no later check");
+});
+
+test("a full pass is not due again the same week, and a check at that hour next week is not swallowed", () => {
+  const store = new SlotStore(dir());
+  store.markSeen("vm-one", new Date("2026-11-23T03:30:00Z"));
+  const monday = dueFor(m(), new Date("2026-11-30T03:05:00Z"), "UTC", store)!;
+  assert.deepEqual(monday, { machine: "vm-one", kind: "full", slot: "2026-11-30@03:00" });
+  store.start(monday, new Date("2026-11-30T03:05:00Z"));
+  store.finish(monday, true, "done");
+  // Tuesday through Sunday: hourly checks, never the Monday pass again.
+  const tue = dueFor(m(), new Date("2026-12-01T09:30:00Z"), "UTC", store)!;
+  assert.deepEqual(tue, { machine: "vm-one", kind: "security", slot: "2026-12-01@09:00" });
+  store.start(tue, new Date("2026-12-01T09:30:00Z"));
+  store.finish(tue, true, "done");
+  // Next Monday: a fresh pass, because its slot key is its own date.
+  const next = dueFor(m(), new Date("2026-12-07T03:05:00Z"), "UTC", store)!;
+  assert.deepEqual(next, { machine: "vm-one", kind: "full", slot: "2026-12-07@03:00" });
+  assert.equal(store.start(next, new Date("2026-12-07T03:05:00Z")), true);
+  assert.deepEqual(store.unfinished().map((r) => `${r.kind}:${r.slot}`), ["full:2026-12-07@03:00"]);
 });
 
 test("DST skip: a run whose wall time is skipped runs at the first real time after it", () => {

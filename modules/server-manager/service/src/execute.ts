@@ -9,7 +9,7 @@ import {
   type Family, type Readout,
 } from "./apt.ts";
 import {
-  exactList, diskVerdict, installCommand, listHash, parseDownloadBytes, parseSimulation, releaseJumps, SIMULATE_UPGRADE,
+  downloadEstimate, exactList, diskVerdict, installCommand, listHash, parseDownloadBytes, parseSimulation, releaseJumps, SIMULATE_UPGRADE,
   simulationProblems, UPDATE_ARGV, word, type Planned,
 } from "./apt.ts";
 import { parseDf, READ, stateOfError } from "./status.ts";
@@ -158,14 +158,17 @@ export function revalidate(i: { os: string; policy: string; simulated: string; h
  * Every §11 gate a patch passes, in order, as one verdict the executor and its tests both read: the record's hash, the simulated
  * plan, the release guard, the disk, the broken state. `list` is the freshly recomputed set, so a caller records or reports it.
  */
-export function verifyPatch(rec: PatchArgs, fresh: { list: Planned[]; hash: string; downloaded_bytes: number; disk: { root_free_gb: number | null; boot_free_gb: number | null }; simulation: string; installed: Map<string, string | undefined>; audit: string; holds: string[]; unattended_upgrades: boolean; reboot_needed: boolean }): { ok: true } | { ok: false; code: string; reason: string } | { stale: true } {
+export function verifyPatch(rec: PatchArgs, fresh: { list: Planned[]; hash: string; downloaded_bytes: number | null; disk: { root_free_gb: number | null; boot_free_gb: number | null }; simulation: string; installed: Map<string, string | undefined>; audit: string; holds: string[]; unattended_upgrades: boolean; reboot_needed: boolean }): { ok: true } | { ok: false; code: string; reason: string } | { stale: true } {
   // §11.1: what gets installed is what this last read showed. A different set is not the approved one.
   if (fresh.hash !== rec.hash) return { stale: true };
   if (fresh.list.length !== rec.packages.length || fresh.list.some((p, i) => word(p) !== rec.packages[i])) return { stale: true };
   // The simulation must show no package outside the list installed, removed or downgraded (§11.1).
   const outside = simulationProblems(parseSimulation(fresh.simulation), rec.packages);
   if (outside.length) return { ok: false, code: "plan_mismatch", reason: `the plan is not what the record said: ${outside.slice(0, 5).join("; ")}${outside.length > 5 ? ` (and ${outside.length - 5} more)` : ""}. Nothing was installed.` };
-  // §11.3: disk first, both places.
+  // §11.3: disk first, both places — measured on the estimate for *this exact list*, never the wider inventory. A host whose
+  // simulation printed no estimate is refused rather than judged against the 1 GB floor, because the space this run needs is then
+  // unknown, and guessing low is what a full `/boot` turns into a machine that does not come back.
+  if (fresh.downloaded_bytes == null) return { ok: false, code: "disk_unknown", reason: "apt printed no download estimate for this exact list, so the space the run needs is unknown: nothing was installed rather than guess it" };
   const disk = diskVerdict(fresh.disk, fresh.downloaded_bytes);
   if (!disk.ok) return { ok: false, code: "low_disk", reason: disk.reason };
   // §11.4: a broken state is not patched over. `dpkg --audit` prints nothing on a clean host.
@@ -193,8 +196,8 @@ export async function runPatch(c: Connection, machine: Machine, rec: PatchArgs):
     boot_id_before: "", boot_id_after: "", reboot_needed: false, unattended_upgrades: false, disk: { root_free_gb: null, boot_free_gb: null }, needed_gb: 1,
   };
   try {
-    // §11.9: the lock's own wait, then the refresh.
-    await c.exec([...UPDATE_ARGV], TIMEOUTS.read);
+    // §11.9: the lock's own wait (600 s), then the refresh — the SSH deadline outlasts both.
+    await c.exec([...UPDATE_ARGV], TIMEOUTS.lock);
     const os = await c.exec([...READ.osRelease]);
     const simulated = await c.exec([...SIMULATE_UPGRADE]);
     const names = [...new Set(parseSimulatedUpgrade(simulated.stdout).map((p) => p.name))].sort();
@@ -217,16 +220,26 @@ export async function runPatch(c: Connection, machine: Machine, rec: PatchArgs):
       securityStatus: secStatus.code === 0 ? secStatus.stdout : undefined,
     }, rec.mode);
     if ("unsupported" in fresh) return { ...base, detail: fresh.unsupported, refused: "unsupported" };
+    // §11.1: what gets installed is what this last read showed. The hash is compared before anything runs, so a set that moved since
+    // the record was filed stops here — and a new record is filed for what this read showed, never the approved one.
+    if (fresh.hash !== rec.hash || fresh.list.length !== rec.packages.length || fresh.list.some((p, i) => word(p) !== rec.packages[i])) {
+      throw new StalePatch(machine.name, rec.hash, fresh.hash, fresh.list.map(word));
+    }
+    // Nothing to do: the set is empty (a revalidation that found every package already current). A record is still reported.
+    if (!fresh.list.length) return { ...base, ok: true, detail: "nothing to install: the last read found no upgrade left for this mode", held: fresh.readout.holds };
+    // The same call, simulated, with the identical list (§11.1). It runs the whole list the record names, so its own summary is what
+    // proves the plan is exactly the change — the inventory simulation above is every upgradable package, which is a wider set than a
+    // security-only record, and reading it here would refuse every security patch for the packages it correctly left out.
+    const exact = await c.exec(installCommand(rec.packages, true), TIMEOUTS.lock);
     const verdict = verifyPatch(rec, {
-      list: fresh.list, hash: fresh.hash, downloaded_bytes: fresh.downloaded_bytes, disk: fresh.readout.disk, simulation: simulated.stdout,
+      // The estimate is the exact list's own `Need to get`, read once and used for both the verdict and the reported need.
+      list: fresh.list, hash: fresh.hash, downloaded_bytes: downloadEstimate(exact.stdout), disk: fresh.readout.disk, simulation: exact.stdout,
       installed: installedFrom(parsePolicy(policy.stdout)), audit: audit.code === 0 ? audit.stdout : "", holds: fresh.readout.holds,
       unattended_upgrades: fresh.readout.unattended_upgrades, reboot_needed: fresh.readout.reboot_needed,
     });
-    Object.assign(base, { held: fresh.readout.holds, before: fresh.readout.services, boot_id_before: bootBefore, unattended_upgrades: fresh.readout.unattended_upgrades, disk: fresh.readout.disk, needed_gb: diskNeeded(fresh.downloaded_bytes) });
+    Object.assign(base, { held: fresh.readout.holds, before: fresh.readout.services, boot_id_before: bootBefore, unattended_upgrades: fresh.readout.unattended_upgrades, disk: fresh.readout.disk, needed_gb: diskNeeded(downloadEstimate(exact.stdout) ?? 0) });
     if ("stale" in verdict) throw new StalePatch(machine.name, rec.hash, fresh.hash, fresh.list.map(word));
     if (!verdict.ok) return { ...base, detail: verdict.reason, refused: verdict.code };
-    // Nothing to do: the set is empty (a revalidation that found every package already current). A record is still reported.
-    if (!fresh.list.length) return { ...base, ok: true, detail: "nothing to install: the last read found no upgrade left for this mode", held: fresh.readout.holds };
     // §11.10: when unattended-upgrades is the one that patches this host, the module stays out of its way. Refreshing and reading
     // does no harm, but installing would race it, so the run stops here and the report says why: the records already showed the
     // module does not disable it, and this is the other half of "coexist".
@@ -237,14 +250,8 @@ export async function runPatch(c: Connection, machine: Machine, rec: PatchArgs):
     // restart shows as a moved start afterwards. Reading both sides after the install would report "no change" for every restart.
     const beforeUnits = fresh.readout.services;
     const beforeStarts = await startTimes(c, beforeUnits);
-    // The same call, simulated, with the identical list (§11.1): the check above proved it is the whole change, and this one runs
-    // against the exact words so a name=version apt would resolve differently never slips through.
-    const list = rec.packages;
-    const simExact = await c.exec(installCommand(list, true), TIMEOUTS.read);
-    const exactProblems = simulationProblems(parseSimulation(simExact.stdout), list);
-    if (exactProblems.length) return { ...base, detail: `the exact-list simulation did not match: ${exactProblems.slice(0, 5).join("; ")}. Nothing was installed.`, refused: "plan_mismatch" };
     // §11.2 and §11.9: non-interactive, bounded, the lock waited out. The install's own timeout is the transport's 1500 s bound.
-    await c.exec(installCommand(list), TIMEOUTS.install);
+    await c.exec(installCommand(rec.packages), TIMEOUTS.install);
     // §11.7-8, and §11.11's boot ID.
     const unitsAfter = await c.exec([...READ.units]);
     const bootAfter = (await c.exec([...READ.bootId])).stdout.trim();
@@ -257,6 +264,9 @@ export async function runPatch(c: Connection, machine: Machine, rec: PatchArgs):
       detail: describe({ installed, held: fresh.readout.holds, stopped: before.stopped, restarted: before.restarted, unattended_upgrades: fresh.readout.unattended_upgrades, disk: fresh.readout.disk }),
     };
   } catch (e) {
+    // §11.1: a set that moved is not a failed patch — the caller files a replacement record for what this last read showed, and only
+    // it can (the kernel's re-plan ran before this run's refresh). It is rethrown as itself, never flattened into a refusal.
+    if (e instanceof StalePatch) throw e;
     const { state, detail } = stateOfError(e);
     return { ...base, detail: (e as Error).message ? String((e as Error).message).slice(0, 500) : detail, refused: (e as { code?: string }).code ?? state };
   }

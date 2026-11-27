@@ -370,15 +370,18 @@ export function simulationProblems(lines: SimLine[], list: string[]): string[] {
   return [...out].sort();
 }
 
-/** `Need to get 12.3 MB of archives.` as bytes (the download estimate §11.3 doubles). */
-export function parseDownloadBytes(text: string): number {
+/** `Need to get 12.3 MB of archives.` as bytes, or `null` when the text carries no estimate (§11.3: unavailable ≠ zero). */
+export function downloadEstimate(text: string): number | null {
   // apt groups thousands with a comma (`Need to get 900,000 kB of archives.`), so a comma is part of the number, not a break.
   const m = /Need to get ([0-9][0-9,.]*)\s*(B|kB|MB|GB)/i.exec(text);
-  if (!m) return 0;
+  if (!m) return null;
   const n = Number(m[1]!.replace(/,/g, ""));
-  if (!Number.isFinite(n)) return 0;
+  if (!Number.isFinite(n)) return null;
   return Math.round(n * ({ B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 } as Record<string, number>)[m[2]!.toUpperCase()]!);
 }
+
+/** The estimate as bytes, 0 when the text carries none (callers that only add it up). */
+export const parseDownloadBytes = (text: string): number => downloadEstimate(text) ?? 0;
 
 /** The space a run needs: the larger of 1 GB and twice the download estimate, in GB. */
 export const neededGb = (downloadBytes: number) => Math.max(1, (downloadBytes / 1024 ** 3) * 2);

@@ -73,11 +73,12 @@ export function dueFor(m: Machine, at: Date, timeZone: string, store: SlotStore)
   const d = dueSince(m, at, timeZone, store.seenAt(m.name));
   const weekly = d.weekly ? { kind: "full" as const, slot: d.weekly } : undefined;
   const check = d.security ? { kind: "security" as const, slot: d.security } : undefined;
-  const checkAt = check ? check.slot.slice(check.slot.indexOf("@") + 1) : "";
-  const weeklyAt = weekly ? weekly.slot.slice(weekly.slot.indexOf("@") + 1) : "";
-  // Same wall-clock slot, both due: one run, the larger. The weekly pass's run includes the check's read, so the check never runs
-  // a second time at that instant — not even after the pass itself is done.
-  if (weekly && check && weeklyAt === checkAt) return store.has(m.name, "full", weekly.slot) ? undefined : { machine: m.name, kind: "full", slot: weekly.slot };
+  // The whole slot, date included: a weekly pass on Monday 03:00 and Tuesday's 03:00 check share a time of day but are different
+  // slots, and comparing only the time would coalesce them into one (wrong) full run on Monday's date.
+  const sameSlot = Boolean(weekly && check && weekly.slot === check.slot);
+  // Same slot, both due: one run, the larger. The weekly pass's run includes the check's read, so the check never runs a second time
+  // at that instant — not even after the pass itself is done.
+  if (sameSlot) return store.has(m.name, "full", weekly.slot) ? undefined : { machine: m.name, kind: "full", slot: weekly.slot };
   if (weekly && !store.has(m.name, "full", weekly.slot)) return { machine: m.name, kind: "full", slot: weekly.slot };
   if (check && !store.has(m.name, "security", check.slot)) return { machine: m.name, kind: "security", slot: check.slot };
   return undefined;
@@ -143,6 +144,16 @@ export class SlotStore {
     const key = this.key(s.machine, s.kind, s.slot);
     const row = this.rows[key] ?? { key, machine: s.machine, kind: s.kind, slot: s.slot, started_at: at.toISOString() };
     this.rows[key] = { ...row, done_at: at.toISOString(), ok, ...(detail ? { detail: detail.slice(0, 300) } : {}) };
+    this.save();
+  }
+  /**
+   * Forget a started slot that never ran: a filing that failed for a transient reason (the kernel was unreachable) leaves the slot
+   * eligible, so the next tick files it, instead of the hour being lost as "done, failed".
+   */
+  release(s: Slot): void {
+    const key = this.key(s.machine, s.kind, s.slot);
+    if (!(key in this.rows)) return;
+    delete this.rows[key];
     this.save();
   }
   /** A slot left started but never finished (a restart mid-run): resolved from the host's state, never replayed blind. */

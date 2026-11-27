@@ -38,8 +38,16 @@ const keys = () => readKeys(env.SERVERS_KEYS_FILE);
 const transport: Transport = { config: { stateDir, tmpDir: env.SERVERS_TMP_DIR } };
 
 const kernelWrites = new KernelWrites({ url: kernelUrl, token: moduleToken, log });
-let agentId: Promise<string> | undefined;
-const holderAgent = () => (agentId ??= kernelWrites.agentId());
+let agentId: string | undefined;
+/**
+ * The module agent's id, read from the kernel once. A failed lookup is not cached: a transient kernel error at boot would otherwise
+ * leave every wake and every holder task broken for the process's life, and the next call must try again.
+ */
+const holderAgent = async (): Promise<string> => {
+  if (agentId) return agentId;
+  agentId = await kernelWrites.agentId();
+  return agentId;
+};
 const wake = async (i: { machine: string; title: string; body: string; source: string }) => {
   try {
     await kernelWrites.wake({ ...i, agent: await holderAgent() });
@@ -137,7 +145,9 @@ function startSchedule() {
           const r = await kernelWrites.file("server-manager.patch", { machine: m.name, mode: due.kind }, task || undefined);
           slots.finish(due, true, `filed ${r.id} (tier ${r.tier})`);
         } catch (e) {
-          slots.finish(due, false, String((e as Error).message ?? e).slice(0, 200));
+          // A filing that failed is not a run that happened: release the slot so the next tick tries again, rather than marking the
+          // hour done and missing it until tomorrow. `prune` only drops done slots, so a released one is retried and then cleaned up.
+          slots.release(due);
           log("a due run did not file", { machine: m.name, kind: due.kind, slot: due.slot });
           await wake({ machine: m.name, title: `Server Manager: a scheduled run did not file on ${m.name}`, body: `${m.name}: the ${due.kind} run due ${due.slot} could not be filed (${String((e as Error).message ?? e).slice(0, 300)}).`, source: `server-manager:schedule-failed:${m.name}:${due.slot}` });
         }
@@ -145,12 +155,16 @@ function startSchedule() {
       // A slot left started and never finished (a restart mid-run) is reported once, and resolved from the host's own state — never
       // replayed blind: the next check reads dpkg --audit and the boot ID, and a patch's plan re-derives its set.
       for (const r of slots.unfinished()) log("a slot was interrupted; the next run reconciles from the host", { machine: r.machine, slot: r.slot });
-      // §6: a reboot deferred to the quiet window's start gets its own record. A live consent whose window is now open, and for
-      // which no record has been filed in this window, is filed now — once, not every minute (`markFiled`), and never past the
-      // consent's 12 hours.
+      // §6: a reboot deferred to the quiet window's start gets its own record. Only a reboot the kernel already *decided* is filed
+      // again — never one a plan merely proposed, and never one past its 12 hours: the sweep below drops those, and `rebootDue`
+      // refuses to revive one it finds expired after the service was offline. Filed once per window (`markFiled`), not every minute.
       for (const m of list) {
         if (!m.enabled) continue;
         const c = consent.get(m.name);
+        // Only a reboot the kernel actually decided is resumed here: a plan that merely proposed one leaves no decision, so a card
+        // the owner never answered cannot be picked up by the scheduler. `rebootDue` handles the window, the once-per-window mark
+        // and the 12 hours measured from that decision.
+        if (!c || !c.decided_at) continue;
         const pending = rebootDue(m, c, new Date(), timeZone());
         if (!pending) continue;
         try {
