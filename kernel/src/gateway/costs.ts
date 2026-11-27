@@ -4,22 +4,20 @@
 // Triggers on `calls` keep it in the write's own transaction, for every connection and process (a draining peer kernel's too):
 // a new or settled call is added to its row; any other change to a reported call (a true-up, a delete) rebuilds the buckets it
 // left and entered from the calls kept. Held calls in flight (`reserved`) are not reported; a cut-off one (`unsettled`) counts
-// as interrupted with no billed amount until its true-up replaces it. Calls are kept 40 days and the rollup 62, so the prune
-// moves a floor first: calls below it leave the ledger without touching the rollup (their buckets are final).
+// as interrupted with no billed amount until its true-up replaces it. Calls and the rollup are both kept 62 days: the prune
+// drops whole buckets of both together, the rollup's first, so the calls leaving rebuild nothing.
 // Every range snaps to the buckets: its start floored, its end ceiled.
 import type { DatabaseSync } from "node:sqlite";
 
 const DAY_MS = 864e5;
 const STEP_MS = 15 * 60_000;
-/** Raw calls are kept 40 days; the rollup 62, so the Costs tab can set the last 30 days against the 30 before. */
-export const CALLS_KEPT_MS = 40 * DAY_MS;
-const ROLLUP_KEPT_MS = 62 * DAY_MS;
+/** Calls and their rollup are kept 62 days, so the Costs tab can set the last 30 days against the 30 before (and a run page still has its calls). */
+export const CALLS_KEPT_MS = 62 * DAY_MS;
 /** The rollup's shape: a new one is rebuilt from the calls kept, in one transaction, at the first start that runs it. */
 const VERSION = "1";
 
 /** The 15-minute UTC bucket of an ISO time (`YYYY-MM-DDTHH:MM`). */
 const BUCKET = (c: string) => `substr(${c}, 1, 14) || CASE WHEN substr(${c}, 15, 2) < '15' THEN '00' WHEN substr(${c}, 15, 2) < '30' THEN '15' WHEN substr(${c}, 15, 2) < '45' THEN '30' ELSE '45' END`;
-const FLOOR = "COALESCE((SELECT value FROM cost_state WHERE key = 'floor'), '')";
 const KEY = "t, agent, model, kind, issue, run, real_run, status";
 const SUMS = "calls, priced, usd, input, cached, output, ms_sum, ms_n, first, last";
 // A call's key columns: no agent or task is ''; its run is the real run id when it named one (real_run), else its credential's key.
@@ -57,12 +55,14 @@ export function costRollup(db: DatabaseSync) {
         CREATE INDEX cost_rollup_failed ON cost_rollup (t) WHERE ${FAILED};
         CREATE INDEX cost_rollup_model ON cost_rollup (model, t, usd, calls);
         CREATE INDEX cost_rollup_groups ON cost_rollup (model, kind, agent, t, status, calls, usd, input, cached, output, ms_sum, ms_n);
-        INSERT INTO cost_rollup (${KEY}, ${SUMS}) ${SELECT} AND at >= ${FLOOR} ${GROUP};
-        CREATE TRIGGER cost_add AFTER INSERT ON calls WHEN NEW.status != 'reserved' AND NEW.at >= ${FLOOR} BEGIN ${ADD} END;
-        CREATE TRIGGER cost_settle AFTER UPDATE OF ${REPORTED} ON calls WHEN OLD.status = 'reserved' AND NEW.status != 'reserved' AND NEW.at >= ${FLOOR} BEGIN ${ADD} END;
-        CREATE TRIGGER cost_change AFTER UPDATE OF ${REPORTED} ON calls WHEN OLD.status != 'reserved' AND OLD.at >= ${FLOOR}
+        INSERT INTO cost_rollup (${KEY}, ${SUMS}) ${SELECT} ${GROUP};
+        CREATE TRIGGER cost_add AFTER INSERT ON calls WHEN NEW.status != 'reserved' BEGIN ${ADD} END;
+        CREATE TRIGGER cost_settle AFTER UPDATE OF ${REPORTED} ON calls WHEN OLD.status = 'reserved' AND NEW.status != 'reserved' BEGIN ${ADD} END;
+        CREATE TRIGGER cost_change AFTER UPDATE OF ${REPORTED} ON calls WHEN OLD.status != 'reserved'
           BEGIN ${rebuild(BUCKET("OLD.at"))} ${rebuild(BUCKET("NEW.at"), `${BUCKET("NEW.at")} != ${BUCKET("OLD.at")}`)} END;
-        CREATE TRIGGER cost_del AFTER DELETE ON calls WHEN OLD.status != 'reserved' AND OLD.at >= ${FLOOR} BEGIN ${rebuild(BUCKET("OLD.at"))} END;
+        -- A bucket the prune already dropped is not rebuilt as its calls leave.
+        CREATE TRIGGER cost_del AFTER DELETE ON calls WHEN OLD.status != 'reserved' AND EXISTS (SELECT 1 FROM cost_rollup WHERE t = ${BUCKET("OLD.at")})
+          BEGIN ${rebuild(BUCKET("OLD.at"))} END;
       `);
       db.prepare("INSERT INTO cost_state (key, value) VALUES ('version', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(VERSION);
     }
@@ -80,17 +80,13 @@ const key = (iso: unknown, ceil = false) => {
   return new Date((ceil ? Math.ceil(ms / STEP_MS) : Math.floor(ms / STEP_MS)) * STEP_MS).toISOString().slice(0, 16);
 };
 
-/**
- * The hourly prune's ledger part, in one transaction: the floor moves to the bucket 40 days back, calls below it go (their buckets
- * stay as they are), and rollup buckets older than 62 days go whole.
- */
+/** The hourly prune's ledger part, in one transaction: whole buckets 62 days back go, the rollup's first, then their calls. */
 export function pruneCalls(db: DatabaseSync, now: number) {
-  const floor = `${key(new Date(now - CALLS_KEPT_MS).toISOString())}:00.000Z`;
+  const cut = key(new Date(now - CALLS_KEPT_MS).toISOString());
   db.exec("BEGIN IMMEDIATE");
   try {
-    db.prepare("INSERT INTO cost_state (key, value) VALUES ('floor', ?) ON CONFLICT (key) DO UPDATE SET value = MAX(value, excluded.value)").run(floor);
-    db.prepare("DELETE FROM calls WHERE at < ?").run(floor);
-    db.prepare("DELETE FROM cost_rollup WHERE t < ?").run(key(new Date(now - ROLLUP_KEPT_MS).toISOString()));
+    db.prepare("DELETE FROM cost_rollup WHERE t < ?").run(cut);
+    db.prepare("DELETE FROM calls WHERE at < ?").run(`${cut}:00.000Z`);
     db.exec("COMMIT");
   } catch (e) {
     if (db.isTransaction) db.exec("ROLLBACK");

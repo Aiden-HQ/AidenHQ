@@ -11,12 +11,12 @@ import { createGateway } from "../src/gateway/lib.ts";
 const serve = (handler) => new Promise((r) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => r({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 const close = (n) => Math.round(n * 1e6) / 1e6;
 
-test("cost reports: the rollup follows every write, survives the calls' prune, and serves the page's figures", async (t) => {
+test("cost reports: the rollup follows every write and the prune, and serves the page's figures", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "costs-"));
   writeFileSync(join(dir, "grants.json"), JSON.stringify({ agents: {} }));
   writeFileSync(join(dir, "gateway.json"), "{}");
   const now = Date.parse("2026-11-20T10:07:00.000Z");
-  // The first start is two months back, so the old calls were within the ledger's 40 days when they were written.
+  // The first start is two months back, so every call was within the ledger's 62 days when it was written.
   let clock = now - 60 * 864e5;
   const open = () => createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: (n) => (n === "gateway_board_key" ? "gw-board" : ""), now: () => clock });
   let gw = open();
@@ -49,14 +49,15 @@ test("cost reports: the rollup follows every write, survives the calls' prune, a
   gw.db.prepare("UPDATE calls SET status = 'interrupted', model = 'm2', cost_usd = 0.05 WHERE key = 'c' AND status = 'unsettled'").run();
   assert.deepEqual(await callsOf("j-1"), [["a", "ok", 0.1], ["c", "interrupted", 0.05], ["b", "ok", 0.2]]);
 
-  // A restart prunes: calls 40 days back go from the ledger but stay in the rollup; buckets 62 days back go whole.
+  // A restart prunes: buckets 62 days back go whole, with their calls; the 50-day-old call stays, in both.
   front.s.close();
   gw.close();
   clock = now;
   gw = open();
   front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { front.s.close(); gw.close(); });
-  assert.deepEqual(gw.db.prepare("SELECT key FROM calls WHERE key IN ('old', 'ancient')").all(), []);
+  assert.deepEqual(gw.db.prepare("SELECT key FROM calls WHERE key IN ('old', 'ancient')").all().map((r) => r.key), ["old"]);
+  assert.deepEqual((await callsOf("j-0")).map(([k]) => k), ["old"]);
 
   assert.equal((await report("summary", { from: iso(now - 60 * 864e5), to: iso(now) }, "nope")).status, 401);
   assert.equal((await report("summary", { from: iso(now - 864e5), to: iso(now), offset: 7 })).status, 400);
