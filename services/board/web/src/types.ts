@@ -775,6 +775,8 @@ export interface SettingRow {
   default?: unknown;
   values?: unknown[];
   required?: boolean;
+  /** A short name for the setting (module.yaml `title`). */
+  title?: string;
   doc?: string;
   /** What the running system reads now, where the board can see it (grants table, gateway, its own environment). */
   live?: string;
