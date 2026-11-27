@@ -1,5 +1,5 @@
 import { stringify as toYaml } from "yaml";
-import { localParts } from "../util/time.js";
+import { localParts, toIso } from "../util/time.js";
 import { type Extraction, inline, paragraph } from "./extraction.js";
 
 export interface MeetingInfo {
@@ -66,6 +66,8 @@ export function renderCanonicalNote(m: MeetingInfo, x: Extraction, sources: Sour
     date: p.date,
     start: p.time,
     end: end.time,
+    start_at: toIso(Date.parse(m.start_at)),
+    end_at: toIso(Date.parse(m.end_at)),
     timezone: m.timezone,
     attendees: m.attendees,
     topics: x.topics.map(inline),
