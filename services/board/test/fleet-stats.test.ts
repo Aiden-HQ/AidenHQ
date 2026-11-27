@@ -33,3 +33,28 @@ describe("fleet summary: shipped tasks come from the card data, not the closing 
     expect(got).toEqual(["WOR-1", "WOR-2", "WOR-3"]);
   });
 });
+
+describe("fleet summary: spend is the ledger's own week", () => {
+  const DAY = 864e5;
+  const dayOf = (t: number) => new Date(t).toISOString().slice(0, 10);
+  // A ledger cell as store.usageDaily returns it: one agent (or none: a check job) on one UTC day.
+  const cell = (agentId: string | null, day: string, costUsd: number) => ({ agentId, day, costUsd, rows: 1, priced: 1 });
+  const week = Array.from({ length: 7 }, (_, k) => dayOf(Date.parse(dayOf(now)) - (k + 1) * DAY));
+
+  it("avg7dUsd is seven days of the ledger divided by 7, check calls with no agent included", () => {
+    // A day each of check-kind spend (agentId null) and agent spend, and one call outside the week that must not count.
+    const cost = week.flatMap((d, k) => [cell(null, d, 10 + k), cell("agent-1", d, 5)]);
+    const got = fleetSummary({ ...facts([]), cost: [...cost, cell("agent-1", dayOf(Date.parse(dayOf(now)) - 20 * DAY), 999)] }, { window: "7d", blocked: [], names: new Map([["agent-1", "Alice"]]), now });
+    const ledgerWeek = cost.reduce((n, c) => n + c.costUsd, 0);
+    expect(ledgerWeek).toBe(126);
+    expect(got.spend.avg7dUsd).toBe(ledgerWeek / 7);
+    // `top` is the same week's per-agent split: the checks have no agent, so only Alice appears.
+    expect(got.spend.top).toEqual([{ agent: "Alice", usd: 35 }]);
+  });
+
+  it("yesterdayUsd is that day's ledger total, not the gateway's day counter", () => {
+    const y = dayOf(Date.parse(dayOf(now)) - DAY);
+    const got = fleetSummary({ ...facts([]), cost: [cell(null, y, 4), cell("agent-1", y, 2.5)] }, { window: "7d", blocked: [], names: new Map(), now });
+    expect(got.spend.yesterdayUsd).toBe(6.5);
+  });
+});
