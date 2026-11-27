@@ -78,7 +78,12 @@
     const sent = { drafts: structuredClone(drafts), removing, added: [...added] }, rev = ++sentRev;
     inOrder(async () => {
       try {
-        await tool("server_manager_config", { edits: { machines: list } });
+        const out = await tool("server_manager_config", { edits: { machines: list } });
+        // A draft the module refuses comes back with its problems and no change: draw those, and never say it is proposed.
+        if (out && Array.isArray(out.problems) && out.problems.length) {
+          if (rev === sentRev) { lastGood = sent; say(out.problems[0].field + " " + out.problems[0].message, true); }
+          return;
+        }
         lastGood = sent;
         say(Object.keys(drafts).length || sent.removing || sent.added.length ? "Changes are proposed: Save in the bar above applies them." : "");
       } catch (e) {

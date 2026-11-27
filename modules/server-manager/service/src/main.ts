@@ -37,7 +37,7 @@ async function serveValidate(req: import("node:http").IncomingMessage, res: impo
   for await (const c of req) { n += (c as Buffer).length; if (n > 256 * 1024) return void res.writeHead(413).end(), true; chunks.push(c as Buffer); }
   let body: ValidateInput;
   try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { return void res.writeHead(400).end(), true; }
-  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(validate(body && typeof body === "object" ? body : {})));
+  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(validate(body && typeof body === "object" ? body : {}, machines())));
   return true;
 }
 

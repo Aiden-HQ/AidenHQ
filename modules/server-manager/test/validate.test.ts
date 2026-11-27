@@ -30,9 +30,19 @@ test("a clear of a key a machine still names is refused, and the message names t
   assert.match(r.errors[0]!.message, /still used/);
 });
 
+
 test("a clear with no machine naming the key is allowed even where the list is empty", () => {
   assert.deepEqual(validate({ settings: settings([]), secret: { name: "servers_keys" }, key: "vm-one-key" }), { ok: true });
-  assert.deepEqual(validate({ secret: { name: "servers_keys" }, key: "vm-one-key" }), { ok: true });
+  assert.deepEqual(validate({ secret: { name: "servers_keys" }, key: "vm-one-key" }, "[]"), { ok: true });
+});
+
+test("a clear the kernel sends with no settings is judged against the list the instance holds", () => {
+  // The kernel's clear carries only { secret: { name }, key }: the saved list is what decides whether the key is still used.
+  const r = validate({ secret: { name: "servers_keys" }, key: "vm-one-key" }, JSON.stringify([entry]));
+  assert.equal(r.ok, false);
+  if (r.ok) return;
+  assert.match(r.errors[0]!.message, /vm-one/);
+  assert.deepEqual(validate({ secret: { name: "servers_keys" }, key: "another-key" }, JSON.stringify([entry])), { ok: true });
 });
 
 test("another secret's clear is not this hook's to judge", () => {
