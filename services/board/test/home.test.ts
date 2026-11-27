@@ -8,6 +8,8 @@ import type { AddressInfo } from "node:net";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { aboutTask } from "../src/home.js";
+import { mergedDescription } from "../src/merge.js";
 import { ViewError, type ViewHost } from "../src/module-views.js";
 import type { Issue, Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
@@ -31,7 +33,7 @@ const issue = (n: number, o: Partial<Issue>): Issue => ({ ...base, id: `00000000
 const carded = issue(1, { title: "Deploy the app" });
 const asking = issue(2, { title: "Chase Sam" });
 // Intake's person waiting on a reply: older than every ask, yet listed after them.
-const reply = issue(6, { title: "Reply to Priya Nair: can you sign off the hiring plan?", assigneeAgentId: "intake", createdAt: ago(80 * H), description: "## Source\n\nType: Slack\nChannel: DM with Priya Nair\nFrom: Priya Nair\n\nsource:slack:C1/1700.1", labels: [label("needs-response")] });
+const reply = issue(6, { title: "Reply to Priya Nair: can you sign off the hiring plan?", assigneeAgentId: "intake", createdAt: ago(80 * H), description: "## Source\n\nType: Slack\nChannel: DM with Priya Nair\nFrom: Priya Nair\nPermalink: https://acme.slack.com/archives/C1/p1700\n\n## Reason\n\nShe asks for a sign-off.\n\n<!-- source:slack:C1:1700.1 -->", labels: [label("needs-response")] });
 const done = issue(5, { title: "Chase the vendor", status: "done", completedAt: ago(H / 2) });
 const agents = [
   { id: "cos", name: "Aiden", status: "idle", metadata: { setupKey: "aidenhq:chief-of-staff", teammate: tm("Chief of staff", ["inbox-agent"]) } },
@@ -95,6 +97,8 @@ describe("home", () => {
     expect(first.needs[0]).toMatchObject({ task: null, teammate: { key: "chief-of-staff" } }); // Intake's card is Aiden's
     expect(first.needs[2]).toMatchObject({ question: "Chase Sam again tomorrow?", detail: "Draft: Hi Sam…", waitSince: ago(3 * H) });
     expect(first.needs[3]).toMatchObject({ question: "can you sign off the hiring plan?", since: reply.createdAt, task: { identifier: "WOR-6" }, reply: { person: "Priya Nair", source: "slack" } });
+    // The drawer's details: the Source block's lines (the link apart), the Reason, the labels.
+    expect(first.needs[3].about).toMatchObject({ created: reply.createdAt, labels: ["needs-response"], source: { type: "Slack", url: "https://acme.slack.com/archives/C1/p1700", fields: [["Channel", "DM with Priya Nair"], ["From", "Priya Nair"]] }, reason: "She asks for a sign-off." });
     expect(first.greeting).toEqual({ needs: 4 });
   });
 
@@ -103,6 +107,26 @@ describe("home", () => {
     expect(first.since.items[1]).toMatchObject({ text: "Triaged 4 emails", teammate: { key: "chief-of-staff", name: "Aiden" } });
     expect(first.since.groups.map((g: { teammate: { key: string }; count: number }) => [g.teammate.key, g.count])).toEqual([["open-loops", 1], ["chief-of-staff", 1]]);
     expect(first.team.map((t: { line: string }) => t.line)).toEqual(["Done: Chase the vendor", "Triaged 4 emails"]);
+  });
+
+  it("details: a merged task's Source, Reason and Suggested action stay that task's, never the survivor's", async () => {
+    const { aboutTask } = await import("../src/home.js");
+    const { mergedDescription } = await import("../src/merge.js");
+    const target = issue(210, { title: "Review the plan", description: "Please review the plan." });
+    const mergedSource = issue(211, { description: "## Source\n\nType: Slack\nPermalink: https://acme.slack.com/archives/C1/p1800\nFrom: Sam\n\n## Reason\n\nSam asks.\n\n## Suggested action\n\nApprove it." });
+    const merge = (own: string) => mergedDescription({ description: own }, { identifier: "WOR-211", title: "Plan", description: mergedSource.description });
+    // A plain-text survivor keeps its own opening: the merged task's Source does not become its own and hide it.
+    const plain = aboutTask({ ...target, description: merge(target.description!) }, undefined, null);
+    expect(plain.source).toBeNull();
+    expect(plain.reason).toBeUndefined();
+    expect(plain.suggested).toBeUndefined();
+    expect(plain.body).toContain("Please review the plan.");
+    // A survivor with its own Source block shows that one, not the merged task's link or lines.
+    const own = "## Source\n\nType: Gmail\nPermalink: https://mail.google.com/mail/u/0/#inbox/abc\nFrom: Priya\n\n## Reason\n\nShe needs a sign-off.";
+    const withOwn = aboutTask({ ...target, description: merge(own) }, undefined, null);
+    expect(withOwn.source).toEqual({ type: "Gmail", url: "https://mail.google.com/mail/u/0/#inbox/abc", fields: [["From", "Priya"]] });
+    expect(withOwn.reason).toBe("She needs a sign-off.");
+    expect(withOwn.body).toBeUndefined();
   });
 
   it("world: a failed calendar read and no waiting-on label are null, and the page still answers", () => {
@@ -124,5 +148,16 @@ describe("home", () => {
     expect((await call("GET", "/api/home")).needs.map((n: { id: string }) => n.id)).toEqual(["k-b2", "k-a1", reply.id]);
     await call("POST", "/api/home/snooze", { id: `${asking.id}:${first.needs[2].waitSince}`, on: false });
     expect((await call("GET", "/api/home")).needs.map((n: { id: string }) => n.id)).toEqual(["k-b2", "k-a1", asking.id, reply.id]);
+  });
+});
+
+describe("aboutTask", () => {
+  it("reads only the task's own Source block, never a merged task's", () => {
+    const own = { description: "Chase the signed contract." };
+    const merged = { identifier: "WOR-9", title: "Reply to Priya", description: "## Source\n\nType: Slack\nPermalink: https://acme.slack.com/archives/C1/p1\n\n## Reason\n\nShe asks." };
+    const a = aboutTask({ id: "i1", identifier: "WOR-1", title: "Contract", description: mergedDescription(own, merged), createdAt: "2026-11-26T00:00:00Z" } as Issue, undefined, null);
+    expect(a.source).toBeNull();
+    expect(a.reason).toBeUndefined();
+    expect(a.body).toBe("Chase the signed contract.");
   });
 });
