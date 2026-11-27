@@ -132,7 +132,7 @@ export function lockProblems(file: string, text: string | undefined): string[] {
   const v = lock?.lockfileVersion;
   if (!(Number.isInteger(v) && v! >= 1 && v! <= 3)) return [`${file}: lockfileVersion ${JSON.stringify(v)} is not one this check reads (1-3)`];
   const pk = lock.packages;
-  if (pk !== undefined && (!pk || typeof pk !== "object" || Array.isArray(pk))) return [`${file}: \`packages\` is not a map, so its entries can't be age-checked`];
+  if (!pk || typeof pk !== "object" || Array.isArray(pk)) return [`${file}: no \`packages\` map, so its entries can't be age-checked`];
   if (!lock.workspaces || typeof lock.workspaces !== "object") return [`${file}: no \`workspaces\` map`];
   return [];
 }

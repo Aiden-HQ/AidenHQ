@@ -55,6 +55,7 @@ test("lockfile and bunfig shape", () => {
   assert.deepEqual(parseBunLock('{ "lockfileVersion": 1, "a": ["x, ]", { "b": 1, }, ], }'), { lockfileVersion: 1, a: ["x, ]", { b: 1 }] });
   assert.match(lockProblems("bun.lock", '{ // c\n "lockfileVersion": 1 }').join(), /cannot be parsed/);
   assert.match(lockProblems("bun.lock", '{ "lockfileVersion": 9, "workspaces": {} }').join(), /lockfileVersion 9/);
+  assert.match(lockProblems("bun.lock", '{ "lockfileVersion": 1, "workspaces": { "": { "dependencies": { "x": "1.0.0" } } } }').join(), /no `packages` map/);
   assert.equal(bunfigProblem("bunfig.toml", "# why\n[install]\nexact = true\nminimumReleaseAge = 604800\n"), undefined);
   assert.equal(bunfigProblem("bunfig.toml", "[install]\nexact = true\nminimumReleaseAge = 604800\n[test]\npreload = [\"./setup.ts\"]\n"), undefined);
   assert.match(bunfigProblem("bunfig.toml", undefined), /missing/);
