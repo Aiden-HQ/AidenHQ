@@ -10,10 +10,9 @@
 @media (min-width: 1100px) { .home-top:not(.home-top-solo) { grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); } }
 .home-side { display: grid; gap: var(--stack); align-content: start; min-width: 0; }
 .home-side > .ui-detail { width: auto; }
-/* Since and the idea, half width each; a lone one takes the row; stacked on a phone. */
+/* Since and the idea on Your world's columns (1.45fr / 1fr), so the gutters line up; a lone one takes the row; stacked on a phone. */
 .home-pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--stack); align-items: start; }
-@media (min-width: 900px) { .home-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.home-pair-cell:only-child { grid-column: 1 / -1; }
+@media (min-width: 1100px) { .home-pair:has(> :nth-child(2)) { grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); } }
 .home-pair-cell { min-width: 0; }
 .home-bone { display: block; width: 100%; border-radius: var(--radius); }
 
