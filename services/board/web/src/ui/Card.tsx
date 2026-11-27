@@ -5,8 +5,8 @@ export const Card = ({ children, className = "" }: { children: React.ReactNode; 
 export function Facts({ items }: { items: readonly (readonly [string, React.ReactNode, string?] | false | null | undefined)[] }) {
   return (
     <dl className="ui-facts">
-      {items.filter((x): x is readonly [string, React.ReactNode, string?] => Boolean(x)).map(([k, v, help]) => (
-        <div key={k} style={{ display: "contents" }}>
+      {items.filter((x): x is readonly [string, React.ReactNode, string?] => Boolean(x)).map(([k, v, help], i) => (
+        <div key={`${i}:${k}`} style={{ display: "contents" }}>
           <dt title={help}>{k}</dt>
           <dd>{v}</dd>
         </div>

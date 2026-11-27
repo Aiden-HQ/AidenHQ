@@ -12,7 +12,7 @@ import { RenameButton, statusLine } from "./Team";
 import { SkeletonLines } from "./Skeleton";
 import type { Assignee, ChatRow, RosterAgent, SettingRow } from "./types";
 import { Banner, Button, Card, Disclosure, EmptyState, Face, Facts, LinkButton, Menu, Page, SectionCard, Segmented, StatusDot, Tag, faceProps, faceStateOf, type TagTone } from "./ui";
-import { settingSummary, settingTitle } from "./settings-format";
+import { settingSummary, settingTitle, yamlValue } from "./settings-format";
 import { ago } from "./util";
 import "./team.css";
 
@@ -218,7 +218,7 @@ function SetUp({ a, onSignIn }: { a: RosterAgent; onSignIn: () => void }) {
   if (!controls.length || (q.data && !rows.length)) return null;
   return (
     <SectionCard title={`How ${a.name} is set up`}>
-      {q.data ? <Facts items={rows.map((s) => [settingTitle(s), <span key={s.key} className="mate-val" title={settingSummary(s.value)}>{settingSummary(s.value)}</span>, s.doc] as const)} /> : <SkeletonLines lines={3} />}
+      {q.data ? <Facts items={rows.map((s) => [settingTitle(s), <span key={s.key} className="mate-val" title={yamlValue(s.value)}>{settingSummary(s.value)}</span>, s.doc] as const)} /> : <SkeletonLines lines={3} />}
       <p className="mate-foot">Change any of this by asking {a.name}.</p>
     </SectionCard>
   );
