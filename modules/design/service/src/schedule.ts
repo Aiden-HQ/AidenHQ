@@ -109,6 +109,10 @@ export function createScheduler(d: ScheduleDeps) {
     }
   }
 
+  /** Apps whose deploy met a pass already running (it may have captured the old version): each gets its deploy pass once that one
+   *  ends. Kept in memory, so the feed's cursor moves on for every other app; a restart forgets one, which costs one pass. */
+  const owed = new Set<string>();
+
   /** Starts a pass of each `after-deploy` app an event names (once per app per page). */
   async function deployed(events: FeedEvent[], done: Set<string>, kind: string, match: (a: App, resource: string) => boolean) {
     const names = new Set<string>();
@@ -118,13 +122,20 @@ export function createScheduler(d: ScheduleDeps) {
       if (done.has(name)) continue;
       const r = await d.passes.startPass(name, "deploy");
       log("deploy pass", { app: name, ...("refused" in r ? { refused: r.refused } : { run: r.run }) });
-      // A transient failure, or a pass already running (it may have captured the old version), keeps the feed's cursor: the next tick reads this deploy again, until its own pass starts.
-      if (("retry" in r && r.retry) || ("refused" in r && r.refused === "already running")) throw new Error(`${name}'s deploy pass wasn't started: ${r.refused}`);
+      // A transient failure keeps the feed's cursor: the next tick reads this deploy again.
+      if ("retry" in r && r.retry) throw new Error(`${name}'s deploy pass wasn't started: ${r.refused}`);
+      if ("refused" in r && r.refused === "already running") owed.add(name);
       done.add(name);
     }
   }
 
   async function deploys() {
+    for (const name of [...owed]) {
+      if (d.store.active(name)) continue;
+      const r = await d.passes.startPass(name, "deploy");
+      log("deploy pass (after the running one)", { app: name, ...("refused" in r ? { refused: r.refused } : { run: r.run }) });
+      if (!("retry" in r && r.retry) && !("refused" in r && r.refused === "already running")) owed.delete(name);
+    }
     await feed("apps", (ev, done) => deployed(ev, done, "app.deployed", (a, res) => a.name === res));
     await feed("github", (ev, done) => deployed(ev, done, "push", (a, res) => a.repo?.toLowerCase() === res));
   }
