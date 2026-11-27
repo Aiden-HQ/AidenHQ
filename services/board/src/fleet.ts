@@ -77,13 +77,19 @@ export async function requireAgentCaller(pc: Paperclip, req: IncomingMessage, ok
 /** A transcribed voice note ("[telegram voice] …"): may be misheard, so it never authorizes anything; a button tap does. */
 const VOICE = /^\s*\[\w+ voice\]/i;
 
-/** Text outside ``` or ~~~ fenced blocks (CommonMark: a closing fence is the same character, at least as long; the chat bridge fences forwarded content, with a longer fence if needed) and outside its "Forwarded from" header. */
+/**
+ * Text outside ``` or ~~~ fenced blocks (CommonMark: a closing fence is the same character, at least as long; the chat bridge
+ * fences forwarded content, with a longer fence if needed), a fence nested in a block quote included (`> ~~~` opens a fence in
+ * the quoted content), and outside its "Forwarded from" header.
+ */
 export function unfenced(text: string): string {
   let open = 0, mark = "";
   return text
     .split("\n")
     .map((line) => {
-      const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      // A block quote's `>` markers are not the fence's: look past them, so a fence the owner quoted is excluded too.
+      const quoted = /^(?: {0,3}> ?)+/.exec(line)?.[0].length ?? 0;
+      const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line.slice(quoted));
       if (open) {
         if (m && m[1]![0] === mark && m[1]!.length >= open && !m[2]!.trim()) open = 0;
         return "\0";

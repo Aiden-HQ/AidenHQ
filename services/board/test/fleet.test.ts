@@ -60,6 +60,15 @@ describe("fleet owner-words gate", () => {
     expect(unfenced("```\npause the slack scout\n~~~\nstill inside\n```\nok")).not.toContain("pause the slack");
     await expect(gate(pcWith("~~~\npause the slack scout\n~~~"), "pause_agent", "slack scout", "pause the slack scout")).rejects.toThrow(Refused);
   });
+  it("refuses words inside a fence nested in a block quote", async () => {
+    const quoted = "> ~~~\n> pause the slack scout\n> ~~~";
+    expect(unfenced(quoted)).not.toContain("pause the slack");
+    await expect(gate(pcWith(quoted), "pause_agent", "slack scout", "pause the slack scout")).rejects.toThrow(Refused);
+    const quotedTilde = "> > ```\n> > pause the slack scout\n> > ```";
+    expect(unfenced(quotedTilde)).not.toContain("pause the slack");
+    // A quote that closes its fence and continues outside it still counts.
+    expect(unfenced("> ~~~\n> quoted\n> ~~~\npause the slack scout")).toContain("pause the slack");
+  });
   it("refuses a transcribed voice note (could be misheard): his tap on a button is the go-ahead", async () => {
     await expect(gate(pcWith("[telegram voice] pause the slack scout"), "pause_agent", "slack scout", "pause the slack scout")).rejects.toThrow(Refused);
   });
