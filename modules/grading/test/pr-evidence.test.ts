@@ -656,6 +656,31 @@ test("the gate check is read from its newest run at the head, and two judgements
   assert.match(redLine, /checks: ci-required not green \(failed\)/, "a red judgement beside a green run is not papered over");
 });
 
+test("an edit's skipped aggregate is no verdict: the fact states the run that judged the head, never the skip", async () => {
+  // A title/body edit plans no suite (ci.yml): it posts a `skipped` ci-required and a `skipped` check for every job it did not
+  // run, all newer than the run that tested the head. GitHub counts a skip as a pass; the grade must read the real run, so a head
+  // whose suite failed still states that failure and a head whose gate passed still states its pass.
+  const failedThenEdit = { ...merged(1510, "q", "r"), commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
+    { __typename: "CheckRun", databaseId: 30, name: "packages (2)", status: "COMPLETED", conclusion: "FAILURE" },
+    { __typename: "CheckRun", databaseId: 31, name: "ci-required", status: "COMPLETED", conclusion: "FAILURE" },
+    { __typename: "CheckRun", databaseId: 32, name: "ci-required", status: "COMPLETED", conclusion: "SKIPPED" },
+    { __typename: "CheckRun", databaseId: 33, name: "packages (2)", status: "COMPLETED", conclusion: "SKIPPED" },
+  ] } } } }] } };
+  const ev = await prEvidence([{ repo: REPO, number: 1510, url: url(1510), heads: ["branch-q"] }], "", depsFor([failedThenEdit]));
+  const line = ev.facts.find((f) => f.startsWith(`${url(1510)}: merged`));
+  assert.match(line, /checks: .*ci-required not green \(failed\)/, `the real gate failure is stated: ${line}`);
+  assert.match(line, /checks: .*packages \(2\) not green \(failed\)/, `the real suite failure is stated: ${line}`);
+  assert.doesNotMatch(line, /green \(skipped/, "an edit's skip is never reported as an accepted pass");
+  // A green head, then an edit: the real run's green verdict is what the fact states, not the edit's skip.
+  const greenThenEdit = { ...merged(1511, "s", "t"), commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
+    { __typename: "CheckRun", databaseId: 40, name: "ci-required", status: "COMPLETED", conclusion: "SUCCESS" },
+    { __typename: "CheckRun", databaseId: 41, name: "ci-required", status: "COMPLETED", conclusion: "SKIPPED" },
+  ] } } } }] } };
+  const green = await prEvidence([{ repo: REPO, number: 1511, url: url(1511), heads: ["branch-s"] }], "", depsFor([greenThenEdit]));
+  const greenLine = green.facts.find((f) => f.startsWith(`${url(1511)}: merged`));
+  assert.match(greenLine, /checks: ci-required green/, "the real pass is the verdict, not the edit's skip");
+});
+
 test("a pending judgement of a name is never dropped behind a red one, and the fact states the verdict it displays", async () => {
   // A failed run and a still-pending status of the same name: the grade waits, since the pending one may still judge the head.
   const running = { ...merged(1507, "m", "n"), commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [

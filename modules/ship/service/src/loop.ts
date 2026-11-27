@@ -11,7 +11,7 @@
 // with its own module token (main.ts). Started by main.ts.
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { latestChecks, namedChecks } from "./aidenhq-sdk/checks.ts";
+import { judgedOnHead, latestChecks, namedChecks } from "./aidenhq-sdk/checks.ts";
 import type { Recovery } from "./ci-recover.ts";
 
 type Json = any;
@@ -60,8 +60,9 @@ const rollupOf = (pr: Json) => pr.commits?.nodes?.[0]?.commit?.statusCheckRollup
 const isDependabot = (pr: Json) => pr.author?.__typename === "Bot" && /^(app\/)?dependabot(\[bot\])?$/.test(pr.author?.login ?? "") && pr.isCrossRepository === false;
 function dependabotDue(pr: Json, which: "off" | "failing" | "all") {
   if (which === "off" || !isDependabot(pr)) return false;
-  // Each name's newest run: an edit re-ran CI and cancelled the run before it, which is no failure of this head.
-  const checks = latestChecks(namedChecks(rollupOf(pr)));
+  // Each name's newest run: an edit re-ran CI and cancelled the run before it, which is no failure of this head, and an edit
+  // that planned no suite posts skips newer than the run that tested the head (judgedOnHead), which are no verdict either.
+  const checks = latestChecks(judgedOnHead(namedChecks(rollupOf(pr))));
   if (checks.some((c) => c.pending)) return false; // a PR with no named checks has none to wait for
   // Past the query's first page of contexts a red one can't be ruled out, so the bump counts as failing.
   return which === "all" || checks.some((c) => !c.ok) || !!rollupOf(pr)?.contexts?.pageInfo?.hasNextPage;
@@ -152,7 +153,7 @@ export function startLoop(o: LoopOptions) {
     // A Dependabot PR is the Engineer's once its checks fail (or always, under `all`); a green one under `failing` goes through the round like any PR.
     // Green means at least one check reported and all finished: no checks yet is not green.
     // The same each-name newest run `dependabotDue` judges on, so a superseded run never files a task and never holds the bump back.
-    const bumpOf = (pr: Json) => { const reported = latestChecks(namedChecks(rollupOf(pr))); return isDependabot(pr) && which === "failing" && reported.length > 0 && !dependabotDue(pr, which) && !reported.some((c) => c.pending); };
+    const bumpOf = (pr: Json) => { const reported = latestChecks(judgedOnHead(namedChecks(rollupOf(pr)))); return isDependabot(pr) && which === "failing" && reported.length > 0 && !dependabotDue(pr, which) && !reported.some((c) => c.pending); };
     o.adopted.see(repo, main.name, open.filter((pr) => !isDependabot(pr) || bumpOf(pr)));
     for (const pr of [...open].reverse()) { // oldest first
       const url = pr.url.toLowerCase();

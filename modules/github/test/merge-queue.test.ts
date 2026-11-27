@@ -1555,6 +1555,47 @@ test("a skipped or cancelled aggregate is no verdict: ship reads the run that ju
     "a skipped suite is a pass, as before");
 });
 
+test("an edit that skipped every job never turns a red head green, and an invalid edited title still blocks", () => {
+  // The shape an `edited` run posts (ci.yml): the run plans no suite, so `checks` and `ci-required` are skipped and every suite
+  // is skipped with them, all newer than the run that tested the head. GitHub counts a skipped check as a pass; this gate must
+  // not, or a body edit after a real failure would make the head mergeable (Aiden-HQ/AidenHQ#1935 follow-up).
+  const H = "a".repeat(40);
+  const run = (name, state, rank) => ({ name, kind: "run", rank, status: state, ok: ["SUCCESS", "SKIPPED", "NEUTRAL"].includes(state), success: state === "SUCCESS", pending: state === "PENDING" });
+  const data = (runs) => ({ repository: { defaultBranchRef: { name: "main" }, pullRequest: {
+    number: 1, state: "OPEN", headRefOid: H, baseRefName: "main", mergeStateStatus: "CLEAN", reviewDecision: null, isDraft: false, isInMergeQueue: false,
+    labels: { nodes: [] }, latestOpinionatedReviews: { nodes: [] }, files: { pageInfo: { hasNextPage: false }, nodes: [{ path: "lib/x.mjs" }] },
+    commits: { nodes: [{ commit: { statusCheckRollup: rollup(runs.at(-1)?.status ?? "SKIPPED", { runs: runs.map((r) => ({ name: r.name, state: r.status, rank: r.rank })) }) } }] },
+    baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40), statusCheckRollup: rollup("SUCCESS", { names: ["ci-required"] }) } },
+  } } });
+  const ship = (runs) => ({ queue: false, approve: false, required: ["ci-required"], checks: runs });
+  // The brief's reproduction: a `skipped` `ci-required` over an older `failure` of the same name. Before this change `decide`
+  // read the newest run, the skip, as a pass and returned `merge`; a red head must stay red after an edit.
+  const failedThenEdit = [run("ci-required", "FAILURE", 2), run("ci-required", "SKIPPED", 3)];
+  assert.equal(decide(data(failedThenEdit), H).do, "fail", "the merge queue reads the real failure, never the edit's skip");
+  assert.deepEqual(decide(data(failedThenEdit), H, ship(failedThenEdit)), { do: "fix_ci", why: "1 required check(s) failed on its head" },
+    "ship reads the real failure, never the edit's skip");
+  // A genuinely failed suite, then a body edit: still a fix, not a merge (the edit skipped that suite's own check too).
+  const failedSuite = [run("packages (2)", "FAILURE", 1), run("ci-required", "FAILURE", 2), run("ci-required", "SKIPPED", 3), run("packages (2)", "SKIPPED", 4)];
+  assert.equal(decide(data(failedSuite), H).do, "fail");
+  assert.equal(decide(data(failedSuite), H, ship(failedSuite)).do, "fix_ci");
+  // A green head, then an edit to an invalid title: the edit's `policy` run is the newest title check and it is red, so the
+  // head is no pass even though the aggregate that would roll it up was skipped.
+  const badTitle = [run("ci-required", "SUCCESS", 1), run("policy", "SUCCESS", 2), run("policy", "FAILURE", 3), run("ci-required", "SKIPPED", 4)];
+  assert.equal(decide(data(badTitle), H).do, "fail", "an invalid edited title blocks the merge queue");
+  assert.equal(decide(data(badTitle), H, ship(badTitle)).do, "fix_ci", "and blocks ship, with the title fix");
+  // A green head, then a body edit that changed nothing about the code: still a merge.
+  const cleanEdit = [run("ci-required", "SUCCESS", 1), run("policy", "SUCCESS", 2), run("ci-required", "SKIPPED", 3), run("policy", "SKIPPED", 4)];
+  assert.deepEqual(decide(data(cleanEdit), H), { do: "merge" });
+  assert.equal(decide(data(cleanEdit), H, ship(cleanEdit)).do, "merge");
+  // The title check the edit re-ran is still running: wait, never merge on a check in flight.
+  const titleRunning = [run("ci-required", "SUCCESS", 1), run("policy", "PENDING", 3), run("ci-required", "SKIPPED", 4)];
+  assert.equal(decide(data(titleRunning), H).do, "wait");
+  assert.equal(decide(data(titleRunning), H, ship(titleRunning)).do, "wait");
+  // A suite skipped by the run that tested the head is still a pass: only a newer edit's skips are dropped.
+  const suiteSkipped = [run("modules (1)", "SKIPPED", 1), run("ci-required", "SUCCESS", 2)];
+  assert.equal(decide(data(suiteSkipped), H).do, "merge");
+});
+
 test("a maintained repo merges as the owner; once it leaves maintainer_repos its approved merge is refused at queue time", async () => {
   const prs = { "globex/payments": { head: HEAD, checks: "SUCCESS" } };
   const github = fakeGitHub(prs);

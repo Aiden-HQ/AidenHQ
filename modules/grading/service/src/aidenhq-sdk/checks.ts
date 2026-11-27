@@ -7,6 +7,8 @@ type Json = any;
 export const CODE_REVIEW_STATUS = "aidenhq/review";
 /** The aggregate check a repository's CI may end with (the product's ci.yml `ci-required`). */
 export const GATE_CHECK = "ci-required";
+/** The product's PR-metadata job: its title check (and the supply-chain checks), the one job an `edited` run still runs. */
+export const POLICY_CHECK = "policy";
 
 /** One context's result: a check run's conclusion once completed, else PENDING; a status's state. */
 export const contextStatus = (n: Json): string | null | undefined => (n.__typename === "CheckRun" ? (n.status === "COMPLETED" ? n.conclusion : "PENDING") : n.state);
@@ -76,15 +78,53 @@ export function namedChecks(rollup: Json): Check[] {
   return contextChecks(rollup).filter((c) => c.name !== CODE_REVIEW_STATUS);
 }
 
+/**
+ * Whether a check is the aggregate gate reporting that it judged nothing: `ci-required` `skipped` (a job skipped by an `if`, as
+ * an `edited` run's is) or `cancelled` (a run superseded before the job started). GitHub counts a skip as a pass for branch
+ * protection; nothing here does. Scoped to the gate name: a suite's own skip is a real result (the change didn't touch it).
+ */
+export const gateJudgedNothing = (c: { name?: string; status?: string | null }) => c.name === GATE_CHECK && ["SKIPPED", "CANCELLED"].includes(String(c.status ?? "").toUpperCase());
+
+/** Whether a report actually judged something: a job skipped by `if` or a run cancelled before it started judged nothing. */
+export const judgedSomething = (c: { status?: string | null }) => !["SKIPPED", "CANCELLED"].includes(String(c.status ?? "").toUpperCase());
+
+/**
+ * Whether the head's newest aggregate report judged nothing: the `ci-required` an `edited` run posts, skipped because that run
+ * planned no suite. Every check that run posted is a skip too, and those skips are newer than the run that tested the head — so
+ * they are no verdict, and reading them as passes is exactly the bug this rule exists to stop.
+ */
+export function newestGateSkipped<T extends { name?: string; kind?: "run" | "status"; rank?: number; status?: string | null }>(checks: T[]): boolean {
+  const runs = checks.filter((c) => c.name === GATE_CHECK && (c.kind ?? "run") === "run" && typeof c.rank === "number");
+  const newest = runs.reduce<T | undefined>((a, b) => (a === undefined || (b.rank as number) > (a.rank as number) ? b : a), undefined);
+  return newest !== undefined && gateJudgedNothing(newest);
+}
+
+/**
+ * The reports that judge a head, for a reader that decides on its checks. A run that planned no suite (`edited`, which only runs
+ * `policy`) posts a `skipped` check for every job it did not run — and a job `if` skips is still a check GitHub counts as a pass.
+ * Those reports are newer than the run that tested the head, so judging them would let a body edit read as green over a real
+ * failure and hide it. Here a skip newer than the newest aggregate that judged the head is dropped; every other report stands,
+ * the `policy` run an edit did make included. A run that judged the head keeps its own skips: a suite skipped there is a real
+ * result (the change didn't touch it). An unranked report proves no order, so it is never dropped.
+ */
+export function judgedOnHead<T extends { name?: string; kind?: "run" | "status"; rank?: number; status?: string | null }>(checks: T[]): T[] {
+  if (!newestGateSkipped(checks)) return checks;
+  const gates = checks.filter((c) => c.name === GATE_CHECK && !gateJudgedNothing(c) && typeof c.rank === "number");
+  const cut = gates.reduce<number | undefined>((a, c) => (a === undefined || (c.rank as number) > a ? (c.rank as number) : a), undefined);
+  // No aggregate ever judged the head: nothing here is a pass, so only the reports that judged something stand.
+  if (cut === undefined) return checks.filter(judgedSomething);
+  return checks.filter((c) => judgedSomething(c) || typeof c.rank !== "number" || c.rank <= cut);
+}
+
 const IMAGE_FILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
 /**
  * `image-scan` skipped on a PR that changes an image definition (or whose files can't all be read): nothing was scanned.
- * The scan's newest run at the head is the judgement (latestChecks), like every other name: a run that scanned the head after
- * an edit superseded a skip cleared the question, so the obsolete skip is not one, and a skip that is the newest run is.
+ * The scan's newest report that judged the head is the judgement (judgedOnHead): a run that scanned the head after an edit
+ * superseded a skip cleared the question, so the obsolete skip is not one, and a skip that is the newest judgement is.
  */
 export function skippedImageScan(pr: Json): boolean {
   const nodes = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
-  const scans = latestChecks(contextChecks({ contexts: { nodes } }).filter((c) => c.name === "image-scan"));
+  const scans = judgedOnHead(contextChecks({ contexts: { nodes } })).filter((c) => c.name === "image-scan");
   if (!scans.some((c) => c.status === "SKIPPED")) return false;
   return !pr.files || pr.files.pageInfo?.hasNextPage || (pr.files.nodes ?? []).some((f: Json) => IMAGE_FILE.test(f.path ?? ""));
 }

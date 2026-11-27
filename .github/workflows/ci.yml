@@ -15,7 +15,9 @@ name: ci
 
 on:
   pull_request:
-    # edited: a fixed title re-runs the `policy` job's title check (no push needed).
+    # edited: a title or body edit changes no code, so it re-runs only the `policy` job's title check (no push needed). Every
+    # other job is guarded off it below, and `ci-required` posts nothing for it: the run that tested the head is left alone.
+    # A retarget is also an `edited` event but changes what CI must test (`github.event.changes.base`), so it runs in full.
     types: [opened, synchronize, reopened, edited]
   push:
     # merge-train/<n>: the merge queue's trains (modules/github merge-gate.ts), main plus the PRs it tests together,
@@ -27,10 +29,13 @@ permissions:
 
 # A newer push to a PR cancels its older run. Every push to main and every merge train runs to the end (its own group:
 # GitHub drops a pending run when a newer one joins the group): the merge queue reads main's result, and a cancelled run
-# says nothing about it (nor does `ci-required` below, which posts no check for a cancelled run).
+# says nothing about it (nor does `ci-required` below, which posts no check for a cancelled run). An edit that changes only the
+# title or body (no new commit, no retarget) has a group of its own and cancels nothing: it exists only for `policy`'s title
+# check, so it never touches the run that is testing the code. A retarget runs in the PR's own group like a push: it changes the
+# base the tests run against, so its run must replace the stale one.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}${{ github.event.action == 'edited' && github.event.changes.base == null && '-edited' || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !(github.event.action == 'edited' && github.event.changes.base == null) }}
 
 jobs:
   # The suites this change needs tested that have no job of their own (checks' `tests` step; all of them on a push
@@ -325,6 +330,10 @@ jobs:
   # dependency manifest or lockfile. Every one is listed, whatever its FROM: a FROM that can't be resolved fails the
   # scan, never skips it.
   checks:
+    # An edit that changes only the title or body changes no code: the run plans nothing, so every job that needs this plan skips
+    # with it (a job `if` skips still posts a `skipped` check, which is why the gate judges the head's newest real run —
+    # merge-gate.ts judgedOnHead). A retarget changes `github.event.changes.base` and plans in full: it tests a new base.
+    if: ${{ github.event.action != 'edited' || github.event.changes.base != null }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -729,9 +738,11 @@ jobs:
   # need another appear only once it finishes, so without this a PR can look all green for a moment before its tests
   # exist; the code host treats this check as required once the base branch has it (modules/github/service/src/merge-gate.ts withGate).
   ci-required:
-    # No check from a run that judged nothing: a cancelled run's jobs are `cancelled`, not failed, and its aggregate would
-    # turn that into a red check on the head. A run with a failed job is not cancelled and still posts `failure`.
-    if: ${{ !cancelled() }}
+    # No check from a run that judged nothing: a cancelled run's jobs are `cancelled`, not failed, and its aggregate would turn
+    # that into a red check on the head; a title/body edit plans no suite, so its aggregate would only say the code was not
+    # tested. A run with a failed job is neither, and still posts `failure`; a retarget runs in full and posts its verdict too. The
+    # code host reads the newest real gate either way, so a skip cannot hide a red head (merge-gate.ts judgedOnHead).
+    if: ${{ !cancelled() && !(github.event.action == 'edited' && github.event.changes.base == null) }}
     needs: [checks, policy, packages, modules, board, reviewer-eval]
     runs-on: ubuntu-latest
     timeout-minutes: 2
