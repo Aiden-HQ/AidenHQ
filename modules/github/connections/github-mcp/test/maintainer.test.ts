@@ -5,6 +5,7 @@ import { GitHubRefused } from "../src/github.js";
 import { GitHubNeed, withWriteBudget } from "../src/client.js";
 import { inMaintained, parseRepos } from "../src/aidenhq-sdk/maintained-repos.js";
 import { accessFor } from "./fake-access.js";
+import type { AppSource } from "../src/client.js";
 
 const PRODUCT = "acme/product";
 const COMMIT = "c".repeat(40);
@@ -185,8 +186,18 @@ function fake(opts: {
 
 /** AidenHQ's records, faked: every label write the owner's login made is the fleet's own, and the issues and PRs `ours` names. */
 const records = (ours: number[] = []) => async (ref: string) => ours.some((n) => ref.endsWith(`#${n}`));
-function maintainer(f: ReturnType<typeof fake>, terms: string[] = [], repos: unknown[] = [{ repo: PRODUCT }], ours: number[] = []) {
-  return new Maintainer(accessFor(f.fetchFn), parseRepos(JSON.stringify(repos)), terms, records(ours));
+/** A GitHub App installed on `repo` with the issues write, so a label write there goes as its bot; `login` is its bot's. */
+const fakeApp = (repo: string, login: string, id = 4242): AppSource => ({
+  installed: async (r) => (r.toLowerCase() === repo.toLowerCase() ? { id: 7, permissions: { issues: "write" }, html_url: "https://github.com/settings/installations/7", account: repo.split("/")[0]! } : null),
+  installedOn: async () => null,
+  evict: () => {},
+  token: async () => "ghs_app",
+  identity: async () => ({ id, slug: login.replace(/\[bot\]$/, ""), login, botId: 99 }),
+  wrote: () => {},
+});
+function maintainer(f: ReturnType<typeof fake>, terms: string[] = [], repos: unknown[] = [{ repo: PRODUCT }], ours: number[] = [], app?: AppSource | Error) {
+  const appId = app instanceof Error ? async () => { throw app; } : async () => (app ? (await app.identity()!)?.id : undefined);
+  return new Maintainer(accessFor(f.fetchFn, "gho_owner", app instanceof Error ? undefined : app), parseRepos(JSON.stringify(repos)), terms, records(ours), appId);
 }
 
 const labeled = (login: string, at: string, app?: { id: number; slug: string }) => ({
@@ -724,6 +735,85 @@ it("a comment on a maintained repo keeps that repo's own org, while other owner 
 const labeledAs = (label: string, login: string, at: string, app?: { id: number; slug: string }) => ({ ...labeled(login, at, app), label: { name: label } });
 const BUILD = "agent-build";
 const FEATURES = [{ repo: PRODUCT, features: true }];
+
+const APP_LOGIN = "aidenhq-alpha[bot]";
+
+it("a label the App added reads trusted from its bot login when GitHub sets no performed_via_github_app, and every write goes through", async () => {
+  const f = fake({
+    issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }],
+    timelines: { 1: [labeledAs("agent-fix", APP_LOGIN, "2026-01-01T00:00:00Z", undefined)] },
+  });
+  const m = maintainer(f, [], [{ repo: PRODUCT }], [], fakeApp(PRODUCT, APP_LOGIN));
+  const { events } = await m.labelEvents(PRODUCT, 1);
+  // GitHub's timeline leaves the App attribution null here; the actor is the App's own bot login.
+  expect(events).toMatchObject([{ actor: APP_LOGIN, app_id: null, trusted: true }]);
+  expect(await m.commentBody(PRODUCT, 1, "hello")).toBe("hello");
+  expect(await m.label(PRODUCT, 1, "remove")).toMatchObject({ label: "agent-fix", changed: true });
+  expect(await m.state(PRODUCT, 1, "closed", "completed")).toMatchObject({ state: "closed" });
+  // The bot account has no collaborator role, so trust never came from the role fallback.
+  expect(f.calls.filter((c) => c.url.includes("/collaborators/"))).toHaveLength(0);
+});
+
+it("the App's bot login is matched case-insensitively, as GitHub logins are", async () => {
+  const f = fake({
+    issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }],
+    timelines: { 1: [labeledAs("agent-fix", APP_LOGIN.toUpperCase(), "2026-01-01T00:00:00Z", undefined)] },
+  });
+  expect((await maintainer(f, [], [{ repo: PRODUCT }], [], fakeApp(PRODUCT, APP_LOGIN)).labelEvents(PRODUCT, 1)).events[0]!.trusted).toBe(true);
+});
+
+it("a label GitHub attributes to the App by performed_via_github_app id still reads trusted", async () => {
+  const f = fake({
+    issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }],
+    timelines: { 1: [labeledAs("agent-fix", "some-bot[bot]", "2026-01-01T00:00:00Z", { id: 4242, slug: "aidenhq-alpha" })] },
+  });
+  const { events } = await maintainer(f, [], [{ repo: PRODUCT }], [], fakeApp(PRODUCT, APP_LOGIN)).labelEvents(PRODUCT, 1);
+  expect(events).toMatchObject([{ app_id: 4242, trusted: true }]);
+});
+
+it("the App's bot login on a pull request reads untrusted, so no write goes through", async () => {
+  const f = fake({
+    issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", pr: true }],
+    timelines: { 1: [labeledAs("agent-fix", APP_LOGIN, "2026-01-01T00:00:00Z", undefined)] },
+  });
+  const m = maintainer(f, [], [{ repo: PRODUCT }], [], fakeApp(PRODUCT, APP_LOGIN));
+  expect((await m.labelEvents(PRODUCT, 1)).events[0]!.trusted).toBe(false);
+  await expect(m.commentBody(PRODUCT, 1, "hello")).rejects.toThrow(/untrusted/);
+  await expect(m.label(PRODUCT, 1, "remove")).rejects.toThrow(/untrusted/);
+  await expect(m.state(PRODUCT, 1, "closed", "completed")).rejects.toThrow(/untrusted/);
+  expect(f.posted).toHaveLength(0);
+});
+
+it("agent-build from the App's bot login reads untrusted, so the build label is never the fleet's word", async () => {
+  const f = fake({
+    issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z", labels: [BUILD] }],
+    timelines: { 1: [labeledAs(BUILD, APP_LOGIN, "2026-01-01T00:00:00Z", undefined)] },
+  });
+  const out = await maintainer(f, [], FEATURES, [], fakeApp(PRODUCT, APP_LOGIN)).repoSince(PRODUCT, BUILD);
+  expect(out.issues).toEqual([]);
+  expect(out.skipped.map((s) => s.number)).toEqual([1]);
+});
+
+it("a human stranger reads untrusted even when the App's bot login is configured", async () => {
+  const f = fake({
+    issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }],
+    timelines: { 1: [labeledAs("agent-fix", "random-user", "2026-01-01T00:00:00Z", undefined)] },
+  });
+  const m = maintainer(f, [], [{ repo: PRODUCT }], [], fakeApp(PRODUCT, APP_LOGIN));
+  expect((await m.labelEvents(PRODUCT, 1)).events[0]!.trusted).toBe(false);
+  await expect(m.commentBody(PRODUCT, 1, "hello")).rejects.toThrow(/untrusted/);
+});
+
+it("a failed App identity read throws instead of reading the bot's label as untrusted", async () => {
+  const f = fake({
+    issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }],
+    timelines: { 1: [labeledAs("agent-fix", APP_LOGIN, "2026-01-01T00:00:00Z", undefined)] },
+  });
+  const broken = { ...fakeApp(PRODUCT, APP_LOGIN), identity: async (): Promise<never> => { throw new Error("couldn't read the App"); } } as unknown as AppSource;
+  const m = maintainer(f, [], [{ repo: PRODUCT }], [], broken);
+  await expect(m.labelEvents(PRODUCT, 1)).rejects.toThrow(/couldn't read the App/);
+  await expect(m.commentBody(PRODUCT, 1, "hello")).rejects.toThrow(/couldn't read the App/);
+});
 
 it("agent-build is trusted from an admin (the owner's login included) and a maintain collaborator, not from a write collaborator under the default roles", async () => {
   const f = fake({
