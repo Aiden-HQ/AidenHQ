@@ -36,7 +36,7 @@ import { SetupFlow } from "./SetupFlow";
 import { Onboarding } from "./Welcome";
 import { Markdown, setSlackTeams } from "./markdown";
 import { BUCKETS, BUCKET_NAMES, type Board, type Bucket, type Card, type NeedRow } from "./types";
-import { ago, dayDate, keepsSecureCookies, parkBucket, todayIn } from "./util";
+import { ago, dayDate, setTimeFormat, keepsSecureCookies, parkBucket, todayIn, clockOpts } from "./util";
 import { panelsOf } from "./sidebar";
 import { BottomBar, Palette, SubNav, TopNav, hrefOf, type NavView } from "./Shell";
 import { AgentWork, AgentWorkLoading } from "./AgentWork";
@@ -313,6 +313,7 @@ export function App() {
   const [board, setBoard] = useState<Board | null>(() => cachedBoard() ?? null);
   // Every view's state words read times in the board's timezone (ui/TaskState.tsx).
   setBoardTimezone(board?.timezone);
+  setTimeFormat(board?.timeFormat);
   const [session, setSession] = useState<Session | null>(null);
   const [needsSignIn, setNeedsSignIn] = useState(false);
   const [items, setItems] = useState<Items | null>(() => cachedBoard()?.buckets ?? null);
@@ -1306,7 +1307,7 @@ function Column({ bucket, cards, total, board, selected, dragDisabled, onOpen, o
 /** "As of 10:42": the kernel snapshot the lanes show; after a failed read, how old that last good one is. */
 function AsOf({ board, stale }: { board: Board; stale: boolean }) {
   if (!board.asOf) return null;
-  const at = new Date(board.asOf).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  const at = new Date(board.asOf).toLocaleTimeString(undefined, { ...clockOpts() });
   return (
     <span className={`tt-asof${stale ? " stale" : ""}`} title="Every lane is one kernel snapshot">
       As of {at}

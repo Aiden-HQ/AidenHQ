@@ -28,6 +28,7 @@ services:
         LANE_DB: /data/lane.sqlite
         OWNER_NAME: "${settings.owner_name}"
         OWNER_TIMEZONE: "${settings.timezone}"
+        OWNER_TIME_FORMAT: "${settings.time_format}"
         MCP_BEARER_TOKEN_FILE: ${secrets.chat_lane_service_key}
         # The lane's config (agents with a `chat:` block, their keys and tools; scripts/paperclip-setup.ts writes it), and the
         # secret its per-turn model tokens are signed with (capped agent calls only, through the gateway).

@@ -1,5 +1,6 @@
 // Settings > Connections: what the board's /api/settings/connections rows mean for the owner (status, why, what to do).
 // Pure, so it is tested without a browser (test/connections-status.test.ts).
+import { clockOpts } from "./util";
 
 export interface Probe {
   ok: boolean;
@@ -99,7 +100,7 @@ const NOT_CONNECTED: Record<string, string> = {
 const notConnectedReason = (name: string, reason: string) =>
   NOT_CONNECTED[name] ? [NOT_CONNECTED[name], reason === "Not connected yet." ? null : reason].filter(Boolean).join(" ") : reason;
 
-const day = (iso: string) => new Date(iso).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
+const day = (iso: string) => new Date(iso).toLocaleString(undefined, { weekday: "short", ...clockOpts() });
 
 /**
  * One row's status. `canConnect`: this browser can start that sign-in (at the board's https address, or on the host's

@@ -13,6 +13,7 @@ import { urlSettingProblem } from "../../src/url-setting";
 import "./settings.css";
 import { Banner, Button, LinkButton, SectionCard, Segmented, StatusDot, Switch, Tag, safeHref } from "./ui";
 import { Steps } from "./SetupFlow";
+import { clockOpts, clockText } from "./util";
 
 // Claude Desktop and claude.ai call from Anthropic's cloud, so they need a public https address: not a tailnet name (*.ts.net) or loopback.
 const cloudReachable = (origin: string) => { const u = new URL(origin); return u.protocol === "https:" && !u.hostname.endsWith(".ts.net"); };
@@ -424,7 +425,7 @@ function InstancePage({ data }: { data: SettingsData }) {
       <div className="st-figures">
         <Fig n={sha(i.product)} l="Product" />
         <Fig n={sha(i.instance)} l="Instance repo, at the last applied change" />
-        <Fig n={i.lastChangeAt ? new Date(i.lastChangeAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "unknown"} l="Last applied change" />
+        <Fig n={i.lastChangeAt ? new Date(i.lastChangeAt).toLocaleString(undefined, { month: "short", day: "numeric", ...clockOpts() }) : "unknown"} l="Last applied change" />
         <Fig n={i.node} l={`Board runtime, ${i.boardTimezone}`} />
       </div>
       {data.updates ? (
@@ -458,14 +459,14 @@ function InstancePage({ data }: { data: SettingsData }) {
 // Release updates (docs/design/release-updates.md): the release this server follows, the one available with what changed, and
 // Update now, which is the kernel's own page (an owner tap happens there, never on the board).
 function Updates({ u, setting }: { u: UpdatesData; setting?: SettingRow }) {
-  const when = (t: string | null) => (t ? new Date(t).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "never");
+  const when = (t: string | null) => (t ? new Date(t).toLocaleString(undefined, { month: "short", day: "numeric", ...clockOpts() }) : "never");
   const a = u.available;
   return (
     <Group title="Updates" hint={<span className="muted">Release {u.current?.name}, checked {when(u.checkedAt)}</span>}>
       {a ? (
         <Banner action={<LinkButton variant="primary" size="sm" href={`${admin.url}/updates`}>Update now</LinkButton>}>
           AidenHQ {a.name} is available.{" "}
-          {u.auto ? `It installs tonight between 02:00 and 05:00 (${u.timezone ?? "UTC"}).` : "Auto-updates are off: install it when you're ready."}
+          {u.auto ? `It installs tonight between ${clockText(2)} and ${clockText(5)} (${u.timezone ?? "UTC"}).` : "Auto-updates are off: install it when you're ready."}
         </Banner>
       ) : (
         <p className="st-note">{u.error ? `Update check: ${u.error}` : `This server runs ${u.current?.name}, the newest release.`}</p>

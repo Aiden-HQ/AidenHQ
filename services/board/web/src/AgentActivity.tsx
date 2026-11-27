@@ -9,6 +9,7 @@ import { SkeletonLines } from "./Skeleton";
 import type { RunTrace } from "./types";
 import { EmptyState, Section, StatusDot, Tag, type StatusTone, type TagTone } from "./ui";
 import type { TimelineEntry, TimelineWrite } from "../../src/timeline";
+import { clockOpts, stampOpts } from "./util";
 
 const TONE: Record<TimelineEntry["outcome"], { tone: StatusTone; word: string }> = {
   running: { tone: "working", word: "Running" },
@@ -78,8 +79,8 @@ function Entry({ e, onSignIn }: { e: TimelineEntry; onSignIn: () => void }) {
       <span className="tl-node" aria-hidden />
       <div className="tl-card">
         <div className="tl-head">
-          <time className="tl-time" dateTime={e.startedAt ?? undefined} title={e.startedAt ? new Date(e.startedAt).toLocaleString() : undefined}>
-            {e.startedAt ? new Date(e.startedAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "—"}
+          <time className="tl-time" dateTime={e.startedAt ?? undefined} title={e.startedAt ? new Date(e.startedAt).toLocaleString(undefined, stampOpts()) : undefined}>
+            {e.startedAt ? new Date(e.startedAt).toLocaleTimeString(undefined, { ...clockOpts() }) : "—"}
           </time>
           <StatusDot tone={s.tone}>{ENDED[e.state] ?? s.word}</StatusDot>
           <span className="tl-trigger">{e.trigger}</span>
@@ -111,7 +112,7 @@ function Entry({ e, onSignIn }: { e: TimelineEntry; onSignIn: () => void }) {
               <ol>
                 {run.timeline.map((x, i) => (
                   <li key={i} className={x.ok ? "" : "bad"}>
-                    <time>{x.at ? new Date(x.at).toLocaleTimeString() : ""}</time>
+                    <time>{x.at ? new Date(x.at).toLocaleTimeString(undefined, { ...clockOpts(), second: "2-digit" }) : ""}</time>
                     <span className="tl-step">{x.text}</span>
                   </li>
                 ))}

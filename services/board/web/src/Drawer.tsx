@@ -7,7 +7,7 @@ import { Avatar, Chips, CloseIcon, CrewAvatar, MergeMenu, MoveMenu, Plan, Snooze
 import { Markdown } from "./markdown";
 import { SkeletonLines } from "./Skeleton";
 import { BUCKETS, BUCKET_NAMES, WEEKDAYS, type Assignee, type Board, type Bucket, type Cadence, type CommentView, type CrewState, type IssueView, type Label, type Milestone, type Models, type Update, type Weekday } from "./types";
-import { MAX_FILE, PRIORITIES, PRIORITY_NAMES, ago, dayDate, elapsed, fileSize, runTime, handleOf, shortName, todayIn, when } from "./util";
+import { MAX_FILE, PRIORITIES, PRIORITY_NAMES, ago, dayDate, elapsed, fileSize, runTime, handleOf, shortName, todayIn, when, stampOpts } from "./util";
 import { ModelPicker, StatusDot, type StatusTone } from "./ui";
 import { bare, prefixOf, shortId } from "../../src/model-catalog";
 import { useModelCatalog } from "./useModelCatalog";
@@ -678,7 +678,7 @@ function Thread({ issue, board, agent, prefix, title = "Activity" }: { issue: Is
     return c.author.name;
   };
   const time = (at: string) => (
-    <span className="muted small" title={new Date(at).toLocaleString()}>
+    <span className="muted small" title={new Date(at).toLocaleString(undefined, stampOpts())}>
       {ago(at)}
     </span>
   );
@@ -759,7 +759,7 @@ function DoneMeans({ grade }: { grade: IssueView["grade"] }) {
         <h3>Done means</h3>
         <StatusDot tone={tone}>{word}</StatusDot>
         {grade.judgedAt && (
-          <span className="muted small" title={new Date(grade.judgedAt).toLocaleString()}>
+          <span className="muted small" title={new Date(grade.judgedAt).toLocaleString(undefined, stampOpts())}>
             version {grade.version?.slice(0, 8)} · {ago(grade.judgedAt)}
           </span>
         )}
@@ -980,7 +980,7 @@ function Files({ issue }: { issue: IssueView }) {
             <a href={`/api/issues/${encodeURIComponent(issue.id)}/files/${f.id}`} target="_blank" rel="noopener noreferrer">
               {f.name}
             </a>
-            <span className="muted small" title={new Date(f.createdAt).toLocaleString()}>
+            <span className="muted small" title={new Date(f.createdAt).toLocaleString(undefined, stampOpts())}>
               {fileSize(f.size)} ·{f.by === "me" ? "you" : "agent"} · {ago(f.createdAt)}
             </span>
           </li>

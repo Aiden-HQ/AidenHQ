@@ -1,10 +1,10 @@
-// Settings in the owner's words: a schedule's cron as "weekdays 8:45", a model id as its short name, a change as the exact
+// Settings in the owner's words: a schedule's cron as "weekdays 8:45 AM", a model id as its short name, a change as the exact
 // instance.yaml lines it asks for. Pure, so it is tested without a browser (test/settings-format.test.ts).
+import { clockText } from "./util.js";
 import type { AgentSettings, SettingChange, SettingRow } from "./types.js";
 
 const DAY = ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"];
 const SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const pad = (n: number) => String(n).padStart(2, "0");
 const num = (s: string) => (/^\d+$/.test(s) ? Number(s) : NaN);
 
 function days(dow: string): string | null {
@@ -16,7 +16,7 @@ function days(dow: string): string | null {
   return list.length === 1 ? DAY[list[0]!]! : list.map((d) => SHORT[d]).join(", ");
 }
 
-/** A cron line in plain words ("weekdays 8:45", "every 4h", "every 30 min, 8:00 to 20:59"); the cron itself when it's unusual. */
+/** A cron line in plain words ("weekdays 8:45 AM", "every 4h", "every 30 min, 8:00 to 20:59"); the cron itself when it's unusual. */
 export function cronText(cron: string): string {
   const f = cron.trim().split(/\s+/);
   if (f.length !== 5) return cron;
@@ -29,7 +29,7 @@ export function cronText(cron: string): string {
   if ((every = /^\*\/(\d+)$/.exec(m)) && dom === "*") {
     const range = /^(\d+)-(\d+)$/.exec(h);
     if (h === "*") return `every ${every[1]} min${tail}`;
-    if (range) return `every ${every[1]} min, ${range[1]}:00 to ${range[2]}:59${tail}`;
+    if (range) return `every ${every[1]} min, ${clockText(Number(range[1]))} to ${clockText(Number(range[2]), 59)}${tail}`;
     return cron;
   }
   if (!/^\d+$/.test(m)) return cron;
@@ -37,7 +37,7 @@ export function cronText(cron: string): string {
   if (h === "*" && dom === "*") return `hourly${tail}`;
   const hours = h.split(",").map(num);
   if (hours.some(Number.isNaN)) return cron;
-  const times = hours.map((x) => `${x}:${pad(Number(m))}`).join(" and ");
+  const times = hours.map((x) => clockText(x, Number(m))).join(" and ");
   if (dom !== "*") {
     const d = num(dom);
     if (Number.isNaN(d) || dow !== "*") return cron;

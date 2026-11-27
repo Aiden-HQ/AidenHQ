@@ -17,7 +17,7 @@ import { anyLive, groupTasks, settleableChat } from "./sidebar";
 import { TaskState, isActive, needsOwner, waitsForAnswer } from "./ui/TaskState";
 import { foldCount, foldNoise, isNoise, seenByOwner, shortTitle, shownInChat, type Folded } from "./conversation";
 import type { Approval, Assignee, ChatDetail, ChatMessage, ChatRow, FileView, Lineage, Working } from "./types";
-import { MAX_FILE, ago, elapsed, fileSize, handleOf } from "./util";
+import { MAX_FILE, ago, elapsed, fileSize, handleOf, clockOpts, stampOpts } from "./util";
 import { Icon } from "./ui/icons";
 
 const QUIET_MS = 2 * 60_000;
@@ -458,7 +458,7 @@ function dayLabel(iso: string): string {
   if (d.toDateString() === y.toDateString()) return "Yesterday";
   return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
 }
-const clock = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+const clock = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { ...clockOpts() });
 
 const MessageView = memo(function MessageView({ m, crew, prefix, lastReply, asking, open, notRight, answer, answerAsk }: { m: ChatMessage; crew: Assignee[]; prefix: string; lastReply: boolean; asking: boolean; open: boolean; notRight: (t: string) => Promise<boolean>; answer: (t: string) => void; answerAsk: (t: string) => Promise<unknown> }) {
   const [fixing, setFixing] = useState(false);
@@ -480,7 +480,7 @@ const MessageView = memo(function MessageView({ m, crew, prefix, lastReply, aski
           {m.correction && <span className="tag bad">Not right</span>}
           <Markdown text={m.text} prefix={prefix} className="md" />
         </div>
-        <div className="msg-meta" title={new Date(m.at).toLocaleString()}>
+        <div className="msg-meta" title={new Date(m.at).toLocaleString(undefined, stampOpts())}>
           {clock(m.at)}
           {m.by ? ` · by ${m.by}` : ""}
           {m.via ? ` · via ${m.via}` : ""}

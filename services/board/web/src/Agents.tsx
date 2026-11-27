@@ -6,7 +6,7 @@ import { useCached } from "./cache";
 import { QUERIES, agentOpenQuery, agentProfileQuery, scorecardQuery, useQuery } from "./queries";
 import { Bone, FleetSkeleton, SkeletonLines, Updating } from "./Skeleton";
 import type { Assignee, Finished, RosterAgent, Session, TaskRef } from "./types";
-import { ago, elapsed, runAt as when } from "./util";
+import { ago, elapsed, runAt as when, stampOpts } from "./util";
 import { Face, StatusDot, faceProps, faceStateOf, type StatusTone } from "./ui";
 
 const STATUS: Record<string, { text: string; tone: "ok" | "bad" | "meh" }> = {
@@ -526,7 +526,7 @@ function SessionRow({ s, now }: { s: Session; now: number }) {
         <b>{s.agent}</b>
         <span className="spacer" />
         {s.startedAt && (
-          <span className="time" title={`Started ${new Date(s.startedAt).toLocaleString()}`}>
+          <span className="time" title={`Started ${new Date(s.startedAt).toLocaleString(undefined, stampOpts())}`}>
             {elapsed(s.startedAt, now)}
           </span>
         )}

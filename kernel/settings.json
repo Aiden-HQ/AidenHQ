@@ -11,6 +11,14 @@
     "required": true,
     "doc": "The instance's timezone (schedules and the owner's day)."
   },
+  "time_format": {
+    "default": "12h",
+    "values": [
+      "12h",
+      "24h"
+    ],
+    "doc": "How times read to the owner, on the board and in what the agents say: 12h = \"8:00 PM\" (the default), 24h = \"20:00\". Machine values (ISO timestamps, wake_at's \"YYYY-MM-DD HH:MM\", logs) stay 24-hour either way."
+  },
   "company_name": {
     "default": "work",
     "doc": "The Paperclip company this instance runs."

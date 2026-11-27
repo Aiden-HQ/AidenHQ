@@ -9,7 +9,7 @@ import { AgentHandbook } from "./AgentHandbook";
 import { AgentSettings } from "./AgentSettings";
 import { SkeletonLines } from "./Skeleton";
 import type { AgentProfile, Scorecard, TaskRow } from "./types";
-import { ago, agoLabel } from "./util";
+import { ago, agoLabel, stampOpts } from "./util";
 import { EmptyState } from "./ui/EmptyState";
 import { hueClass } from "./ui/hue";
 import { ListRow, ListRows } from "./ui/ListRow";
@@ -115,7 +115,7 @@ export function AgentPage({ agentKey, tab, go, onSignIn }: { agentKey: string; t
 
 const Rows = ({ rows }: { rows: TaskRow[] }) => (
   <ListRows>
-    {rows.map((r) => <ListRow key={r.identifier} href={`#/t/${r.identifier}`} status={<TaskState state={r.state} />} title={r.title} id={r.identifier} from={r.from} time={ago(r.updatedAt)} timeTitle={new Date(r.updatedAt).toLocaleString()} />)}
+    {rows.map((r) => <ListRow key={r.identifier} href={`#/t/${r.identifier}`} status={<TaskState state={r.state} />} title={r.title} id={r.identifier} from={r.from} time={ago(r.updatedAt)} timeTitle={new Date(r.updatedAt).toLocaleString(undefined, stampOpts())} />)}
   </ListRows>
 );
 

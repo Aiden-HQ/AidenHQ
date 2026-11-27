@@ -7,6 +7,7 @@ import { BadRequest } from "./board.js";
 import { WEEKDAYS } from "./dates.js";
 import type { Issue, Label, Paperclip, Routine } from "./paperclip.js";
 import type { Recurring, Store } from "./store.js";
+import { type TimeFormat, hhmmWords } from "./clock.js";
 
 export const RECURRING_LABEL = "recurring";
 /** Title prefix of a board-made routine: setup (scripts/retire-agents.ts) leaves routines with it alone. */
@@ -78,9 +79,9 @@ const ordinal = (n: number) => `${n}${n % 10 === 1 && n !== 11 ? "st" : n % 10 =
 const NTH = ["first", "second", "third", "fourth"];
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-/** "Every Monday at 07:00", "Every 3 months on the 1st at 07:00", "Monthly on the first Monday at 07:00". */
-export function describeRule(c: Cadence, time: string): string {
-  const at = `at ${time}`;
+/** "Every Monday at 7:00 AM", "Every 3 months on the 1st at 7:00 AM", "Monthly on the first Monday at 7:00 AM". */
+export function describeRule(c: Cadence, time: string, fmt: TimeFormat): string {
+  const at = `at ${hhmmWords(time, fmt)}`;
   if (c.kind === "weekly") return c.interval === 1 ? `Every ${cap(c.weekday)} ${at}` : `Every ${c.interval} weeks on ${cap(c.weekday)} ${at}`;
   const every = c.interval === 1 ? "Monthly" : `Every ${c.interval} months`;
   if (c.kind === "monthly_day") return `${every} on the ${c.day === "last" ? "last day" : ordinal(c.day)} ${at}`;
@@ -102,10 +103,10 @@ export interface RecurringView {
 
 const scheduleOf = (routine: Routine | undefined) => routine?.triggers?.find((t) => t.kind === "schedule" && t.label === TRIGGER_LABEL);
 
-export function recurringView(r: Recurring, routine: Routine | undefined): RecurringView {
+export function recurringView(r: Recurring, routine: Routine | undefined, fmt: TimeFormat): RecurringView {
   const paused = routine?.status === "paused";
   const nextRun = paused || routine?.status !== "active" ? null : scheduleOf(routine)?.nextRunAt ?? null;
-  return { summary: describeRule(r.cadence, r.time), cadence: r.cadence, time: r.time, repos: r.repos, paused, nextRun, upcoming: nextRun ? [nextRun] : [] };
+  return { summary: describeRule(r.cadence, r.time, fmt), cadence: r.cadence, time: r.time, repos: r.repos, paused, nextRun, upcoming: nextRun ? [nextRun] : [] };
 }
 
 // ------------------------------------------------------------------ changes
@@ -135,14 +136,14 @@ const monthOf = (now: Date, tz: string) => Number(new Intl.DateTimeFormat("en-CA
 /** What a run is told: the task, the rule and the repositories; the rest is in the Researcher's skill. */
 function brief(issue: Issue, c: Cadence, time: string, repos: string[], tz: string): string {
   return [
-    `Recurring task ${issue.identifier} is due: ${describeRule(c, time)} (${tz}). Run time: {{timestamp}}.`,
+    `Recurring task ${issue.identifier} is due: ${describeRule(c, time, "24h")} (${tz}). Run time: {{timestamp}}.`,
     `Its instructions are that task's description.${repos.length ? ` GitHub repositories: ${repos.join(", ")}.` : ""}`,
     `Follow skill recurring-reports. Then close this task with one line saying what you did.`,
   ].join("\n");
 }
 
 /** Make a task recurring, change its rule, pause, resume, stop, or run it now. */
-export async function changeRecurring(pc: Paperclip, store: Store, ctx: Ctx, issue: Issue, input: z.infer<typeof RecurringSchema>, tz: string, log: Logger): Promise<RecurringView | null> {
+export async function changeRecurring(pc: Paperclip, store: Store, ctx: Ctx, issue: Issue, input: z.infer<typeof RecurringSchema>, tz: string, fmt: TimeFormat, log: Logger): Promise<RecurringView | null> {
   const existing = store.recurring(issue.id);
   const label = ctx.labels.find((l) => l.name === RECURRING_LABEL);
   if (input.action === "set") {
@@ -187,8 +188,8 @@ export async function changeRecurring(pc: Paperclip, store: Store, ctx: Ctx, iss
     const labelIds = withLabel(issue, label, true);
     if (labelIds) await pc.updateIssue(issue.id, { labelIds });
     if (!label) log.warn("label \"recurring\" missing in Paperclip (run scripts/paperclip-setup.ts)");
-    log.info({ issue: issue.identifier, rule: describeRule(input.cadence, input.time), cron, repos: repos.length }, "recurring task set");
-    return recurringView(store.recurring(issue.id)!, await pc.routine(routineId));
+    log.info({ issue: issue.identifier, rule: describeRule(input.cadence, input.time, "24h"), cron, repos: repos.length }, "recurring task set");
+    return recurringView(store.recurring(issue.id)!, await pc.routine(routineId), fmt);
   }
   if (!existing) throw new BadRequest("this task isn't recurring");
   const routineId = existing.routineId;
@@ -215,7 +216,7 @@ export async function changeRecurring(pc: Paperclip, store: Store, ctx: Ctx, iss
     await pc.request("POST", `/api/routines/${routineId}/run`, { source: "api" });
   }
   log.info({ issue: issue.identifier, action: input.action }, "recurring task changed");
-  return recurringView(existing, await pc.routine(routineId));
+  return recurringView(existing, await pc.routine(routineId), fmt);
 }
 
 // ------------------------------------------------------------------ lifecycle
@@ -254,8 +255,8 @@ export async function convertLegacyRecurring(pc: Paperclip, store: Store, tz: st
       const issue = await pc.issue(r.issueId).catch((err: { status?: number }) => (err.status === 404 ? undefined : Promise.reject(err)));
       if (!issue || CLOSED.has(issue.status)) continue;
       try {
-        await changeRecurring(pc, store, ctx, issue, { action: "set", cadence: r.cadence, time: r.time, repos: r.repos }, tz, log);
-        if (r.paused) await changeRecurring(pc, store, ctx, issue, { action: "pause" }, tz, log);
+        await changeRecurring(pc, store, ctx, issue, { action: "set", cadence: r.cadence, time: r.time, repos: r.repos }, tz, "24h", log);
+        if (r.paused) await changeRecurring(pc, store, ctx, issue, { action: "pause" }, tz, "24h", log);
       } catch (err) {
         if (!(err instanceof BadRequest)) throw err;
         log.error({ issue: issue.identifier, err: err.message }, "recurring task not converted to a routine");

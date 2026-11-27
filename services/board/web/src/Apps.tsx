@@ -5,7 +5,7 @@ import { QUERIES, useQuery } from "./queries";
 import { Updating } from "./Skeleton";
 import type { AppRow } from "./types";
 import { Banner, Button, Card, EmptyState, Facts, LinkButton, Meter, Monogram, Page, PageHeader, Section, StatusDot, Tag, Tags, Tile, TileGrid, hueClass, type StatusTone } from "./ui";
-import { agoLabel, isLocalDoor, keepsSecureCookies } from "./util";
+import { agoLabel, isLocalDoor, keepsSecureCookies, stampOpts } from "./util";
 import "./apps.css";
 
 // Apps (#/apps) and one app's page (#/apps/<name>): what runs on the apps platform, whether it is healthy, where it
@@ -176,7 +176,7 @@ function AppPage({ a, admins, secureCookies = keepsSecureCookies() }: { a: AppRo
                     <StatusDot tone={DEPLOY_TONE[d.status] ?? "idle"}>{DEPLOY_WORD[d.status] ?? d.status}</StatusDot>
                     <code>{short(d.sha)}</code>
                     <span className="apps-deploy-by">{d.by}</span>
-                    <time dateTime={new Date(d.at).toISOString()} title={new Date(d.at).toLocaleString()}>{ago(d.at)}</time>
+                    <time dateTime={new Date(d.at).toISOString()} title={new Date(d.at).toLocaleString(undefined, stampOpts())}>{ago(d.at)}</time>
                   </div>
                 ))}
               </div>

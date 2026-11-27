@@ -51,6 +51,8 @@ const NAME = /^\d{4}\.\d{1,2}(\.\d+){0,2}$/;
 const SHA = /^[0-9a-f]{40}$/;
 /** The night, in the owner's timezone: an automatic install starts at or after FROM and before TO. */
 export const NIGHT = { from: 2, to: 5 };
+/** An hour of the owner's day as he reads it: "2:00 AM" (time_format 12h, the default) or "02:00" (24h). */
+export const hourWords = (hour: number, format?: string) => (format === "24h" ? `${String(hour).padStart(2, "0")}:00` : `${hour % 12 || 12}:00 ${hour < 12 ? "AM" : "PM"}`);
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
 
 /** A release that failed verification: never installed, and the owner is told once. Anything else (network) is retried. */
@@ -114,6 +116,8 @@ export type State = {
   current?: { name: string; product: string } | null;
   auto?: boolean;
   timezone?: string;
+  /** The instance's time_format setting. */
+  timeFormat?: string;
   checkedAt?: string;
   available?: Candidate | null;
   error?: string;
@@ -350,7 +354,7 @@ export function writeState(d: Pick<Deps, "dir" | "board">, s: State) {
   const put = (f: string, v: unknown) => { mkdirSync(join(f, ".."), { recursive: true }); writeFileSync(`${f}.tmp`, `${JSON.stringify(v, null, 2)}\n`); renameSync(`${f}.tmp`, f); };
   put(join(d.dir, "state.json"), s);
   // The board's copy: what it shows, nothing it could act on.
-  if (d.board) put(d.board, { current: s.current ?? null, auto: s.auto ?? null, timezone: s.timezone ?? null, checkedAt: s.checkedAt ?? null, available: s.available ? { name: s.available.name, notes: s.available.notes, compare: s.available.compare } : null, error: s.error ?? null, last: s.last ?? null });
+  if (d.board) put(d.board, { current: s.current ?? null, auto: s.auto ?? null, timezone: s.timezone ?? null, timeFormat: s.timeFormat ?? null, checkedAt: s.checkedAt ?? null, available: s.available ? { name: s.available.name, notes: s.available.notes, compare: s.available.compare } : null, error: s.error ?? null, last: s.last ?? null });
 }
 /**
  * `fn` holding the state's lock (`state.lock` beside it, made exclusively, holding the holder's pid): every read-modify-write
@@ -403,6 +407,7 @@ async function checkLocked(d: Deps, asked: Asked, candidate: string): Promise<St
   s.current = cur ? { name: cur.name, product: String(instance.product ?? "") } : null;
   s.auto = autoOn(instance);
   s.timezone = String((isMap(instance.settings) && instance.settings.timezone) || "UTC");
+  s.timeFormat = String((isMap(instance.settings) && instance.settings.time_format) || "12h");
   delete s.error;
   delete s.checkFailed;
   s.available = null;
@@ -419,7 +424,7 @@ async function checkLocked(d: Deps, asked: Asked, candidate: string): Promise<St
         try {
           const { text: pinned, ...c } = await verify(d, text, tag.name, tag.sha, !!candidate);
           if (!(s.events ?? []).some((e) => e.id === `available:${c.name}`)) event(s, `available:${c.name}`, s.auto
-            ? `AidenHQ ${c.name} is available. It is filed for install tonight between ${NIGHT.from}:00 and ${NIGHT.to}:00 (${s.timezone}), for the AI reviewer; to file it now or see what changed, open Settings > Instance.`
+            ? `AidenHQ ${c.name} is available. It is filed for install tonight between ${hourWords(NIGHT.from, s.timeFormat)} and ${hourWords(NIGHT.to, s.timeFormat)} (${s.timezone}), for the AI reviewer; to file it now or see what changed, open Settings > Instance.`
             : `AidenHQ ${c.name} is available. Auto-updates are off: file it from Settings > Instance (Update now), where what changed is listed; it installs on your approval.`);
           s.available = c;
           next = pinned;

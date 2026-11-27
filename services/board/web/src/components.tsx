@@ -7,7 +7,7 @@ import { api } from "./api";
 import { BUCKETS, BUCKET_NAMES, type Assignee, type Board, type Bucket, type Card, type CrewMember, type CrewState, type PlanItem, type SignInStatus, type Working } from "./types";
 import { Face, faceProps, type FaceState } from "./ui";
 import { TaskState } from "./ui/TaskState";
-import { SOURCE_NAMES, addDays, agentShort, ago, dayDate, elapsed, matches, shortDate, shortName, snoozeOptions, todayIn, untilLabel } from "./util";
+import { SOURCE_NAMES, addDays, agentShort, ago, dayDate, elapsed, matches, shortDate, shortName, snoozeOptions, todayIn, untilLabel, clockOpts, stampOpts } from "./util";
 
 /** A crew member's face (ui/Face: its kit or shipped image, by its seed), or a letter for you. */
 export function Avatar({ assignee, size = 18, state }: { assignee: Assignee | undefined; size?: number; state?: FaceState }) {
@@ -105,7 +105,7 @@ export function Plan({ items }: { items: PlanItem[] }) {
 /** An agent working on the task right now (pulsing), or the runner holding it in its queue. */
 export function WorkingBadge({ working }: { working: Working }) {
   const who = agentShort(working.agent);
-  const title = working.queued ? `${working.agent}: queued, waiting for a free slot` : `${working.agent} is working on this${working.since ? ` (started ${new Date(working.since).toLocaleTimeString()})` : ""}`;
+  const title = working.queued ? `${working.agent}: queued, waiting for a free slot` : `${working.agent} is working on this${working.since ? ` (started ${new Date(working.since).toLocaleTimeString(undefined, { ...clockOpts(), second: "2-digit" })})` : ""}`;
   return (
     <span className={`badge ${working.queued ? "badge-queued" : "badge-live"}`} title={title}>
       {working.queued ? `${who} queued` : `${who}${working.since ? ` · ${elapsed(working.since)}` : ""}`}
@@ -183,7 +183,7 @@ export function CardView({ card, assignees, selected, overlay, closed, onOpen, o
           )}
           <span className="spacer" />
           {executor && <span className="exec" title="Model override">{executor}</span>}
-          <span className="time" title={new Date(card.activityAt).toLocaleString()}>
+          <span className="time" title={new Date(card.activityAt).toLocaleString(undefined, stampOpts())}>
             {ago(card.activityAt)}
           </span>
           {assignee?.kind !== "me" && !card.crew && <Avatar assignee={assignee} />}
@@ -481,7 +481,7 @@ export function GoogleBanner({ google }: { google: Board["google"] }) {
         <div key={a.email} className="alert-row">
           <span>
             Google sign-in for <b>{a.email}</b> stopped working on {new Date(a.since).toLocaleDateString(undefined, { weekday: "long" })} at{" "}
-            {new Date(a.since).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })}.{" "}
+            {new Date(a.since).toLocaleTimeString(undefined, { ...clockOpts() })}.{" "}
             {a.primary ? "Meeting notes, calendar, email and Drive from it are paused." : "Email and Drive from it are paused."}
           </span>
           <a className="btn" href={`/google/connect?account=${encodeURIComponent(a.email)}`}>
@@ -505,7 +505,7 @@ function SignInBanner({ name, path, status, offer, mode, canConnect, stopped }: 
       <div className="alert-row">
         <span>
           {name} sign-in stopped working on {since.toLocaleDateString(undefined, { weekday: "long" })} at{" "}
-          {since.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })}. {stopped}
+          {since.toLocaleTimeString(undefined, { ...clockOpts() })}. {stopped}
         </span>
         {canConnect && <ConnectButton c={{ id: path, label: name, signIn: { state: status.state, offer, mode } }} />}
       </div>

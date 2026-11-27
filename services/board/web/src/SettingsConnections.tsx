@@ -9,11 +9,12 @@ import { Group, Page, Row } from "./settings-ui";
 import { SetupButton } from "./SetupButton";
 import { SignInLines, linesNeeding } from "./SignInLines";
 import { Banner, Button, Dialog, LinkButton, Section, StatusDot, Tile, TileGrid, type StatusTone } from "./ui";
+import { clockOpts } from "./util";
 
 type Can = { signIn: boolean };
 const TONE: Record<Status, StatusTone> = { connected: "ok", not_connected: "idle", signed_out: "needs", error: "failed", not_configured: "idle", unknown: "idle", builtin: "info" };
 const NEEDS: Status[] = ["error", "signed_out", "not_configured", "unknown"];
-const when = (iso?: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "never");
+const when = (iso?: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", ...clockOpts() }) : "never");
 
 /** The hash's query: `connect=<id>[&error=…]` opens that connection's Connect (an old link, or a sign-in that failed); `connected=<id>`: this tab was opened for a sign-in that just landed. */
 const asked = () => new URLSearchParams(location.hash.split("?")[1] ?? "");

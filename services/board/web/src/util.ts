@@ -1,3 +1,4 @@
+import { clockWords, timeFormatOf } from "../../src/clock.js";
 import type { Assignee, Bucket, Card } from "./types.js";
 
 export function ago(iso: string, now = Date.now()): string {
@@ -28,8 +29,18 @@ export function agentShort(agent: string): string {
   return agent.replace(/^Engineer · /, "").replace(/ \(.*\)$/, "");
 }
 
+/** The owner's `time_format` setting (the board read carries it): 12h is the default. */
+let hour12 = true;
+export const setTimeFormat = (f: string | undefined) => void (hour12 = timeFormatOf(f) === "12h");
+/** A time of day as words ("8:00 AM" or "08:00"): for an hour and minute with no date, such as a schedule. */
+export const clockText = (hour: number, minute = 0) => clockWords(hour, minute, hour12 ? "12h" : "24h");
+/** Intl options for a clock time in the owner's format: "8:00 PM" (12h) or "20:00" (24h). Spread them into any date format. */
+export const clockOpts = (): Intl.DateTimeFormatOptions => (hour12 ? { hour: "numeric", minute: "2-digit", hour12: true } : { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+/** Options for a full date and time (tooltips): "11/27/2026, 8:00:05 PM". */
+export const stampOpts = (): Intl.DateTimeFormatOptions => ({ year: "numeric", month: "numeric", day: "numeric", ...clockOpts(), second: "2-digit" });
+
 export function when(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", ...clockOpts() });
 }
 
 export const PRIORITIES = ["critical", "high", "medium", "low"] as const;
@@ -74,9 +85,9 @@ export const fileSize = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? 
 /** "Thu, Oct 15" for a YYYY-MM-DD date. */
 export const dayDate = (d: string) => new Date(`${d}T12:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 
-/** "Thu, Oct 15, 07:00" for an instant, in the board's timezone. */
+/** "Thu, Oct 15, 7:00 AM" for an instant, in the board's timezone. */
 export function runTime(iso: string, timeZone: string): string {
-  return new Date(iso).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone });
+  return new Date(iso).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", ...clockOpts(), timeZone });
 }
 
 /** The date `n` days after a YYYY-MM-DD date. */
@@ -92,10 +103,10 @@ export function todayIn(timeZone: string | undefined, at = new Date()): string {
   return `${p.year}-${p.month}-${p.day}`;
 }
 
-/** When an instant falls, in the board's timezone: "today 08:00", "tomorrow 08:00", "Thu 08:00" within a week, else "Oct 15, 08:00". */
+/** When an instant falls, in the board's timezone: "today 8:00 AM", "tomorrow 8:00 AM", "Thu 8:00 AM" within a week, else "Oct 15, 8:00 AM". */
 export function dueWords(iso: string, timeZone: string | undefined, now = new Date()): string {
   const at = new Date(iso);
-  const time = at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone });
+  const time = at.toLocaleTimeString(undefined, { ...clockOpts(), timeZone });
   const today = todayIn(timeZone, now), day = todayIn(timeZone, at);
   if (day === today) return `today ${time}`;
   if (day === addDays(today, 1)) return `tomorrow ${time}`;
@@ -160,5 +171,5 @@ export const runAt = (iso: string, zone?: string) => {
   const timeZone = zone && validZone(zone) ? zone : undefined;
   const dayOf = (x: Date) => x.toLocaleDateString("en-CA", { timeZone });
   const day = dayOf(d) === dayOf(new Date()) ? "" : `${d.toLocaleDateString(undefined, { weekday: "short", timeZone })} `;
-  return `${day}${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", timeZone })}`;
+  return `${day}${d.toLocaleTimeString(undefined, { ...clockOpts(), timeZone })}`;
 };

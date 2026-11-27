@@ -9,7 +9,7 @@ import { inFilter, outcomeOf, type ApprovalFilter } from "./conversation";
 import { CardListSkeleton, Updating } from "./Skeleton";
 import type { Approval } from "./types";
 import { StatusDot } from "./ui/StatusDot";
-import { ago } from "./util";
+import { ago, stampOpts } from "./util";
 
 const toolCall = (a: Approval) => a.state === "auto" && a.action.includes(".");
 const FILTERS: [ApprovalFilter, string][] = [["pending", "Pending"], ["done", "Done"], ["failed", "Failed"], ["all", "All"]];
@@ -124,7 +124,7 @@ function HistoryRow({ group, state }: { group: Approval[]; state?: ReactNode }) 
         <span className="history-what">{a.sentence}</span>
         <span className="history-target">{a.target}</span>
         {group.length > 1 && <span className="recent-count" title="Earlier attempts at the same request">{group.length} tries</span>}
-        <span className="time" title={new Date(a.createdAt).toLocaleString()}>{ago(a.createdAt)}</span>
+        <span className="time" title={new Date(a.createdAt).toLocaleString(undefined, stampOpts())}>{ago(a.createdAt)}</span>
       </button>
       {shown && (
         <ul className="approval-list history-cards">
