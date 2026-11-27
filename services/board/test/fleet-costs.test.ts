@@ -32,6 +32,9 @@ describe("fleet_costs", () => {
 
     expect(reply.days).toBe(2);
     expect(reply.note).toMatch(/board's ledger/);
+    // The note says what the two ambiguous fields count: `runs` is gateway calls, costCents only what was priced.
+    expect(reply.note).toMatch(/runs counts the gateway's model calls, not agent jobs/);
+    expect(reply.note).toMatch(/0 does not mean free/);
     expect(reply.usage).toEqual([
       { agent: "Alice", day: yesterday, runs: 1, inputTokens: 50, cachedInputTokens: 0, outputTokens: 5, costCents: 0 },
       { agent: "Bob", day: yesterday, runs: 1, inputTokens: 1000, cachedInputTokens: 100, outputTokens: 200, costCents: 123 },

@@ -217,11 +217,14 @@ export function boundedFleetStatus<T extends Record<string, unknown>>(reply: T, 
   return ordered as T & { truncated?: string[] };
 }
 
+/** What a fleet_costs row counts, said in the reply: `runs` is the model gateway's calls, and costCents only what OpenRouter priced. */
+export const NOTE = "Usage from the board's ledger (the model gateway's calls, pulled every minute). runs counts the gateway's model calls, not agent jobs: one job can make several. costCents sums the calls OpenRouter priced, rounded to the cent; calls it gave no cost add nothing, and 0 does not mean free (a few priced cents round there too): use tokens and runs for volume.";
+
 /**
  * Token usage per agent per UTC day over the last `days` days (today included), from the board's usage ledger: the model
  * gateway's calls (costs.ts pullUsage), which is where every agent run spends. Paperclip records no agent spend of its own.
- * One row per agent and day, summed across models and lanes; OpenRouter leaves some calls unpriced (costCents 0), so the
- * tokens and runs are the reliable figures.
+ * One row per agent and day, summed across models and lanes. `runs` is the ledger's call count (a model call, not an agent
+ * job) and `costCents` only the calls OpenRouter priced, so the tokens and runs are the reliable figures.
  */
 export async function fleetCosts(pc: Paperclip, store: Store, days?: number) {
   const n = Math.min(Math.max(Math.floor(days ?? 7) || 7, 1), 31);
@@ -246,7 +249,7 @@ export async function fleetCosts(pc: Paperclip, store: Store, days?: number) {
   const usage = [...rows.values()]
     .sort((a, b) => (a.day === b.day ? a.agent.localeCompare(b.agent) : a.day.localeCompare(b.day)))
     .map((r) => ({ agent: r.agent, day: r.day, runs: r.runs, inputTokens: r.inputTokens, cachedInputTokens: r.cachedInputTokens, outputTokens: r.outputTokens, costCents: Math.round(r.costUsd * 100) }));
-  return { days: n, note: "Usage from the board's ledger (the model gateway's calls, pulled every minute). OpenRouter is unpriced where costCents is 0: use tokens and runs.", usage };
+  return { days: n, note: NOTE, usage };
 }
 
 export async function fleetControl(pc: Paperclip, caller: Agent, a: z.infer<typeof ControlSchema>, store: Pick<Store, "meta" | "setMeta" | "delMeta">) {
