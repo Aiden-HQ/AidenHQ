@@ -62,7 +62,7 @@ export function Decide({ a, hold, size, onDecided }: { a: Approval; hold?: boole
           <Button size={size} onClick={() => setRejecting(true)} disabled={off}>Reject…</Button>
         </div>
       )}
-      {error && <p className="decide-error" role="alert">{error}</p>}
+      {error && <p className="decide-error" role="alert" title={error}>{error}</p>}
     </div>
   );
 }
