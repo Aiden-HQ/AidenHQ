@@ -66,16 +66,16 @@ Five inputs the spec implies that ordinary use will hit and the lane tests must 
 
 | Lane | Builder | Owns (creates or edits; nobody else touches these) |
 |---|---|---|
-| **0: scaffold** (serial, first, ~30 min) | B's builder | `modules/telegram/connections/telegram-live/{package.json,package-lock.json,tsconfig.json,tsconfig.build.json,vitest.config.ts,Dockerfile,.dockerignore}`, `src/aidenhq-sdk/{caller,fence,executor}.ts`, `src/source-store.ts`, `src/td.ts`, `src/store.ts`, `src/tdlib-types.ts`, stub `src/mcp.ts` and `src/send.ts`, `modules/telegram/schemas/send.json`, `scripts/sync-shared.ts` |
-| **A: board sign-in** | sonnet | `modules/board/schemas/signins.json`, `services/board/src/{device-signin.ts,mcpauth.ts,app.ts,config.ts,setup-flows.ts}`, `services/board/web/src/{Connect.tsx,api.ts,types.ts}` and its CSS, `services/board/test/connections-simple.test.ts`, `docs/configuration.md` |
-| **B: telegram-live core** | opus (TDLib session, outbox and crash semantics) | `src/{main.ts,auth.ts,filter.ts,ingest.ts,sources.ts,backfill.ts,kernel.ts}` and `test/{filter,ingest,reconcile,backfill,auth}.test.ts`, `test/fake-td.ts` |
+| **0: scaffold** (serial, first, ~30 min) | B's builder | `modules/telegram/connections/telegram-live/{package.json,package-lock.json,tsconfig.json,tsconfig.build.json,vitest.config.ts,Dockerfile,.dockerignore}`, `src/aidenhq-sdk/{caller,fence,executor}.ts`, `src/source-store.ts`, `src/td.ts`, `src/store.ts`, `src/tdlib-types.ts`, `test/fake-td.ts`, stub `src/mcp.ts` and `src/send.ts`, `modules/telegram/schemas/send.json`, `scripts/sync-shared.ts` |
+| **A: board sign-in** | sonnet | `modules/board/schemas/signins.json`, `services/board/src/{device-signin.ts,mcpauth.ts,app.ts,config.ts,setup-flows.ts}`, `services/board/web/src/{Connect.tsx,SetupFlow.tsx,SetupPaths.tsx,api.ts,types.ts}` and its CSS, `services/board/web/dev/mock-api.ts`, `services/board/test/connections-simple.test.ts`, `docs/configuration.md` |
+| **B: telegram-live core** | opus (TDLib session, outbox and crash semantics) | `src/{main.ts,auth.ts,filter.ts,ingest.ts,sources.ts,backfill.ts,kernel.ts}` and `test/{filter,ingest,reconcile,backfill,auth}.test.ts` |
 | **C: tools and executor** | sonnet | `src/mcp.ts`, `src/send.ts`, `test/{mcp,send}.test.ts` |
 | **D: wiring** | sonnet | `modules/telegram/{module.yaml,README.md}`, `modules/marketplace.json`, `.github/ci/areas.json`, `modules/warehouse/apps/warehouse/sources.sql`, `ops/warehouse-sources.sh`, `docs/design/sources.md`, `modules/intake/{module.yaml,skills/triage-telegram/SKILL.md}`, `modules/chief-of-staff/module.yaml`, `modules/LICENSES`/`NOTICE` entry |
 
 **Branching.**
 - Lane 0 commits on `feat/telegram-module`, cut from fresh `origin/main`.
 - Lanes A–D each cut their own branch from Lane 0's commit: `git worktree add <scratchpad>/wt-tg-<lane> -b tg-<lane> feat/telegram-module`.
-- Lane C needs Lane 0's `td.ts`, `store.ts` and stubs. Lane D needs Lane 0's `schemas/send.json`.
+- Lane C needs Lane 0's `td.ts`, `store.ts`, `test/fake-td.ts` and stubs. Lane D needs Lane 0's `schemas/send.json`.
 - Lane D's compile check needs Lane A's schema (`mode: qr`). D runs it in the integration pass, not alone.
 
 **Merge order** into `feat/telegram-module`, with `git merge --no-ff`, never a rebase or force-push: **A → B → C → D**, then the Integration task. No two lanes edit the same file, so conflicts mean a lane strayed outside its row.
@@ -109,7 +109,7 @@ Read the plan's Global Constraints, your lane's tasks, and CLAUDE.md "Convention
 **Interfaces (produced; every lane codes against these):**
 
 ```ts
-// src/td.ts — the only door to TDLib. Real impl wraps tdl; tests use test/fake-td.ts (Lane B creates it in B1).
+// src/td.ts — the only door to TDLib. Real impl wraps tdl; tests use test/fake-td.ts (Task 0 creates it).
 export type TdUpdate = { _: string; [k: string]: unknown };
 export interface TdClient {
   invoke<T = any>(req: { _: string; [k: string]: unknown }): Promise<T>; // throws TdError; refuses READ_STATE_METHODS
@@ -133,13 +133,13 @@ export interface Store {
 
 DDL (`openStore` creates it; column details are the lane's choice, the tables and keys are not):
 - `kv(k PK, v)`
-- `ingested(chat_id INTEGER, message_id INTEGER, PRIMARY KEY(chat_id, message_id))`: the exactly-once guard.
+- `ingested(chat_id INTEGER, message_id INTEGER, outgoing INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(chat_id, message_id))`: the exactly-once guard. `outgoing` feeds the filter's `isOwnMessage`.
 - `checkpoint(chat_id INTEGER PK, last_message_id INTEGER NOT NULL)`
 - `msg_root(chat_id, message_id, root_id, PRIMARY KEY(chat_id, message_id))`: reply-chain roots.
 - `outbox(seq INTEGER PK AUTOINCREMENT, target TEXT CHECK(target IN ('warehouse','kernel')), payload TEXT NOT NULL, created_at INTEGER NOT NULL)`, indexed `(target, seq)`. A row is deleted when its drain lands.
 - `backfill(chat_id INTEGER PK, from_message_id INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0, flood_until INTEGER, order_key INTEGER)`
 - `agent_sent(chat_id, message_id, PRIMARY KEY(chat_id, message_id))`: final ids of executor sends.
-- `agent_pending(chat_id, temp_message_id, write_id, PRIMARY KEY(chat_id, temp_message_id))`
+- `agent_pending(chat_id, temp_message_id, write_id, final_message_id INTEGER, error TEXT, PRIMARY KEY(chat_id, temp_message_id))`. Ingest (B3) fills `final_message_id` on `updateMessageSendSucceeded` or `error` on `updateMessageSendFailed`. The executor (C2) alone writes `writes`.
 - `writes(id TEXT PK, state TEXT CHECK(state IN ('sending','done','failed','unknown')), chat_id INTEGER, message_id INTEGER, text TEXT, at INTEGER NOT NULL)`
 - `send_log(at INTEGER NOT NULL, chat_id INTEGER NOT NULL)`: the rate cap.
 
@@ -182,8 +182,14 @@ export type Me = { user_id: number; usernames: string[]; name: string };   // ex
   - the `source-store.ts` list (`…/src/source-store.ts`).
 
   Then run `node scripts/sync-shared.ts` to write the copies. Check: `git diff --stat` shows the four new copies and no other changes.
+- [ ] **Step 3b:** Write `test/fake-td.ts`. A `FakeTd implements TdClient` that:
+  - scripts responses per method (`fake.on("getChatHistory", fn)`);
+  - records every `invoke` in `fake.calls`;
+  - lets a test emit updates (`fake.emit(update)`);
+  - can be told to throw at the Nth `invoke` or the Nth update (crash injection).
+  - Like the real one, it refuses `READ_STATE_METHODS`.
 - [ ] **Step 4:** Write `td.ts`. `openTd` calls `tdl.configure({ tdjson: getTdjson() })`, then `tdl.createClient({ apiId, apiHash, databaseDirectory: dir, filesDirectory: dir + "/files", databaseEncryptionKey: key, tdlibParameters: {…Global Constraints} })`. Write `store.ts` with the DDL, the stubs and `send.json`.
-- [ ] **Step 5:** `perl -e 'alarm shift; exec @ARGV' 600 npm run typecheck` passes. Then `pkill -f "${WT:?}/"`.
+- [ ] **Step 5:** `perl -e 'alarm shift; exec @ARGV' 600 npm run typecheck` passes. Then `pkill -f "${WT:?}/"`. Run `node scripts/supply-chain/npm-age.ts origin/main HEAD` after committing. The lockfile's fresh transitive deps must also be at least 7 days old; pin any that are not.
 - [ ] **Step 6:** Commit only the explicit paths: `git commit -m "feat(telegram): telegram-live scaffold and contracts"`.
 
 ---
@@ -256,6 +262,8 @@ The wire contract between the board and any module that declares `mode: qr` or `
   - `DeviceSignIn` renders by the code's shape. For `qr`, it renders the QR from the latest `qr` (start, then each poll) with `qrcode-generator`, the way `SetupFlow.tsx` does, plus the line "Scan in Telegram: Settings → Devices → Link Desktop Device". The wording comes from the sign-in label; nothing is Telegram-specific in code.
   - On `state: "secret"` it shows a password input labelled `secret.label`, the hint, and Submit. Submit calls `api.deviceSecret`. A 400 shows `error` under the field and keeps the step. The input is `type="password"` and `autoComplete="off"`, and is cleared after each submit.
   - The `view?.mode === "device"` check at line ~199 also takes `"qr"`.
+- Modify: `services/board/web/src/SetupFlow.tsx` (lines ~207–211) and `SetupPaths.tsx` (~73–76). These pass `flow.signin_mode` into `ConnectButton`; it is Telegram's main path to Connect. Widen the type and check the QR dialog opens from both.
+- Modify: `services/board/web/dev/mock-api.ts`. Add a fake qr sign-in that walks pending → secret → ok, for the visual check.
 - Modify: the connection card where a signed-in sign-in shows Reconnect (find it with `git grep -n "Reconnect" services/board/web/src`).
   - With `disconnect`, add a quiet "Disconnect" button. It opens a confirm dialog: "Disconnect <label>? This signs AidenHQ out at <label>; reconnecting needs a new sign-in." On confirm it calls `api.disconnect`.
 
@@ -274,15 +282,10 @@ The wire contract between the board and any module that declares `mode: qr` or `
 
 All paths below are under `modules/telegram/connections/telegram-live/`.
 
-### Task B1: Fake TDLib and the auth state machine
+### Task B1: The auth state machine
 
 **Files:**
-- Create: `test/fake-td.ts`. A `FakeTd implements TdClient` that:
-  - scripts responses per method (`fake.on("getChatHistory", fn)`);
-  - records every `invoke` in `fake.calls`;
-  - lets a test emit updates (`fake.emit(update)`);
-  - can be told to throw at the Nth `invoke` or the Nth update (crash injection).
-- Create: `src/auth.ts`
+- Create: `src/auth.ts`. Tests use Task 0's `test/fake-td.ts`.
 - Test: `test/auth.test.ts`
 
 **Interfaces:**
@@ -303,7 +306,7 @@ What the code does:
 - **States.**
   - With no `telegram_api_id`/`telegram_api_hash`: `status()` returns `{ state: "missing", configured: false }` and no client is opened.
   - `authorizationStateWaitPhoneNumber`: `deviceStart` invokes `requestQrCodeAuthentication { other_user_ids: [] }`.
-  - `authorizationStateWaitOtherDeviceConfirmation.link` becomes `qr` and is refreshed on each new state update. `expires_in` is 30.
+  - `authorizationStateWaitOtherDeviceConfirmation.link` becomes `qr` and is refreshed on each new state update. `expires_in` is 300: the whole attempt (scan, then 2FA), so the board's per-admin lock holds throughout. The 30-second link refresh rides on GET's `qr`.
   - `authorizationStateWaitPassword`: state `secret`, `{ label: "Two-step verification password", hint: password_hint }`.
   - `deviceSecret` calls `checkAuthenticationPassword { password: value }`. A `TdError` is rethrown as a 400 message. The value is never logged.
   - `authorizationStateReady`: calls `getMe`, stores `Me`, fires `onReady`.
@@ -312,7 +315,7 @@ What the code does:
   - These count as revoked: `authorizationStateClosed` not caused by our own `disconnect`, `authorizationStateLoggingOut` not ours, or any `TdError` whose message matches `/AUTH_KEY_UNREGISTERED|SESSION_REVOKED|USER_DEACTIVATED|AUTH_KEY_DUPLICATED/`.
   - On revoke: `status().state = "expired"`, then `kernel.need("expired", "Telegram signed AidenHQ out: reconnect on the board")` and `kernel.notify(…, "telegram:session")`, once per revoke.
   - Network errors only log.
-- **`disconnect()`.** Calls `logOut`, waits for `authorizationStateClosed`, then `rm -rf <dataDir>/tdlib`, clears `checkpoint`/`backfill`/`ingested`/`msg_root`, then `process.exit(0)`. The container restarts idle with a fresh client.
+- **`disconnect()`.** Calls `logOut`, waits for `authorizationStateClosed`, then `rm -rf <dataDir>/tdlib`, clears `checkpoint`/`backfill`/`ingested`/`msg_root`/`agent_pending` and `kv backfill_started` (so a reconnect backfills again), then `process.exit(0)`. Compose runs services `restart: unless-stopped` (`scripts/compiler/services.ts`), so the container restarts idle with a fresh client.
 
 - [ ] **Step 1: Write the failing test** "qr then password then ready" with FakeTd. Assert:
   - `deviceStart()` invoked `requestQrCodeAuthentication`;
@@ -425,13 +428,18 @@ Reactions are not messages and never reach `classify` (B3 stores them and never 
   3. Write the outbox `warehouse` row(s), including the chat row on first sight.
   4. Write the outbox `kernel` event when `event` is true.
   5. Run `checkpoint = max(checkpoint, message_id)`.
-- **`updateMessageSendSucceeded`.** When `agent_pending` has `(chat_id, old_message_id)`, move it to `agent_sent(chat_id, message.id)` and ingest the message with `agentSent: true`. Otherwise ingest it as normal (an own send from this client).
+- **`updateMessageSendSucceeded`.** When `agent_pending` has `(chat_id, old_message_id)`, set its `final_message_id`, insert `agent_sent(chat_id, message.id)` and ingest the message with `agentSent: true`, all in one `tx`. Otherwise ingest it as normal (an own send from this client).
+- **`updateMessageSendFailed`.** When `agent_pending` has `(chat_id, old_message_id)`, set its `error` to `error.message`. Nothing is stored.
 - **Other updates**, each written as outbox warehouse items with no event:
   - `updateMessageContent` / `updateMessageEdited`: a new text, `edited_at`.
   - `updateDeleteMessages` with `is_permanent && !from_cache`: tombstones.
   - `updateMessageInteractionInfo`: a reaction row.
   - `updateNewChat` / `updateChatTitle` / `updateChatNotificationSettings` / `updateScopeNotificationSettings` / `updateChatPosition` / `updateChatFolders`: the in-memory chat cache plus a chat row.
   - `updateUser`: a user row.
+- **Checkpoints.**
+  - A chat seen for the first time (`updateNewChat`, or its first stored message) gets the seed `checkpoint = chat.last_message?.id ?? 0`, with no events. Older history is backfill's job.
+  - A chat with no checkpoint is never reconciled, only seeded.
+  - `reconcile` pages back to a checkpoint snapshot taken when its trigger fired, never to the live `checkpoint` row. On start, the snapshot of every chat is taken before `td.onUpdate` is attached. Live messages that land before or during a reconcile push the row past a lost message, and the snapshot is what stops reconcile skipping it. The `ingested` guard dedupes the overlap.
 - **Gap triggers.** Call `reconcile([chat])` on an `updateChatLastMessage` whose `last_message.id` is above the checkpoint but was never ingested, and on `updateConnectionState` going back to `connectionStateReady`. Run `reconcile()` for all chats on start, once Ready.
 - **`reconcile(chat)`.**
   - `getChatHistory { chat_id, from_message_id: 0, offset: 0, limit: 100, only_local: false }`, paging back until an id ≤ the checkpoint.
@@ -452,6 +460,8 @@ Reactions are not messages and never reach `classify` (B3 stores them and never 
   1. Ingest messages 1–3 in a DM. Before draining, "crash": drop the Ingest object, open a new one on the same file. Run the drains and assert the kernel got ids `:1`,`:2`,`:3` exactly once each.
   2. Crash injection: FakeTd throws on the update for message 4 before `tx` commits. Restart; the history fake returns 1–6. `reconcile()` ingests 4, 5 and 6, and the kernel gets each once. The warehouse fake got each `(chat, id)` at least once and the final set is exactly 1–6.
   3. Do the same for a supergroup chat id `-100…`. Re-emit message 5's update after the restart (TDLib redelivery): no second event.
+  3b. **Live before reconcile.** After the restart, message 7 arrives live before `reconcile()` runs, while message 4 was lost. Reconcile still ingests 4, each event fires once, and the checkpoint ends at 7.
+  3c. **New chat.** A chat first seen after the restart, with `last_message.id = 9`, is seeded at 9. Nothing older is ingested by reconcile and no event fires.
   4. A history read returns message 2 un-deleted after a live delete: `writeRow` skips it (row stays `deleted`).
 - [ ] **Step 4:** Run `perl -e 'alarm shift; exec @ARGV' 600 npx vitest run test/ingest.test.ts test/reconcile.test.ts` and expect a FAIL. Then `pkill -f "${WT:?}/"`.
 - [ ] **Step 5:** Implement `sources.ts`, `kernel.ts` and `ingest.ts`.
@@ -571,7 +581,12 @@ What the code does:
   2. Rate cap: count `send_log` rows in the last hour (`>= 30` → `{ ok: false, text: "Send cap reached (30 an hour): try again after <ISO time>." }`) and the last send to this chat (`< CHAT_GAP_MS` → the same shape, after <time>). React and delete count as well.
   3. `INSERT writes(id, 'sending', …)` and `INSERT send_log` in one `store.tx`, before the TDLib call.
   4. Invoke `sendMessage` (send/reply with `reply_to: messageReplyToMessage`), `forwardMessages` (one id), `addMessageReaction` (`reaction_type: reactionTypeEmoji`), `editMessageText` or `deleteMessages { revoke: true }`.
-  5. For a send, reply or forward: `onAgentSend(chat, temp id, rec.id)`. Then wait up to 60 s for the final id. B3 moves it to `agent_sent`; poll `agent_sent`/`agent_pending`. Mark `done` with the message id. A TDLib error marks `failed` with its message.
+  5. For a send, reply or forward: `onAgentSend(chat, temp id, rec.id)`, which inserts the `agent_pending` row. Then poll that row for up to 60 s:
+     - `final_message_id` set → mark `done` with the id;
+     - `error` set → mark `failed` with TDLib's words;
+     - no answer after 60 s → mark `unknown` and return `ok: false` with the "outcome unknown" text.
+
+     A TDLib error from the invoke itself marks `failed`. React, edit and delete are done when their invoke resolves.
   6. Never invoke a read-state method.
 
 - [ ] **Step 1: Write the failing test** `send.test.ts`, with a temp SQLite file and FakeTd.
@@ -680,7 +695,9 @@ generated_secrets: [ telegram_live_service_key, telegram_auth_token, telegram_to
 data_version: 0
 ```
 
-Check these against `docs/configuration.md` while writing: the `links: [board]` need (slack-mcp has it for the board's health check), whether `port:` is needed, and whether `optional_secrets` must list both. The README has the four sections modules/AGENTS.md requires, including "New installs": the module is in the default bundle, idle until connected, nothing triages under quiet start, and the "Connect Telegram" banner shows.
+Check these against `docs/configuration.md` while writing: the `links: [board]` need (slack-mcp has it for the board's health check), whether `port:` is needed, and whether `optional_secrets` must list both.
+
+**Banner check.** Before an `api_id` exists, B's `status()` answers `configured: false`, and `services/board/web/src/connections.ts:129` then shows "not_configured" with no Connect. Check this on a fresh install. If no banner or Connect shows, add `secrets: [telegram_api_id, telegram_api_hash]` to the sign-in, so Connect asks for both inline (that line's `fields` branch). Record the result in the PR body. The README has the four sections modules/AGENTS.md requires, including "New installs": the module is in the default bundle, idle until connected, nothing triages under quiet start, and the "Connect Telegram" banner shows.
 
 - [ ] Write both files. Commit: `feat(telegram): module manifest and README`.
 
@@ -760,6 +777,7 @@ Check these against `docs/configuration.md` while writing: the `links: [board]` 
   Fix each finding, with a test.
 - [ ] **Step 5:** Local Codex review, run in the background: `codex exec review --base origin/main -m gpt-6.2-sol -c model_reasoning_effort=medium -o <scratchpad>/review.md < /dev/null`. Fix every important finding. A finding judged wrong goes in the PR body with the reason.
 - [ ] **Step 6:** Push. Open one PR against `main`, titled `feat(telegram): the user's own Telegram account`, labelled `ship:stop`. The body states the pins and dates, the spec gaps below, and the manual acceptance list. Remove `ship:stop` once the content is final.
+- [ ] **Step 6b:** File the deferred issue the spec names: "Telegram voice notes: transcription (voice joins only channel-telegram's network today)". Use `gh issue create -R Aiden-HQ/AidenHQ`, label `feature-request`.
 - [ ] **Step 7:** Run the spec's manual acceptance steps 1–7 on a real test account after deploy, never the owner's chats in a TEST-titled task. Remove the lane worktrees and branches.
 
 ---
@@ -778,4 +796,5 @@ None of these change a design decision. Each is how the plan reads the spec wher
 8. **Per-chat minimum gap.** The spec gives none. The plan uses `CHAT_GAP_MS = 10_000`.
 9. **Sign-in id.** `signInPoints` requires the sign-in id to equal the module name. It is `telegram` (token `telegram_auth_token`); the connection stays `telegram_account`.
 10. **Reactions.** The spec says "never triaged in muted chats"; there is one event kind, `message`. The plan reads that as: reactions never fire events in any chat.
-11. **Reply-chain root.** TDLib gives only the direct `reply_to`. The service keeps `msg_root` locally to name the root. A reply whose parent predates ingest uses the parent as its root.
+11. **Banner before setup.** The spec promises "idle until connected, with a banner like Slack's". The board hides the banner while a sign-in answers `configured: false`. See D1's banner check.
+12. **Reply-chain root.** TDLib gives only the direct `reply_to`. The service keeps `msg_root` locally to name the root. A reply whose parent predates ingest uses the parent as its root.
