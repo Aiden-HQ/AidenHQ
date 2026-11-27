@@ -1,5 +1,5 @@
 // The character kit's drawing tables (Face.tsx): each spec value's SVG paths on a 0 0 100 100 canvas, ported verbatim
-// from the mockup (docs/superpowers/plans/2026-11-26-home-teammates-mockups/Face.dc.html), and a face derived from a seed
+// from the home mockup, and a face derived from a seed
 // for an agent whose module picks none. Colours are tokens (ui/tokens.css --face-*).
 import { ACCESSORIES, BODIES, HAIR_COLORS, HAIRS, PALETTES, SKINS, type FaceKit } from "../../../src/face-kit";
 

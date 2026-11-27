@@ -1,7 +1,7 @@
 name: ship
 description: "Ship: owns every pull request's lifecycle on the repos it covers (the fleet's own, and the ones you list in maintainer_repos): per-repo settings and presets (cautious, full), one round engine for every PR, a task's own and a member's hand-off alike (repair, update-branch, wakes for red checks and code review's findings, holds that tell their owner, the merge on code review's pass, App approval), CI re-runs, Dependabot tasks and quiet contributor PRs."
 license: MIT
-# Design: docs/superpowers/specs/2026-11-24-ship-design.md. The service (service/) holds the per-repo settings (`ship`), the
+# Design: modules/ship/README.md. The service (service/) holds the per-repo settings (`ship`), the
 # adoption records (data/ship/state.json, holds only: the rest is derived from the PR) and the watch loop (service/src/loop.ts, moved
 # from github's pr-watch.ts; its own table in data/ship/loop.json), which reaches GitHub, code review's verdict and
 # pr-tasks.json through github's /internal/ship/* routes with this module's token. Its tools

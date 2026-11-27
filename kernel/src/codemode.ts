@@ -1,4 +1,4 @@
-// Code mode (docs/superpowers/specs/2026-11-25-session-code-mode-design.md): an engine that declares `tools: code` reaches its
+// Code mode (docs/design/sessions.md, "Code mode"): an engine that declares `tools: code` reaches its
 // connections as files in its engine home instead of an MCP tool list. At launch the kernel lists each of the job's connections
 // through its own tool proxy, as the job (the same handler, grant filter and setup cache the box hits), and publishes
 // <home>/aidenhq-tools/: a README index, and per granted tool a typed wrapper (.ts, fixed text: an import of the box's MCP
