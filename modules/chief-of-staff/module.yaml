@@ -118,6 +118,7 @@ settings:
   # Heartbeats: hours between an agent's scheduled "Heartbeat: <key>" runs (1, 2, 3, 4, 6, 8, 12 or 24); an agent's
   # `heartbeat: <hours>` (or overrides.agents.<key>.heartbeat) sets its own.
   heartbeat_hours:
+    title: Heartbeat interval (hours)
     default: 4
     values: [1, 2, 3, 4, 6, 8, 12, 24]
 # The "Fleet issues" task heartbeat runs note missed wake-ups on.

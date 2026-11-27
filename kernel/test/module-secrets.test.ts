@@ -7,11 +7,21 @@ import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModuleSecrets, vaultWriter } from "../src/module-secrets.ts";
+import type { SetupField } from "../src/admin.ts";
+import { createModuleValidate } from "../src/module-validate.ts";
+import { openFacts } from "../src/facts.ts";
+import { DatabaseSync } from "node:sqlite";
+import { serve } from "./helpers.ts";
 import { authApiServer } from "./auth-helpers.ts";
+import { createResolver } from "../src/net.ts";
 
 const FIELDS = [
   { module: "channel-telegram", secret: "telegram_bot_token", label: "Bot token", pattern: "^[0-9]{6,12}:[A-Za-z0-9_-]{30,50}$" },
   { module: "design", secret: "ui_logins", label: "UI test logins", pattern: "^\\{[\\s\\S]*\\}$" },
+  // A module page's map secret (board.pages secret_maps): its fields and their caps, as compile carries them (scripts/modules.ts).
+  { module: "design", secret: "design_keys", label: "SSH keys", pattern: "^\\{[\\s\\S]*\\}$", fields: [
+    { name: "label", kind: "text" }, { name: "private_key", kind: "key", maxLength: 4096 },
+  ] },
   { module: "slack", secret: "slack_bot_token", label: "Slack bot token", pattern: "^xoxb-[A-Za-z0-9-]{20,200}$" },
 ];
 const SERVICES = { "channel-telegram": ["telegram"], "slack": ["slack-live"], design: ["design"], google: [] };
@@ -23,11 +33,11 @@ const TOKEN = "123456789:" + "A".repeat(35);
 const session = (id, owner) => ({ account: { id, email: `${id}@example.com`, role: "admin", owner }, session: { id: `s-${id}` }, ready: true });
 const accounts = { uiSession: async (_m, t) => (t === "ready" ? session("owner", true) : t === "admin" ? session("admin", false) : null) };
 
-function vault(recreate = async () => {}) {
+function vault(recreate = async () => {}, fields = FIELDS as SetupField[]) {
   const dir = mkdtempSync(join(tmpdir(), "module-secrets-"));
   const calls = [], lines = [];
   const secrets = createModuleSecrets({
-    fields: () => FIELDS,
+    fields: () => fields,
     services: (m) => SERVICES[m],
     mounts: (s) => MOUNTS[s] ?? [],
     save: vaultWriter(dir),
@@ -39,10 +49,30 @@ function vault(recreate = async () => {}) {
   return { dir, calls, lines, secrets };
 }
 
-async function api(t, v) {
-  const s = await authApiServer(accounts, { secrets: v.secrets });
+async function api(t, v, { validate } = {}) {
+  const s = await authApiServer(accounts, { secrets: v.secrets, validate });
   t.after(s.close);
   return (op, body, token = "ready") => s.post(`/v1/accounts/${op}`, { token, ...body }, { authorization: `Bearer ${s.boardKey}` });
+}
+
+/** The real module-validate.ts in front of a fake module hook at `url` (an IP, so the resolver uses it as it is): what it was asked, and its answer.
+ * `answer: null` is a hook that can't answer (it drops the request, as a down service does). */
+async function validator(t, fields = FIELDS, answer = { ok: true }) {
+  const asked: unknown[] = [];
+  const hook = await serve(async (req, res) => {
+    let text = "";
+    for await (const c of req) text += c;
+    asked.push(JSON.parse(text));
+    if (!answer) return void res.destroy();
+    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer));
+  });
+  t.after(() => hook.s.close());
+  const validate = createModuleValidate({
+    registry: () => ({ "design.validate": { module: "design", at: "validate", url: `${hook.url}/validate`, auth_secret: "gateway_job_secret" } }),
+    services: (m) => (m === "design" ? [new URL(hook.url).hostname] : SERVICES[m]),
+    secret: () => "k".repeat(40), resolver: createResolver({ inspect: async () => "127.0.0.1" }), facts: openFacts(new DatabaseSync(":memory:")), log: () => {},
+  });
+  return { validate, asked };
 }
 
 test("save_secret writes a declared secret and recreates its module's services", async (t) => {
@@ -106,4 +136,142 @@ test("save_secret with a key sets one key of a JSON map in place, restarts nothi
     [{ key: "acme", value: "not json" }, "ready", 400], [{ key: "Acme Co", value: entry({ a: "b" }) }, "ready", 400], [{ key: "acme", value: entry({ a: 1 }) }, "ready", 400],
     [{ key: "acme", value: entry({ a: "b" }) }, "admin", 403],
   ]) assert.equal((await post("save_secret", { module: "design", secret: "ui_logins", ...body }, token)).status, status, JSON.stringify(body));
+});
+
+// A sample private key's armour, built from parts so the repo's leak scan doesn't read this test as one.
+const PEM_HEAD = ["-----BEGIN", "OPENSSH", "PRIVATE KEY-----"].join(" ");
+const PEM_END = ["-----END", "OPENSSH", "PRIVATE KEY-----"].join(" ");
+// The map secret a module page declares (board.pages secret_maps): its fields' kinds and caps come from compile.
+const ENTRY = (o) => JSON.stringify({ label: "alpha", ...o });
+
+test("a map secret's key field is capped at its declared maxLength, stored whole and read back byte for byte", async (t) => {
+  const v = vault();
+  const post = await api(t, v);
+  const pem = `${PEM_HEAD}\nAAAAB3NzaC1yc2E\n\tindented\n${PEM_END}\n`;
+  const r = await post("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: ENTRY({ private_key: pem }) });
+  assert.equal(r.status, 200, r.body);
+  // The whole file is read as the module reads it: the key's newlines are all there, its trailing newline included.
+  assert.equal(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")).alpha.private_key, pem);
+  assert.ok(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")).alpha.private_key.endsWith("\n"));
+  // Over the declared cap (4096) is refused; the file is unchanged.
+  const over = await post("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: ENTRY({ private_key: "k".repeat(4097) }) });
+  assert.equal(over.status, 400);
+  assert.ok(!over.body.includes("k".repeat(4097)));
+  assert.equal(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")).alpha.private_key, pem);
+  // An undeclared field still caps at 300, as every other module's do.
+  assert.equal((await post("save_secret", { module: "design", secret: "design_keys", key: "beta", value: JSON.stringify({ label: "l".repeat(301) }) })).status, 400);
+  // And a 4 KB key (which the old 1000/4000 request cap refused) goes through.
+  const fourk = "k".repeat(4096);
+  const big = await post("save_secret", { module: "design", secret: "design_keys", key: "gamma", value: ENTRY({ private_key: fourk }) });
+  assert.equal(big.status, 200, big.body);
+  assert.equal(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")).gamma.private_key, fourk);
+});
+
+test("a key at the schema's ceiling of 65536 characters goes through, even all newlines", async (t) => {
+  // A page that declares the ceiling itself (pages.json's maxLength maximum).
+  const fields = [...FIELDS.filter((f) => f.secret !== "design_keys"), { module: "design", secret: "design_keys", label: "SSH keys", pattern: "^\\{[\\s\\S]*\\}$", fields: [
+    { name: "label", kind: "text" }, { name: "private_key", kind: "key", maxLength: 65536 },
+  ] }];
+  const v = vault(undefined, fields as SetupField[]);
+  const post = await api(t, v);
+  // A field at pages.json's maxLength ceiling (65536), every character a newline: its JSON escaping is the worst case.
+  const at = "\n".repeat(65536);
+  const one = await post("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: ENTRY({ private_key: at }) });
+  assert.equal(one.status, 200, one.body);
+  assert.equal(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")).alpha.private_key, at);
+  // A whole-map paste is bounded by the brief's 64 KB, so a key at the ceiling, its escapes doubling it, is too much for one.
+  const whole = JSON.stringify({ beta: { label: "b", private_key: at } });
+  assert.equal((await post("save_secret", { module: "design", secret: "design_keys", value: whole })).status, 400);
+  // A 30 KB key, escaped, still fits a whole-map paste (the brief's 64 KB).
+  const half = "\n".repeat(30 * 1024);
+  const paste = await post("save_secret", { module: "design", secret: "design_keys", value: JSON.stringify({ beta: { label: "b", private_key: half } }) });
+  assert.equal(paste.status, 200, paste.body);
+  assert.equal(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")).beta.private_key, half);
+  // A field over the ceiling is still refused.
+  assert.equal((await post("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: ENTRY({ private_key: "k".repeat(65537) }) })).status, 400);
+});
+
+test("an entry with every field at its declared ceiling gets through a per-key save", async (t) => {
+  // Two key fields, each declared at the ceiling: an entry fills both, so a budget for only the largest would refuse it.
+  const fields = [...FIELDS.filter((f) => f.secret !== "design_keys"), { module: "design", secret: "design_keys", label: "SSH keys", pattern: "^\\{[\\s\\S]*\\}$", fields: [
+    { name: "private_key", kind: "key", maxLength: 65536 }, { name: "public_key", kind: "key", maxLength: 65536 },
+  ] }];
+  const v = vault(undefined, fields as SetupField[]);
+  const post = await api(t, v);
+  const at = (n) => "\n".repeat(n);
+  const r = await post("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: JSON.stringify({ private_key: at(65536), public_key: at(65536) }) });
+  assert.equal(r.status, 200, r.body);
+  assert.deepEqual(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")).alpha, { private_key: at(65536), public_key: at(65536) });
+});
+
+test("a whole-map paste is held to its declared field caps and refused over 64 KB", async (t) => {
+  const v = vault();
+  const post = await api(t, v);
+  const fitting = JSON.stringify({ alpha: { label: "a", private_key: "k\n".repeat(2000) } });
+  assert.equal((await post("save_secret", { module: "design", secret: "design_keys", value: fitting })).status, 200);
+  assert.equal(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")).alpha.private_key, "k\n".repeat(2000));
+  const tooLong = JSON.stringify({ alpha: { label: "a", private_key: "k".repeat(4097) } });
+  assert.equal((await post("save_secret", { module: "design", secret: "design_keys", value: tooLong })).status, 400);
+  // Over 64 KB in total: refused, and the stored map left as it was.
+  const huge = JSON.stringify({ alpha: { label: "a", private_key: "k".repeat(65 * 1024) } });
+  const r = await post("save_secret", { module: "design", secret: "design_keys", value: huge });
+  assert.equal(r.status, 400);
+  assert.equal(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")).alpha.private_key, "k\n".repeat(2000), "the stored map is what it was");
+});
+
+test("a clear is offered to the module's check, and its no refuses it", async (t) => {
+  const v = vault();
+  writeFileSync(join(v.dir, "design_keys"), JSON.stringify({ alpha: { label: "a", private_key: "k" } }));
+  const { validate, asked } = await validator(t, FIELDS, { ok: false, errors: [{ field: "alpha", message: "alpha still names this key" }] });
+  const post = await api(t, v, { validate });
+  const r = await post("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: "" });
+  assert.equal(r.status, 400);
+  assert.match(r.body, /alpha still names this key/);
+  assert.deepEqual(asked, [{ secret: { name: "design_keys" }, key: "alpha" }], "the hook sees the key, with no value");
+  assert.deepEqual(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")), { alpha: { label: "a", private_key: "k" } }, "the entry is still there");
+});
+
+test("a clear fails closed: a hook that can't be asked refuses it and the entry survives", async (t) => {
+  const v = vault();
+  writeFileSync(join(v.dir, "design_keys"), JSON.stringify({ alpha: { label: "a", private_key: "k" } }));
+  const { validate } = await validator(t, FIELDS, null);
+  const post = await api(t, v, { validate });
+  const r = await post("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: "" });
+  assert.equal(r.status, 400, r.body);
+  assert.match(r.body, /couldn't check whether this is still in use.*nothing was cleared/);
+  assert.deepEqual(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")), { alpha: { label: "a", private_key: "k" } }, "the entry is still there");
+  // A written value is not fail closed: the same hook lets it through, unchecked, as every other save does.
+  const w = await post("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: ENTRY({ private_key: "k2" }) });
+  assert.equal(w.status, 200, w.body);
+  assert.match(w.json.unchecked, /couldn't check this/);
+  assert.equal(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")).alpha.private_key, "k2");
+  // A module with no validate hook still clears.
+  const plain = vault();
+  writeFileSync(join(plain.dir, "design_keys"), JSON.stringify({ alpha: { label: "a", private_key: "k" } }));
+  assert.equal((await (await api(t, plain))("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: "" })).status, 200);
+  assert.deepEqual(JSON.parse(readFileSync(join(plain.dir, "design_keys"), "utf8")), {});
+});
+
+test("a set still asks the hook with its top-level value, the shape modules already read", async (t) => {
+  const v = vault();
+  const { validate, asked } = await validator(t, FIELDS, { ok: true });
+  const post = await api(t, v, { validate });
+  assert.equal((await post("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: ENTRY({ private_key: "k\n" }) })).status, 200);
+  assert.deepEqual(asked, [{ secret: { name: "design_keys" }, value: JSON.stringify({ alpha: { label: "alpha", private_key: "k\n" } }) }]);
+});
+
+test("a clear goes ahead when the module's check allows it, and when the module has no validate hook", async (t) => {
+  const v = vault();
+  writeFileSync(join(v.dir, "design_keys"), JSON.stringify({ alpha: { label: "a", private_key: "k" }, beta: { label: "b", private_key: "k2" } }));
+  const { validate, asked } = await validator(t, FIELDS, { ok: true });
+  const post = await api(t, v, { validate });
+  assert.equal((await post("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: "" })).status, 200);
+  assert.deepEqual(asked, [{ secret: { name: "design_keys" }, key: "alpha" }]);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8"))), ["beta"]);
+  // The same vault, the kernel's own validate (a module with no hook): the clear still goes ahead.
+  const plain = vault();
+  writeFileSync(join(plain.dir, "design_keys"), JSON.stringify({ alpha: { label: "a", private_key: "k" } }));
+  const postPlain = await api(t, plain);
+  assert.equal((await postPlain("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: "" })).status, 200);
+  assert.deepEqual(JSON.parse(readFileSync(join(plain.dir, "design_keys"), "utf8")), {});
 });

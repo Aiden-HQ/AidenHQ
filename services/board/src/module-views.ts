@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 
 /** One compiled page (modules/board/schemas/pages.json) and its module. */
-export interface SecretMap { secret: string; keys_from: string; fields: { name: string; label: string; kind: "text" | "password" | "totp" }[] }
+export interface SecretMap { secret: string; keys_from: string; fields: { name: string; label: string; kind: "text" | "password" | "key" | "totp"; maxLength?: number }[] }
 export interface PagePoint { id: string; title: string; icon: string; order: number; module: string; connection: string; view: string; tools: string[]; settings?: string[]; secret_maps?: SecretMap[] }
 
 /** Each setting's applied value: the compiled config (readSources) carries { value, set } per key. */

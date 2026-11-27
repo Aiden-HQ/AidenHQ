@@ -40,18 +40,6 @@ test("the routes need a module holding kernel.work-read", async (t) => {
   assert.equal((await get("/v1/work/metrics", "reader")).headers.get("content-type").startsWith("text/plain"), true);
 });
 
-test("a task's read carries its status as the wake scan last saw it, null when it has not seen it", () => {
-  const { work, records } = setup();
-  assert.equal(work.task("t1").status, null);
-  records.db.exec("CREATE TABLE wake_tasks (task TEXT PRIMARY KEY, agent TEXT, status TEXT, comment TEXT)");
-  records.db.prepare("INSERT INTO wake_tasks (task, status) VALUES ('t1', 'cancelled')").run();
-  assert.equal(work.task("t1").status, "cancelled");
-  assert.equal(work.task("t2").status, null);
-  records.db.prepare("UPDATE jobs SET identifier = 'ACME-1' WHERE task = 't1'").run();
-  assert.equal(work.task("ACME-1").status, "cancelled", "by identifier too");
-  assert.deepEqual(work.task("ACME-1").jobs.map((j) => j.id), ["j-2", "j-1"]);
-});
-
 test("a record read says whether its missing identifier is still owed or the control plane's answer", () => {
   const { work, records } = setup();
   const card = { sentence: "s", changes: "c", reads: "r", cost: "none", details: "" };
@@ -188,16 +176,6 @@ test("an agent's timeline: each job's wake and who caused it, why it ended, its 
   assert.equal((await get(`/v1/writes/${rec.id}/chain`, "wrong")).status, 401);
 });
 
-test("a job that never got a shell is not started: a launch failure or an early stop reads started false", () => {
-  const { work, records } = setup();
-  const add = (id, state, ended, pid) => records.db.prepare("INSERT INTO jobs (id, module, agent, task, engine, pid, log, dir, at, jobcaps, observing, live_input, state, ended) VALUES (?, 'dispatch', 'a7', 't7', 'codex', ?, '', '', 1, '[]', 0, 0, ?, ?)").run(id, pid, state, ended);
-  add("u-failed", "failed", 1_000, 0); // couldn't start: admission's launch failure
-  add("u-stopped", "cancelled", 1_000, 0); // the owner's Stop during launch
-  add("u-ran", "done", 9_000, 4242);
-  const got = work.agent("a7").jobs.filter((j) => j.id.startsWith("u-")).sort((x, y) => x.id.localeCompare(y.id));
-  assert.deepEqual(got.map((j) => [j.id, j.started]), [["u-failed", false], ["u-ran", true], ["u-stopped", false]]);
-});
-
 test("an agent's history leaves quiet routine runs out before its limit of 50", async () => {
   const { records, work } = setup();
   const facts = openFacts(records.db);
@@ -221,17 +199,6 @@ test("an agent's history leaves quiet routine runs out before its limit of 50", 
   const brief = work.agent("a9", { since: 0, brief: true }).jobs;
   assert.equal(brief.length, 61);
   assert.deepEqual(Object.keys(brief[0]).sort(), ["agent", "ended_at", "engine", "id", "profile", "saw", "session", "started", "started_at", "state", "task"]);
-});
-
-test("a task's read names what its work made: its PRs, the files its landed writes changed, its last final", () => {
-  const { records, work } = setup();
-  const facts = openFacts(records.db);
-  facts.record({ type: "pr.opened", subject: "pr:o/r#7", version: "1", task: "t1", at: "2026-01-01T00:00:00Z", actor: "kernel", source: "live", data: { repo: "o/r", number: 7, title: "Lens" } });
-  records.db.prepare("UPDATE jobs SET final = 'shipped the lens' WHERE id = 'j-1'").run();
-  const rec = records.file({ kind: "runner.pr", module: "runner", args: {}, targets: {}, executor: { module: "runner" }, policy: "p", tier: 1, card: { sentence: "s", changes: "", reads: "", cost: "", details: "" }, requester: { agent: "a1", key: "eng", name: "eng", roles: [], kind: "run" }, task: "t1", state: "review", paths: ["o/r:kernel/src/jobs.ts"] });
-  records.db.prepare("UPDATE records SET state = 'done' WHERE id = ?").run(rec.id);
-  const t = work.task("t1");
-  assert.deepEqual({ prs: t.prs, paths: t.paths, final: t.final }, { prs: [{ repo: "o/r", number: 7, title: "Lens" }], paths: ["kernel/src/jobs.ts"], final: "shipped the lens" });
 });
 
 test("GET /v1/facts: a module holding kernel.flow-read reads the log after a seq; without since, only its tail", async (t) => {

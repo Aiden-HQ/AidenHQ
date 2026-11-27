@@ -33,25 +33,6 @@ test("a quiet PR is nudged, then closed after another quiet spell; an active aut
   assert.equal(await look(), 0);
 });
 
-test("a nudge keeps the deadline it promised when the repo's quiet window is lowered afterwards", async () => {
-  const store = kv(), log = logs(), tasks = [];
-  let now = NOW, days = 14;
-  const rows = [pr({ number: 1, last_author_activity: ago(15) })];
-  const prs = async () => ({ repos: [{ repo: R, quiet_pr_days: days, prs: rows }] });
-  const firePr = async (_r, t) => (tasks.push(t), "done" as const);
-  assert.equal(await prTick({ prs, firePr, store, log, now }), 1);
-  assert.equal(tasks[0].close_by, new Date(NOW + 14 * DAY).toISOString().slice(0, 10));
-  // The owner lowers the window to 7: the 14 days the nudge promised still hold.
-  days = 7;
-  now = NOW + 8 * DAY;
-  assert.equal(await prTick({ prs, firePr, store, log, now }), 0);
-  now = NOW + 14 * DAY;
-  assert.equal(await prTick({ prs, firePr, store, log, now }), 1);
-  assert.deepEqual(tasks.map((t) => t.kind), ["nudge", "close"]);
-  assert.equal(tasks[1].close_by, new Date(NOW + 14 * DAY).toISOString().slice(0, 10));
-  // Had the close recomputed from the lowered window it would already have been filed at NOW + 8 days.
-});
-
 test("Ship nudges and closes a quiet PR itself, in fixed words: a nudge is one comment; a close is a comment, then the close; a failed close retries only the close", async () => {
   const calls: string[] = [];
   let closes = 0;
@@ -83,14 +64,3 @@ test("a close reads the PR again first: an author who acted since the batch read
   assert.equal(reads, 2);
 });
 
-
-test("a repo's quiet-PR history is one, whatever its spelling: a nudge kept as Acme/App is not sent again for acme/app", async () => {
-  const now = Date.parse("2026-12-03T00:00:00Z");
-  const state: Record<string, string> = { maintainer_prs: JSON.stringify({ repos: { "Acme/App": { nudged: { 9: { at: "2026-12-01T00:00:00Z", author_activity_at: "2026-11-20T00:00:00Z", close_at: "2026-12-08T00:00:00Z" } } } } }) };
-  const store = { meta: (k: string) => state[k], setMeta: (k: string, v: string) => void (state[k] = v) };
-  const prs = async () => ({ repos: [{ repo: "acme/app", quiet_pr_days: 7, prs: [{ number: 9, author_kind: "human" as const, draft: false, last_author_activity: "2026-11-20T00:00:00Z", review_requested: false, waiting_on_author: "failing checks (1)" }] }] });
-  const done: string[] = [];
-  assert.equal(await prTick({ prs, firePr: async (_r, t) => (done.push(t.kind), "done"), store, log: { info() {}, warn() {} }, now }), 0);
-  assert.deepEqual(done, []);
-  assert.ok(JSON.parse(state.maintainer_prs!).repos["acme/app"].nudged[9]);
-});

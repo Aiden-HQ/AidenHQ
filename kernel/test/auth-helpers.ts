@@ -66,9 +66,9 @@ export function jsonBrowser(base, host, { https = false, jar = new Map() } = {})
 export const reqWith = (jar, host = "localhost:3120", https = false) => ({ headers: { host, ...(https ? { "x-forwarded-proto": "https" } : {}), cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; ") } });
 
 /** The backplane's /v1/<group>/<op> routes for accounts (createAuthApi) on a loopback listener; `whoami`: bearer → identity. */
-export async function authApiServer(accounts, { whoami = async () => undefined, boardKey = "b".repeat(40), operatorKey = "o".repeat(40), secrets } = {}) {
+export async function authApiServer(accounts, { whoami = async () => undefined, boardKey = "b".repeat(40), operatorKey = "o".repeat(40), secrets, validate } = {}) {
   const { createAuthApi } = await import("../src/auth-api.ts");
-  const api = createAuthApi({ accounts: () => accounts, whoami, boardKey: () => boardKey, operatorKey: () => operatorKey, secrets });
+  const api = createAuthApi({ accounts: () => accounts, whoami, boardKey: () => boardKey, operatorKey: () => operatorKey, secrets, validate });
   const { s, url } = await serve(async (req, res) => {
     const [, , group, op] = new URL(req.url, "http://x").pathname.split("/");
     try {

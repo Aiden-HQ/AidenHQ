@@ -20,6 +20,7 @@ export interface SettingDef {
   /** `url`: the board offers a URL input, checked by services/shared/url-setting.ts (with `host`, when set). */
   type?: string;
   host?: string;
+  title?: string;
   doc?: string;
   /** An anchored regex a text value must match; `when`: it applies only while these settings hold. */
   pattern?: string;
@@ -196,6 +197,7 @@ export function settingsView(s: Sources) {
         ...(d?.def.default !== undefined ? { default: d.def.default } : {}),
         ...(d?.def.values ? { values: d.def.values } : {}),
         ...(d?.def.required ? { required: true } : {}),
+        ...(d?.def.title ? { title: d.def.title } : {}),
         ...(d?.def.doc ? { doc: d.def.doc } : {}),
         ...(d?.def.type ? { type: d.def.type } : {}),
         ...(d?.def.host ? { host: d.def.host } : {}),

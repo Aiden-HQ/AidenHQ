@@ -82,7 +82,7 @@ only thing in the fleet that holds a server's private key or talks to a server.
   refuse every real key.
 - `generated_secrets: [ server_manager_token, server_manager_service_key ]`.
 - `connections.server-manager`: `url: http://server-manager-ssh:8103/mcp`, `auth: server_manager_service_key`,
-  `returns: untrusted`, `setup: "Built in: nothing to connect."`, with its tools tagged:
+  `returns: untrusted`, `tool_timeout_sec: 1800`, `setup: "Built in: nothing to connect."`, with its tools tagged:
 
   | Tool | Tag | Who holds it |
   |---|---|---|
@@ -99,15 +99,27 @@ only thing in the fleet that holds a server's private key or talks to a server.
   file the same `server-manager.patch` record and go through the same tier, executor and audit trail.
   `server_manager_check` is not any kind's tool: it is a read (§6).
 - `providers.executor`: `{ url: http://server-manager-ssh:8103/aidenhq/v1/executor, auth: server_manager_service_key }`.
+- `validate: { post: http://ssh:8103/validate, auth: server_manager_service_key }` — the module's own check of a settings
+  change and of a key's clear (§7). Its host is the service's key in `services.run` (`ssh`), not the compose name:
+  `scripts/modules.ts` `checkEntries` refuses a `validate.post` whose hostname is not one of `services.run`'s keys, while
+  `kernel/src/net.ts` resolves either name to the same container.
 - `writes:` two kinds (§6).
 - `settings:` `servers_machines` (a list, `entry: name`), the one setting (§9). It carries a comment above it in
   `module.yaml`: `scripts/modules.ts` `requireDocs` refuses an official module's setting without one, and that comment
   is what the board and the owner's Claude show as the field's help.
-- `services: { data: true, run: { ssh: { build: ./service, port: 8103, tmp: 16m, egress: true, data: ["state:/data"],
-  secrets: [ servers_keys ], env: {...} } } }`.
+- `services: { data: true, run: { ssh: { build: ./service, port: 8103, tmp: 16m, egress: true, links: [sources],
+  data: ["state:/data"], secrets: [ servers_keys ], env: {...} } } }`. `links: [sources]` is the warehouse's network and
+  is reachable only through `scripts/modules.ts` `LEGACY_LINKS`, a closed list a test pins: this build adds
+  `server-manager: { until: "3g", to: ["sources"] }` to it and updates that test. The status writer's login is the same
+  kind of change: `generated_secrets` gains `warehouse_src_servers_password`, and `ops/warehouse-sources.sh` and
+  `modules/warehouse/apps/warehouse/sources.sql` each gain `src_servers` beside the sources they create today (the SQL's
+  `FOREACH` array, its `set_config` lines, and the script's `for s in …` list).
 - `data_version: 0` — the data dir's format, migrated forward only.
 - `agents.server-manager`: `skills: [ server-manager.maintenance, tasks.delegate-work ]`, `department: platform`,
-  `model: ~deepseek/deepseek-flash-latest`, `timeout_sec: 1200`, its grants, and `heartbeat: 4` as the backstop for a
+  `model: ~deepseek/deepseek-flash-latest`, `timeout_sec: 1200`,
+  `paperclip_tasks: [ task_current, task_get, task_comments, task_comment, task_block, task_finish, task_list,
+  task_approvals ]`, `server-manager: [ server_manager_config, server_manager_status, server_manager_check ]`,
+  `apps: [ web_view, app_view ]`, and `heartbeat: 4` as the backstop for a
   missed wake. Its `teammate:` block lives in its `AGENTS.md` frontmatter, not here: a product module's teammate is
   declared there (`modules/AGENTS.md` "Teammates").
 
@@ -278,8 +290,9 @@ module):
 3. **The check runs on a clear too.** `saveKey` calls `check` with the key and a null entry when an entry is being
    removed; `auth-api.ts` passes that through as `{ secret: { name }, key }` with no value; and
    `kernel/src/module-validate.ts` gains an optional `key` on `ValidateInput` and forwards it, since today it forwards
-   only `secret.name` and `value`. A module that answers `{ ok: false }` refuses the clear; a module with no hook, or one
-   that does not answer, clears as it does today.
+   only `secret.name` and `value`. A module that answers `{ ok: false }` refuses the clear; so does one whose hook cannot be
+   asked (unreachable, timed out, or answering nonsense), because a cleared key cannot be read back — a clear fails closed.
+   A module with no hook clears as it does today; a written value still goes ahead unchecked when its hook cannot be asked.
 4. **The hook's answer is not a new branch.** `server-manager.validate` answers for `servers_keys`: a clear of a key a
    machine still names is refused with a message naming the machines; a replace is allowed, because that is how a key is
    rotated. The rule stays with the thing that knows what "in use" means, which is the module.
@@ -315,10 +328,13 @@ What is published is one **sanitized latest-status row per machine**, through th
 entry the way `modules/security` publishes `src_security`:
 
 ```
-src_servers.servers   name, distro, distro_version, enabled, pending_updates, security_updates,
-                      security_known (bool), reboot_needed, disk_root_pct, disk_boot_pct, uptime_s,
-                      last_check, last_outcome, updated_at
-src_servers.fleet     view: one row per enabled machine, current state
+contributes:
+  warehouse.sources:
+    - schema: src_servers
+      about: "src_servers.servers (one sanitized status row per machine) / fleet"
+      views:
+        - { name: servers, time: updated_at }
+        - { name: fleet, time: updated_at }
 ```
 
 - No key names, no key material, no addresses, no user names, no action rows, no package lists.
@@ -367,10 +383,15 @@ plain-language summaries, Advanced collapsed.
   servers_machines:
     default: []
     entry: name
+    pattern: '^[a-z0-9][a-z0-9-]{0,31}$'
     writers: [ owner ]        # the page's Save is the owner's; no agent holds a write to it
   ```
 
-  Each entry is one object, checked against this schema when the page saves it and when compile reads the instance:
+  Each entry is one object. Compile checks the field `entry: name` names against this setting's `pattern`, so a machine
+  name that is not lowercase letters, digits and `-` is caught at compile wherever the entry was written — the page, an
+  agent's settings change, or the instance file by hand: the compile warns and the setting falls back to its empty default,
+  so a bad name never reaches a service. The module's `validate:` hook checks a whole entry against the schema below, on
+  the page's Save and on an agent's settings change, and its refusal is shown under the field:
 
   ```jsonc
   {
@@ -589,6 +610,17 @@ and the service files its own records.
 
 **Left to the build, not to the review:** the page's icon and order, the exact wording of a failed run's report, and
 whether `expected_fingerprint` should ever default to anything but empty. All three are in §17.
+
+**A build-blocker pass against `main` (2026-11-27), and what changed:** the `validate` hook's `post` must name the
+`services.run` key (`ssh`), not the compose name `server-manager-ssh`, because compile refuses any other host while the
+kernel resolves both to the same container (§3); the connection needs `tool_timeout_sec: 1800`, because the kernel's
+proxy otherwise cuts a tool call at 300 s, below the install's 1500 s bound (§3, §4); `links: [sources]` and the
+status writer's `warehouse_src_servers_password` login are platform touches — a closed `LEGACY_LINKS` list plus two ops
+files — rather than something a module can declare alone (§3); each `warehouse.sources` entry needs `time` on every view,
+so the old example would not have validated (§8); and the agent's grants must carry the five tools a heartbeat requires
+(`task_list`, `task_comments`, `task_approvals`, `task_comment`, `task_finish`), or compile refuses the heartbeat (§3).
+`servers_machines` now declares its own `pattern`, so compile checks a machine name on every path, a hand edit of the
+instance file included, which the `validate:` hook alone could not.
 
 ## 17. What is still open
 

@@ -1,0 +1,33 @@
+name: mapok
+description: declares a Fleet page whose Sign-ins panel keeps an SSH private key
+requires: [board]
+secrets:
+  provided:
+    - name: mapok_keys
+      setup: { label: SSH keys, pattern: '^\{[\s\S]*\}$' }
+connections:
+  mapok-mcp: { url: "http://mapok-mcp:1/mcp", auth: mapok_service_key, tools: { read: [mapok_notes], write: [] } }
+settings:
+  # The machines each key is for: a key's name is one of these.
+  mapok_targets:
+    default: []
+    description: the machines each key is for
+contributes:
+  board.pages:
+    - id: machines
+      title: Machines
+      icon: list
+      order: 20
+      connection: mapok-mcp
+      view: "ui://mapok/page"
+      tools: [mapok_notes]
+      secret_maps:
+        - secret: mapok_keys
+          keys_from: "mapok_targets[].name"
+          fields:
+            - { name: label, label: Label, kind: text }
+            - { name: private_key, label: Private key, kind: key, maxLength: 4096 }
+            - { name: passphrase, label: Passphrase, kind: password }
+services:
+  run:
+    mapok-mcp: { image: "example/mapok@sha256:0000000000000000000000000000000000000000000000000000000000000000", port: 1 }

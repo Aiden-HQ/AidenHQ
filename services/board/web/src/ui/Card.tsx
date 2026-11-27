@@ -1,12 +1,13 @@
 // A plain surface for a few facts or a short note, and the label/value list that usually goes in it.
 export const Card = ({ children, className = "" }: { children: React.ReactNode; className?: string }) => <div className={`ui-card ${className}`}>{children}</div>;
 
-export function Facts({ items }: { items: readonly (readonly [string, React.ReactNode] | false | null | undefined)[] }) {
+/** Label/value rows; an optional third item is the label's help, shown on hover. */
+export function Facts({ items }: { items: readonly (readonly [string, React.ReactNode, string?] | false | null | undefined)[] }) {
   return (
     <dl className="ui-facts">
-      {items.filter((x): x is readonly [string, React.ReactNode] => Boolean(x)).map(([k, v]) => (
-        <div key={k} style={{ display: "contents" }}>
-          <dt>{k}</dt>
+      {items.filter((x): x is readonly [string, React.ReactNode, string?] => Boolean(x)).map(([k, v, help], i) => (
+        <div key={`${i}:${k}`} style={{ display: "contents" }}>
+          <dt title={help}>{k}</dt>
           <dd>{v}</dd>
         </div>
       ))}

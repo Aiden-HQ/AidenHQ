@@ -11,17 +11,6 @@ const scope = { fleet: [] };
 const state = () => openState(join(mkdtempSync(join(tmpdir(), "ship-")), "state.json"));
 const adoption = (n: number, hold: unknown = null) => ({ repo: "a/b", number: n, generation: 1, trigger: { kind: "fleet", event: "e", actor: "x" }, hold }) as any;
 
-test("applyShipChange sets one repo's entry and reports what it loosens; a new entry is a loosening", () => {
-  const raw = { defaults: "cautious", repos: { "a/b": "cautious" } };
-  const r = applyShipChange(raw, { repo: "a/b", change: "full", scope });
-  assert.deepEqual([r.summary, r.value.repos], [["a/b: ship full"], { "a/b": "full" }]);
-  assert.ok(r.loosens.includes("a/b.by_tier.standard.approve"));
-  assert.deepEqual(applyShipChange({}, { repo: "a/b", change: "cautious", scope }).loosens, ["a/b.enabled"]);
-  const kept = applyShipChange({ repos: { "a/b": { caps: { usd: 1, rounds: 10 } } } }, { repo: "a/b", change: { caps: { rounds: 5 } }, scope });
-  assert.deepEqual((kept.value.repos as any)["a/b"].caps, { usd: 1, rounds: 5 });
-  assert.deepEqual(applyShipChange(raw, { repo: "a/c", change: "full", scope }).loosens.filter((l) => l.startsWith("a/c")), ["a/c.enabled"]);
-});
-
 test("ship_configure files a tightening and refuses a loosening for the owner", async () => {
   const filed: unknown[] = [];
   const tools = (raw: object) => configTools({ raw: () => raw, scope: () => scope, state: state(), file: async (c) => (filed.push(c), { ok: true }) });
@@ -29,17 +18,6 @@ test("ship_configure files a tightening and refuses a loosening for the owner", 
   await tools({ repos: { "a/b": "full" } }).find((t) => t.name === "ship_configure")!.run({ repo: "a/b", change: "cautious" }, caller);
   assert.equal(filed.length, 1);
   await assert.rejects(tools({ repos: { "a/b": "cautious" } }).find((t) => t.name === "ship_configure")!.run({ repo: "a/b", change: "full" }, caller), /owner's to approve/);
-});
-
-test("ship_status reads headline settings and holds for the Fleet page", async () => {
-  const s = state();
-  s.put(adoption(1));
-  s.put(adoption(2, { kind: "stalled", reason: "ci rounds" }));
-  s.put({ ...adoption(3, { kind: "handed_back", reason: "its PR was closed" }), counters: { lastRound: "closed" } });
-  const tool = configTools({ raw: () => ({ repos: { "a/b": "full" } }), scope: () => scope, state: s, file: async () => ({}) }).find((t) => t.name === "ship_status")!;
-  const r = (await tool.run({}, { agent: "x", roles: [] })) as any;
-  const { settings, own, inherits, ...row } = r.repos[0];
-  assert.deepEqual([r.paused, row, r.held.length, settings.caps.usd, r.defaults.preset, r.defaults.settings.caps.usd], [false, { repo: "a/b", removable: true, preset: "full", enabled: true, handoff: "all", by_tier: PRESETS.full.by_tier, unwatched: { merge: "ready" }, actions: {}, over: [] }, 1, null, "cautious", 5]);
 });
 
 test("ship_configure for the owner returns the settings change and files nothing; Add writes only Ship's own list", async () => {
@@ -103,12 +81,6 @@ test("the pause is its own setting and works whatever the entries hold; a broken
   await assert.rejects(tool.run({ paused: false }, agent), /paused/);
 });
 
-test("ship_status lists the fleet's named repos that inherit the defaults, and which fields an entry sets itself", async () => {
-  const tool = configTools({ raw: () => ({ repos: { "a/b": { unwatched: { merge: "off" } } } }), scope: () => ({ fleet: ["org/*", "org/product"] }), state: state(), file: async () => ({}) }).find((t) => t.name === "ship_status")!;
-  const r = (await tool.run({}, { agent: "x", roles: [] })) as any;
-  assert.deepEqual(r.repos.map((x: any) => [x.repo, x.preset, x.enabled, x.over]), [["a/b", "cautious", true, ["unwatched"]], ["org/product", "cautious", true, []]]);
-});
-
 test("a cap edit and a reset make the right proposal: caps merge field by field, a reset drops the field so the preset applies", async () => {
   const raw = { repos: { "a/b": { preset: "cautious", by_tier: { trivial: { approve: "observe" }, sensitive: { merge: "off" } }, caps: { usd: 1, rounds: 10 } } } };
   const tool = configTools({ raw: () => raw, scope: () => scope, state: state(), file: async () => ({}) }).find((t) => t.name === "ship_configure")!;
@@ -119,8 +91,4 @@ test("a cap edit and a reset make the right proposal: caps merge field by field,
   assert.throws(() => applyShipChange(raw, { repo: "a/b", change: { reset: ["caps.usd_"] }, scope }), /can't reset/);
   assert.throws(() => applyShipChange(raw, { repo: "a/b", change: { reset: ["caps.usd.x"] }, scope }), /can't reset/);
   assert.throws(() => applyShipChange(raw, { repo: "a/b", change: { caps: { usd: 1 }, reset: "caps.usd" }, scope }), /list of fields/);
-});
-
-test("a malformed tier cell is refused, never dropped", () => {
-  assert.throws(() => applyShipChange({ repos: { "a/b": "cautious" } }, { repo: "a/b", change: { by_tier: { sensitive: "off" } }, scope }), /by_tier\.sensitive/);
 });

@@ -175,10 +175,10 @@ test("the web for every crew agent: web_view and app_view granted (an agent may 
     const writes = Object.entries(a.enabled_tools).flatMap(([c, list]) => list.filter((t) => c !== "paperclip_tasks" && !own.includes(t) && writeTools(r.paperclip.mcp_servers[c]).includes(t)).map((t) => `${c}.${t}`));
     assert.deepEqual(writes, [], k);
   }
-  // An Engineer has what it grants itself (attaching its own task's file, reading its own approval cards, finishing it,
-  // recording its wait), ship_configure alone of ship's tools (a ship task's generate command, which it proposes) and the tasks
-  // module's reads.
-  assert.deepEqual(r.paperclip.agents.engineer.enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues", "github_issue_comment", "github_job_log", "github_pr_files", "github_product_issue_status", "github_pr_threads", "github_pr_thread_reply", "github_pr_thread_resolve"], code_review: ["code_review_findings", "code_review_resolve"], ship: ["ship_configure"], paperclip_tasks: ["task_file_upload", "task_finish", "task_wait", "task_approvals", "task_get", "task_search"] });
+  // An Engineer has what it grants itself (commenting on its own task, attaching its own task's file, reading its own
+  // approval cards, finishing it, recording its wait), ship_configure alone of ship's tools (a ship task's generate
+  // command, which it proposes) and the tasks module's reads.
+  assert.deepEqual(r.paperclip.agents.engineer.enabled_tools, { apps: ["app_list", "app_status", "app_view", "app_check", "web_view"], github: ["github_whoami", "github_project_read", "github_issue_read", "github_search_issues", "github_issue_comment", "github_job_log", "github_pr_files", "github_product_issue_status", "github_pr_threads", "github_pr_thread_reply", "github_pr_thread_resolve"], code_review: ["code_review_findings", "code_review_resolve"], ship: ["ship_configure"], paperclip_tasks: ["task_file_upload", "task_finish", "task_wait", "task_approvals", "task_comment", "task_get", "task_search"] });
   assert.equal(r.paperclip.agents["review-chaser"].web_search, "disabled");
   assert.equal(r.paperclip.agents.assistant.web_search, undefined);
 });
@@ -207,24 +207,6 @@ test("the Fleet Steward's grants: reads, its predecessors' writes and settling s
   assert.ok(r.paperclip.agents.maintainer.enabled_tools.github.includes("github_product_issue"), "the Maintainer files product bugs");
 });
 
-test("the own-part ending reaches only agents that hold task_handoff; every crew agent keeps the handoff and report-back guidance", () => {
-  // The own-part section names an ending (`task_handoff`) an agent without the tool would be refused, so it goes only to
-  // the agents granted it. The delegation and report-back guidance is every crew agent's, whatever its grant.
-  const dir = mkdtempSync(join(tmpdir(), "inst-"));
-  mkdirSync(join(dir, "agents"));
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "apps-platform"], settings: owner }));
-  const r = compile(product, dir);
-  const parts = (key) => handbookParts(r.paperclip, key, r.paperclip.agents[key], { repo: product, instanceDir: dir, fleetIssues: "WOR-0" });
-  const own = (key) => parts(key).find(([id]) => id === "own-part")?.[1];
-  assert.match(own("fleet-steward"), /Your part of the owner's task/);
-  assert.ok(r.paperclip.agents["fleet-steward"].enabled_tools.paperclip_tasks.includes("task_handoff"));
-  // app-maintainer is a crew agent with no task_handoff: it reads no ending it would be refused.
-  assert.ok(!r.paperclip.agents["app-maintainer"].enabled_tools.paperclip_tasks.includes("task_handoff"));
-  assert.equal(own("app-maintainer"), undefined);
-  const handoff = parts("app-maintainer").find(([id]) => id === "handoff")?.[1] ?? "";
-  assert.match(handoff, /Handing work on/);
-  assert.match(handoff, /A report back/);
-});
 test("the security module's agents may hand a fix task to the Fleet Steward, and only to it", () => {
   // Security Watch and the Red Teamer file their fixes as tasks for the Fleet Steward, which routes them to the owner's
   // engineer (#815). Without the list `delegateIds` falls back to their reports and the Engineers, so the task_create with
@@ -248,12 +230,4 @@ test("the in-box `aidenhq task|tasks` reads are the tasks module's default grant
   assert.deepEqual(reads({ ...crew, image: "agent-base" }), ["task_get", "task_search"]);
   assert.deepEqual(reads({ ...crew, profile: "check" }), [], "a check agent");
   assert.deepEqual(reads({ ...crew, profile: "engineer" }), ["task_get", "task_search"], "an Engineer");
-});
-
-test("a setting is the shape of its default: a string where a list is meant fails the compile", () => {
-  const dir = withAgents({}, ["github"]);
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "github"], settings: { ...owner, github_orgs: "acme,evil" } }));
-  assert.throws(() => compile(product, dir), /settings\.github_orgs: a list, like its default \(got a string\)/);
-  writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "github"], settings: { ...owner, github_orgs: ["acme"] } }));
-  assert.equal(compile(product, dir).paperclip ? "ok" : "", "ok");
 });

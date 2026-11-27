@@ -49,9 +49,9 @@ codehost:
   comment: { repos: [ "@agents/*", "@product", "@listed" ] }
 settings:
   # The per-repo ship settings: { defaults: cautious | full | { preset, …fields }, repos: { owner/name: cautious | full | { preset?,
-  # handoff: none|label|all, rebase: conflict|behind, generated: { globs, command } or { globs, ci: <check name> } (a check
-  # in the repo's CI regenerates those paths: the repair takes their base side and runs nothing, and its head merges only once that
-  # check passed on it), ignore_authors: [logins] (automation accounts
+  # handoff: none|label|all, rebase: conflict|behind, generated: { globs, command } or { globs, ci: <workflow file> } (a
+  # workflow in the repo's CI regenerates those paths: the repair takes their base side and runs nothing, and its head merges only
+  # once that workflow's newest run on it succeeded), ignore_authors: [logins] (automation accounts
   # whose comments are never a member's request),
   # fix: [conflicts, ci, review], protected: [globs], caps: { wakes_per_head, ci_rounds, same_check_heads,
   # rounds, usd, requeue_on_timeout: a number, or null for unlimited },
@@ -65,6 +65,7 @@ settings:
   # id; service/src/actions.ts) } } }. Ship works the fleet org's repos and the product repo, and every repo with an entry here: `repos` is Ship's own list (adding one is the owner's; quiet until enabled), apart from the Maintainer's and code review's. The Fleet page
   # edits it; this is the advanced form. Read by the service (service/src/settings.ts).
   ship:
+    title: Ship settings per repo
     type: object
     writers: [ ship-admin ]
     default:
@@ -73,6 +74,7 @@ settings:
   # The kill switch: true stops every adoption, push, approval and merge; PRs resume where they were. Its own setting, so a repo
   # change saved from an older proposal can never put it back (resuming is the owner's).
   ship_paused:
+    title: Ship paused
     default: false
     writers: [ ship-admin ]
 # Sam: ship's teammate. The service above is the engine; Sam answers the owner about it and changes its settings when asked.

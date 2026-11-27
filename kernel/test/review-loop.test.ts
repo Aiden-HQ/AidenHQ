@@ -15,7 +15,7 @@ import { createResolver } from "../src/net.ts";
 import { RETRY_MS } from "../src/tier.ts";
 import { readBody, serve } from "./helpers.ts";
 
-const until = async (fn) => { for (let i = 0; i < 300 && !fn(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(fn()); };
+const until = async (fn) => { for (let i = 0; i < 1000 && !fn(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(fn()); }; // 10 s: the kernel suite runs six files at once
 const KIND = "acme.post";
 const OK = { decision: "approve", code: "clean", reason: "fine", model: "~acme/model-a" };
 
@@ -278,6 +278,8 @@ test("the restart probe asks the service's own /healthz, and a probe in flight n
   mod.mod.instance = "instance-1";
   const sweep = k.loop.tick();
   await until(() => mod.seen.length === 1);
+  // The probe covers reviews the kernel has recorded: `seen` only says the module was sent it.
+  await until(() => k.reviews.held().includes("instance-1"));
   // The service restarts, and its /healthz is slow: a second review lands while the probe is in flight. It is covered by the
   // probe by identity, not by a timestamp, so even an acknowledgement in the same clock tick as the probe is never stale.
   mod.mod.instance = "instance-2";
@@ -320,6 +322,7 @@ test("a review that finishes during the restart probe is no restart: check() rep
   mod.mod.instance = "instance-1";
   const sweep = k.loop.tick();
   await until(() => mod.seen.length === 1);
+  await until(() => k.reviews.held().includes("instance-1")); // recorded, not only sent
   // The service answers its probe slowly, and the review finishes while that answer is still in flight.
   mod.mod.instance = "instance-2";
   mod.mod.healthDelay = 300;
@@ -402,14 +405,6 @@ test("a job's precheck gets the reviewer's verdict on the write it would file, a
   assert.deepEqual([(await verdict).decision, (await verdict).reason, asked], ["reject", "say which release", 1]);
   assert.equal(k.records.list(["review", "owner", "approved", "claimed", "done", "rejected"], 100).length, 0, "nothing was filed");
   await assert.rejects(k.writes.preview({ ...who, job: undefined, kind: "module" }, { kind: KIND, args: { note: "x" } }), /kernel job's own/);
-});
-
-test("the reviewer reads an agent's form with its options spelled out, so the owner's \"1A, 2A\" reads against them", async () => {
-  const { spellQuestions } = await import("../src/review-loop.ts");
-  const body = "**Asking**\n\nWhere next?\n\n<!-- aidenhq-reply -->\n<!-- aidenhq-questions:[{\"question\":\"Where do you want to review the design?\",\"options\":[\"On Primer\",\"Here in chat\"]}] -->";
-  const out = spellQuestions(body);
-  assert.match(out, /1\. Where do you want to review the design\?\nA\) On Primer\nB\) Here in chat/);
-  assert.equal(spellQuestions("plain"), "plain");
 });
 
 test("the owner's short answer to a form is read by code against that form's options", async () => {

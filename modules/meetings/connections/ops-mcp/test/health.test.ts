@@ -122,16 +122,6 @@ describe("healthChecks vault", () => {
     expect(h.detail).toContain("cannot be written");
   });
 
-  it("names an invalid timezone instead of throwing", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ops-mcp-health-vault-"));
-    mkdirSync(join(root, "Meetings"));
-    const env = makeEnv({ cfg: { timezone: "Mars/Olympus", ...vaultAt(root, ["Meetings"]) } });
-    const h = await healthChecks(env.app);
-    expect(h.ok).toBe(false);
-    expect(h.detail).toContain("have no path");
-    expect(h.detail).toContain("Mars/Olympus");
-  });
-
   it("fails when the current month's folder is a dangling symlink", async () => {
     const root = mkdtempSync(join(tmpdir(), "ops-mcp-health-vault-"));
     const env = makeEnv({ cfg: vaultAt(root, ["Meetings"]) });

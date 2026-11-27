@@ -13,7 +13,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
  * setup: a setup flow's state changed (a secret saved, a mode chosen, a flow dismissed, a pairing completed or revoked); home:
  * what Home shows changed (a card, a task or a chat, which each also send it; the account looked or snoozed a row).
  */
-export type EventName = "approvals" | "chat" | "progress" | "fleet" | "tasks" | "connections" | "setup" | "home";
+export type EventName = "approvals" | "chat" | "progress" | "fleet" | "tasks" | "connections" | "setup" | "home" | "board";
 /** The changes Home shows: each one also tells Home. */
 const HOME_FROM: EventName[] = ["approvals", "tasks", "chat"];
 

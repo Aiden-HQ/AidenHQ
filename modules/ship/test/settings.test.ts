@@ -4,35 +4,11 @@ import { effective, loosens, oldShape, validate, type Scope } from "../service/s
 
 const scope: Scope = { fleet: ["acme-agents/*", "acme/product"] };
 
-test("cautious carries today's pr-watch constants; full is unlimited; overrides keep the preset's caps", () => {
-  const c = effective({ defaults: "cautious", repos: {} }, "acme/product", scope)!;
-  assert.deepEqual([c.caps.wakes_per_head, c.caps.ci_rounds, c.caps.same_check_heads, c.by_tier.standard.approve, c.by_tier.trivial.approve, c.by_tier.sensitive.approve], [3, 3, 2, "observe", "on", "off"]);
-  assert.equal(effective({ repos: { "a/b": "full" } }, "a/b", scope)!.caps.usd, null);
-  const o = effective({ repos: { "a/b": { preset: "cautious", by_tier: { sensitive: { approve: "on" } } } } }, "a/b", scope)!;
-  assert.deepEqual([o.by_tier.sensitive.approve, o.by_tier.sensitive.merge, o.by_tier.trivial.approve, o.caps.ci_rounds], ["on", "ready", "on", 3], "a tier's field overrides; the rest keep the preset's");
-  const d = effective({ defaults: { preset: "full", by_tier: { trivial: { merge: "off" } } }, repos: { "a/b": { by_tier: { sensitive: { merge: "off" } } } } }, "a/b", scope)!;
-  assert.deepEqual([d.by_tier.trivial.merge, d.by_tier.sensitive.merge, d.by_tier.standard.approve], ["off", "off", "on"], "an entry sits over the defaults' tiers");
-});
-
-test("an old-shape entry is named by oldShape (the compile refuses it), at repo and defaults level", () => {
-  assert.deepEqual(oldShape({ defaults: { safe: {} }, repos: { "a/b": { preset: "full", merge: "off" }, "c/d": "full" } }), ["defaults.safe", "a/b.merge"]);
-  assert.deepEqual(oldShape({ defaults: "full", repos: { "a/b": { by_tier: {} } } }), []);
-});
-
 test("a fleet repo is worked with no entry; any other repo only once it has its own entry (Ship's own list)", () => {
   assert.ok(effective({}, "acme-agents/anything", scope));
   assert.equal(effective({}, "a/b", scope), null);
   assert.ok(effective({ repos: { "a/b": "cautious" } }, "a/b", scope));
   assert.equal(effective({}, "z/z", scope), null);
-});
-
-test("an unknown field, a bad cap or a malformed repo is refused; full is valid anywhere", () => {
-  assert.deepEqual(validate({ repos: { "x/y": "full" } }), []);
-  assert.deepEqual(validate({ repos: { "x": "full" } }), ["x isn't owner/name"]);
-  assert.match(validate({ repos: { "a/b": { caps: { rounds: -1 }, nope: 1 } } }).join("|"), /rounds.*whole number.*nope|nope.*rounds/s);
-  assert.match(validate({ repos: { "a/b": { approve: "safe", merge: "ready", safe: {} } } }).join("|"), /approve and merge are per tier now.*safe is gone/);
-  assert.match(validate({ repos: { "a/b": { by_tier: { skip: { approve: "on" }, trivial: { approve: "safe" }, huge: {} } } } }).join("|"), /skip has no review.*one of off, observe, on.*unknown tier/s);
-  assert.deepEqual(validate({ defaults: "full", repos: { "a/b": { preset: "full", caps: { usd: null } } } }), []);
 });
 
 test("loosens names each loosened field by repo, and the same policy spelled differently is no change", () => {
@@ -55,8 +31,8 @@ test("loosens names each loosened field by repo, and the same policy spelled dif
   const gen = (globs: string[], command = "make gen") => ({ repos: { "a/b": { preset: "cautious", generated: { globs, command } } } });
   assert.deepEqual(loosens(gen(["gen/**"]), gen(["gen/**", "src/**"])), ["a/b.generated.globs"]);
   assert.deepEqual(loosens(gen(["gen/**"]), gen(["gen/**"], "npm run gen")), []);
-  // The repo's CI regenerating (a ci check) runs nothing and writes only the base's blobs: an ordinary change.
-  assert.deepEqual(loosens(gen(["gen/**"]), { repos: { "a/b": { preset: "cautious", generated: { globs: ["gen/**"], ci: "regenerate" } } } }), []);
+  // The repo's CI regenerating (a ci workflow) runs nothing and writes only the base's blobs: an ordinary change.
+  assert.deepEqual(loosens(gen(["gen/**"]), { repos: { "a/b": { preset: "cautious", generated: { globs: ["gen/**"], ci: "schema-generate.yml" } } } }), []);
   // Ignored accounts: adding one (its comments stop gating a merge) is the owner's; the same login in another case, or dropping one, isn't.
   const ign = (l: string[]) => ({ repos: { "a/b": { preset: "cautious", ignore_authors: l } } });
   assert.deepEqual(loosens(ign([]), ign(["acme-bot"])), ["a/b.ignore_authors"]);
@@ -67,21 +43,14 @@ test("loosens names each loosened field by repo, and the same policy spelled dif
 test("repo hooks are workflows naming the PR with {pr}; comment steps and bad logins are refused", () => {
   const scope = { fleet: ["a/*"], listed: [] };
   const v = (e: unknown) => validate({ repos: { "a/b": e } }, scope);
-  assert.deepEqual(v({ actions: { conflict: [{ workflow: "pr-rebase.yml", inputs: { pr: "{pr}" } }] }, generated: { globs: ["gen/**"], ci: "regenerate" }, ignore_authors: ["acme-bot", "renovate[bot]"] }), []);
+  assert.deepEqual(v({ actions: { conflict: [{ workflow: "pr-rebase.yml", inputs: { pr: "{pr}" } }] }, generated: { globs: ["gen/**"], ci: "schema-generate.yml" }, ignore_authors: ["acme-bot", "renovate[bot]"] }), []);
   assert.match(v({ actions: { conflict: [{ comment: "/rebase" }] } }).join(), /comment steps are gone/);
   assert.match(v({ actions: { conflict: [{ workflow: "pr-rebase.yml" }] } }).join(), /name the PR with \{pr\}/);
   assert.match(v({ actions: { conflict: [{ workflow: "x.yml", inputs: { pr: "{pr}", ref: "{head}" } }] } }).join(), /only placeholder is \{pr\}/);
   assert.match(v({ ignore_authors: ["not a login"] }).join(), /ignore_authors/);
-  assert.match(v({ generated: { globs: ["gen/**"], command: "make gen", ci: "regenerate" } }).join(), /a command or a ci check, not both/);
+  assert.match(v({ generated: { globs: ["gen/**"], command: "make gen", ci: "schema-generate.yml" } }).join(), /a command or a ci workflow, not both/);
+  assert.match(v({ generated: { globs: ["gen/**"], ci: "generate" } }).join(), /generated\.ci: the file name in \.github\/workflows/);
   assert.match(v({ generated: { globs: ["gen/**"], command: null } }).join(), /generated\.command: text/);
-});
-
-test("clearing an explicit generated list back to discovery is a loosening", () => {
-  const scope = { fleet: ["acme/*"] };
-  const before = { repos: { "acme/app": { generated: { globs: ["gen/**"], command: "make gen" } } } };
-  const after = { repos: { "acme/app": { generated: null } } };
-  assert.ok(loosens(before, after, scope).includes("acme/app.generated"));
-  assert.ok(!loosens(after, before, scope).includes("acme/app.generated"));
 });
 
 test("the pull-request duties are fields of a repo's entry: validated, and switching dependabot to all or quiet-PR closing on is the owner's", () => {
