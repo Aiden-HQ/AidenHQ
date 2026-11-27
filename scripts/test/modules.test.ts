@@ -507,6 +507,13 @@ test("maintainer_repos: an old key or a boolean dependabot fails the compile nam
   assert.doesNotThrow(bad({ repo: "acme/app", dependabot: "all", fix_label: "fix", fixes: false }));
 });
 
+test("listed repos: the Maintainer's list and Ship's, the Maintainer's only while its module is on; code review's never", () => {
+  const settings = { ...owner, maintainer_repos: ["acme/app", { repo: "Globex/Lib" }], ship: { defaults: "cautious", repos: { "globex/lib": "full", "initech/api": {} } }, code_review: { repos: [{ repo: "umbrella/web" }] } };
+  const listed = (modules) => { const r = compile(product, pinst(modules, settings)); return [r.kernelModules.repos.listed, r.compose.services["github-github"].environment.GITHUB_LISTED_REPOS]; };
+  assert.deepEqual(listed(["github", "maintainer", "ship"]), [["acme/app", "globex/lib", "initech/api"], "acme/app,globex/lib,initech/api"]);
+  assert.deepEqual(listed(["github", "ship"])[0], ["globex/lib", "initech/api"], "the Maintainer off: its list grants nothing");
+});
+
 test("code review: every watched repo asks its verdict; the kernel skips the AI reviewer only where every selectable tier gates; old shapes fail", () => {
   const c = (mandatory?: boolean) => ({ engine: "codex", model: "~a/b", effort: "low", ...(mandatory ? { mandatory } : {}) });
   const advice = { on_open: [c()], on_push: [] };

@@ -774,14 +774,14 @@ gh_mutations="$(sed -n '/^export const GRAPHQL/,/^} as const;/p' modules/github/
 app_paths="$(grep -oE 'api\("(GET|POST)", (`[^`]*`|"[^"]*")' modules/github/connections/github-mcp/src/github-app.ts | LC_ALL=C sort | tr '\n' ' ')"
 # The third path is `mint`: the repo-narrowed token a session box's git credential gets (ops.ts app_token). Pinned end to end: only a
 # live `session`-profile job asks (jobtools.ts gitToken, refused while autonomy is off), only for a GitHub repo in the agents orgs, the
-# product or maintainer_repos and never the instance repo (main.ts reach); the code host narrows it to the one repository with
+# product or the listed repos and never the instance repo (main.ts reach); the code host narrows it to the one repository with
 # contents and pull requests write; app_token is in no module's grant table (codehost.ts GRANT_KEY), so only the kernel asks.
 [ "$app_paths" = 'api("GET", `/repos/${repo}/installation` api("POST", `/app/installations/${installation}/access_tokens` api("POST", `/app/installations/${installation}/access_tokens` ' ] \
   && [ "$(grep -c 'fetchImpl(' modules/github/connections/github-mcp/src/github-app.ts)" = 1 ] \
   && grep -qF '!== "session") throw new JobToolError(403' kernel/src/jobtools.ts \
   && grep -qF 'autonomy() === "off") throw new JobToolError(403' kernel/src/jobtools.ts \
   && grep -qF 'repo.toLowerCase() !== baseRepos.instance?.toLowerCase()' kernel/src/main.ts \
-  && grep -qF '["@agents/*", "@product", "@maintained"]' kernel/src/main.ts \
+  && grep -qF '["@agents/*", "@product", "@listed"]' kernel/src/main.ts \
   && grep -qF '{ repositories: [s.name], permissions: { contents: "write", pull_requests: "write" } }' modules/github/service/src/ops.ts \
   && ! sed -n '/^const GRANT_KEY/,/^};/p' kernel/src/codehost.ts | grep -q app_token \
   && pass "github-mcp: code review's App fetches only its installation and token endpoints; a session's git token is session-only, repo-narrowed, never the instance repo" || fail "github-mcp: code review's App fetches more than its fixed endpoints: $app_paths"
@@ -791,7 +791,7 @@ app_paths="$(grep -oE 'api\("(GET|POST)", (`[^`]*`|"[^"]*")' modules/github/conn
   && pass "github-mcp: GraphQL limited to fixed documents whose only mutations add an issue to a project, set its status and resolve a review thread" || fail "github-mcp: unexpected GraphQL mutations: $gh_mutations"
 # The code host (codehost-github) merges the PRs an approved merge record lists (merges.ts over merge-gate.ts's decide, #630):
 # one queue per repo, at most one merge per repo a poll, only in our own repos (the agents org and the product repo) and the
-# repos the owner listed in maintainer_repos (an App installation alone never counts; elsewhere the App only opens PRs: plan.ts
+# listed repos (the owner listed them for the Maintainer or Ship; an App installation alone never counts; elsewhere the App only opens PRs: plan.ts
 # refuses an outside merge and the queue refuses it again, also for a repo taken off the list after its record was approved). Each PR merges by one PUT carrying
 # the head the record bound (GitHub refuses any other), only after decide says so (open on the default branch, at that head,
 # every named check green, none truncated, the base's gate check present). Nothing in the
@@ -804,7 +804,7 @@ app_paths="$(grep -oE 'api\("(GET|POST)", (`[^`]*`|"[^"]*")' modules/github/conn
 # generation right before the PUT. A PR handed to ship whose repo's `fix` includes review also adds one more read, never a write: its
 # review threads and conversation comments, one GraphQL query per page (member-comments.ts), so a member's open comment holds it like a
 # finding. The record is the
-# review in our own repos; a product merge is Tier 0 only on its exact-head eligibility (productMergeEligible). Closes (plan.ts): agents org, product and maintained repos Tier 0; never the
+# review in our own repos; a product merge is Tier 0 only on its exact-head eligibility (productMergeEligible). Closes (plan.ts): agents org, product and listed repos Tier 0; never the
 # instance repo. Repos on this server (codehost-local) join the agents orgs only when that module is enabled (kernel main.ts);
 # its host refuses a moved head and checks that aren't green itself.
 rm_="modules/github/service/src/merge-gate.ts"; rq="modules/github/service/src/merges.ts"
@@ -834,9 +834,9 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'if (!calls?.length) return undefined;' "$rq" \
   && grep -qF 'p.sha = await mergePut(id, p.repo, p.number, p.head, method, body, token);' "$rq" \
   && grep -qF 'trailer(`merge queue ${token}`)' "$rq" \
-  && grep -qF 'if (!mergeable(p.repo, d.fleetOrg, platform, d.maintained ?? [])) return fail(' "$rq" \
-  && grep -qF '  ownRepo(slug, fleetOrg, productRepo) || maintained.some((m) => sameSlug(slug, m));' modules/github/service/src/git-auth.ts \
-  && grep -qF 'const inMaintained = (repo: unknown, s: State) => !inAgentsOrg(repo, s) && (s.maintained ?? []).some((r) => same(r, repo));' "$rplan" \
+  && grep -qF 'if (!mergeable(p.repo, d.fleetOrg, platform, d.listed ?? [])) return fail(' "$rq" \
+  && grep -qF '  ownRepo(slug, fleetOrg, productRepo) || listed.some((m) => sameSlug(slug, m));' modules/github/service/src/git-auth.ts \
+  && grep -qF 'const inListed = (repo: unknown, s: State) => !inAgentsOrg(repo, s) && (s.listed ?? []).some((r) => same(r, repo));' "$rplan" \
   && [ "$(cat "$rm_" "$rq" | grep -c 'mutation')" = 0 ] \
   && grep -qF 'if (pr.headRefOid !== head) return { do: "fail"' "$rm_" \
   && grep -qF 'if (!def || pr.baseRefName !== def) return ship ? { do: "wait"' "$rm_" && grep -qF ': { do: "fail", why: `based on \`${pr.baseRefName}\`, not the default branch' "$rm_" \
@@ -857,7 +857,7 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'const inAgentsOrg = (repo: unknown, s: State) => agentsOrgs(s).some((o) => same(orgOf(repo), o));' "$rplan" && grep -qF 'const agentsOrgs = (s: State) => [s.agentsOrgs ?? s.agentsOrg].flat().filter(Boolean);' "$rplan" \
   && grep -qF 'agentsOrgs: [fleetOrg(), ...(localHost() ? [LOCAL_ORG] : [])]' kernel/src/main.ts \
   && grep -qF 'if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-close"' "$rplan" \
-  && pass "codehost: the merge queue merges only in the agents org, the product repo and maintainer_repos, one PUT per PR at the head its record bound, after the gate's decide (default branch, bound head, named checks green and complete); it has no other write; outside merges refused in plan and queue; a product merge is Tier 0 only with ci-required successful (not neutral or skipped) and code review's pass on its exact head, the newest title check among them, checked again at the merge ($rq, $rm_)" || fail "codehost: the merge queue's writes or their gates changed ($rq, $rm_, $rplan)"
+  && pass "codehost: the merge queue merges only in the agents org, the product repo and the listed repos, one PUT per PR at the head its record bound, after the gate's decide (default branch, bound head, named checks green and complete); it has no other write; outside merges refused in plan and queue; a product merge is Tier 0 only with ci-required successful (not neutral or skipped) and code review's pass on its exact head, the newest title check among them, checked again at the merge ($rq, $rm_)" || fail "codehost: the merge queue's writes or their gates changed ($rq, $rm_, $rplan)"
 # The AI reviewer's own code (evalgate.ts REVIEWER_CODE) merges on CI's reviewer-eval job, part of ci-required; the code host
 # runs no eval of its own. An `aidenhq` marketplace pin never lands through an apply: official modules come with the product pin.
 rgate="modules/github/service/src/evalgate.ts"

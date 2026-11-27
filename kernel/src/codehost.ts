@@ -61,7 +61,7 @@ export function routeKind(kind: string, args: unknown): string {
 export type Answer = Readable & { statusCode?: number; headers: http.IncomingHttpHeaders };
 // A module's grant (its `codehost:`, taken literally): repos are owner/name, owner/*, */* (anything the owner's account reaches), or
 // @instance, @product, @agents/<name|*> (in the fleet org: github_fleet_org), @orgs (every repo of each owner the instance allows,
-// github_orgs) and @maintained (the repos it maintains, maintainer_repos), which resolve from the kernel's own configuration (its
+// github_orgs) and @listed (the repos the owner listed for the Maintainer or Ship: compile's listed_repos), which resolve from the kernel's own configuration (its
 // repos), never from a module's settings. A commit grant names the paths it writes (a setup grant the same, where a `*` stands for one path segment), a
 // runner grant, the orgs.
 export type OpsGrant = { module: string; snapshot?: { repos: string[] }; clone?: { repos: string[] }; fetch?: { repos: string[] }; read?: { repos: string[] }; comment?: { repos: string[] }; commit?: { repos: string[]; paths: string[] }; setup?: { repos: string[]; paths: string[] }; runner?: { orgs: string[] } };
@@ -82,7 +82,7 @@ export function resolveRepo(p: string, r: KernelRepos): string[] {
   if (p === "@instance") return r.instance && PLAIN.test(r.instance) ? [r.instance] : [];
   if (p === "@product") return r.product && PLAIN.test(r.product) ? [r.product] : [];
   if (p === "@orgs") return (r.orgs ?? []).filter((o) => ORG.test(o)).map((o) => `${o}/*`);
-  if (p === "@maintained") return (r.maintained ?? []).filter((x) => PLAIN.test(x));
+  if (p === "@listed") return (r.listed ?? []).filter((x) => PLAIN.test(x));
   if (p.startsWith("@agents/")) return (r.agentsOrgs ?? []).filter((o) => ORG.test(o)).map((o) => `${o}/${p.slice("@agents/".length)}`);
   return [p];
 }
@@ -94,7 +94,7 @@ export function resolveOrg(p: string, r: KernelRepos): string[] {
   return [p];
 }
 /** The kernel's repos; `agentsOrgs`: one per enabled code host (the GitHub fleet org, `local` with codehost-local). */
-export type KernelRepos = { instance?: string; product?: string; agentsOrgs?: string[]; orgs?: string[]; maintained?: string[] };
+export type KernelRepos = { instance?: string; product?: string; agentsOrgs?: string[]; orgs?: string[]; listed?: string[] };
 
 /** Whether a grant's repos cover `slug` (owner/name, or owner/* for an org-wide token). */
 export function covers(slug: string, repos: string[] = [], r: KernelRepos = {}): boolean {

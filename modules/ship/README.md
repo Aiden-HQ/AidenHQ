@@ -3,7 +3,7 @@
 ## What it does
 
 Owns the lifecycle of every pull request on the repos it covers: the fleet's own repos (the agents org and the product
-repo) and every repo in `maintainer_repos`. One `ship` setting holds per-repo entries and two presets (`cautious`, the
+repo) and every repo added to Ship (its own list, the keys of `ship.repos`: the Maintainer and code review keep theirs). One `ship` setting holds per-repo entries and two presets (`cautious`, the
 default, and `full`), every knob a per-repo setting with no floor in code (`null` caps are unlimited).
 
 Its watch loop reads a repo's open PRs (one list read) when the github module's change feed reports a change there (a PR
@@ -53,8 +53,9 @@ The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui
 
 ## Connect
 
-GitHub only: ship is available once a GitHub repo is connected (the `github` module); the local code host keeps its own merge path. List repos in `maintainer_repos` (the fleet's own are covered already), then give a repo an entry
-in the Fleet page, or ask Aiden.
+GitHub only: ship is available once a GitHub repo is connected (the `github` module); the local code host keeps its own merge path. Add a repo on the Fleet page (the fleet's own are covered
+already); its settings change there or through Aiden. A repo added to Ship is also a listed repo, where the fleet's work may merge
+and close (the code host's `listed_repos`: Ship's list and the Maintainer's).
 
 Without ship, no PR is watched: Engineers merge their own green PRs (`aidenhq merge`, a `github.merge` record).
 
@@ -62,7 +63,7 @@ Without ship, no PR is watched: Engineers merge their own green PRs (`aidenhq me
 
 Sam (the `ship` agent) is ship's teammate: he answers the owner about a PR's merge state, holds and the queue, and changes
 the settings when asked. The `ship` connection. Read: `ship_config`, `ship_status`. Write: `ship_configure`. Both need the
-`ship-admin` role (Sam, the Maintainer and Aiden hold it); the owner's own Fleet page calls them too, and `ship_configure` then only returns the typed settings change (the board files it on his Save). A repo ship doesn't cover yet is the owner's to add from the Fleet page, as one change covering its `maintainer_repos` and `ship` entries. Code review is separate: adding a repo to ship never turns it on (the owner does that from the Reviews page), and a repo it doesn't watch merges by the `unwatched` setting. A change that loosens anything (more hand-off, a higher or removed cap, a tier's approve or merge raised) is the owner's, made from the
+`ship-admin` role (Sam, the Maintainer and Aiden hold it); the owner's own Fleet page calls them too, and `ship_configure` then only returns the typed settings change (the board files it on his Save). A repo ship doesn't cover yet is the owner's to add from the Fleet page: Add writes only its `ship` entry and Remove drops only that. The Maintainer and code review are separate: adding a repo to Ship never lists it there (the owner does that from their pages), and a repo code review doesn't watch merges by the `unwatched` setting. The Maintainer's Dependabot duty runs in Ship's watch loop, which reads `maintainer_repos` for it alone. A change that loosens anything (more hand-off, a higher or removed cap, a tier's approve or merge raised) is the owner's, made from the
 Fleet page.
 
 ## New installs

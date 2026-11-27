@@ -9,7 +9,7 @@ requires:
   - board # its sign-in and setup flow
 # The GitHub process (service `github`) is the only holder of the owner's GitHub token (its /state) and the owner of all git
 # state. Its write kinds github.{push,pr,merge,close,create_repo} go through the kernel's /v1/writes, with service/src/plan.ts as
-# their executor@1 plan. Outside the fleet org, the product repo and maintainer_repos it is PR-only (no merge; create_repo is
+# their executor@1 plan. Outside the fleet org, the product repo and the listed repos (listed_repos) it is PR-only (no merge; create_repo is
 # Tier 0 in any github_orgs org). It talks to the kernel with its own token (codehost_github_token): the module's roles below go
 # with that token alone, never with the connections' service key (kernel/src/identity.ts), so a call on the connections' key
 # holds no kernel role and can't report a write's outcome.
@@ -81,9 +81,10 @@ settings:
   # `inactive_issue_days` (null): one notice after that many quiet days, the close 14 days later. `fix_label` (default
   # agent-fix). `trusted`: who may vouch for a label (the owner's login is an admin): admin, maintain or write (default admin
   # and maintain; github-mcp refuses any other role); it lists every role that counts: [write] alone trusts no admin.
-  # `protected_labels` (default roadmap, wip, blocked): skipped by every automatic close. A listed repo is also where the
-  # fleet's work may merge and close, with no duty on. Read by github-mcp (maintainer.ts), which the Maintainer's tools and
-  # watcher go through, and by ship.
+  # `protected_labels` (default roadmap, wip, blocked): skipped by every automatic close. The Maintainer's own list: Ship and
+  # code review keep theirs. While the maintainer module is on, its repos are also listed repos (compile's listed_repos), where
+  # the fleet's work may merge and close. Read by github-mcp (maintainer.ts), which the Maintainer's tools and watcher go
+  # through, and by ship for the dependabot duty.
   maintainer_repos:
     default: []
     entry: repo
@@ -292,9 +293,11 @@ services:
         # The module's own token: the kernel calls the executor and ops with it, and the process reports outcomes and files facts
         # with it.
         CODEHOST_KEY_FILE: ${secrets.codehost_github_token}
-        # The maintained repos (setting maintainer_repos, as JSON): the Maintainer's tools and watcher act on these only; the PR
-        # watch also covers those with dependabot on, and the fleet merges and closes there as in the fleet org (plan.ts, merges.ts).
+        # The maintained repos (setting maintainer_repos, as JSON): github-mcp's Maintainer tools act on these only.
         GITHUB_MAINTAINER_REPOS: "${settings.maintainer_repos}"
+        # The listed repos (compile derives them: the Maintainer's and Ship's lists, while each module is on; comma-separated): the
+        # code host merges and closes there as in the fleet org (plan.ts, merges.ts) and the change feed watches them.
+        GITHUB_LISTED_REPOS: "${settings.listed_repos}"
         GITHUB_RELEASE_WINDOW_MINUTES: "${settings.release_window_minutes}" # the release train's batch window
         # Shared sources (src_github): the orgs it syncs (github_orgs plus the fleet org) and its warehouse login.
         GITHUB_SYNC_ORGS: "${settings.github_sync_orgs}"

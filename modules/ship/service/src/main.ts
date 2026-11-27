@@ -15,7 +15,7 @@ import { shipEffects } from "./effects.ts";
 import { effectRefusal } from "./safe.ts";
 import { followFeed, startLoop } from "./loop.ts";
 import { createMcp, pageHtml, serveMcp } from "./mcp.ts";
-import { effective, scopeFrom } from "./settings.ts";
+import { effective, inFleet, scopeFrom } from "./settings.ts";
 import { openState } from "./state.ts";
 import { generationOf } from "./handoff.ts";
 import { isModule } from "./module-caller.ts";
@@ -31,17 +31,15 @@ const json = (v: string | undefined) => { try { return JSON.parse(v || "null"); 
 // The ship setting with the kill switch (its own setting, ship_paused, so a repo proposal never carries it) folded in.
 const raw = () => { const v = json(env.SHIP_SETTINGS); return { ...(v && typeof v === "object" && !Array.isArray(v) ? v : {}), paused: env.SHIP_PAUSED === "true" }; };
 const scope = () => scopeFrom(env);
-const maintainerRepos = (): unknown[] => { const t = String(env.SHIP_MAINTAINER_REPOS ?? "").trim(); const v = t.startsWith("[") ? json(t) : t.split(",").map((x) => x.trim()).filter(Boolean); return Array.isArray(v) ? v : []; };
 const paused = () => raw().paused === true;
 /** The repo's settings when ship works it (on, in scope), else null. */
 const settingsOf = (repo: string) => { const s = effective(raw(), repo, scope()); return s?.enabled ? s : null; };
-const codeReview = () => { const v = json(env.SHIP_CODE_REVIEW); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; };
 
 const stateFile = env.SHIP_STATE_FILE ?? "/data/state.json";
 const state = openState(stateFile);
 const jwks = kernelJwks(`${kernelUrl}/v1/jwks`);
 const mcp = serveMcp(createMcp("ship", configTools({
-  raw, scope, state, maintainerRepos, codeReview,
+  raw, scope, state,
   file: async (changes, assertion) => {
     const r = await kernel.raw("POST", "/v1/settings/agent", { changes }, { "x-aidenhq-caller": assertion });
     if (r.status >= 300) throw new Error(`Refused: ${String(r.json?.error?.message ?? r.json?.error ?? r.status).slice(0, 1000)}`);
@@ -64,23 +62,26 @@ const gh = async (method: string, path: string, body?: unknown, o?: { deadline?:
   return r as { status: number; body: any };
 };
 
-// The repos the loop watches: the product repo and every maintained repo ship works (all duties), and the other maintained repos
-// with Dependabot on (that duty only).
+// The repos the loop watches: the product repo, every Maintainer repo ship works and every repo with its own ship entry outside the
+// fleet org (all duties, while on), and the Maintainer's other repos with Dependabot on (that duty only: the Maintainer's, run here).
+// maintainer_repos is read for the Dependabot duty alone: Ship's own list is ship.repos.
 let unreadable = false;
-const maintained = (() => { try { return parseRepos(env.SHIP_MAINTAINER_REPOS ?? ""); } catch (e) { unreadable = true; log("maintainer_repos unreadable: only the product repo is watched, and no Dependabot task is filed", { err: String((e as Error).message).slice(0, 200) }); return []; } })();
+const maintained = (() => { try { return parseRepos(env.SHIP_MAINTAINER_REPOS ?? ""); } catch (e) { unreadable = true; log("maintainer_repos unreadable: no Dependabot task is filed", { err: String((e as Error).message).slice(0, 200) }); return []; } })();
 const dataDir = dirname(stateFile);
 /** Whether the loop still tracks a Dependabot task it filed on this repo (its loop.json). */
 const tracked = (repo: string) => { try { return Object.keys(JSON.parse(readFileSync(join(dataDir, "loop.json"), "utf8"))[repo.toLowerCase()]?.dependabot ?? {}).length > 0; } catch { return false; } };
 const repos = new Map<string, { duties: "all" | "dependabot"; dependabot?: "off" | "failing" | "all" }>();
-// Which Dependabot bumps get a task comes from the repo's maintainer_repos entry (the product repo, unlisted, takes every one).
-// A list that can't be read files none: a read failure is never the `all` default.
-const bumps = (repo: string) => unreadable ? "off" as const : maintained.find((m) => m.repo.toLowerCase() === repo.toLowerCase())?.dependabot;
-if (env.SHIP_PRODUCT_REPO && settingsOf(env.SHIP_PRODUCT_REPO)) repos.set(env.SHIP_PRODUCT_REPO, { duties: "all", dependabot: bumps(env.SHIP_PRODUCT_REPO) });
+const product = (env.SHIP_PRODUCT_REPO ?? "").toLowerCase();
+// Which Dependabot bumps get a task comes from the repo's maintainer_repos entry: the product repo, unlisted, takes every one; any
+// other repo the Maintainer doesn't list gets none. A list that can't be read files none: a read failure is never the `all` default.
+const bumps = (repo: string) => unreadable ? "off" as const : maintained.find((m) => m.repo.toLowerCase() === repo.toLowerCase())?.dependabot ?? (repo.toLowerCase() === product ? undefined : "off" as const);
+const watch = (repo: string, v: { duties: "all" | "dependabot"; dependabot?: "off" | "failing" | "all" }) => { if (![...repos.keys()].some((r) => r.toLowerCase() === repo.toLowerCase())) repos.set(repo, v); };
+if (env.SHIP_PRODUCT_REPO && settingsOf(env.SHIP_PRODUCT_REPO)) watch(env.SHIP_PRODUCT_REPO, { duties: "all", dependabot: bumps(env.SHIP_PRODUCT_REPO) });
+for (const r of Object.keys((raw().repos as Record<string, unknown>) ?? {})) if (!inFleet(r, scope()) && settingsOf(r)) watch(r, { duties: "all", dependabot: bumps(r) });
 for (const m of maintained) {
-  if (repos.has(m.repo)) continue;
-  if (settingsOf(m.repo)) repos.set(m.repo, { duties: "all", dependabot: bumps(m.repo) });
+  if (settingsOf(m.repo)) watch(m.repo, { duties: "all", dependabot: bumps(m.repo) });
   // `off` is polled only while tasks it filed are still open: the loop closes them once their PR is gone and files no new ones.
-  else if (m.dependabot !== "off" || tracked(m.repo)) repos.set(m.repo, { duties: "dependabot", dependabot: m.dependabot });
+  else if (m.dependabot !== "off" || tracked(m.repo)) watch(m.repo, { duties: "dependabot", dependabot: m.dependabot });
 }
 const effects = shipEffects(kernel, { codeReview: "http://code-review:8098", key: token });
 const loop = startLoop({

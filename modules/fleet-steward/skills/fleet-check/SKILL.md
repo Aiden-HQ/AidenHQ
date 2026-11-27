@@ -112,7 +112,7 @@ An incident is yours until it is resolved live:
 - **A stale PR** (`pr:<repo>#<n>`): `task_search` for the task that opened it. The branch exists only in that task's
   workspace, so file no second task for the same PR. Still open: make the status write yourself, `task_route` *that* task
   with one line with what to do (merge, fix the named check, or close). Done: `task_create` to the app's owner (else the
-  Engineer) "merge, fix or close <PR>". `aidenhq close` reaches only the agents org, `maintainer_repos` and the product
+  Engineer) "merge, fix or close <PR>". `aidenhq close` reaches only the agents org, the listed repos (the Maintainer's and Ship's) and the product
   repo; a PR outside that scope goes to the Maintainer: `task_create` `assignee: maintainer`, marker
   `pr-close:<repo>#<n>` (PR link, why superseded, close reason), no close task for an Engineer, and log
   `pr · <repo>#<n> · outside-close-scope · maintainer`.

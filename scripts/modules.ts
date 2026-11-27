@@ -888,8 +888,14 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   settings.code_review_gated = reviewGated.watched.join(",");
   // Derived: whether the ship module is on, for the github module's adopted-PR writes (absent: every write naming an adoption is refused).
   settings.ship_enabled = enabled.includes("ship") ? "1" : "";
-  // Derived: the repos with a ship entry, for the Maintainer's Remove (an entry there is cleared from the Ship page, with the Maintainer's own).
-  settings.ship_repos = enabled.includes("ship") ? Object.keys(((settings.ship as { repos?: object } | undefined)?.repos) ?? {}).join(",") : "";
+  // Derived: the listed repos, where the fleet's work may merge, close and push outside the agents org and the product repo: the
+  // repos the owner listed for the Maintainer (maintainer_repos) and for Ship (the keys of ship.repos), each while its module is on.
+  // Each module keeps its own list; this union is the only place they meet. Code review's list isn't one: it never merges.
+  const listedRepos = [...new Map([
+    ...(enabled.includes("maintainer") ? [settings.maintainer_repos ?? []].flat().map((e: unknown) => String((e as Obj)?.repo ?? e)) : []),
+    ...(enabled.includes("ship") ? Object.keys((settings.ship as Obj)?.repos ?? {}) : []),
+  ].filter((r) => /^[\w.-]+\/[\w.-]+$/.test(r)).map((r) => [r.toLowerCase(), r])).values()];
+  settings.listed_repos = listedRepos.join(",");
   // An old per-repo shape (approve, merge or safe) fails the compile before anything is written, never half-read (docs/design/code-review.md, Risk tiers).
   if (enabled.includes("ship") && oldShape(settings.ship).length) fail(`settings.ship: ${oldShape(settings.ship).join(", ")}: approve and merge are per tier now: by_tier.<tier>.approve / merge; safe is gone: code review's tier rules say what is small and safe`);
 
@@ -1484,7 +1490,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // (a service outside the owning module can mount one), and they are recreated with it.
   const mounted = composeSecretFiles(base, compose);
   const mounts = Object.fromEntries(setup.map((f) => [f.secret, [...(mounted[f.secret] ?? [])].sort()]));
-  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, commit_domain: settings.instance_name ? `${settings.instance_name}.aidenhq.ai` : "aidenhq.ai", repos: { ...(fleetOrg ? { fleet_org: fleetOrg } : {}), orgs: [settings.github_orgs ?? []].flat().map(String), maintained: [settings.maintainer_repos ?? []].flat().map((e) => String(e?.repo ?? e)), review_code: String(settings.ai_review_code ?? "all"), code_review_mandatory: reviewGated.mandatory }, modules: kernelModuleTable(enabledDefs, settings, new Set(enabled.filter((n) => all.get(n)!.tier === "official"))), services, ...(reviewer ? { reviewer } : {}), ...(Object.keys(checkJobTable).length ? { check_jobs: checkJobTable } : {}), ...(setup.length ? { setup, mounts } : {}) };
+  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, commit_domain: settings.instance_name ? `${settings.instance_name}.aidenhq.ai` : "aidenhq.ai", repos: { ...(fleetOrg ? { fleet_org: fleetOrg } : {}), orgs: [settings.github_orgs ?? []].flat().map(String), listed: listedRepos, review_code: String(settings.ai_review_code ?? "all"), code_review_mandatory: reviewGated.mandatory }, modules: kernelModuleTable(enabledDefs, settings, new Set(enabled.filter((n) => all.get(n)!.tier === "official"))), services, ...(reviewer ? { reviewer } : {}), ...(Object.keys(checkJobTable).length ? { check_jobs: checkJobTable } : {}), ...(setup.length ? { setup, mounts } : {}) };
   // Every agent (any module's or the instance's) is the job dispatcher's: the one enabled module with kernel.jobs. The kernel
   // starts a job only for an agent its requester dispatches (kernel/src/jobs.ts).
   const dispatchers = Object.entries<Obj>(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);

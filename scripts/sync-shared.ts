@@ -10,7 +10,7 @@
 //   kernel/sdk/src/kernel-client.ts  the module-to-kernel client, in each module that calls the kernel
 //   kernel/sdk/src/checks.ts         how check results are read, in the merge gate (codehost-github) and the PR watcher
 //   kernel/sdk/src/paperclip.ts      the one Paperclip HTTP client (lanes through the kernel, or direct), in the board, tasks-mcp and ops-mcp
-//   kernel/sdk/src/maintained-repos.ts  maintainer_repos and its per-repo duties, in github-mcp and the code host (src/aidenhq-sdk/)
+//   kernel/sdk/src/maintained-repos.ts  maintainer_repos and its per-repo duties, in github-mcp, the Maintainer and ship (src/aidenhq-sdk/)
 //   kernel/sdk/src/attribution.ts    the AidenHQ commit trailer and text footer, in github-mcp and the code host (src/aidenhq-sdk/)
 //   kernel/sdk/src/box-bundle.ts     a job's branch from its box's bundle, never its .git, in the code host (src/aidenhq-sdk/)
 //   kernel/sdk/src/pin-owner.ts      who moves the product pin, in the code host's release train (the kernel's updater imports it)
@@ -102,8 +102,8 @@ export function sharedCopies(root = repo) {
   "kernel/sdk/src/judge.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/judge.ts", "modules/grading/service/src/aidenhq-sdk/judge.ts"],
   // How GitHub check results are read: the merge gate and the PR watcher.
   "kernel/sdk/src/checks.ts": ["modules/github/service/src/aidenhq-sdk/checks.ts", "modules/ship/service/src/aidenhq-sdk/checks.ts"],
-  // The one parser of maintainer_repos (per-repo duties): github-mcp's Maintainer tools and the code host's PR watch read.
-  "kernel/sdk/src/maintained-repos.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/maintained-repos.ts", "modules/github/service/src/aidenhq-sdk/maintained-repos.ts", "modules/maintainer/service/src/aidenhq-sdk/maintained-repos.ts", "modules/ship/service/src/aidenhq-sdk/maintained-repos.ts"],
+  // The one parser of maintainer_repos (per-repo duties): github-mcp's Maintainer tools, the Maintainer's page and ship's Dependabot duty.
+  "kernel/sdk/src/maintained-repos.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/maintained-repos.ts", "modules/maintainer/service/src/aidenhq-sdk/maintained-repos.ts", "modules/ship/service/src/aidenhq-sdk/maintained-repos.ts"],
   // What closed an issue (the newest ClosedEvent): github-mcp's github_issue_read.
   "kernel/sdk/src/closed-event.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/closed-event.ts"],
   "kernel/sdk/src/attribution.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/attribution.ts", "modules/github/service/src/aidenhq-sdk/attribution.ts", "modules/ship/service/src/aidenhq-sdk/attribution.ts"],

@@ -354,7 +354,7 @@
   }
   function draftPanel() {
     const msg = h("p", { className: "msg", role: "status" }), add = h("button", { type: "button", className: "primary", textContent: "Add repo" });
-    const check = () => { const bad = nameError(draft.name.trim()); msg.textContent = bad || (draft.name.trim() ? `Lists it for Ship and the Maintainer, then applies the settings below. Code review is separate: turn it on from the Reviews page.${Object.keys(pending.repos).length || pending.paused !== undefined ? " It replaces the edits already proposed in the bar above." : ""}` : "owner/name of the GitHub repo."); msg.className = bad ? "msg bad" : "msg"; add.disabled = !NAME.test(draft.name.trim()) || !!bad; };
+    const check = () => { const bad = nameError(draft.name.trim()); msg.textContent = bad || (draft.name.trim() ? `Adds it to Ship with the settings below. The Maintainer and code review keep their own lists: add it on their pages to use them too.${Object.keys(pending.repos).length || pending.paused !== undefined ? " It replaces the edits already proposed in the bar above." : ""}` : "owner/name of the GitHub repo."); msg.className = bad ? "msg bad" : "msg"; add.disabled = !NAME.test(draft.name.trim()) || !!bad; };
     const name = h("input", { type: "text", id: "newrepo", value: draft.name, placeholder: "owner/name", ariaLabel: "Repo to add", autocomplete: "off", spellcheck: false });
     name.addEventListener("input", () => { draft.name = name.value; check(); });
     name.addEventListener("keydown", (e) => { if (e.key === "Enter" && !add.disabled) addRepo(); else if (e.key === "Escape") closeDraft(); });
@@ -411,7 +411,7 @@
       if (confirming === raw.repo) {
         const yes = h("button", { type: "button", className: "danger", textContent: "Remove" }), no = h("button", { type: "button", textContent: "Cancel" });
         yes.addEventListener("click", () => removeRepo(raw.repo)); no.addEventListener("click", () => { confirming = null; render(); });
-        more.push(h("div", { className: "confirm", role: "alert" }, h("span", { textContent: `Remove ${r.repo} from Ship, the Maintainer and code review?` }), yes, no));
+        more.push(h("div", { className: "confirm", role: "alert" }, h("span", { textContent: `Remove ${r.repo} from Ship? The Maintainer and code review keep it if they list it.` }), yes, no));
       }
       if (isOpen) more.push(drawer(raw.repo));
       return [row, ...more];

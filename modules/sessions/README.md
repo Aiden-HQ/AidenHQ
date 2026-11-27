@@ -32,5 +32,5 @@ watched, and the Session works with timed waits and comments only.
 
 In the default bundle with `engine-opencode`. Quiet start: no session runs until the owner or Aiden starts one, and the board shows
 an empty list. The GitHub subscription is optional (`subscribes: github?`): an install without GitHub compiles, and the watches
-appear once GitHub is connected. A watch covers the repos the code host manages (the fleet's, the product's and `maintainer_repos`);
-another repo is refused with the setting to add it to. Another owner's module adds a harness through `engine@1`.
+appear once GitHub is connected. A watch covers the repos the code host manages (the fleet's, the product's and the listed repos: the
+Maintainer's and Ship's); another repo is refused with where to add it. Another owner's module adds a harness through `engine@1`.

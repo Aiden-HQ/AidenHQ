@@ -10,9 +10,9 @@ roles:
   requests: [ kernel.jobs, kernel.cp-read, kernel.wake, kernel.tasks, kernel.owner-notice ]
 # An Engineer job's workspace (kernel/src/boxes.ts): the kernel clones the repositories its task names, for this module as the
 # agent's dispatcher, on its default branch: the fleet's own repos (the agents org's, the product's and the instance's) and the
-# maintained ones (maintainer_repos), where ship's tasks fix PRs it adopted.
+# listed ones (the repos listed for the Maintainer or Ship), where ship's tasks fix PRs it adopted.
 codehost:
-  clone: { repos: [ "@agents/*", "@product", "@instance", "@maintained" ] }
+  clone: { repos: [ "@agents/*", "@product", "@instance", "@listed" ] }
 services:
   data: true
   run:

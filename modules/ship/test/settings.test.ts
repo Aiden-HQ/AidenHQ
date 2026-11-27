@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { effective, loosens, oldShape, validate, type Scope } from "../service/src/settings.ts";
 
-const scope: Scope = { fleet: ["acme-agents/*", "acme/product"], listed: ["a/b", "a/c"] };
+const scope: Scope = { fleet: ["acme-agents/*", "acme/product"] };
 
 test("cautious carries today's pr-watch constants; full is unlimited; overrides keep the preset's caps", () => {
   const c = effective({ defaults: "cautious", repos: {} }, "acme/product", scope)!;
@@ -19,19 +19,20 @@ test("an old-shape entry is named by oldShape (the compile refuses it), at repo 
   assert.deepEqual(oldShape({ defaults: "full", repos: { "a/b": { by_tier: {} } } }), []);
 });
 
-test("quiet until enabled: a fleet repo is worked, a maintainer_repos repo only with its own entry", () => {
+test("a fleet repo is worked with no entry; any other repo only once it has its own entry (Ship's own list)", () => {
   assert.ok(effective({}, "acme-agents/anything", scope));
   assert.equal(effective({}, "a/b", scope), null);
   assert.ok(effective({ repos: { "a/b": "cautious" } }, "a/b", scope));
   assert.equal(effective({}, "z/z", scope), null);
 });
 
-test("an entry for a repo outside the scope, an unknown field or a bad cap is refused; full is valid anywhere", () => {
-  assert.deepEqual(validate({ repos: { "x/y": "full" } }, scope), ["x/y isn't a repo ship covers (agents org, product repo or maintainer_repos)"]);
-  assert.match(validate({ repos: { "a/b": { caps: { rounds: -1 }, nope: 1 } } }, scope).join("|"), /rounds.*whole number.*nope|nope.*rounds/s);
-  assert.match(validate({ repos: { "a/b": { approve: "safe", merge: "ready", safe: {} } } }, scope).join("|"), /approve and merge are per tier now.*safe is gone/);
-  assert.match(validate({ repos: { "a/b": { by_tier: { skip: { approve: "on" }, trivial: { approve: "safe" }, huge: {} } } } }, scope).join("|"), /skip has no review.*one of off, observe, on.*unknown tier/s);
-  assert.deepEqual(validate({ defaults: "full", repos: { "a/b": { preset: "full", caps: { usd: null } } } }, scope), []);
+test("an unknown field, a bad cap or a malformed repo is refused; full is valid anywhere", () => {
+  assert.deepEqual(validate({ repos: { "x/y": "full" } }), []);
+  assert.deepEqual(validate({ repos: { "x": "full" } }), ["x isn't owner/name"]);
+  assert.match(validate({ repos: { "a/b": { caps: { rounds: -1 }, nope: 1 } } }).join("|"), /rounds.*whole number.*nope|nope.*rounds/s);
+  assert.match(validate({ repos: { "a/b": { approve: "safe", merge: "ready", safe: {} } } }).join("|"), /approve and merge are per tier now.*safe is gone/);
+  assert.match(validate({ repos: { "a/b": { by_tier: { skip: { approve: "on" }, trivial: { approve: "safe" }, huge: {} } } } }).join("|"), /skip has no review.*one of off, observe, on.*unknown tier/s);
+  assert.deepEqual(validate({ defaults: "full", repos: { "a/b": { preset: "full", caps: { usd: null } } } }), []);
 });
 
 test("loosens names each loosened field by repo, and the same policy spelled differently is no change", () => {
@@ -57,7 +58,7 @@ test("loosens names each loosened field by repo, and the same policy spelled dif
 });
 
 test("clearing an explicit generated list back to discovery is a loosening", () => {
-  const scope = { fleet: ["acme/*"], listed: [] };
+  const scope = { fleet: ["acme/*"] };
   const before = { repos: { "acme/app": { generated: { globs: ["gen/**"], command: "make gen" } } } };
   const after = { repos: { "acme/app": { generated: null } } };
   assert.ok(loosens(before, after, scope).includes("acme/app.generated"));

@@ -129,7 +129,7 @@ export function parseRepos(raw: string): MaintainedRepo[] {
 }
 
 /**
- * The one way a repo joins maintainer_repos (the Maintainer page's add and Ship's Add repo both call it): the list with `repo`
+ * The one way a repo joins maintainer_repos (the Maintainer page's add; Ship keeps its own list): the list with `repo`
  * appended as an entry carrying `fields` (none = every default). Throws with the owner-readable reason for a malformed or already
  * listed repo; the caller still runs parseRepos over the result.
  */

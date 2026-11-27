@@ -564,7 +564,7 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           if (w?.kind !== "module") throw fail(401, "unauthorized", "a module's own token is required");
           const t = grantsFile();
           const agents = Object.fromEntries(Object.entries(t.agents ?? {}).map(([id, g]) => [id, Object.fromEntries(DIRECTORY.filter((k) => g[k] !== undefined).map((k) => [k, g[k]]))]));
-          // The repos the instance reaches (the agents orgs, product, github_orgs, maintainer_repos): what a deliverable may name.
+          // The repos the instance reaches (the agents orgs, product, github_orgs, the listed repos): what a deliverable may name.
           // Setup's log tasks (task-scope.ts logTasks): the tasks bridge keeps them out of an agent's own work.
           return send(res, 200, { agents, repos: repos(), log_tasks: [...logTasks(t as never)] });
         }

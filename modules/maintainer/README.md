@@ -4,7 +4,9 @@
 
 Looks after the GitHub repos you list in `maintainer_repos`. It validates each issue labelled for a fix (default
 `agent-fix`), hands the fix to an engineer and sees it through to a merged PR that closes the issue. Per repo it can also label feature requests and build those you mark `agent-build`, and nudge then close quiet
-contributor PRs.
+contributor PRs. `maintainer_repos` is the Maintainer's own list: adding or removing a repo here never touches Ship's or code
+review's. While the module is on, its repos are also listed repos (compile's `listed_repos`), where the fleet's work may merge and
+close. The `dependabot` and `quiet_pr_days` duties run in the ship module's loop: with Ship off they don't run.
 
 ## Connect
 
