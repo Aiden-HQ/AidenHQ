@@ -279,7 +279,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
                 </>
               }
             >
-              <div role="listbox" aria-label="Needs you" aria-activedescendant={keys.at ? `need-${keys.at}` : undefined} tabIndex={-1}>
+              <div className="ui-digest" role="listbox" aria-label="Needs you" aria-activedescendant={keys.at ? `need-${keys.at}` : undefined} tabIndex={-1}>
                 {shown.map((r, i) => {
                   const person = r.kind === "open" ? r.reply?.person : null;
                   const who = person || r.teammate.name;
