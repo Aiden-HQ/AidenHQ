@@ -27,5 +27,5 @@ AidenHQ account) or `header-jwt` (a front door's signed identity header).
 
 ## New installs
 
-Always installed (core requires it). No apps exist yet. The incident and request routines are webhooks, so quiet start
+In the default bundle. No apps exist yet. The incident and request routines are webhooks, so quiet start
 does not pause them, but nothing fires until an app exists. The `app-maintainer` heartbeat is off under quiet start.

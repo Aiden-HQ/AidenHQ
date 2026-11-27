@@ -184,7 +184,7 @@ const http = createServer(async (req, res) => {
       if ((await reader(req)) !== 0) return send(res, 401, { error: "unauthorized" });
       return send(res, 200, await openPrs(async () => (codehost ? await localOpenPrs() : []), githubOpenPrs, (e) => log.warn({ err: String(e) }, "open-prs: the fleet's GitHub PRs could not be read")));
     }
-    // Named pull requests' state from the warehouse (`?pr=owner/repo#12`, up to 100): the board's event wake-ups (wake.ts) wake
+    // Named pull requests' state from the warehouse (`?pr=owner/repo#12`, up to 100): the kernel wake inbox (kernel/src/wakes.ts) wakes
     // the agent waiting on one when it merges or closes. Empty when there is no warehouse yet.
     if (url.pathname === "/internal/pr-states" && req.method === "GET") {
       if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });

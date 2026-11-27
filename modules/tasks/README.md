@@ -22,4 +22,4 @@ The `paperclip_tasks` connection (22 read, 23 write).
 
 ## New installs
 
-In the default bundle (core requires it). Nothing runs on its own.
+In the default bundle. Nothing runs on its own.

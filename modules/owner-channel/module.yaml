@@ -1,5 +1,5 @@
 name: owner-channel
-description: "The one way a message reaches the owner: agents' `notify`, and every message the kernel, the board and the runner have for them. Each one lands once: on its chat on the board, and on the first channel that delivers it (slack and channel-telegram are its transports). Duplicates drop, muted and routine messages wait for the board or the digest, and a message waits while every channel is down. Always installed (core requires it)."
+description: "The one way a message reaches the owner: agents' `notify`, and every message the kernel, the board and the runner have for them. Each one lands once: on its chat on the board, and on the first channel that delivers it (slack and channel-telegram are its transports). Duplicates drop, muted and routine messages wait for the board or the digest, and a message waits while every channel is down. In the default bundle."
 # It never speaks as the owner and holds no channel token: it takes the kernel's queued owner messages and has the kernel send
 # each one to a channel's transport (kernel.notify), and reads the task a message is about (kernel.cp-read).
 requires: [ board ] # its ledger on the board's Home (board.reads)

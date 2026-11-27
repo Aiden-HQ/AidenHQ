@@ -15,7 +15,7 @@ services. An instance's own modules are local modules in its instance repo (`mod
 
 | Folder | What it is |
 |---|---|
-| `apps-platform` | Apps platform: DevOps Engineer, apps-mcp, the gate, the app starter, the design system. Always installed. |
+| `apps-platform` | Apps platform: DevOps Engineer, apps-mcp, the gate, the app starter, the design system. In the default bundle. |
 | `board`, `tasks`, `chief-of-staff`, `dispatch` | The owner's board, task tools, Aiden the chief of staff, and the job dispatcher that turns wakes into agent jobs. |
 | `agent-builder`, `design`, `fleet-steward`, `maintainer`, `security`, `engineering`, `sessions` | Specialist agents: Agent Architect, UI Designer and UI Reviewer, Fleet Steward, Maintainer, Security Watch and Red Teamer, Engineers, Session. |
 | `ai-reviewer`, `grading`, `platform` | AI review of writes, graded "done", and the product's own change gate. |

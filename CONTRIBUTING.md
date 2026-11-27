@@ -159,8 +159,6 @@ checks.
 - **CI for fork PRs runs on GitHub-hosted runners only**, with no secrets and no access to our self-hosted runners. Don't
   expect a deploy, a reviewer-eval or anything else that needs a secret to run on your PR; the maintainer runs those.
   Those hosted checks are advisory, not required: the maintainer's own review and our self-hosted CI decide the merge.
-  `scripts/supply-chain/fork-lint.ts` flags any workflow change that lets a fork PR reach a
-  self-hosted runner.
 
 ### How community PRs are reviewed
 

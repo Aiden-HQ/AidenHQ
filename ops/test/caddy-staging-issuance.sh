@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The public front door's exit check (unit U2, docs/design/minimal-core-install.md section 4.1): the pinned Caddy, with the
+# The public front door's exit check (unit U2, docs/design/access.md "The public front door (Caddy)"): the pinned Caddy, with the
 # Caddyfile compile generates (scripts/front-door.ts) and only the ACME directory swapped for Let's Encrypt staging, gets
 # an IPv4 certificate on the shortlived profile over TLS-ALPN-01 with port 80 closed. It asserts:
 #   - both sites (443 and 8446) serve a certificate from the staging CA whose subject alternative name is the IP;

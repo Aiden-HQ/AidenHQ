@@ -28,4 +28,4 @@ No tools. Two behaviours agents run into:
 
 ## New installs
 
-Always installed. A fresh board shows empty states that say how to connect each module, never errors.
+In the default bundle. A fresh board shows empty states that say how to connect each module, never errors.

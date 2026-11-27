@@ -66,7 +66,7 @@ settings:
   # default branch or a same-repo PR only (runner/job-started.ts). That org's runner group
   # (ci_org_runner_group) must also serve them (docs/operations.md, "CI runners").
   ci_runner_repos:
-    default: "Aiden-HQ/AidenHQ Aiden-HQ/aidenhq-modules Aiden-HQ/aidenhq-distro"
+    default: "Aiden-HQ/AidenHQ Aiden-HQ/aidenhq-distro"
     pattern: '^[\w.-]+/[\w.-]+( [\w.-]+/[\w.-]+)*$'
   # The runner group (by name) that runners serving another org join, e.g. the product repo's org: create it there limited
   # to the repos above. Required for those units (they refuse to register without it); unused for the agents org.

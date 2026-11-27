@@ -28,5 +28,5 @@ and shows that channel's own answer ("not set up yet", "the transport answered 5
 
 ## New installs
 
-Always installed. With no channel connected, messages show on the board. Attention control starts in `observe`: it logs
+In the default bundle. With no channel connected, messages show on the board. Attention control starts in `observe`: it logs
 what it would block and lets everything through.

@@ -1,5 +1,5 @@
 # AidenHQ secret vault: mounts the plaintext view of the encrypted secrets (gocryptfs) at ~/.config/aidenhq.
-# The gocryptfs password is a systemd credential sealed to the TPM (ops/vault/init.sh); systemd decrypts it into
+# The gocryptfs password is a systemd credential sealed to the TPM2 or a host key (ops/vault/init.sh); systemd decrypts it into
 # this unit's private, non-swappable credentials directory. Docker requires this unit (docker-requires-vault.conf).
 [Unit]
 Description=AidenHQ secret vault (gocryptfs view of ~/.config/aidenhq)
