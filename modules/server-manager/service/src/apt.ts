@@ -276,15 +276,30 @@ export function listHash(list: string[]): string {
   return createHash("sha256").update([...list].sort().join("\n")).digest("hex");
 }
 
-/** The install (§11.1-2): `--only-upgrade`, never `upgrade` or `dist-upgrade`, non-interactive, the lock waited out. */
-export function installArgv(list: string[], simulate = false): string[] {
+/**
+ * The install's core words: `--only-upgrade`, never `upgrade` or `dist-upgrade`, non-interactive, the lock waited out. One builder
+ * for all three calls, so the plan, the estimate and the install can never disagree about the list or the `-o` words: `-s` adds the
+ * simulation, `--print-uris` the download estimate, and neither the real install.
+ */
+function aptInstallArgv(list: string[], mode?: "-s" | "--print-uris"): string[] {
   return [
-    "apt-get", ...(simulate ? ["-s"] : []), "install", "--only-upgrade", "-y",
+    "apt-get", ...(mode ? [mode] : []), "install", "--only-upgrade", "-y",
     "-o", "DPkg::Lock::Timeout=600",
     "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold",
     ...list,
   ];
 }
+
+/** The install (§11.1-2). */
+export const installArgv = (list: string[], simulate = false) => aptInstallArgv(list, simulate ? "-s" : undefined);
+
+/**
+ * The download estimate's words (§11.3): the same install words with `--print-uris` in place of `-s`, so apt resolves the same plan
+ * and prints `Need to get … of archives.` `apt-get -s` does not print that line on any apt tested (2.8.4 on Ubuntu 24.04, 3.3.6 on
+ * Debian): it prints the `Inst`/`Conf` lines and the summary counts, nothing about bytes. So `-s` proves the plan and this call
+ * answers the space; `--print-uris` changes nothing and downloads nothing.
+ */
+export const estimateArgv = (list: string[]) => aptInstallArgv(list, "--print-uris");
 
 /**
  * The two lock guards §11.9 asks for, together: apt waits for the dpkg lock up to its own timeout, and `flock` holds the same
@@ -299,6 +314,9 @@ export const LOCKED = ["flock", "-w", "600", "-x", "/var/lib/dpkg/lock-frontend"
  * core after them is `installArgv`'s; `sudo` precedes `flock` because the lock file is root's.
  */
 export const installCommand = (list: string[], simulate = false) => ["sudo", "-n", ...LOCKED, "env", "DEBIAN_FRONTEND=noninteractive", ...installArgv(list, simulate)];
+
+/** The estimate (`--print-uris`) as a host runs it: the same `sudo`, lock guard and environment as `installCommand`. */
+export const estimateCommand = (list: string[]) => ["sudo", "-n", ...LOCKED, "env", "DEBIAN_FRONTEND=noninteractive", ...estimateArgv(list)];
 
 /** `apt-get update`, the same two lock guards as the install so a concurrent unattended-upgrades run is waited out (§11.9). */
 export const UPDATE_ARGV = ["sudo", "-n", ...LOCKED, "apt-get", "update", "-o", "DPkg::Lock::Timeout=600"];
@@ -379,9 +397,6 @@ export function downloadEstimate(text: string): number | null {
   if (!Number.isFinite(n)) return null;
   return Math.round(n * ({ B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 } as Record<string, number>)[m[2]!.toUpperCase()]!);
 }
-
-/** The estimate as bytes, 0 when the text carries none (callers that only add it up). */
-export const parseDownloadBytes = (text: string): number => downloadEstimate(text) ?? 0;
 
 /** The space a run needs: the larger of 1 GB and twice the download estimate, in GB. */
 export const neededGb = (downloadBytes: number) => Math.max(1, (downloadBytes / 1024 ** 3) * 2);

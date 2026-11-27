@@ -106,12 +106,34 @@ Calculating upgrade...
 The following packages will be upgraded:
   libc6 openssl
 2 upgraded, 0 newly installed, 0 to remove and 1 not upgraded.
-Need to get 4,120 kB of archives.
-After this operation, 12.6 MB of additional disk space will be used.
 Inst libc6 [2.39-0ubuntu8.3] (2.39-0ubuntu8.5 Ubuntu:24.04/noble-security [amd64])
 Inst openssl [3.0.13-0ubuntu3.2] (3.0.13-0ubuntu3.4 Ubuntu:24.04/noble-security [amd64])
 Conf libc6 (2.39-0ubuntu8.5 Ubuntu:24.04/noble-security [amd64])
 Conf openssl (3.0.13-0ubuntu3.4 Ubuntu:24.04/noble-security [amd64])
+
+### apt-get --print-uris install --only-upgrade libc6=2.39-0ubuntu8.5 openssl=3.0.13-0ubuntu3.4
+Reading package lists...
+Building dependency tree...
+The following packages will be upgraded:
+  libc6 openssl
+2 upgraded, 0 newly installed, 0 to remove and 1 not upgraded.
+Need to get 4219 kB of archives.
+After this operation, 2048 B disk space will be freed.
+'http://security.ubuntu.com/ubuntu/pool/main/g/glibc/libc6_2.39-0ubuntu8.5_amd64.deb' libc6_2.39-0ubuntu8.5_amd64.deb 3041472 MD5Sum:e047f8fc18dec25370a8a003e3a910e7
+'http://security.ubuntu.com/ubuntu/pool/main/o/openssl/openssl_3.0.13-0ubuntu3.4_amd64.deb' openssl_3.0.13-0ubuntu3.4_amd64.deb 1177792 MD5Sum:c17b6507d0f1637b90bb6f0b4bed7a52
+
+### apt-get --print-uris upgrade
+Reading package lists...
+Building dependency tree...
+Calculating upgrade...
+The following packages will be upgraded:
+  libc6 openssl tzdata
+3 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+Need to get 4639 kB of archives.
+After this operation, 3072 B disk space will be freed.
+'http://archive.ubuntu.com/ubuntu/pool/main/t/tzdata/tzdata_2024b-1ubuntu1.1_amd64.deb' tzdata_2024b-1ubuntu1.1_amd64.deb 420032 MD5Sum:55e24ca6f23e2a95da92b8542e7d9a22
+'http://security.ubuntu.com/ubuntu/pool/main/g/glibc/libc6_2.39-0ubuntu8.5_amd64.deb' libc6_2.39-0ubuntu8.5_amd64.deb 3041472 MD5Sum:e047f8fc18dec25370a8a003e3a910e7
+'http://security.ubuntu.com/ubuntu/pool/main/o/openssl/openssl_3.0.13-0ubuntu3.4_amd64.deb' openssl_3.0.13-0ubuntu3.4_amd64.deb 1177792 MD5Sum:c17b6507d0f1637b90bb6f0b4bed7a52
 
 ### dpkg --audit
 

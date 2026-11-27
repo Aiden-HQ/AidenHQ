@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  classify, diskVerdict, downloadEstimate, exactList, installArgv, installCommand, listHash, LOCKED, neededGb, parseAptConfig, parseDownloadBytes, parseHolds,
+  classify, diskVerdict, downloadEstimate, estimateArgv, estimateCommand, exactList, installArgv, installCommand, listHash, LOCKED, neededGb, parseAptConfig, parseHolds,
   parseOsRelease, parsePolicy, parseSimulatedUpgrade, parseSimulation, releaseJumps, simulationProblems, unattendedUpgradesOn, word, UPDATE_ARGV,
 } from "../service/src/apt.ts";
 import { hashOf, planFrom, revalidate, serviceChange, startSeconds, verifyPatch, installedFrom, DPKG_AUDIT } from "../service/src/execute.ts";
@@ -68,12 +68,28 @@ test("§11.1 the exact argv: install --only-upgrade -y name=version…, never up
   ]);
   const sim = installArgv(["libc6=2.39-0ubuntu8.5"], true);
   assert.deepEqual(sim.slice(0, 3), ["apt-get", "-s", "install"], "the simulation is the same call with -s, before the install");
+  // The estimate is the same call with --print-uris instead: `apt-get -s` prints no `Need to get` line, so the simulation proves the
+  // plan and this call answers the space (§11.3). The `--only-upgrade -y` and both `Dpkg::Options` words are identical.
+  const est = estimateArgv(["libc6=2.39-0ubuntu8.5", "openssl=3.0.13-0ubuntu3.4"]);
+  assert.deepEqual(est, [
+    "apt-get", "--print-uris", "install", "--only-upgrade", "-y",
+    "-o", "DPkg::Lock::Timeout=600", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold",
+    "libc6=2.39-0ubuntu8.5", "openssl=3.0.13-0ubuntu3.4",
+  ]);
+  // The only word that differs from the install is the flag: the list and every `-o` word are the same call.
+  assert.deepEqual(est.filter((w) => w !== "--print-uris"), installArgv(["libc6=2.39-0ubuntu8.5", "openssl=3.0.13-0ubuntu3.4"]));
+  // A plan still simulates: `--print-uris` is not the plan's proof, and `-s` is never the estimate's source.
+  assert.ok(!est.includes("-s") && sim.includes("-s"));
   // The host's own words: passwordless sudo, never a prompt, and the one non-interactive environment apt gets (§11.2).
   const host = installCommand(["libc6=2.39-0ubuntu8.5"]);
   // sudo, the dpkg lock guard (§11.9), the non-interactive environment, then the same core: never a bare `env apt-get`.
   assert.deepEqual(host.slice(0, 6), ["sudo", "-n", "flock", "-w", "600", "-x"]);
   assert.deepEqual(host.slice(7, 11), ["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install"]);
   assert.ok(!host.includes("upgrade") && !host.includes("dist-upgrade") && !host.includes("do-release-upgrade"));
+  // The estimate runs over the same host prefix and lock guard, so it is the same words a host would accept.
+  const estHost = estimateCommand(["libc6=2.39-0ubuntu8.5"]);
+  assert.deepEqual(estHost.slice(0, 6), ["sudo", "-n", "flock", "-w", "600", "-x"]);
+  assert.deepEqual(estHost.slice(7, 12), ["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "--print-uris", "install"]);
   assert.deepEqual(UPDATE_ARGV, ["sudo", "-n", "flock", "-w", "600", "-x", "/var/lib/dpkg/lock-frontend", "apt-get", "update", "-o", "DPkg::Lock::Timeout=600"], "the refresh waits out the lock too (§11.9)");
 });
 
@@ -129,9 +145,9 @@ test("§11.3 low disk on / and on /boot refuses the run and reports the numbers"
   assert.ok(Math.abs(neededGb(900 * 1024 * 1024) - 1.76) < 0.01);
   // apt groups thousands, and the estimate has to be the real one: 900,000 kB is 0.86 GB, doubled to 1.7 GB, which a host with
   // 1.2 GB free must be refused for.
-  assert.equal(parseDownloadBytes("Need to get 900,000 kB of archives."), 900_000 * 1024, "a thousands separator is part of the number");
+  assert.equal(downloadEstimate("Need to get 900,000 kB of archives."), 900_000 * 1024, "a thousands separator is part of the number");
   assert.equal(diskVerdict({ root_free_gb: 1.2, boot_free_gb: 1.2 }, 900_000 * 1024).ok, false, "1.2 GB free is short of twice a 900 MB download");
-  assert.equal(parseDownloadBytes("Need to get 2.5 GB of archives."), 2.5 * 1024 ** 3);
+  assert.equal(downloadEstimate("Need to get 2.5 GB of archives."), 2.5 * 1024 ** 3);
   // A host with no separate /boot is not a refusal: there is no second filesystem to fill.
   assert.equal(diskVerdict({ root_free_gb: 18.4, boot_free_gb: null }, 0).ok, true);
 });

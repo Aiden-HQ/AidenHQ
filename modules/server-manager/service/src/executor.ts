@@ -8,9 +8,9 @@
 import { readMachines, type Machine } from "./config.ts";
 import { runPatch, revalidate, StalePatch, type PatchArgs, type PatchOutcome } from "./execute.ts";
 import { ConsentStore, inWindow, pendingId, readRebootState, rebootAndProve } from "./reboot.ts";
-import { withConnection, type Keys, type SshMachine, type Transport } from "./ssh.ts";
+import { TIMEOUTS, withConnection, type Keys, type SshMachine, type Transport } from "./ssh.ts";
 import type { Executor, ExecuteRequest, PlanRequest, PlanResult } from "./aidenhq-sdk/executor.ts";
-import { detect, parseOsRelease, parseSimulatedUpgrade } from "./apt.ts";
+import { detect, downloadEstimate, parseOsRelease, parseSimulatedUpgrade } from "./apt.ts";
 import { parseDf, READ } from "./status.ts";
 import * as apt from "./apt.ts";
 
@@ -76,9 +76,16 @@ async function planPatch(d: ExecutorDeps, m: Machine, mode: "security" | "full",
     const fresh = revalidate({ os: os.stdout, policy: policy.stdout, simulated: sim.stdout, holds: holds.code === 0 ? holds.stdout : "", bootId: boot, rebootRequired: reboot.code === 0, freeRootGb: parseDf(dfRoot.stdout).root_free_gb, freeBootGb: parseDf(dfBoot.stdout).boot_free_gb, unattendedUpgrades: false, securityStatus: secStatus.code === 0 ? secStatus.stdout : undefined }, mode);
     if ("unsupported" in fresh) throw Object.assign(new Error(`${m.name}: ${fresh.unsupported}`), { code: "unsupported" });
     const list = fresh.list;
-    // §11.3's guard is checked at plan time too, so a card the owner reads already says the disk is short.
-    const disk = apt.diskVerdict(fresh.readout.disk, fresh.downloaded_bytes);
-    if (!disk.ok) throw Object.assign(new Error(`${m.name}: ${disk.reason}`), { code: "low_disk" });
+    // §11.3's guard is checked at plan time too, so a card the owner reads already says the disk is short. Its estimate is the exact
+    // list's own, from `--print-uris` over the same words the run will use: `-s` prints no `Need to get` line, and reading the space
+    // off it judged every host against the 1 GB floor with `0`. An estimate the host did not print is a refusal, not that guess.
+    if (list.length) {
+      const est = await c.exec(apt.estimateCommand(list.map(apt.word)), TIMEOUTS.lock);
+      const downloaded = downloadEstimate(est.stdout);
+      if (downloaded == null) throw Object.assign(new Error(`${m.name}: apt printed no download estimate for this plan, so the space the run needs is unknown`), { code: "disk_unknown" });
+      const disk = apt.diskVerdict(fresh.readout.disk, downloaded);
+      if (!disk.ok) throw Object.assign(new Error(`${m.name}: ${disk.reason}`), { code: "low_disk" });
+    }
     const rec: PatchArgs = { machine: m.name, mode, reboot_policy: rebootPolicy, fingerprint: pin.fingerprint, packages: list.map(apt.word), hash: fresh.hash };
     return { rec, list, reboot_needed: fresh.readout.reboot_needed };
   });

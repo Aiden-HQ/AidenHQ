@@ -31,7 +31,7 @@ function sections(name: string) {
 }
 
 /** A stand-in ssh over the recorded fixture, with the answers the write path asks for (the exact-list simulation, dpkg, units). */
-function fakeHost(i: { simulate?: string; audit?: string; bootId?: string; units?: string; ua?: string } = {}) {
+function fakeHost(i: { simulate?: string; estimate?: string; audit?: string; bootId?: string; units?: string; ua?: string; disk?: string } = {}) {
   const root = mkdtempSync(join(tmpdir(), "sm-exec-"));
   mkdirSync(join(root, "tmp"));
   mkdirSync(join(root, "state"), { recursive: true });
@@ -54,9 +54,11 @@ function fakeHost(i: { simulate?: string; audit?: string; bootId?: string; units
     ["apt-cache policy", { out: g("apt-cache policy") }],
     ["systemctl list-units", { out: i.units ?? g("systemctl list-units --type=service --state=running --no-legend --plain") }],
     ["sudo -n env DEBIAN_FRONTEND=noninteractive apt-get -s install", { out: i.simulate ?? g("apt-get -s install --only-upgrade libc6=2.39-0ubuntu8.5 openssl=3.0.13-0ubuntu3.4") }],
+    // The estimate is its own `--print-uris` read (§11.3): the fixture's is real apt 2.8.4 output. `null` proves the refusal path.
+    ["sudo -n env DEBIAN_FRONTEND=noninteractive apt-get --print-uris install", { out: i.estimate ?? g("apt-get --print-uris install --only-upgrade libc6=2.39-0ubuntu8.5 openssl=3.0.13-0ubuntu3.4") }],
     ["sudo -n apt-get update", { out: "" }],
     ["sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install", { out: "Setting up libc6...\nSetting up openssl...\n" }],
-    ["df ", { out: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/vda1 41152736 1 18432000 7% /\n/dev/vda2 1523248 1 1430080 1% /boot" }],
+    ["df ", { out: i.disk ?? "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/vda1 41152736 1 18432000 7% /\n/dev/vda2 1523248 1 1430080 1% /boot" }],
     ["systemctl show", { out: "Sun 2026-11-23 04:31:02 UTC" }],
   ];
   const script = [
@@ -120,6 +122,9 @@ test("plan for a patch reads the host and proposes the exact name=version list w
   assert.equal(args.fingerprint, PIN, "the plan names the fingerprint it read the host over");
   assert.equal(args.reboot_policy, "auto");
   assert.match(plan.card!["sentence"]!, /Installs 3 security updates/);
+  // The plan's disk guard read a real estimate, not `0`: the exact list's `--print-uris` call carries `Need to get 4598 kB`,
+  // which is what the fixture's `-s` output never printed.
+  assert.ok(h.read().some((c) => c.cmd.startsWith("sudo -n flock -w 600 -x /var/lib/dpkg/lock-frontend env DEBIAN_FRONTEND=noninteractive apt-get --print-uris install --only-upgrade -y")), "the plan reads the estimate from --print-uris over the exact list");
   // Only the server-manager service files its own kinds.
   await assert.rejects(createExecutor(d).plan({ kind: "server-manager.patch", args: { machine: "vm-one", mode: "security" }, requester: module({ module: "github" }), task: "" } as never), /only the server-manager service/);
   await assert.rejects(createExecutor(d).plan({ kind: "server-manager.patch", args: { machine: "vm-nine", mode: "security" }, requester: module(), task: "" } as never), /no machine/);
@@ -233,6 +238,63 @@ test("§11.1 a security record installs on a host that also has ordinary updates
   const clean = await ex.execute({ id: "k-fedcba9876543210", kind: "server-manager.patch", args: plan.args, digest: "d", idempotency_key: "i2", tier: 0 } as never);
   assert.equal(clean.ok, true, clean.text);
   assert.ok(h.read().some((c) => c.cmd.startsWith("sudo -n flock -w 600 -x /var/lib/dpkg/lock-frontend env DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade")), "the install ran on the exact list");
+});
+
+// §11.3 — the plan-time guard reads the exact list's real estimate. With the estimate read as `0` (the old `-s` path) the floor is
+// the only thing judged, so a host with 2 GB free would pass a 1.5 GB download that needs twice that. The guard must refuse it.
+test("§11.3 planPatch's disk guard judges the real --print-uris estimate, not the 1 GB floor a zero would fall back to", async () => {
+  const twoGb = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/vda1 41152736 1 2097152 7% /";
+  const big = [
+    "The following packages will be upgraded:", "  libc6 openssl tzdata", "3 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.",
+    "Need to get 1.5 GB of archives.", "After this operation, 3 GiB of additional disk space will be used.",
+  ].join("\n");
+  const h = fakeHost({ estimate: big, disk: twoGb });
+  const ex = createExecutor(deps(h).d);
+  await assert.rejects(
+    ex.plan({ kind: "server-manager.patch", args: { machine: "vm-one", mode: "security" }, requester: module(), task: "" } as never),
+    (e: Error & { code?: string }) => e.code === "low_disk" && /1536 MB download/.test(e.message),
+    "2 GB free is short of twice 1.5 GB, and the guard says so with the real number",
+  );
+  // The same host with the estimate it really printed for this list passes: the guard is reading bytes, not a constant.
+  const small = [
+    "The following packages will be upgraded:", "  libc6 openssl tzdata", "3 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.",
+    "Need to get 4598 kB of archives.",
+  ].join("\n");
+  const ok = await createExecutor(deps(fakeHost({ estimate: small, disk: twoGb })).d).plan({ kind: "server-manager.patch", args: { machine: "vm-one", mode: "security" }, requester: module(), task: "" } as never);
+  assert.equal((ok.args as { packages: string[] }).packages.length, 3);
+});
+
+// §11.3 — the estimate is unavailable, not zero. The old code read it off `apt-get -s`, which never prints it, so every patch was
+// refused as `disk_unknown`; that refusal is right and stays. When `--print-uris` also prints none, the run still refuses before
+// anything is installed, and so does the plan.
+test("§11.3 runPatch and planPatch refuse disk_unknown when --print-uris prints no estimate", async () => {
+  // A host whose `-s` plan is fine but whose `--print-uris` call prints no `Need to get` line: the simulation says what to install
+  // and nothing says how many bytes it costs.
+  const noEstimate = "The following packages will be upgraded:\n  libc6 openssl tzdata\n3 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n";
+  const h = fakeHost({ estimate: noEstimate });
+  const { d, wakes } = deps(h);
+  const ex = createExecutor(d);
+  // The plan needs an estimate for its own guard, so it refuses first and files nothing.
+  await assert.rejects(
+    ex.plan({ kind: "server-manager.patch", args: { machine: "vm-one", mode: "security" }, requester: module(), task: "" } as never),
+    (e: Error & { code?: string }) => e.code === "disk_unknown" && /no download estimate/.test(e.message),
+    "the plan refuses a host whose estimate it cannot read, rather than judging it against the 1 GB floor",
+  );
+  assert.ok(!h.read().some((c) => c.cmd.startsWith("sudo -n flock -w 600 -x /var/lib/dpkg/lock-frontend env DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade")), "nothing was installed");
+  // The run's own refusal: a record planned on a host that answered, executed on one that does not, names disk_unknown and refuses.
+  const good = fakeHost();
+  const planned = await createExecutor(deps(good).d).plan({ kind: "server-manager.patch", args: { machine: "vm-one", mode: "security" }, requester: module(), task: "" } as never);
+  const run = await createExecutor(deps(fakeHost({ estimate: noEstimate })).d).execute({ id: "k-0123456789abcdef", kind: "server-manager.patch", args: planned.args, digest: "d", idempotency_key: "i", tier: 0 } as never);
+  assert.equal(run.ok, false, run.text);
+  assert.match(run.text, /no download estimate for this exact list/, "the run names the missing estimate, not a zero-byte guess");
+  const runHost = fakeHost({ estimate: noEstimate });
+  const runDeps = deps(runHost);
+  const run2 = await createExecutor(runDeps.d).execute({ id: "k-0123456789abcdef", kind: "server-manager.patch", args: planned.args, digest: "d", idempotency_key: "i", tier: 0 } as never);
+  assert.equal(run2.ok, false, run2.text);
+  assert.match(run.text, /space the run needs is unknown/, "the refusal is the disk guard's, not a plan mismatch");
+  assert.ok(!runHost.read().some((c) => c.cmd.startsWith("sudo -n flock -w 600 -x /var/lib/dpkg/lock-frontend env DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade")), "the install never ran");
+  assert.equal(runDeps.wakes.length, 1, "a refused run wakes the agent with what it refused");
+  void wakes;
 });
 
 test("execute refuses a broken dpkg state and names it, before any install", async () => {
