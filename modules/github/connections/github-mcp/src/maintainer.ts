@@ -163,7 +163,8 @@ export class Maintainer {
     private readonly terms: string[] = [],
     /** Whether a GitHub object (`github:<repo>#<n>`) is in AidenHQ's records: the fleet acts as the owner's login or the App. */
     private readonly ours: (ref: string) => Promise<boolean> = async () => false,
-    /** The instance's GitHub App id (read from GitHub), or undefined without one: its label events are the fleet's own. */
+    /** The instance's GitHub App id (read from GitHub), or undefined without one: its label events are the fleet's own. A label
+     * event GitHub leaves unattributed is matched by the App's bot login instead (appLogin). */
     private readonly appId: () => Promise<number | undefined> = async () => undefined,
   ) {}
 
@@ -218,13 +219,29 @@ export class Maintainer {
     return res.body?.pull_request != null;
   }
 
+  /**
+   * The App's own bot login on `r` (`<slug>[bot]`), when the fleet would write the issue there as the App: GitHub's second
+   * attribution of an App's label event, for the timeline entries where `performed_via_github_app` is null. Undefined when the
+   * fleet would write as the owner (no App, or no issues write here), so only the role check can trust the event then. A broken
+   * App's identity read throws, failing closed, as every other App read does.
+   */
+  private async appLogin(r: MaintainedRepo): Promise<string | undefined> {
+    const actor = await this.gh.actorFor({ repo: r.repo }, "issue");
+    return actor.kind === "app" ? (await actor.identity()).login : undefined;
+  }
+
   private async trustedEvent(e: GhTimelineEvent, r: MaintainedRepo, isPr: () => Promise<boolean>): Promise<boolean> {
     // The fleet's own label on an issue, made as the App, is trusted as one made as the owner's login is: only the code host holds
     // the App's issues write (a session box's token has none). Not on a pull request (a box's pull requests write can label one),
     // and never the build label: that is the owner's own word on GitHub, and no tool of the fleet's adds it.
+    // GitHub attributes an App write via `performed_via_github_app` only for some events: a label it added can come back with
+    // that null and the App's own bot login (`<slug>[bot]`) as the actor. Either attribution is the fleet's own.
     const via = e.performed_via_github_app?.id;
-    if (via != null && Number(via) === (await this.appId())) return !named(String(e.label?.name ?? ""), BUILD_LABEL) && !(await isPr());
     const login = e.actor?.login;
+    const bot = login?.toLowerCase().endsWith("[bot]") ? await this.appLogin(r) : undefined;
+    const viaApp = via != null && Number(via) === (await this.appId());
+    if (viaApp || (login !== undefined && bot !== undefined && same(login, bot)))
+      return !named(String(e.label?.name ?? ""), BUILD_LABEL) && !(await isPr());
     if (!login) return false;
     const role = await this.role(r.owner, r.name, login);
     return role !== null && r.trusted.includes(role);
