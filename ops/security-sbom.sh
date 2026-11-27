@@ -444,6 +444,9 @@ save_hit_cap() { # <rc> <dest> <err> <cap>
   case "$err" in *"file too large"*|*"File too large"*|*"no space left on device"*) return 0 ;; esac
   return 1
 }
+# The space watchdogs' check interval below: a second, or a shorter one (the tests); never longer, whatever the environment says.
+poll_s="${AIDENHQ_SBOM_POLL_S:-1}"
+[ "$(awk -v p="$poll_s" 'BEGIN { print (p > 0 && p <= 1) }' 2>/dev/null)" = 1 ] || poll_s=1
 save_call() { # <cap bytes, empty for none> <secs> <docker args...>
   local cap="$1" secs="$2" rc floor_bytes pid docker_root; shift 2
   if [ -z "$cap" ]; then docker_call "$secs" "$@"; return; fi
@@ -462,7 +465,7 @@ save_call() { # <cap bytes, empty for none> <secs> <docker args...>
     exec timeout "$secs" docker "$@" ) &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
-    sleep "${AIDENHQ_SBOM_POLL_S:-1}" # the space check's interval (the tests shorten it)
+    sleep "$poll_s"
     if [ "$(free_bytes)" -lt "$floor_bytes" ] || { [ -n "$docker_root" ] && [ "$(free_bytes_at "$docker_root")" -lt "$floor_bytes" ]; }; then
       kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null
       wait "$pid" 2>/dev/null
@@ -563,7 +566,7 @@ run_watched() { # <secs> <cmd...>
   ( exec timeout "$secs" "$@" ) &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
-    sleep "${AIDENHQ_SBOM_POLL_S:-1}" # the space check's interval (the tests shorten it)
+    sleep "$poll_s"
     if [ "$(free_bytes)" -lt "$floor_bytes" ] || { [ -n "$docker_root" ] && [ "$(free_bytes_at "$docker_root")" -lt "$floor_bytes" ]; }; then
       kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null
       wait "$pid" 2>/dev/null

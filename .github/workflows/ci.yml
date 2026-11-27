@@ -355,7 +355,7 @@ jobs:
           case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE=$(git rev-parse origin/main) ;; esac
           base="${PR_BASE:-$PUSH_BEFORE}"
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            base=$(git rev-parse "$HEAD_SHA~1")
+            base=$(git hash-object -t tree /dev/null) # no base to diff: the empty tree, so everything counts as changed
           fi
           src="$PR_BASE"
           case "$GITHUB_REF" in refs/heads/merge-train/*) src=$(git rev-parse origin/main) ;; refs/heads/main) src="" ;; esac
@@ -385,7 +385,7 @@ jobs:
           case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE=$(git rev-parse origin/main) ;; esac
           base="${PR_BASE:-$PUSH_BEFORE}"
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            base=$(git rev-parse "$HEAD_SHA~1")
+            base=$(git hash-object -t tree /dev/null) # no base to diff: the empty tree, so everything counts as changed
           fi
           changed=$(git diff --name-only "$base" "$HEAD_SHA")
           found=""
