@@ -5,7 +5,6 @@
       "Bash(bun test *)",
       "Bash(git fetch)",
       "Bash(git fetch *)",
-      "Bash(npx vitest run)",
       "Bash(npx tsc -p tsconfig.build.json --noEmit)",
       "Bash(npx tsc --noEmit -p .)",
       "Bash(npm run typecheck)",

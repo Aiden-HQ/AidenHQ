@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { checkRequest } from "../src/app.js";
 import { assignees, buildBoard, keepMarkers } from "../src/board.js";
 import { mergedDescription } from "../src/merge.js";

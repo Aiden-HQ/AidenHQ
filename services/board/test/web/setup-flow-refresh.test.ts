@@ -1,10 +1,10 @@
-// @vitest-environment happy-dom
 // A setup page kept open while the flow changes elsewhere (the pairing completed in another tab, or a secret was saved):
 // the page re-reads its flow on the server's `setup` event rather than showing the state it loaded with (issue #1300).
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { SetupFlow } from "../../web/src/SetupFlow";
+import { stubGlobal, unstubAllGlobals } from "../stubs";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -47,7 +47,7 @@ afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   FakeEventSource.reset();
-  vi.unstubAllGlobals();
+  unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -68,8 +68,8 @@ describe("a setup page open while its flow changes", () => {
       if (path === "/api/organisations") return json({ organisations: [], suggested: null, chosen: null });
       return { ok: false, status: 404, text: async () => JSON.stringify({ error: `no route ${path}` }) };
     });
-    vi.stubGlobal("fetch", fetchMock);
-    vi.stubGlobal("EventSource", FakeEventSource);
+    stubGlobal("fetch", fetchMock);
+    stubGlobal("EventSource", FakeEventSource);
 
     const el = document.createElement("div");
     document.body.appendChild(el);

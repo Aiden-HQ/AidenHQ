@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { appliedValues, mapKeys, mayPropose, type PagePoint } from "../src/module-views.js";
 
 const page: PagePoint = { id: "ship", title: "Ship", icon: "rocket", order: 10, module: "ship", connection: "ship", view: "ui://ship/page", tools: [], settings: ["code_review", "maintainer_repos"] };

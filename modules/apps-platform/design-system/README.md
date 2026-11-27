@@ -44,7 +44,7 @@ gate check and migrations stay as they are: only the UI moves.
 1. **Split the server into an API.** Every page's data becomes a JSON route (`GET /api/<view>?<the page's query>`)
    returning what the template used to receive, built from the same service functions. Writes stay as they are (or
    become JSON `POST`/`PATCH` with the same validation). Keep `/api/health`. Agent-facing API routes don't change.
-2. **Add the client.** Copy the starter's `index.html`, `vite.config.ts`, `tsconfig.json`, `components.json`, `src/`
+2. **Add the client.** Copy the starter's `index.html`, `vite.config.ts`, `tsconfig.json`, `bunfig.toml`, `components.json`, `src/`
    (without the example page), `public/theme.js` and its dependencies into the repo. Point the build at `dist/` and have
    the server serve `dist/` the way the starter's `server.mjs` does: the HTML with a fresh nonce and the strict CSP
    (`script-src 'self'; style-src 'self' 'nonce-…'`, no `'unsafe-inline'`), hashed assets from `/assets/`, and the same

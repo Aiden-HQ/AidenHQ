@@ -1,11 +1,11 @@
-// @vitest-environment happy-dom
 // The setup flow's Pair step (web/src/SetupFlow.tsx): a code lives 15 minutes, and the board says it expired and offers a
 // new one instead of waiting forever.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Pairing } from "../../web/src/SetupFlow";
 import type { SetupFlowView } from "../../web/src/api";
+import { stubGlobal, unstubAllGlobals } from "../stubs";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -15,7 +15,7 @@ afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   vi.useRealTimers();
-  vi.unstubAllGlobals();
+  unstubAllGlobals();
 });
 
 /** Lets the rendered reads and timers settle (the clock is the test's own). */
@@ -35,7 +35,7 @@ describe("a pair code's expiry", () => {
     let polls = 0;
     // The channel says how long each code lives: the first 15 minutes, the second only 1.
     const ttl = [900, 1];
-    vi.stubGlobal(
+    stubGlobal(
       "fetch",
       vi.fn(async (_path: string, init?: RequestInit) => {
         const body = init?.method === "POST" ? { code: `CODE-${++mints}`, minted_at: Date.now(), expires_in: ttl[mints - 1] } : (polls++, { paired: false });
@@ -83,7 +83,7 @@ describe("a pair code's expiry", () => {
     vi.useFakeTimers({ now: 1_000_000 });
     let mints = 0;
     const behaviour = { stalls: true, pairs: false };
-    vi.stubGlobal(
+    stubGlobal(
       "fetch",
       vi.fn(async (_path: string, init?: RequestInit) => {
         if (init?.method === "POST") return answer({ code: `CODE-${++mints}`, minted_at: Date.now(), expires_in: 60 });
@@ -122,7 +122,7 @@ describe("a pair code's expiry", () => {
     let mints = 0;
     let unpair: (body: unknown) => void = () => {};
     const reload = vi.fn(async () => {});
-    vi.stubGlobal(
+    stubGlobal(
       "fetch",
       vi.fn(async (_path: string, init?: RequestInit) => {
         if (init?.method === "POST") return answer({ code: `CODE-${++mints}`, minted_at: Date.now(), expires_in: 60 });

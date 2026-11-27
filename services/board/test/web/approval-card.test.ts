@@ -1,11 +1,11 @@
-// @vitest-environment happy-dom
 // A pending Tier 2 card's Approve and Reject (web/src/Chat.tsx): off while the card is an earlier visit's cached copy, and
 // off once a decision went through (until the fresh card replaces it); back only when the decision failed.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ApprovalCard } from "../../web/src/ApprovalCard";
 import type { Approval } from "../../web/src/types";
+import { stubGlobal, unstubAllGlobals } from "../stubs";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -19,7 +19,7 @@ let root: Root | undefined;
 afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
-  vi.unstubAllGlobals();
+  unstubAllGlobals();
 });
 
 const render = async (hold?: boolean) => {
@@ -35,14 +35,14 @@ const answer = (status: number, body: unknown) => ({ ok: status < 400, status, t
 
 describe("an approval card's Approve and Reject", () => {
   it("can't be used on a cached copy", async () => {
-    vi.stubGlobal("fetch", vi.fn());
+    stubGlobal("fetch", vi.fn());
     const el = await render(true);
     expect(buttons(el).length).toBe(2);
     expect(buttons(el).every((b) => b.disabled)).toBe(true);
   });
 
   it("stay off after the decision went through", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => answer(200, { id: card.id, ok: true, state: "approved" })));
+    stubGlobal("fetch", vi.fn(async () => answer(200, { id: card.id, ok: true, state: "approved" })));
     const el = await render();
     expect(approve(el).disabled).toBe(false);
     await act(async () => approve(el).click());
@@ -51,7 +51,7 @@ describe("an approval card's Approve and Reject", () => {
   });
 
   it("come back when the decision failed, with why", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => answer(409, { error: "the card changed" })));
+    stubGlobal("fetch", vi.fn(async () => answer(409, { error: "the card changed" })));
     const el = await render();
     await act(async () => approve(el).click());
     expect(buttons(el).every((b) => !b.disabled)).toBe(true);

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { REPLY_MARKER, askedQuestions, chatAgent, chatAgentMarker, pickAgent } from "../src/chats.js";
 import type { Agent, Issue } from "../src/paperclip.js";
 

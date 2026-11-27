@@ -1,13 +1,13 @@
-// @vitest-environment happy-dom
 // The Modules list's setup state (web/src/ModuleParts.tsx, SetupButton.tsx): a flow that completes elsewhere (its setup page,
 // its Done, another tab) turns the tile from Needs setup to its real state without a reload (issue #1300).
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ModulesView } from "../../web/src/Modules";
 import { SetupButton, forgetFlows } from "../../web/src/SetupButton";
 import type { ConnectionsData } from "../../web/src/connections";
 import type { ModuleRow } from "../../web/src/types";
+import { stubGlobal, unstubAllGlobals } from "../stubs";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -78,7 +78,7 @@ afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   FakeEventSource.reset();
-  vi.unstubAllGlobals();
+  unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -98,8 +98,8 @@ const renderModules = async () => {
 describe("the Modules list's setup state", () => {
   it("shows the real state after Done remounts the list, without a reload", async () => {
     const s = server();
-    vi.stubGlobal("fetch", s.fetchMock);
-    vi.stubGlobal("EventSource", FakeEventSource);
+    stubGlobal("fetch", s.fetchMock);
+    stubGlobal("EventSource", FakeEventSource);
     const el = await renderModules();
     expect(el.textContent).toContain("Needs setup");
 
@@ -115,8 +115,8 @@ describe("the Modules list's setup state", () => {
 
   it("reads setup state fresh when the server sends a setup event, so the tile leaves Needs setup live", async () => {
     const s = server();
-    vi.stubGlobal("fetch", s.fetchMock);
-    vi.stubGlobal("EventSource", FakeEventSource);
+    stubGlobal("fetch", s.fetchMock);
+    stubGlobal("EventSource", FakeEventSource);
     const el = await renderModules();
     expect(el.textContent).toContain("Needs setup");
 
@@ -131,8 +131,8 @@ describe("the Modules list's setup state", () => {
 
   it("reads the flows once for both the list and its setup button", async () => {
     const s = server();
-    vi.stubGlobal("fetch", s.fetchMock);
-    vi.stubGlobal("EventSource", FakeEventSource);
+    stubGlobal("fetch", s.fetchMock);
+    stubGlobal("EventSource", FakeEventSource);
     const el = document.createElement("div");
     document.body.appendChild(el);
     root = createRoot(el);
@@ -150,8 +150,8 @@ describe("the Modules list's setup state", () => {
 
   it("keeps the state shown when a refresh fails, and the button follows a setup event", async () => {
     const s = server();
-    vi.stubGlobal("fetch", s.fetchMock);
-    vi.stubGlobal("EventSource", FakeEventSource);
+    stubGlobal("fetch", s.fetchMock);
+    stubGlobal("EventSource", FakeEventSource);
     const el = document.createElement("div");
     document.body.appendChild(el);
     root = createRoot(el);
@@ -177,8 +177,8 @@ describe("the Modules list's setup state", () => {
 
   it("ignores a read that began before the last view left when a new view is showing", async () => {
     const s = server();
-    vi.stubGlobal("fetch", s.fetchMock);
-    vi.stubGlobal("EventSource", FakeEventSource);
+    stubGlobal("fetch", s.fetchMock);
+    stubGlobal("EventSource", FakeEventSource);
     // A read is out for the flow still needing setup, and the view leaves before it answers (Done, then a remount).
     s.state.slow = true;
     s.state.holdFirst = true;
@@ -212,8 +212,8 @@ describe("the Modules list's setup state", () => {
 
   it("answers an event during a read with one follow-up read, not a second in parallel", async () => {
     const s = server();
-    vi.stubGlobal("fetch", s.fetchMock);
-    vi.stubGlobal("EventSource", FakeEventSource);
+    stubGlobal("fetch", s.fetchMock);
+    stubGlobal("EventSource", FakeEventSource);
     s.state.slow = true;
     const el = document.createElement("div");
     document.body.appendChild(el);
@@ -239,8 +239,8 @@ describe("the Modules list's setup state", () => {
 
   it("reads again after an event that arrives while a read is in flight", async () => {
     const s = server();
-    vi.stubGlobal("fetch", s.fetchMock);
-    vi.stubGlobal("EventSource", FakeEventSource);
+    stubGlobal("fetch", s.fetchMock);
+    stubGlobal("EventSource", FakeEventSource);
     // The first read is held, and will answer with the state it saw when it started.
     s.state.slow = true;
     const el = document.createElement("div");
@@ -265,8 +265,8 @@ describe("the Modules list's setup state", () => {
 
   it("starts no setup read or watcher while no view shows the flows", async () => {
     const s = server();
-    vi.stubGlobal("fetch", s.fetchMock);
-    vi.stubGlobal("EventSource", FakeEventSource);
+    stubGlobal("fetch", s.fetchMock);
+    stubGlobal("EventSource", FakeEventSource);
     const before = FakeEventSource.last;
 
     // A pairing on a setup page (SetupFlow's `forgetFlows`) must not create a stream or a read with nothing subscribed.
@@ -279,8 +279,8 @@ describe("the Modules list's setup state", () => {
 
   it("shows a view mounted later the flows already read, without reading them again", async () => {
     const s = server();
-    vi.stubGlobal("fetch", s.fetchMock);
-    vi.stubGlobal("EventSource", FakeEventSource);
+    stubGlobal("fetch", s.fetchMock);
+    stubGlobal("EventSource", FakeEventSource);
     const first = await renderModules();
     expect(first.textContent).toContain("Needs setup");
     expect(s.reads.setup).toBe(1);

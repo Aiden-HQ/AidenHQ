@@ -1,7 +1,7 @@
 // The pattern to copy for a component test: render with Testing Library, act as a person with user-event (click, type,
 // keyboard), and find things by role and label. Portalled pieces (Dialog, Sheet, Select, Popover) work as in a browser.
 import { useState } from "react"
-import { expect, test } from "vitest"
+import { expect, test } from "bun:test"
 import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { Button } from "@/components/ui/button"

@@ -1,6 +1,6 @@
 // "Explain this decision" (src/explain.ts): the history names the tier the record filed at, never its merits as if they were
 // the decision. Every raise above 0 is the AI reviewer's (kernel/src/tier.ts); only a cap or the owner's own call lifts it.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { explain, type RecordWhole } from "../src/explain.js";
 
 const record = (o: Partial<RecordWhole>): RecordWhole => ({

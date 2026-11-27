@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { commentView, isSystemNote } from "../src/board.js";
 import { milestonesOf } from "../src/task-truth.js";
 import { Paperclip } from "../src/paperclip.js";

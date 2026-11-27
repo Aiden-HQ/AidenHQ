@@ -1,10 +1,10 @@
-// @vitest-environment happy-dom
 // The marketplace form's pin (web/src/Marketplaces.tsx AddMarketplace) belongs to the repository that was checked: a
 // lookup answered after the input changed must not offer to add that commit to the new repository.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { AddMarketplace } from "../../web/src/Marketplaces";
+import { stubGlobal, unstubAllGlobals } from "../stubs";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -12,7 +12,7 @@ let root: Root | undefined;
 afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
-  vi.unstubAllGlobals();
+  unstubAllGlobals();
 });
 
 const answer = (body: unknown) => ({ ok: true, status: 200, text: async () => JSON.stringify(body) });
@@ -25,7 +25,7 @@ const type = async (el: HTMLElement, text: string) =>
   });
 
 const render = async (resolve: (repo: string) => Promise<unknown>) => {
-  vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: { body?: string }) => answer(await resolve(JSON.parse(init?.body ?? "{}").repo))));
+  stubGlobal("fetch", vi.fn(async (_url: string, init?: { body?: string }) => answer(await resolve(JSON.parse(init?.body ?? "{}").repo))));
   const el = document.createElement("div");
   document.body.append(el);
   root = createRoot(el);

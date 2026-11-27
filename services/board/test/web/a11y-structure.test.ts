@@ -1,13 +1,13 @@
-// @vitest-environment happy-dom
 // The board's page structure, as axe reads it (issue #1870): a tablist holds only tabs, the Modules page has a main landmark
 // with the tile grid under an h2 (never an h3 straight under the h1), and the Agents list carries no table roles, so no
 // aria-level sits on a role="row" outside a treegrid and every cell is a direct child of its row.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { CrewView } from "../../web/src/Agents";
 import { ModulesView } from "../../web/src/Modules";
 import { BoardTabs, type TaskBoard } from "../../web/src/TaskTools";
+import { stubGlobal, unstubAllGlobals } from "../stubs";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -25,7 +25,7 @@ let root: Root | undefined;
 afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
-  vi.unstubAllGlobals();
+  unstubAllGlobals();
 });
 
 const mount = async (el: React.ReactElement) => {
@@ -91,8 +91,8 @@ describe("the board's page structure", () => {
   });
 
   it("ModulesView is a main landmark, and the tile grid sits under an h2, not straight under the h1", async () => {
-    vi.stubGlobal("EventSource", FakeEventSource);
-    vi.stubGlobal("fetch", server({
+    stubGlobal("EventSource", FakeEventSource);
+    stubGlobal("fetch", server({
       "/api/modules": { modules: [module], advisories: [] },
       "/api/modules/browse": { modules: [] },
       "/api/settings/changes": { changes: [] },
@@ -113,8 +113,8 @@ describe("the board's page structure", () => {
   });
 
   it("the Agents list has no table roles: no aria-level on a row, and cells direct children of their row", async () => {
-    vi.stubGlobal("EventSource", FakeEventSource);
-    vi.stubGlobal("fetch", server({
+    stubGlobal("EventSource", FakeEventSource);
+    stubGlobal("fetch", server({
       "/api/agents/roster": { roster: [agent("a1", "Engineer"), agent("a2", "Reviewer", "a1")] },
       "/api/agents": { sessions: [], finished: [], roster: [agent("a1", "Engineer"), agent("a2", "Reviewer", "a1")] },
     }));

@@ -3,7 +3,7 @@
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { createApp } from "../src/app.js";
 import { setupFlowRoutes } from "../src/setup-flows.js";
 import type { GoogleAuth } from "../src/google.js";
@@ -270,7 +270,7 @@ describe("setup flows", () => {
     expect((await flow()).restarting).toBeUndefined();
     const saved = (await admin("POST", "/api/setup-flows/phone/secret", { secret: "phone_bot_token", value: "123:abc" })).json;
     // The answer says how long the wait has left, not when it ends: the page counts it down on its own clock.
-    expect(saved).toMatchObject({ ok: true, restarted: ["phone"], restarting_for: expect.any(Number) });
+    expect(saved).toMatchObject({ ok: true, restarted: ["phone"] });
     expect(saved.restarting_for).toBeGreaterThan(4 * 60_000);
     expect(saved.restarting_for).toBeLessThanOrEqual(5 * 60_000);
     expect(await flow()).toMatchObject({ restarting: true, present: { phone_bot_token: true } });

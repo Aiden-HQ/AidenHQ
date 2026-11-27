@@ -1,10 +1,9 @@
-// @vitest-environment node
 /// <reference types="node" />
 // The sessions list shows "what it is doing" once: the under-the-title copy on a phone, the column copy on a wide
 // screen. Below 760px a bare .ses-doing rule here would un-hide the column copy too, printing the line twice.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 
 const css = readFileSync(join(import.meta.dirname, "../../web/src/sessions.css"), "utf8");
 

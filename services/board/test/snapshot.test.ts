@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { Paperclip, type Issue } from "../src/paperclip.js";
 import { Swr } from "../src/swr.js";
 

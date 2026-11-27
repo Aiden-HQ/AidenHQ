@@ -74,12 +74,12 @@ Before pushing, run `node scripts/ci-local.ts`: it runs what CI would run for yo
 cd scripts && npm test && npm run typecheck  # compiler, setup, sync-shared drift; types of the converted scripts and modules
 cd services/computer && bun test --parallel=2 --timeout=60000 ./test/
 cd modules/apps-platform/gate && npm test && npm run typecheck
-cd services/board && npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run lint && npm run build
+cd services/board && npm test && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run lint && npm run build
 # kernel, modules/apps-platform/apps-mcp, modules/*/connections/*, modules/security/scanner:
 npm test && npm run typecheck
 ```
 
-The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. After
+The board's Docker build is stricter than the tests: always run `tsc -p tsconfig.build.json` for board changes. After
 editing any file `scripts/sync-shared.ts` lists (SDK helpers, vendored code, the app starter and design system, the page kit,
 the CI template's supply-chain scripts), run `node scripts/sync-shared.ts` (a test fails on drift, the copies under
 `modules/` included). The official modules are this repo's `modules/` (MIT by folder:

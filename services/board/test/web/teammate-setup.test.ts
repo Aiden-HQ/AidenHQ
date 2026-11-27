@@ -1,10 +1,10 @@
-// @vitest-environment happy-dom
 // A teammate's "How <name> is set up" card (web/src/Teammate.tsx): a setting whose compact summary leaves part of its value
 // out gets a Show all button that reveals the whole value without a hover, so a phone or a keyboard reaches it.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { TeammateView } from "../../web/src/Teammate";
+import { stubGlobal, unstubAllGlobals } from "../stubs";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -40,14 +40,14 @@ afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   document.body.innerHTML = "";
-  vi.unstubAllGlobals();
+  unstubAllGlobals();
 });
 
 const json = (body: unknown) => ({ ok: true, status: 200, text: async () => JSON.stringify(body) });
 
 const mount = async () => {
-  vi.stubGlobal("EventSource", FakeEventSource);
-  vi.stubGlobal("fetch", vi.fn(async (path: string) => {
+  stubGlobal("EventSource", FakeEventSource);
+  stubGlobal("fetch", vi.fn(async (path: string) => {
     if (path === "/api/agents/roster") return json({ roster });
     if (path === "/api/settings") return json(settings);
     if (path === "/api/pages") return json({ pages: [] });
