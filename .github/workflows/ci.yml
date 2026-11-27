@@ -739,7 +739,7 @@ jobs:
             for (let waited = 0; ; waited += poll) {
               const pending = judged.filter((r) => r.status !== "completed");
               if (!pending.length) break;
-              if (waited >= 540000) {
+              if (waited >= 54 * poll) { // nine minutes
                 console.log(`::error::${pending.map((r) => r.name).join(", ")} is still running on this head; the edit cannot pass it`);
                 process.exit(1);
               }

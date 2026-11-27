@@ -1158,6 +1158,7 @@ switchOver() {
 # (125) instead of running the query against an empty name, and the status returned is always a number.
 kernelRead() {
   local f d i=0 status=124 s="${AIDENHQ_KERNEL_READ_S:-5}"
+  case "$s" in ""|*[!0-9]*) s=5 ;; esac # whole seconds
   f="$(mktemp 2>/dev/null)" && [ -n "$f" ] || return 125
   timeout -k 2 "$s" "$@" </dev/null >"$f" 2>/dev/null 9>&- &
   d=$!

@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { execFile } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,6 +20,7 @@ const lockLib = join(here, "../../ops/lib/apply-lock.sh");
 const genLib = join(here, "../../ops/lib/generations.sh");
 
 const dirs = [];
+const until = async (ok) => { const end = Date.now() + 20000; while (!ok()) { if (Date.now() > end) throw new Error("timed out"); await new Promise((r) => setTimeout(r, 20)); } };
 after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
 
 /** A checkout with the apply's scripts, a data dir, and a fake docker that records its calls. */
@@ -46,12 +47,14 @@ function checkout() {
 function run(dir, script, { env = {} } = {}) {
   const log = join(dir, "docker.log");
   writeFileSync(log, "");
-  return new Promise((resolve) => {
-    execFile("bash", ["-c", script], {
+  let child;
+  const done = new Promise((resolve) => {
+    child = execFile("bash", ["-c", script], {
       cwd: dir,
       env: { PATH: `${join(dir, "bin")}:/usr/bin:/bin`, HOME: join(dir, "home"), AIDENHQ_STATE_DIR: join(dir, "state"), DOCKER_LOG: log, AIDENHQ_INSTANCE_DIR: "", ...env },
     }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}`, docker: readFileSync(log, "utf8") }));
   });
+  return Object.assign(done, { child });
 }
 
 test("with no marker the entry point takes data/apply.lock at its fixed path and proceeds", { skip: NOT_LINUX }, async () => {
@@ -65,21 +68,26 @@ test("with no marker the entry point takes data/apply.lock at its fixed path and
 
 test("a second apply waits for the first, then runs: never refused for being second", { skip: NOT_LINUX }, async () => {
   const dir = checkout();
-  // The first apply gets a checkout to work on and a `git` whose first call takes a moment, so it is still inside the apply
-  // (holding the lock) when the second one starts. Both go through the real entry point.
+  // The first apply gets a checkout to work on and a `git` whose first call holds it inside the apply (holding the lock) until
+  // the second one is queued on the lock. Both go through the real entry point.
   mkdirSync(join(dir, "inst"), { recursive: true });
   writeFileSync(join(dir, ".env"), `AIDENHQ_INSTANCE_DIR=${join(dir, "inst")}\n`);
-  writeFileSync(join(dir, "bin/git"), "#!/usr/bin/env bash\n[ -e \"$0.ran\" ] || { : > \"$0.ran\"; sleep 1; }\nexit 0\n");
+  writeFileSync(join(dir, "bin/git"), "#!/usr/bin/env bash\n[ -e \"$0.ran\" ] || { : > \"$0.ran\"; until [ -e \"$0.release\" ]; do sleep 0.05; done; }\nexit 0\n");
   chmodSync(join(dir, "bin/git"), 0o755);
   const first = run(dir, `bash ops/apply-config.sh`).then((r) => ({ ...r, end: Date.now() }));
-  await new Promise((r) => setTimeout(r, 300));
-  const second = await run(dir, `bash ops/apply-config.sh`).then((r) => ({ ...r, end: Date.now() }));
-  const a = await first;
-  assert.match(second.out, /another apply is running: this one waits its turn/, second.out);
-  assert.doesNotMatch(second.out, /refusing/, second.out);
+  await until(() => existsSync(join(dir, "bin/git.ran")));
+  const queued = run(dir, `bash ops/apply-config.sh`);
+  const second = queued.then((r) => ({ ...r, end: Date.now() }));
+  let said = "";
+  queued.child.stdout.on("data", (d) => { said += d; });
+  await until(() => said.includes("waits its turn")); // it says so just before it blocks on the lock
+  writeFileSync(join(dir, "bin/git.release"), "");
+  const [a, b] = [await first, await second];
+  assert.match(b.out, /another apply is running: this one waits its turn/, b.out);
+  assert.doesNotMatch(b.out, /refusing/, b.out);
   // It ran the apply only once the first had let the lock go: with no git wait of its own, it could not end after the first otherwise.
-  assert.ok(second.end >= a.end, "the second apply ended before the first: it did not wait");
-  assert.match(second.out, /apply timing: instance/, `the second ran the apply:\n${second.out}`);
+  assert.ok(b.end >= a.end, "the second apply ended before the first: it did not wait");
+  assert.match(b.out, /apply timing: instance/, `the second ran the apply:\n${b.out}`);
   assert.match(a.out, /apply timing: instance/, `the holder ran the apply:\n${a.out}`);
 });
 
