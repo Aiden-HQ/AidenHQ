@@ -228,6 +228,9 @@
       act("Install security now", () => patchNow(name, "security"), `security:${name}`),
       act("Full update now", () => patchNow(name, "full"), `full:${name}`),
     ];
+    // §10: the re-pin is built here, before `acts` reads it, and only while the machine is `host-key-changed` with a fingerprint the
+    // page was shown — so a stale click can never pin a third key.
+    const repinAct = st && st.state === "host-key-changed" && st.fingerprint ? act("Re-pin the key shown", () => repinNow(name, st.fingerprint), `repin:${name}`) : null;
     const acts = gone ? [btn("Keep", () => { removing.delete(name); redraw(); propose(); })]
       : open && fresh ? [btn("Discard", () => { added = added.filter((x) => x !== name); delete drafts[name]; redraw(); propose(); })]
       : open ? [btn("Remove", () => { removing.add(name); redraw(); propose(); }), checkBtn()]
@@ -245,8 +248,6 @@
       st.state === "host-key-changed" && st.fingerprint ? h("span", { className: "tag needs", textContent: `presented ${st.fingerprint}`, title: st.fingerprint }) : null,
       st.last_check ? h("span", { className: "tag", textContent: `checked ${ago(st.last_check)}` }) : h("span", { className: "tag", textContent: st.state }),
     ].filter(Boolean) : [];
-    // §10: the re-pin sits with the fingerprint it accepts, so the owner reads the key and the button together.
-    const repinAct = st && st.state === "host-key-changed" && st.fingerprint ? act("Re-pin the key shown", () => repinNow(name, st.fingerprint), `repin:${name}`) : null;
     return h("div", { className: `card mc${open && !gone ? " open" : ""}${drawn ? " seen" : ""}` }, h("div", { className: "top" }, h("div", { className: "who" }, h("div", { className: "name" }, h("span", { textContent: name }), ...tags.filter(Boolean)), h("div", { className: "sum", textContent: summaryOf(d) }), stTags.length ? h("div", { className: "state" }, ...stTags) : null), h("div", { className: "acts" }, ...acts)), ...(open && !gone ? body(name) : []));
   }
   const summaryOf = (m) => {

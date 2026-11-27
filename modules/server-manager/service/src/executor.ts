@@ -201,6 +201,9 @@ export function createExecutor(d: ExecutorDeps): Executor {
                 } catch (err) {
                   const why = String((err as Error).message ?? err).slice(0, 200);
                   log("a stale patch could not be refiled", { machine: m.name, mode: args.mode, err: why });
+                  // The wake lives here, not at the await below: a filing slower than the outcome's 5 s bound fails *after* the
+                  // outcome was already written, and the owner must still be told that no replacement record exists.
+                  await d.wake({ machine: m.name, title: `Server Manager: a stale patch could not be refiled on ${m.name}`, body: `${m.name}: the ${args.mode} patch found the set had moved and stopped before installing; its replacement record could not be filed (${why}). The next scheduled run follows the set.`, source: `server-manager:refile-failed:${m.name}:${args.mode}:${e.actual.slice(0, 12)}` }).catch(() => undefined);
                   return { ok: false as const, why };
                 }
               })();
@@ -215,7 +218,7 @@ export function createExecutor(d: ExecutorDeps): Executor {
             const done = await Promise.race([filed, new Promise<undefined>((ok) => setTimeout(() => ok(undefined), 5_000))]);
             if (done && done.ok) return { ok: false, text: `${e.message} (hash ${e.actual.slice(0, 12)}…). Filed again as ${done.id} for the set this read showed.` };
             if (done && !done.ok) {
-              await d.wake({ machine: m.name, title: `Server Manager: a stale patch could not be refiled on ${m.name}`, body: `${m.name}: the ${args.mode} patch found the set had moved and stopped before installing; its replacement record could not be filed (${done.why}). The next scheduled run follows the set.`, source: `server-manager:refile-failed:${m.name}:${args.mode}:${e.actual.slice(0, 12)}` }).catch(() => undefined);
+              // The wake already went out from the filing itself (see above), which also covers a failure that arrives after this bound.
               return { ok: false, text: `${e.message} (hash ${e.actual.slice(0, 12)}…): nothing was installed, and the replacement record could not be filed, so the agent was woken to file it.` };
             }
             // The kernel has not answered yet: the record is on its way, and the outcome says so rather than claiming an id it has not.
@@ -267,6 +270,9 @@ export function createExecutor(d: ExecutorDeps): Executor {
             // Not `markFiled`: that is the scheduler's "a record is already filed for this pending id" guard, and marking it here
             // would stop the very refile this deferral is for. The decision alone (12 h from when it was taken, dropped on success)
             // bounds it; the scheduler files the same decision again when the window opens rather than asking the owner twice.
+            // `rearm` clears the once-per-window mark: the scheduler filed this record for the window that has since closed, so a
+            // mark left set would make `rebootDue` refuse every later window and the approved reboot would never be filed at all.
+            consent.rearm(m.name, args.pending_id);
             return { ok: false, text: `${m.name}: outside its quiet window ${args.quiet_window.start}–${args.quiet_window.end} (${d.timeZone()}): the reboot is deferred to the next window, and nothing on the host was touched.` };
           }
           const r = await rebootAndProve(c, { before: st.boot_id, window: args.quiet_window, timeZone: d.timeZone(), at: now });

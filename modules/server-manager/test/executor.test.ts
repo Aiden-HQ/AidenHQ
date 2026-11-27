@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createExecutor, type ExecutorDeps } from "../service/src/executor.ts";
-import { pendingId } from "../service/src/reboot.ts";
+import { ConsentStore, pendingId, rebootDue } from "../service/src/reboot.ts";
 import { listHash } from "../service/src/apt.ts";
 import { word } from "../service/src/apt.ts";
 import type { Keys } from "../service/src/ssh.ts";
@@ -275,7 +275,7 @@ test("execute refuses a reboot whose pending id no longer matches, and one outsi
   // The window is read at the moment of the reboot: 12:00 UTC is outside 03:00–05:00.
   const outside = { ...(plan.args as Record<string, unknown>) };
   const realDate = Date;
-  const at = "2026-11-27T12:00:00Z";
+  const at = "2026-11-28T02:00:00Z";
   (globalThis as { Date: unknown }).Date = class extends realDate { constructor(...a: unknown[]) { super(...(a.length ? (a as [string]) : [at])); } static now() { return Date.parse(at); } };
   try {
     const out = await ex.execute({ id: "k-0123456789abcdef", kind: "server-manager.reboot", args: outside, digest: "d", idempotency_key: "i", tier: 0 } as never);
@@ -284,6 +284,34 @@ test("execute refuses a reboot whose pending id no longer matches, and one outsi
     assert.ok(!h.read().some((c) => c.cmd.includes("systemctl reboot")));
   } finally { (globalThis as { Date: unknown }).Date = realDate; }
   assert.equal(wakes.length >= 1, true, "§13: a refused or failed reboot wakes the agent");
+});
+
+// §6, §11.12 — a reboot the scheduler filed for one window, and the owner approved after that window closed, is deferred *and*
+// re-armed: the "already filed for this pending id" mark is cleared, so the next window files it again instead of the approval
+// silently expiring unused. Without the re-arm `rebootDue` answers nothing for every later window.
+test("§6 a reboot deferred outside its window re-arms, so the next window files it again", async () => {
+  const h = fakeHost();
+  const { d } = deps(h);
+  const id = pendingId({ boot_id: sections("ubuntu-lts")("boot id"), kernel: "6.8.0-48-generic", reboot_pkgs: ["libc6"] });
+  // The scheduler filed a record for this pending id in the window that has since closed.
+  const consent = new ConsentStore(join(h.root, "data"));
+  consent.decide("vm-one", id, PIN, new Date("2026-11-28T00:30:00Z"));
+  consent.markFiled("vm-one", id);
+  const window = { quiet_start: "03:00", quiet_end: "05:00" };
+  const recordWindow = { start: "03:00", end: "05:00" };
+  assert.equal(rebootDue(window, consent.get("vm-one"), new Date("2026-11-28T02:00:00Z"), "UTC"), undefined, "filed once; outside the window it is not due again either");
+  const realDate = Date;
+  const at = "2026-11-27T12:00:00Z";
+  (globalThis as { Date: unknown }).Date = class extends realDate { constructor(...a: unknown[]) { super(...(a.length ? (a as [string]) : [at])); } static now() { return Date.parse(at); } };
+  try {
+    const out = await createExecutor(d).execute({ id: "k-0123456789abcdef", kind: "server-manager.reboot", args: { machine: "vm-one", fingerprint: PIN, pending_id: id, quiet_window: recordWindow, reboot_policy: "auto" }, digest: "d", idempotency_key: "i", tier: 0 } as never);
+    assert.equal(out.ok, false);
+    assert.match(out.text, /outside its quiet window/);
+  } finally { (globalThis as { Date: unknown }).Date = realDate; }
+  const after = new ConsentStore(join(h.root, "data")).get("vm-one");
+  assert.equal(after?.decided_at !== undefined, true, "the owner's decision is not spent by a deferral");
+  assert.equal(after?.filed, undefined, "the once-per-window mark is cleared, so the window that opens can file it");
+  assert.equal(rebootDue(window, after, new Date("2026-11-28T03:30:00Z"), "UTC"), id, "the next window files the same approved reboot");
 });
 
 test("a changed host key refuses the reboot and wakes the agent with both fingerprints", async () => {
@@ -393,6 +421,25 @@ test("§11.1 a stale patch whose refile fails wakes the agent instead of failing
   assert.equal(r.ok, false);
   assert.match(r.text, /could not be filed/);
   assert.equal(base.wakes.length, 1);
+  assert.match(base.wakes[0]!.title, /could not be refiled/);
+});
+
+// §11.1, §13 — a refile that fails *after* the outcome's 5 s bound still wakes the agent: the outcome said it was on its way, and the
+// failure must reach someone who can file it.
+test("§11.1 a refile that fails after the outcome was written still wakes the agent", async () => {
+  const h = fakeHost();
+  const base = deps(h);
+  const d: ExecutorDeps = {
+    ...base.d,
+    file: (() => new Promise((_, no) => setTimeout(() => no(new Error("kernel went away")), 5_600))) as ExecutorDeps["file"],
+  };
+  const ex = createExecutor(d);
+  const plan = await ex.plan({ kind: "server-manager.patch", args: { machine: "vm-one", mode: "security" }, requester: module(), task: "" } as never);
+  const stale = { ...(plan.args as Record<string, unknown>), packages: ["libc6=2.39-0ubuntu8.5"], hash: listHash(["libc6=2.39-0ubuntu8.5"]) };
+  const r = await ex.execute({ id: "k-0123456789abcdef", kind: "server-manager.patch", args: stale, digest: "d", idempotency_key: "i", tier: 0 } as never);
+  assert.match(r.text, /being filed/, "the outcome cannot claim an id it has not got");
+  await new Promise((ok) => setTimeout(ok, 1_200));
+  assert.equal(base.wakes.length, 1, "the late failure still reaches the agent");
   assert.match(base.wakes[0]!.title, /could not be refiled/);
 });
 

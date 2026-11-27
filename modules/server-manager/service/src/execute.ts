@@ -37,7 +37,7 @@ export class StalePatch extends Error {
   readonly actual: string;
   readonly packages: string[];
   constructor(machine: string, expected: string, actual: string, packages: string[]) {
-    super(`${machine}: the package set changed since the record was filed (filed ${expected.slice(0, 12)}…, now ${actual.slice(0, 12)}…): nothing was installed, and a new record is filed for the set the last read showed`);
+    super(`${machine}: the package set changed since the record was filed (filed ${expected.slice(0, 12)}…, now ${actual.slice(0, 12)}…): nothing was installed`);
     this.name = "StalePatch";
     this.machine = machine;
     this.expected = expected;

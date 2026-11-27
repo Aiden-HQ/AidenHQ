@@ -110,7 +110,14 @@ test("the page's write actions file the typed kinds, never a command: patch, reb
   // §10: the fingerprint is on the card, in the state line, before the button — on a reload the earlier check's message is gone, so a
   // click that accepted an unseen key would be the whole defect.
   assert.match(html, /presented \$\{st\.fingerprint\}/, "the state line names the fingerprint the host presented");
-  assert.ok(html.indexOf("presented ${st.fingerprint}") < html.indexOf('act("Re-pin the key shown"'), "it is drawn before the re-pin action is offered");
+  // The fingerprint renders in the card's state line, which the card draws before its action buttons: the owner reads the key
+  // beside the button, never after accepting it.
+  const stateLine = html.indexOf("const stTags = st ?");
+  const actions = html.indexOf("h(\"div\", { className: \"acts\" }");
+  assert.ok(stateLine > 0 && actions > stateLine, "the state line is built and drawn before the actions");
+  assert.ok(html.slice(stateLine, actions).includes("presented ${st.fingerprint}"), "the fingerprint is in that state line");
+  // The action is a `const` read by `acts`: declared after it, the first collapsed machine would throw and blank the page.
+  assert.ok(html.indexOf("const repinAct") < html.indexOf("...(repinAct ? [repinAct] : [])"), "the re-pin is declared before the list that reads it");
   // Nothing the page sends is a shell word: the only arguments are a machine name, a mode and a fingerprint.
   assert.ok(!/command|argv|shell/i.test(html), "the page sends no command, argv or shell word");
   // The buttons read the machine's last readout, so it is declared before the closure that draws them: a `const` used above its
