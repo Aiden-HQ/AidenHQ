@@ -139,7 +139,7 @@ export async function post(ctx, params, context, postKey, now = Date.now()) {
   if (issue && scope === "created" && issue.createdByAgentId !== agent) return { refused: "this agent didn't create the task" };
   if (issue && scope === "child" && (!issue.parentId || (await ctx.issues.get(issue.parentId, companyId))?.assigneeAgentId !== agent)) return { refused: "the task's parent isn't assigned to this agent" };
   if (issue && scope === "evidence" && (!issue.assigneeUserId || issue.assigneeAgentId || !issue.createdByAgentId || issue.createdByUserId)) return { refused: "scope evidence closes only a task an agent made that the owner holds" };
-  if (issue && scope === "source" && (!issue.assigneeUserId || issue.assigneeAgentId || !issue.createdByAgentId || issue.createdByUserId)) return { refused: "scope source adds a source marker to an owner task an agent filed" };
+  if (issue && scope === "source" && (!issue.assigneeUserId || issue.assigneeAgentId || issue.createdByAgentId !== agent || issue.createdByUserId)) return { refused: "scope source adds a source marker to an owner task the caller filed" };
   if (scope === "part" && p.child.assigneeAgentId !== agent) return { refused: "a part is assigned to the agent itself" };
   const may = (to) => !to || to === agent || (p.delegateTo ?? []).includes(to);
   if (!may(p.child?.assigneeAgentId) || !may(p.patch?.assigneeAgentId)) return { refused: "a task goes to the agent itself or one it delegates to" };

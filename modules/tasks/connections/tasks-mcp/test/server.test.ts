@@ -149,8 +149,8 @@ test("task_list and task_get name the agent that filed a task, and user for the 
   assert.equal(one.out.filed_by, "chief-of-staff");
 });
 
-test("task_create records the incoming source on a survivor another agent filed", async () => {
-  const survivor = { id: "s1", identifier: "WOR-9", title: "Meeting action", status: "todo", assigneeUserId: "owner", createdByAgentId: "cos", description: "Ask.\n\n<!-- source:meeting:m1 -->", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" };
+test("task_create records the incoming source on the caller's own survivor", async () => {
+  const survivor = { id: "s1", identifier: "WOR-9", title: "Meeting action", status: "todo", assigneeUserId: "owner", createdByAgentId: "me", description: "Ask.\n\n<!-- source:meeting:m1 -->", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" };
   const patches = [];
   const handler = async (req, res) => {
     let body = "";
@@ -169,6 +169,28 @@ test("task_create records the incoming source on a survivor another agent filed"
   const out = parse(await call("task_create", { title: "Slack ask", description: "d", marker: "source:slack:C1:1", related_markers: ["source:meeting:m1"] }));
   assert.equal(out.out.deduplicated, true);
   assert.deepEqual(patches, [{ description: "Ask.\n\n<!-- source:meeting:m1 -->\n\n<!-- source:slack:C1:1 -->" }]);
+});
+
+test("task_create leaves another agent's survivor for its filer to record", async () => {
+  const survivor = { id: "s2", identifier: "WOR-10", title: "Meeting action", status: "todo", assigneeUserId: "owner", createdByAgentId: "cos", description: "Ask.\n\n<!-- source:meeting:m2 -->", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" };
+  const patches = [];
+  const handler = async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    const send = (x) => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(x));
+    const url = new URL(req.url ?? "", "http://x");
+    if (url.pathname === "/api/agents/me") return send({ id: "me", companyId: "co" });
+    if (url.pathname === "/api/companies/co/issues") return send([survivor]);
+    if (url.pathname === "/api/companies/co/agents") return send([]);
+    if (url.pathname === "/api/companies/co") return send({ id: "co", defaultResponsibleUserId: "owner" });
+    if (url.pathname === "/api/issues/s2" && req.method === "GET") return send(survivor);
+    if (url.pathname === "/api/issues/s2" && req.method === "PATCH") { patches.push(JSON.parse(body)); return send(survivor); }
+    return send({});
+  };
+  const { call } = bridge({ handler, agents: { cos: { key: "chief-of-staff" } } });
+  const out = parse(await call("task_create", { title: "Slack ask", description: "d", marker: "source:slack:C1:2", related_markers: ["source:meeting:m2"] }));
+  assert.equal(out.out.deduplicated, true);
+  assert.deepEqual(patches, []);
 });
 
 test("task_list returns no more than limit matches even when more pages hold matches", async () => {

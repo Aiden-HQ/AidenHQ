@@ -13,9 +13,10 @@ it. The owner can move or reopen anything; their move always wins (a placement i
 Look for an open owner task with the same person and the same ask before you `task_create`: `task_search` the person's
 name and the ask's key words (a Slack thread, a meeting action and a pin about one commitment are one task). A match:
 file with `related_markers: ["<its marker>"]`, which returns that task (`deduplicated: true`) and files nothing new; when it
-is yours, one `task_comment` with the new source link. The new source is recorded on a survivor an agent filed, so the
-thread's answer still finds it. A match the owner made is theirs: file nothing and leave it to them. A search that failed or
-returned an error is not a "no match": file as usual.
+is yours, one `task_comment` with the new source link. The new source is recorded on a survivor you filed, so the thread's
+answer still finds it; a survivor another agent filed is its filer's to record (route the source to it below). A match the
+owner made is theirs: file nothing and leave it to them. A search that failed or returned an error is not a "no match":
+file as usual.
 
 ## Placing a new task
 
@@ -45,8 +46,8 @@ A duplicate you filed is `task_cancel` with "Duplicate of <identifier>". The clo
 
 A task another agent filed is closed by that agent (or a fleet settler): when your source shows it finished, do not force it.
 `task_create` one task for the agent in its `filed_by` (`assignee` that key, marker
-`owner-triage:evidence:<identifier>:<date>`), naming the task and the evidence link, so it closes it; a fleet settler closes
-it directly.
+`owner-triage:evidence:<identifier>:<date>`), naming the task, the evidence link and the source to record with `task_update`
+(it is the filer), so it records the source and closes it; a fleet settler closes it directly.
 
 ## Reports
 

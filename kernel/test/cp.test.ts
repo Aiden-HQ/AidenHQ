@@ -223,14 +223,16 @@ test("the evidence close: an owner task an agent filed is closed by its maker, i
   assert.equal((await act("settler", "PATCH", "/api/issues/WOR-6", { status: "done", comment: "Done: https://example.com" })).status, 403);
 });
 
-test("a filing agent records a new source on an owner task another agent filed, and nothing else", async (t) => {
+test("a source marker is appended by the task's filer, never by another agent", async (t) => {
   const { h, act } = await setup(t);
-  // Ada filed WOR-9; Tess deduped another source onto it and may append that source marker only.
+  // Ada filed WOR-9. Tess did not: a marker-only PATCH is not a source append, and the normal scope refuses it.
   assert.equal((await act("ada", "PATCH", "/api/issues/WOR-9", { description: "Asked in the meeting." })).status, 200);
-  let r = await act("tess", "PATCH", "/api/issues/WOR-9", { description: "Asked in the meeting.\n\n<!-- source:slack:C1:123.456 -->" });
-  assert.deepEqual([r.status, h.issues[FILED].description], [200, "Asked in the meeting.\n\n<!-- source:slack:C1:123.456 -->"]);
-  // Text, a status change, or the owner's own task is not a source append.
+  assert.equal((await act("tess", "PATCH", "/api/issues/WOR-9", { description: "Asked in the meeting.\n\n<!-- source:slack:C1:123.456 -->" })).status, 403);
   assert.equal((await act("tess", "PATCH", "/api/issues/WOR-9", { description: "Asked in the meeting.\n\nHello" })).status, 403);
   assert.equal((await act("tess", "PATCH", "/api/issues/WOR-9", { status: "cancelled", description: "Asked in the meeting.\n\n<!-- source:slack:C1:1 -->" })).status, 403);
+  // Ada filed it: the marker-only append is hers, and it is the only thing the source scope adds.
+  const r = await act("ada", "PATCH", "/api/issues/WOR-9", { description: "Asked in the meeting.\n\n<!-- source:slack:C1:123.456 -->" });
+  assert.deepEqual([r.status, h.issues[FILED].description], [200, "Asked in the meeting.\n\n<!-- source:slack:C1:123.456 -->"]);
+  // The owner's own task is not this path.
   assert.equal((await act("tess", "PATCH", "/api/issues/WOR-6", { description: "<!-- source:slack:C1:1 -->" })).status, 403);
 });

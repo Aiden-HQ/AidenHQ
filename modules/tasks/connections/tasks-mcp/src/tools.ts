@@ -410,8 +410,9 @@ async function findByMarker(marker: string, statuses = OPEN_STATUSES) {
 }
 
 /**
- * A new source that deduped onto a task another agent filed joins that task: the marker is appended to its description, so
- * the later answer in this thread still finds the survivor (the kernel allows only source markers, nothing else).
+ * A new source that deduped onto the caller's own task joins it: the marker is appended to its description, so the later
+ * answer in this thread still finds the survivor (the kernel allows only source markers, nothing else). Another agent's
+ * survivor is its filer's to record; the skill routes the source to it.
  */
 async function appendSource(i: Json, marker: string) {
   if (["done", "cancelled"].includes(String(i.status))) return;
@@ -1450,8 +1451,8 @@ const TOOLS: Record<string, Tool> = {
         // A graded task left parked by a failed rubric filing: this retry files it and starts it.
         if (existing && start && parked(existing, { id: g.id }, grade)) return { ...(await brief(existing)), deduplicated: true, ...(await startGraded(existing, grade)) };
         if (existing) {
-          // A related marker is an incoming source: it stays on the survivor, findable when that thread answers the ask.
-          if (k !== m && ownerFiled(existing)) await appendSource(existing, m);
+          // A related marker is an incoming source: it stays on the caller's own survivor, findable when that thread answers.
+          if (k !== m && ownerFiled(existing) && existing.createdByAgentId === g.id) await appendSource(existing, m);
           return { ...(await brief(existing)), deduplicated: true };
         }
       }

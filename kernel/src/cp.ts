@@ -300,11 +300,11 @@ export function createCp({ whoami, asserter, plugin, once, sawn = () => 0, agent
     }
 
     /**
-     * A source marker a filing agent adds to an owner task it matched (a duplicate ask): the description may only gain
+     * A source marker the filer adds to its own owner task (a duplicate ask it matched): the description may only gain
      * `<!-- source:... -->` lines, so the incoming thread stays findable without changing anything else on the task.
      */
     function sourceAppend(t: Issue, patch: Record<string, unknown>): boolean {
-      if (!t.assigneeUserId || t.assigneeAgentId || !t.createdByAgentId || t.createdByUserId) return false;
+      if (!t.assigneeUserId || t.assigneeAgentId || t.createdByAgentId !== agent || t.createdByUserId) return false;
       if (Object.keys(patch).length !== 1 || typeof patch.description !== "string") return false;
       const had = String(t.description ?? "").trimEnd();
       const next = String(patch.description);
