@@ -60,10 +60,20 @@ describe("Home", () => {
     expect(sent.filter((s) => s.path === "/api/home/seen")).toHaveLength(1);
   });
 
+  it("opens a row in the drawer over the page, and Esc closes it", async () => {
+    const { el } = await mountApp("#/");
+    await act(async () => (el.querySelector<HTMLElement>("#need-id-815 .ui-digest-open")!).click());
+    expect(el.querySelector(".home-drawer")?.textContent).toContain("Which week?");
+    expect(el.querySelector(".home-needs")).not.toBeNull();
+    await key("Escape");
+    await settle();
+    expect(el.querySelector(".home-drawer")).toBeNull();
+  });
+
   it("opens a decided card that isn't in Needs you at #/approvals/<id>", async () => {
     const id = "k-00000000000000d1";
     const { el } = await mountApp(`#/approvals/${id}`, (path) => (path === `/api/approvals/${id}` ? answer({ approval: { ...card, id, state: "rejected", decidedBy: "account:u1" } }) : undefined));
     await settle();
-    expect(el.querySelector(".ui-detail")?.textContent).toMatch(/Rejected/);
+    expect(el.querySelector(".home-drawer")?.textContent).toMatch(/Rejected/);
   });
 });

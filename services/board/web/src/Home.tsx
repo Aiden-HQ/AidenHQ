@@ -1,6 +1,6 @@
 // Home (#/): the board's front page. What needs the owner, answered in place (J/K, E, S); what the team did since he last
 // looked; his world (who he waits on, today's calendar); the teammates with news. One read (GET /api/home), and a
-// block with no source or no data is left out, never shown empty. #/approvals/<id> opens that card in the detail pane.
+// block with no source or no data is left out, never shown empty. #/approvals/<id> opens that card in the detail drawer.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { AnswerForm } from "./AnswerForm";
 import { HttpStatusError, SignInRequired, api, type Session } from "./api";
@@ -14,7 +14,7 @@ import { Bone } from "./Skeleton";
 import { TaskCheck, useCheckOff } from "./MyTasks";
 import { chipOf } from "./own-tasks";
 import type { Approval, Board, Card, FaceRef, Home, NeedRow, SinceItem } from "./types";
-import { Banner, Button, DetailPane, DigestList, DigestRow, Face, Kbd, Monogram, Page, SectionCard, TeammateChip, Tile, faceProps } from "./ui";
+import { Banner, Button, DigestList, DigestRow, Face, Kbd, Monogram, Page, SectionCard, TeammateChip, Tile, faceProps } from "./ui";
 import { ago, clockOpts, clockText } from "./util";
 import "./home.css";
 
@@ -23,7 +23,7 @@ type Toast = (text: string, action?: { label: string; run: () => void }) => void
 type Receipt = { text: string; onUndo?: () => void; row: NeedRow };
 /** A receipt's key and a row's snooze key (home.ts): an answer row's task and wait (a follow-up question on the same task is a new row), else the row's id. */
 const rkey = (r: NeedRow) => (r.kind === "answer" ? `${r.id}:${r.waitSince}` : r.id);
-/** What the detail pane shows: a Needs row, or a card that isn't in Needs (#/approvals/<id>). */
+/** What the detail drawer shows: a Needs row, or a card that isn't in Needs (#/approvals/<id>). */
 type Pane = { kind: "row"; id: string } | { kind: "card"; id: string } | null;
 
 /** The most rows Needs you and You're waiting on list (the newest); the rest is one click away in Tasks. */
@@ -87,7 +87,8 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   // The card lists the newest SHOWN of them; a row with a receipt stays for the visit. "View all" opens the rest in Tasks.
   const shown = useMemo(() => {
     const newest = [...rows].sort((a, b) => b.since.localeCompare(a.since));
-    const top = new Set(newest.slice(0, HOME_ROWS).map((r) => r.id));
+    // The newest ten still open, plus the rows answered this visit (their receipts), so acting on a row brings the next up.
+    const top = new Set(newest.filter((r) => !receipts.has(rkey(r))).slice(0, HOME_ROWS).map((r) => r.id));
     return newest.filter((r) => top.has(r.id) || receipts.has(rkey(r)));
   }, [rows, receipts]);
   const live = shown.filter((r) => !receipts.has(rkey(r)));
@@ -106,12 +107,6 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
     io.observe(sinceEl);
     return () => io.disconnect();
   }, [sinceEl]);
-  // The pane opens beside the Needs row; on a narrower screen, where it stacks under the list, it is brought into view.
-  const paneRef = useRef<HTMLDivElement>(null);
-  const paneKey = pane?.kind === "row" ? pane.id : pane?.kind === "card" ? `card:${pane.id}` : null;
-  useEffect(() => {
-    if (paneKey && !mobile) paneRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [paneKey, mobile]);
   // On a phone the pane is a full-screen sheet over Home: what is behind it hasn't been seen (a row's pane closes when the row leaves).
   const sheetOpen = !!pane && (pane.kind !== "row" || rows.some((r) => r.id === pane.id));
   const sinceReady = !data?.since || (sinceInView && !(mobile && sheetOpen));
@@ -217,17 +212,17 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   const paneRow = pane?.kind === "row" ? rows.find((r) => r.id === pane.id) : undefined;
   const paneOpen = !!pane && (pane.kind !== "row" || !!paneRow);
   const since = data.since && <SinceCard since={data.since} timezone={timezone} from={data.since_from} />;
-  const sideShown = (paneOpen && !mobile) || !!since;
+  const sideShown = !!since;
   // Needs you shows only while something is in it (or a receipt from this visit); empty, the box is left out.
   const needsShown = shown.length > 0;
   // The rows still open here: an answered row leaves the count at once, before the kernel catches up.
   const n = everyLive.length;
-  // On a phone the pane is a full-screen sheet: outside the animated column, whose transform would hold a fixed child.
-  const detail = paneOpen && (
-    <DetailPane open title="Details" onClose={closePane}>
-      {pane?.kind === "row" && paneRow && <RowDetail row={paneRow} answer={answer} done={done} receipt={receipts.get(rkey(paneRow))} />}
-      {pane?.kind === "card" && <CardAlone key={pane.id} id={pane.id} />}
-    </DetailPane>
+  // A row opens in a right drawer over the page (a full-screen sheet on a phone): Home underneath keeps its layout.
+  const detail = paneOpen && pane && (
+    <HomeDrawer key={`${pane.kind}:${pane.id}`} rowId={pane.id} onClose={closePane}>
+      {pane.kind === "row" && paneRow && <RowDetail row={paneRow} answer={answer} done={done} receipt={receipts.get(rkey(paneRow))} />}
+      {pane.kind === "card" && <CardAlone key={pane.id} id={pane.id} />}
+    </HomeDrawer>
   );
 
   return (
@@ -248,11 +243,10 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
         </Banner>
       )}
       {data.start?.nextUp && <div className="home-nextup enter" style={{ "--i": 1 } as CSSProperties}><NextUp next={data.start.nextUp} reload={reload} /></div>}
-      {mobile && detail}
       {data.start && <MoreTeam more={data.start.more} />}
       {day && onDone && <YourDay day={day} onDone={onDone} />}
       <World world={data.world} reload={reload} />
-      {/* Needs you (left, the more important) and Since you last looked (right, with the detail pane over it while a row is open) share one row on Your world's columns; a lone one takes the row. */}
+      {/* Needs you (left, the more important) and Since you last looked (right) share one row on Your world's columns; a lone one takes the row. */}
       {(needsShown || sideShown) && (
         <div className="home-pair">
           {needsShown && <div className="home-needs home-pair-cell enter" style={{ "--i": 4 } as CSSProperties}>
@@ -308,12 +302,12 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
             </SectionCard>
           </div>}
           {sideShown && <div className="home-side home-pair-cell enter" style={{ "--i": 5 } as CSSProperties}>
-            {paneOpen && !mobile && <div ref={paneRef}>{detail}</div>}
             {since && <div ref={setSinceEl}>{since}</div>}
           </div>}
         </div>
       )}
       <TeamRow team={data.team} />
+      {detail}
     </Page>
   );
 }
@@ -383,6 +377,7 @@ function RowActions({ row, answer, decided, snooze, done, dismiss, pick }: { row
           </label>
         )}
         <Decide a={row.card} size="sm" onDecided={(d) => decided(row, d)} />
+        {later}
       </>
     );
   if (row.kind === "open")
@@ -390,7 +385,7 @@ function RowActions({ row, answer, decided, snooze, done, dismiss, pick }: { row
       <>
         <Button size="sm" variant="primary" className="press" disabled={busy} onClick={run(() => done(row))}>Done</Button>
         {row.reply && later}
-        <Button size="sm" variant="quiet" className="press" disabled={busy} onClick={run(() => dismiss(row))}>Dismiss</Button>
+        {row.reply && <Button size="sm" variant="quiet" className="press" disabled={busy} onClick={run(() => dismiss(row))}>Dismiss</Button>}
       </>
     );
   // Several questions, or one taking several options, are answered in the pane's form: an answer claims the whole wait.
@@ -403,7 +398,39 @@ function RowActions({ row, answer, decided, snooze, done, dismiss, pick }: { row
   );
 }
 
-/** A row in the pane: the question, the full draft, the task, and every question of the ask (or the whole card). */
+/** The right drawer a Needs row opens (the board's drawer look: a scrim over the page, click outside or Esc closes). Focus moves in and returns to the row. */
+function HomeDrawer({ rowId, onClose, children }: { rowId: string; onClose: () => void; children: React.ReactNode }) {
+  const ref = useRef<HTMLElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    ref.current?.focus({ preventScroll: true });
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !e.defaultPrevented && !document.querySelector("dialog[open], .palette-backdrop")) (e.preventDefault(), close.current());
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      const row = document.querySelector<HTMLElement>(`[id="need-${rowId}"] .ui-digest-open`);
+      (row ?? (opener?.isConnected ? opener : null))?.focus({ preventScroll: true });
+    };
+  }, [rowId]);
+  return (
+    <div className="drawer-backdrop" onPointerDown={(e) => e.target === e.currentTarget && close.current()}>
+      <aside ref={ref} tabIndex={-1} className="drawer home-drawer" role="dialog" aria-modal="true" aria-label="Details">
+        <header className="drawer-head">
+          <h2 className="home-drawer-title">Details</h2>
+          <span className="spacer" />
+          <button type="button" className="btn quiet sm" onClick={onClose} aria-label="Close details">Close <Kbd>Esc</Kbd></button>
+        </header>
+        <div className="drawer-scroll">{children}</div>
+      </aside>
+    </div>
+  );
+}
+
+/** A row in the drawer: the question, the full draft, the task, and every question of the ask (or the whole card). */
 function RowDetail({ row, answer, done, receipt }: { row: NeedRow; answer: (r: NeedRow & { kind: "answer" }, t: string) => Promise<void>; done: (r: NeedRow) => Promise<void>; receipt?: Receipt }) {
   return (
     <div className="home-detail">

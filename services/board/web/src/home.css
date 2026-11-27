@@ -25,7 +25,9 @@
 .home-all { font-size: var(--text-sm); font-weight: 600; color: var(--accent); }
 .home-more { color: var(--faint); font-size: var(--text-sm); white-space: nowrap; }
 
-/* The detail pane's body. */
+/* The detail drawer (the board's drawer look, styles.css) and its body. */
+.drawer.home-drawer { width: min(520px, 100%); outline: none; }
+.home-drawer-title { margin: 0; font-size: var(--text-sm); font-weight: 600; color: var(--faint); }
 .home-detail { display: grid; gap: 12px; min-width: 0; }
 .home-detail-who { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: var(--text-sm); }
 .home-detail-who a { color: var(--muted); }

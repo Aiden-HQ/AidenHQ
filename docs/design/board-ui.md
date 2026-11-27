@@ -32,7 +32,7 @@ and type, grids that add columns, never a narrow column in the middle of a big s
 - **Phone**: a bottom bar (Home · Tasks · Ask Aiden · Team · More); More holds Apps, Insight, Settings, module pages and
   app panels.
 - **A page's own tools** go in the page (its header, or a `.page-tools` row like Tasks), never in the top bar.
-- **Routes:** `#/` Home (`#/approvals/<id>` opens that card in Home's pane), `#/tasks[?view=<id>]`,
+- **Routes:** `#/` Home (`#/approvals/<id>` opens that card in Home's drawer), `#/tasks[?view=<id>]`,
   `#/tasks/sessions[/<ref>]`, `#/apps[/<name>]`, `#/team`, `#/team/<key>[/c/<chat>][?text=…]`, `#/team/agents[/<key>[/<tab>]]`,
   `#/team/modules[/<name>[/<tab>]]`, `#/team/m/<page>[/<sub>]`, `#/insight/{costs,flow,decisions}`, `#/settings[/<cat>]`;
   overlays `#/t/<task>`, `#/r/<run>`, `#/brief`, `#/help`, `#/setup/<module>` keep the page under them, and closing one
@@ -135,19 +135,18 @@ outside `tokens.css`, and no class the kit replaced (`web/legacy-classes.json`, 
 
 `Home.tsx`, one read (`GET /api/home`), top to bottom: the greeting (Day-one Next up under it), Your day, Your world (who the
 owner waits on; today's calendar), then **Needs you on the left and Since you last looked on the right in one row** on Your
-world's columns (1.45fr / 1fr, so the gutters line up), with the detail pane opening at the top of the right column, beside the rows
-(a lone cell takes the whole row; stacked on a phone: Needs you, Since), then Your team (teammates with news, and Hire a teammate).
+world's columns (1.45fr / 1fr, so the gutters line up), (a lone cell takes the whole row; stacked on a phone: Needs you, Since), then Your team (teammates with news, and Hire a teammate).
 **Needs you holds everything
 waiting on the owner**: the teammates' asks (answers, approval cards, handed-back tasks) and the people waiting on his
 reply (open tasks labelled `needs-response`, which Intake files from Slack and email), each ONE compact row. **One row
 component** (`DigestRow` in `ui/DigestList.tsx`) draws every list on Home (Needs you, You're waiting on, Today, Since you last
 looked): face or monogram, one clamped line of text ("who · what"), the row's buttons inline, the age on the right; the same
 48px rows and paddings everywhere, buttons wrapping under the text on a phone. **The whole row is the click target** (no
-Open button; Enter does the same): Needs rows open the detail pane (where the full draft, every option and the card live),
-You're waiting on rows open the task. Buttons: an ask shows its single primary answer (the first option, or Approve and
+Open button; Enter does the same): Needs rows open a right-hand **drawer** over the page (the board's drawer look: scrim, click outside, Esc or Close dismisses; focus moves in and back to the row; a full-screen sheet on a phone; Home underneath keeps its layout) where the full draft, every option and the card live,
+You're waiting on rows open the task (the row text is a real button or link, so Tab and Enter work). Buttons: an ask shows its single primary answer (the first option, or Approve and
 Reject… for a card) and **Later**; an ask with several questions or options has no inline answer, only Later, and its row
-click opens the pane. A person waiting shows **Done** (closes the task as done), **Later** and **Dismiss** (closes it as
-cancelled; it stays in history). You're waiting on rows have Done, Later and Dismiss with the same meanings (Later hides it
+click opens the drawer. A person waiting (`needs-response`) shows **Done** (closes the task as done), **Later** and **Dismiss** (closes it as
+cancelled; it stays in history); a task handed back to the owner shows Done only. You're waiting on rows have Done, Later and Dismiss with the same meanings (Later hides it
 until 08:00 tomorrow, mouse only: J/K/E/S belong to Needs you). Each card lists the **newest ten** (newest first) with
 "View all N →" in its header, which opens Tasks (`#/tasks?show=needs`: the Needs you lane; `?show=waiting`: the `waiting-on`
 label) on the Agent work layout; the greeting and the card's count are the full N. Since is a glance; its "All N" expands in place under the card.
@@ -155,7 +154,7 @@ label) on the Agent work layout; the greeting and the card's count are the full 
 <name>." (the greeting counts every row of Needs you, so it never claims "nothing"). A fresh install sees the greeting,
 Next up and the team row.
 
-- **Keyboard** (`needs.ts`): J/K move through Needs you, Enter opens the detail pane, E does the row's main action (approve,
+- **Keyboard** (`needs.ts`): J/K move through Needs you, Enter opens the detail drawer, E does the row's main action (approve,
   the recommended option, Done), S is Later. Enter, E and S wait until a row is picked; every key is off while
   typing, with a modifier, or with focus in Ask Aiden, a pane, a dialog or ⌘K.
 - **Later** (snooze) hides a row until 08:00 the next day, per account. **Receipts** replace an answered row ("Sent: …", "Approved",
@@ -163,7 +162,7 @@ Next up and the team row.
 - **The window** of Since is per visit: the first answer's `since_from` goes back with every refetch, and the cursor moves
   to a snapshot's `as_of` once it has been on screen; with a Since digest on the page, once that digest has been in the
   viewport (an IntersectionObserver), so a digest below the fold is not marked seen unread.
-- `#/approvals/<id>` opens that card in the pane: its row when it is listed, else the card read alone (a decided one shows
+- `#/approvals/<id>` opens that card in the drawer: its row when it is listed, else the card read alone (a decided one shows
   its outcome).
 - Every other write record is on Insight › Decisions; failed and idle tasks are on Team › All agents (`AttentionStrip`).
 

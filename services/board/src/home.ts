@@ -61,8 +61,6 @@ const DAY = 86_400_000;
 /** The since window's oldest start: the ledger's age. */
 const MAX_WINDOW = 14 * DAY;
 const TODAY_MS = 5 * 60_000;
-/** The most people waiting on a reply that Needs you lists (the oldest first); Intake can file many. */
-const REPLIES = 10;
 /** Kinds of ledger rows Home tells again (decisions and alerts are needs or already seen). */
 const SINCE_KINDS = ["done", "fyi", "digest"];
 /** The most since items one response carries ("All N" says when it shows fewer than the total). */
@@ -174,7 +172,6 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
   const replies = open
     .filter((i) => labelled(i, "needs-response") && !asked.has(i.id) && !asked.has(i.identifier) && !snoozed.has(i.id))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-    .slice(0, REPLIES)
     .map((i): NeedRow => {
       // Intake's task format: the description opens with `Type:` (Slack, Email) and `From:`; the title is "Reply to <person>: <topic>".
       const field = (k: string) => new RegExp(`^${k}:[ \\t]*(.+)$`, "im").exec(i.description ?? "")?.[1]?.trim();

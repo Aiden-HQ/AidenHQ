@@ -42,7 +42,13 @@ export function DigestRow({ d }: { d: DigestItem }) {
         </span>
       ) : (
         <>
-          <span className="ui-digest-text" title={d.title}>{d.text}</span>
+          {d.onOpen ? (
+            <button type="button" className="ui-digest-text ui-digest-open" title={d.title} onClick={d.onOpen}>{d.text}</button>
+          ) : d.open ? (
+            <a className="ui-digest-text ui-digest-open" title={d.title} href={safeHref(d.open)}>{d.text}</a>
+          ) : (
+            <span className="ui-digest-text" title={d.title}>{d.text}</span>
+          )}
           {d.actions && <span className={`ui-digest-actions${d.persist ? " persist" : ""}`}>{d.actions}</span>}
           {d.meta && <span className="ui-digest-meta">{d.meta}</span>}
           {d.link && <a href={safeHref(d.link.href)}>{d.link.label}</a>}

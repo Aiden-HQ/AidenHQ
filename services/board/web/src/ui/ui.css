@@ -352,6 +352,9 @@ button.ui-dr-top:hover .ui-dr-q { color: var(--accent); }
 .ui-digest-row.openable { cursor: pointer; }
 .ui-digest-row.on, .ui-digest-row.on:hover { background: color-mix(in srgb, var(--accent) 5%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 32%, var(--border)); }
 .ui-digest-text { flex: 1; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+.ui-digest-open { padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; text-decoration: none; cursor: pointer; border-radius: var(--radius-sm); }
+.ui-digest-open:focus-visible { outline: none; box-shadow: var(--ring); }
+.ui-digest-row:hover .ui-digest-open { color: var(--accent); }
 .ui-digest-text b { font-weight: 600; }
 .ui-digest-receipt { display: flex; align-items: center; gap: 8px; color: var(--ok-text); font-weight: 600; }
 .ui-digest-meta { flex: none; min-width: 5.5em; text-align: right; font-size: var(--text-sm); color: var(--faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
