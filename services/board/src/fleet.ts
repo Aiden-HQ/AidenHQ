@@ -113,11 +113,13 @@ const VERBS: Record<string, RegExp> = {
 
 const NEGATION = /\b(don['’]?t|do not|never|no|not|stop|cancel|hold off on|avoid)\b/i;
 
-/** True when some match of `verb` in `q` is a request: not negated by a negation word in the 3 words before it within the same clause ("don't run", "never ever run"). */
-function asks(q: string, verb: RegExp): boolean {
-  const g = new RegExp(verb.source, "gi");
-  for (const m of q.matchAll(g)) {
-    const clause = q.slice(0, m.index).split(/[.,;:!?\n]/).pop()!;
+/**
+ * True when a match of `verb` inside `q`, found at `at` in `text` (the owner's whole message), is a request: not negated by a negation word in the 3 words before it within the same clause
+ * ("don't run", "never ever run"), looking at the message, not only the quote, so where the caller starts the quote changes nothing. "Don't forget to run" asks.
+ */
+function asks(text: string, at: number, q: string, verb: RegExp): boolean {
+  for (const m of q.matchAll(new RegExp(verb.source, "gi"))) {
+    const clause = text.slice(0, at + m.index).split(/[.,;:!?\n]/).pop()!.replace(/\b(don['’]?t|do not) (forget|hesitate) to\b/gi, "");
     if (!NEGATION.test(clause.trim().split(/\s+/).slice(-3).join(" "))) return true;
   }
   return false;
@@ -161,17 +163,23 @@ export async function assertOwnerWords(pc: Paperclip, store: Pick<Store, "meta">
   if (q.length < 12) throw new Refused("refused: `quote` must be the owner's exact words (at least 12 characters)");
   const named = words(target);
   if (!named || !` ${words(q)} `.includes(` ${named} `)) throw new Refused(`refused: the owner's words must name the target ("${target}")`);
-  if (!asks(q, VERBS[action.split("_")[0]!]!)) throw new Refused(`refused: the owner's words must ask for it (${action.split("_")[0]}...)`);
+  const verb = VERBS[action.split("_")[0]!]!;
+  if (!verb.test(q)) throw new Refused(`refused: the owner's words must ask for it (${action.split("_")[0]}...)`);
   const me = await pc.me();
   if (!me) throw new Refused("refused: owner unknown");
   const task = await pc.issue(taskRef);
   if (task.assigneeAgentId !== caller.id) throw new Refused("refused: the current task is not assigned to you");
+  // The quote must occur verbatim in the message at a spot where the action is not negated.
+  const asksIn = (text: string) => {
+    for (let i = text.indexOf(q); i >= 0; i = text.indexOf(q, i + 1)) if (asks(text, i, q, verb)) return true;
+    return false;
+  };
   const owns = (body: string, at: string) =>
     // Only original words: anything the board or runner relayed or posted (from/for-others/delivered/runner markers) never counts.
     !/<!-- aidenhq-/.test(body) &&
     !VOICE.test(body) &&
     Date.now() - Date.parse(at) < QUOTE_MAX_AGE_MS &&
-    unfenced(body.replace(/<!--[\s\S]*?-->/g, "")).toLowerCase().includes(q);
+    asksIn(unfenced(body.replace(/<!--[\s\S]*?-->/g, "")).toLowerCase());
   const hit = (await pc.comments(task.id)).find((c) => c.authorType === "user" && Boolean(c.authorUserId) && c.authorUserId === me && owns(c.body, c.createdAt));
   if (hit) return hit.id;
   // A new chat's first message is the task's description, not a comment: the board recorded it when the owner started the chat.

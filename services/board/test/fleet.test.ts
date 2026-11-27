@@ -89,9 +89,14 @@ describe("fleet owner-words gate", () => {
   });
   it("refuses a negated request and accepts a plain one", async () => {
     for (const q of ["don't run the daily brief now", "please do not run the daily brief now", "never ever run the daily brief", "dont run the daily brief now", "hold off on run the daily brief", "I said stop, don't run the daily brief now"])
-      await expect(gate(pcWith(q), "run_routine", "daily brief", q)).rejects.toThrow(/ask for it/);
+      await expect(gate(pcWith(q), "run_routine", "daily brief", q)).rejects.toThrow(Refused);
     for (const q of ["please run the daily brief now", "go ahead and run the daily brief", "yes, run the daily brief now", "no. run the daily brief now"])
       await expect(gate(pcWith(q), "run_routine", "daily brief", q)).resolves.toBe("c1");
+  });
+  it("reads negation from the whole message, not only the quote", async () => {
+    await expect(gate(pcWith("don't run the daily brief now"), "run_routine", "daily brief", "run the daily brief now")).rejects.toThrow(/ask for it|not the owner's own words/);
+    await expect(gate(pcWith("Don't forget to run the daily brief now"), "run_routine", "daily brief", "run the daily brief now")).resolves.toBe("c1");
+    await expect(gate(pcWith("Don't forget to run the daily brief now"), "run_routine", "daily brief", "don't forget to run the daily brief now")).resolves.toBe("c1");
   });
   it("fails closed without an author id, on a missing verb or target, and on short quotes", async () => {
     await expect(gate(pcWith("pause the slack scout", null), "pause_agent", "slack scout", "pause the slack scout")).rejects.toThrow(Refused);
