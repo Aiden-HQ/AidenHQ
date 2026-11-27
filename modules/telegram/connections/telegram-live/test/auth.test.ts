@@ -100,4 +100,47 @@ describe("auth", () => {
     expect(b.kernel.notices).toEqual([]);
     expect(b.exits).toEqual([]);
   });
+
+  it("LoggingOut then Closed waits for the in-flight reports; the notified marker is set only after they land", async () => {
+    const td = new FakeTd();
+    td.on("getMe", user);
+    const kernel = fakeKernel();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const send = kernel.notify;
+    kernel.notify = async (t: string, k: string) => {
+      await gate;
+      await send(t, k);
+    };
+    const store = openStore(tmpDb());
+    const exits: number[] = [];
+    const mk = (k: typeof kernel, t: FakeTd) => createAuth({ configured: () => true, open: () => t, store, dataDir: "/nonexistent", kernel: k, log: { info: () => {}, warn: () => {}, error: () => {} }, exit: (c) => void exits.push(c) });
+    mk(kernel, td);
+    td.emit(state({ _: "authorizationStateReady" }));
+    td.emit(state({ _: "authorizationStateLoggingOut" }));
+    td.emit(state({ _: "authorizationStateClosed" }));
+    await new Promise((r) => setImmediate(r));
+    expect(exits).toEqual([]);
+    expect(store.getKv("revoke_notified")).toBeFalsy();
+    release();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(exits).toEqual([0]);
+    expect(kernel.notices).toHaveLength(1);
+    expect(store.getKv("revoke_notified")).toBeTruthy();
+
+    // reports that fail leave the marker unset, and the next start sends them again
+    store.setKv("revoke_notified", "");
+    const bad = fakeKernel();
+    bad.notify = async () => {
+      throw new Error("down");
+    };
+    mk(bad, new FakeTd());
+    await new Promise((r) => setTimeout(r, 10));
+    expect(store.getKv("revoke_notified")).toBeFalsy();
+    const good = fakeKernel();
+    mk(good, new FakeTd());
+    await new Promise((r) => setTimeout(r, 10));
+    expect(good.notices).toHaveLength(1);
+    expect(store.getKv("revoke_notified")).toBeTruthy();
+  });
 });

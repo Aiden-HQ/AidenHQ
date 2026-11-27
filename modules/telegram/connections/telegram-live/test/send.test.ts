@@ -27,14 +27,27 @@ function setup(clock = { t: 1_000_000 }) {
 }
 
 test("normalise maps the six shapes", () => {
-  const n = (a: object) => normalise({ chat_id: "-1", ...a }, "Aiden").action;
-  expect(n({ text: "x" })).toBe("send");
-  expect(n({ reply_to_message_id: "2", text: "x" })).toBe("reply");
-  expect(n({ message_id: "2", emoji: "👍" })).toBe("react");
-  expect(n({ from_chat_id: "-2", message_id: "2" })).toBe("forward");
-  expect(n({ message_id: "2", text: "x" })).toBe("edit");
-  expect(n({ message_id: "2" })).toBe("delete");
-  expect(() => normalise({ chat_id: "-1" }, "Aiden")).toThrow();
+  const n = (a: object, k: string) => normalise({ chat_id: "-1", ...a }, "Aiden", `telegram.${k}`).action;
+  expect(n({ text: "x" }, "send")).toBe("send");
+  expect(n({ reply_to_message_id: "2", text: "x" }, "reply")).toBe("reply");
+  expect(n({ message_id: "2", emoji: "👍" }, "react")).toBe("react");
+  expect(n({ from_chat_id: "-2", message_id: "2" }, "forward")).toBe("forward");
+  expect(n({ message_id: "2", text: "x" }, "edit")).toBe("edit");
+  expect(n({ message_id: "2" }, "delete")).toBe("delete");
+  expect(() => normalise({ chat_id: "-1" }, "Aiden", "telegram.send")).toThrow();
+});
+
+test("a record's kind fixes its action: a send kind never plans a delete", async () => {
+  const { ex, fake } = setup();
+  fake.on("getChat", { id: -1, title: "T", type: { _: "chatTypeSupergroup" } }).on("getMessage", { id: 2, is_outgoing: true });
+  const plan = (kind: string, args: object) => ex.plan({ kind, args, requester: { name: "Aiden" } as any, task: "t" });
+  await expect(plan("telegram.send", { chat_id: "-1", message_id: "2" })).rejects.toThrow("can only send");
+  await expect(plan("telegram.send", { chat_id: "-1", message_id: "2", text: "x" })).rejects.toThrow("can only send");
+  await expect(plan("telegram.reply", { chat_id: "-1", text: "x" })).rejects.toThrow("can only reply");
+  await expect(plan("telegram.delete", { chat_id: "-1", message_id: "2" })).resolves.toBeTruthy();
+  const bad = { ...rec(9, "-1"), args: { action: "delete", chat_id: "-1", message_id: "2", agent: "Aiden" } };
+  expect((await ex.execute(bad).catch((e) => e)).message).toContain("can only send");
+  expect(fake.calls.filter((c) => c._ === "deleteMessages")).toEqual([]);
 });
 
 test("the same record id sends once", async () => {
@@ -73,7 +86,7 @@ test("the hourly cap and the per-chat gap", async () => {
 test("edit plans refuse a message that is not the owner's, and nothing reads state", async () => {
   const { ex, fake } = setup();
   fake.on("getChat", { id: -1, title: "T", type: { _: "chatTypeSupergroup" } }).on("getMessage", { id: 2, is_outgoing: false });
-  const req = { kind: "telegram.send", args: { chat_id: "-1", message_id: "2", text: "x" }, requester: { name: "Aiden" } as any, task: "t" };
+  const req = { kind: "telegram.edit", args: { chat_id: "-1", message_id: "2", text: "x" }, requester: { name: "Aiden" } as any, task: "t" };
   await expect(ex.plan(req)).rejects.toThrow("only your own messages");
   expect(fake.calls.filter((c) => READ_STATE_METHODS.has(c._))).toEqual([]);
 });
@@ -83,9 +96,9 @@ test("plans put the words they act on in the card's details", async () => {
   fake
     .on("getChat", { id: -1, title: "T", type: { _: "chatTypeSupergroup" } })
     .on("getMessage", { id: 2, is_outgoing: true, content: { _: "messageText", text: { _: "formattedText", text: "old words", entities: [] } } });
-  const plan = (args: object) => ex.plan({ kind: "telegram.send", args, requester: { name: "Aiden" } as any, task: "t" });
+  const plan = (args: object, kind = "telegram.send") => ex.plan({ kind, args, requester: { name: "Aiden" } as any, task: "t" });
   expect((await plan({ chat_id: "-1", text: "hello" })).card?.details).toBe("hello");
-  expect((await plan({ chat_id: "-1", message_id: "2", text: "new words" })).card?.details).toBe("Was: old words\nNow: new words");
-  expect((await plan({ chat_id: "-1", message_id: "2" })).card?.details).toBe("Deletes for everyone: old words");
-  expect((await plan({ chat_id: "-1", from_chat_id: "-1", message_id: "2" })).card?.details).toBe("Forwards from T: old words");
+  expect((await plan({ chat_id: "-1", message_id: "2", text: "new words" }, "telegram.edit")).card?.details).toBe("Was: old words\nNow: new words");
+  expect((await plan({ chat_id: "-1", message_id: "2" }, "telegram.delete")).card?.details).toBe("Deletes for everyone: old words");
+  expect((await plan({ chat_id: "-1", from_chat_id: "-1", message_id: "2" }, "telegram.forward")).card?.details).toBe("Forwards from T: old words");
 });

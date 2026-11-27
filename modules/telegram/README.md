@@ -30,7 +30,7 @@ channels; `all` treats muted like unmuted), `telegram_exclude_chats` (chat ids n
 - `telegram_account` read: `telegram_list_chats`, `telegram_read_chat`, `telegram_search`, `telegram_get_message`,
   `telegram_chat_info`, `telegram_owner` (your id, usernames and name). Message text is fenced data.
 - Write: `telegram_save_draft`.
-- Destructive (named grants only; each a record the AI reviewer decides first, filed as `telegram.send`): `telegram_send`,
+- Destructive (named grants only; each a record the AI reviewer decides first, filed as its own kind: `telegram.send`, `.reply`, `.react`, `.forward`, `.edit`, `.delete`, so a grant names exactly the actions it allows): `telegram_send`,
   `telegram_reply`, `telegram_react`, `telegram_forward`, `telegram_edit_own`, `telegram_delete_own`.
 - Intake's inbox agent reads, and the chief of staff reads, drafts, sends and replies when you ask.
 - Warehouse views: `src_telegram.messages`, `chats`, `changes` (edits and deletes), `users`.

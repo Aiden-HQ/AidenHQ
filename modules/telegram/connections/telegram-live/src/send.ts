@@ -1,5 +1,5 @@
-// telegram.send (module.yaml writes.send), the executor side: an agent's telegram_send / _reply / _react / _forward / _edit_own /
-// _delete_own call is a kernel record. plan resolves the chat and checks ownership; the AI reviewer reads every call first
+// The telegram.<action> write kinds (module.yaml writes: send, reply, react, forward, edit, delete; one tool each), the executor
+// side: an agent's telegram_send / _reply / _react / _forward / _edit_own / _delete_own call is a kernel record. plan resolves the chat and checks ownership; the AI reviewer reads every call first
 // (floor 1). execute runs it as the owner's account with a persisted idempotency guard (the writes table, keyed by the record
 // id) and a persisted rate cap (send_log). A send whose outcome is ambiguous (a restart mid-send, no TDLib answer in 60 s) is
 // never retried blind: it answers "outcome unknown".
@@ -32,10 +32,21 @@ const UNKNOWN_TIMEOUT = "Outcome unknown: Telegram didn't confirm the message in
 /** A message's words for a card: its text or caption, else its kind. */
 const bodyOf = (m: any): string => m?.content?.text?.text ?? m?.content?.caption?.text ?? `[${String(m?.content?._ ?? "message").replace(/^message/, "").toLowerCase()}]`;
 
+/** The action each write kind carries: the kernel authorised the kind by the tool the caller holds, so the args must be that action's. */
+export const KIND_ACTION: Record<string, SendArgs["action"]> = { "telegram.send": "send", "telegram.reply": "reply", "telegram.react": "react", "telegram.forward": "forward", "telegram.edit": "edit", "telegram.delete": "delete" };
+
 const str = (v: unknown) => (typeof v === "string" && v !== "" ? v : undefined);
 
-/** The record's args: the action is inferred from the arg shape (the six tool shapes are pairwise distinct). */
-export function normalise(a: any, agent: string): SendArgs {
+/** The record's args: the action is inferred from the arg shape (the six tool shapes are pairwise distinct) and must be the one the record's kind carries. */
+export function normalise(a: any, agent: string, kind: string): SendArgs {
+  const want = KIND_ACTION[kind];
+  if (!want) throw new Error(`${kind} is not a telegram write kind`);
+  const got = infer(a, agent);
+  if (got.action !== want) throw new Error(`a ${kind} record can only ${want}; these args ${got.action}`);
+  return got;
+}
+
+function infer(a: any, agent: string): SendArgs {
   if (!agent) throw new Error("telegram sends need a known agent (its run key) to sign the card");
   const chat_id = str(a?.chat_id);
   if (!chat_id || !ID.test(chat_id)) throw new Error("chat_id must be a chat id, e.g. -1001234567890");
@@ -88,7 +99,7 @@ export function sender(d: {
     async plan(req) {
       const td = d.td();
       if (!td) throw new Error("Telegram isn't connected: set it up on the board (#/setup/telegram)");
-      const a = normalise(req.args, String(req.requester?.name ?? ""));
+      const a = normalise(req.args, String(req.requester?.name ?? ""), req.kind);
       const chat = await td.invoke<any>({ _: "getChat", chat_id: Number(a.chat_id) });
       if (chat.type?._ === "chatTypeSecret") throw new Error("secret chats aren't supported");
       // The card's details: the words the reviewer and the owner judge. A forward, an edit and a delete read the message they act on.
@@ -124,7 +135,7 @@ export function sender(d: {
       }
       const td = d.td();
       if (!td) return { ok: false, text: "Telegram isn't connected: set it up on the board (#/setup/telegram)" };
-      const a = normalise(rec.args, String(rec.args?.agent ?? ""));
+      const a = normalise(rec.args, String(rec.args?.agent ?? ""), rec.kind);
       const chatId = Number(a.chat_id);
       const t = now();
 

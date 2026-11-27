@@ -37,7 +37,7 @@ contributes:
 # token. kernel.owner-notice: it tells the owner when Telegram signs the account out (POST /v1/connections/need).
 roles:
   requests: [ kernel.events, kernel.owner-notice ]
-# The kernel calls telegram.send's plan, execute and status here, with the connection's key (executor@1).
+# The kernel calls the telegram write kinds' plan, execute and status here, with the connection's key (executor@1).
 providers:
   executor:
     url: http://telegram-live:8090/aidenhq/v1/executor
@@ -50,19 +50,71 @@ connections:
     auth: telegram_live_service_key
     # Reads touch no read state (nothing is marked read). telegram_save_draft is the one plain write. Every send, reply, reaction,
     # forward, edit and delete acts as the owner: `destructive`, so only a grant naming one reaches it and each is a record the
-    # AI reviewer decides first (writes.send below).
+    # AI reviewer decides first (the writes below, one kind per action).
     tools:
       read: [ telegram_list_chats, telegram_read_chat, telegram_search, telegram_get_message, telegram_chat_info, telegram_owner ]
       write: [ telegram_save_draft ]
       destructive: [ telegram_send, telegram_reply, telegram_react, telegram_forward, telegram_edit_own, telegram_delete_own ]
     # Routines' events (kernel events.ts): a routine subscribes to a chat its agent's telegram_read_chat reaches.
     events: { resource: "chat id", kinds: [ message ], filter: [ kind, author, label, bot ], reads: [ telegram_read_chat ] }
-# Every agent send is a kernel record the AI reviewer reads first (floor 1).
+# Every agent send is a kernel record the AI reviewer reads first (floor 1). One kind per Telegram action, each routing exactly
+# one tool: the kernel authorises a kind by the tools a caller holds, so a send grant can never file a delete, and the executor's
+# plan refuses a record whose args are another action's.
 writes:
   send:
     args: schemas/send.json
     floor: 1
-    tools: [ telegram_send, telegram_reply, telegram_react, telegram_forward, telegram_edit_own, telegram_delete_own ]
+    tools: [ telegram_send ]
+    card:
+      sentence: "Telegram, as you: {{what}} in {{chat}}."
+      changes: "{{changes}}"
+      reads: "Nothing new: the text below."
+      cost: "No model cost."
+      details: "{{details}}" # the planner fills it: the text, or the message a forward, edit or delete acts on
+  reply:
+    args: schemas/reply.json
+    floor: 1
+    tools: [ telegram_reply ]
+    card:
+      sentence: "Telegram, as you: {{what}} in {{chat}}."
+      changes: "{{changes}}"
+      reads: "Nothing new: the text below."
+      cost: "No model cost."
+      details: "{{details}}" # the planner fills it: the text, or the message a forward, edit or delete acts on
+  react:
+    args: schemas/react.json
+    floor: 1
+    tools: [ telegram_react ]
+    card:
+      sentence: "Telegram, as you: {{what}} in {{chat}}."
+      changes: "{{changes}}"
+      reads: "Nothing new: the text below."
+      cost: "No model cost."
+      details: "{{details}}" # the planner fills it: the text, or the message a forward, edit or delete acts on
+  forward:
+    args: schemas/forward.json
+    floor: 1
+    tools: [ telegram_forward ]
+    card:
+      sentence: "Telegram, as you: {{what}} in {{chat}}."
+      changes: "{{changes}}"
+      reads: "Nothing new: the text below."
+      cost: "No model cost."
+      details: "{{details}}" # the planner fills it: the text, or the message a forward, edit or delete acts on
+  edit:
+    args: schemas/edit.json
+    floor: 1
+    tools: [ telegram_edit_own ]
+    card:
+      sentence: "Telegram, as you: {{what}} in {{chat}}."
+      changes: "{{changes}}"
+      reads: "Nothing new: the text below."
+      cost: "No model cost."
+      details: "{{details}}" # the planner fills it: the text, or the message a forward, edit or delete acts on
+  delete:
+    args: schemas/delete.json
+    floor: 1
+    tools: [ telegram_delete_own ]
     card:
       sentence: "Telegram, as you: {{what}} in {{chat}}."
       changes: "{{changes}}"

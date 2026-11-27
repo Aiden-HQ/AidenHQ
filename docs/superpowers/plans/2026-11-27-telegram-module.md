@@ -4,11 +4,11 @@
 
 **Goal:** A `telegram` module that signs in to the user's own Telegram account from the board (an `api_id`, then a QR code), keeps `src_telegram` in the warehouse current, feeds Intake triage, and lets granted agents read, draft and (reviewed) send as the user.
 
-**Architecture:** There is one service, `telegram-live`. It is the only TDLib client of the account (`tdl` + `prebuilt-tdlib`). Every kept TDLib update commits, in one SQLite transaction, the warehouse rows, the kernel event and the chat checkpoint into a local outbox. Two drainers then empty that outbox, one into the warehouse (idempotent upserts) and one into the kernel's event router (deduplicated by event id). The same process serves the MCP tools, the board's sign-in endpoints and the `telegram.send` executor. The board gets three generic sign-in additions, usable by any module: a QR variant of the device sign-in, a transient secret step and a Disconnect action.
+**Architecture:** There is one service, `telegram-live`. It is the only TDLib client of the account (`tdl` + `prebuilt-tdlib`). Every kept TDLib update commits, in one SQLite transaction, the warehouse rows, the kernel event and the chat checkpoint into a local outbox. Two drainers then empty that outbox, one into the warehouse (idempotent upserts) and one into the kernel's event router (deduplicated by event id). The same process serves the MCP tools, the board's sign-in endpoints and the write executor. The board gets three generic sign-in additions, usable by any module: a QR variant of the device sign-in, a transient secret step and a Disconnect action.
 
 **Tech Stack:** TypeScript on Node 24, `tdl@8.1.0`, `prebuilt-tdlib@0.1008070.0` and `@prebuilt-tdlib/types@0.1008070.0`, `better-sqlite3`, `pg`, `@modelcontextprotocol/sdk`, zod, vitest. The board is React (`services/board/web`) and uses `qrcode-generator@2.0.4`, which is already a dependency.
 
-**Spec:** `docs/superpowers/specs/2026-11-27-telegram-module-design.md`. Its "Calls made in review" are fixed decisions. Read it beside this plan. Rules: `CLAUDE.md` "Conventions" and `modules/AGENTS.md`, both in full. They are cited below, not copied.
+**Spec:** `docs/superpowers/specs/2026-11-27-telegram-module-design.md`. Its "Calls made in review" record what was decided in review and why. Read it beside this plan. Rules: `CLAUDE.md` "Conventions" and `modules/AGENTS.md`, both in full. They are cited below, not copied.
 
 ## Global Constraints
 
@@ -515,7 +515,7 @@ Shape follows slack-live's `main.ts`:
 
 ---
 
-## Lane C: agent tools and the `telegram.send` executor
+## Lane C: agent tools and the Telegram write executor
 
 All paths below are under `modules/telegram/connections/telegram-live/`.
 
@@ -541,7 +541,7 @@ Tools, registered like slack-live's `mcp.ts`:
 | `telegram_get_message` | `{ chat_id, message_id }` | `getMessage` + `getRepliedMessage` when it is a reply |
 | `telegram_chat_info` | `{ chat_id }` | `getChat` + `getSupergroupFullInfo` / `getBasicGroupFullInfo` / `getUser` |
 | `telegram_save_draft` (write) | `{ chat_id, text 1..4096, reply_to_message_id? }` | `setChatDraftMessage`. A plain write tool, so the proxy makes it a Tier 0 conn-tool record. |
-| `telegram_send`, `telegram_reply`, `telegram_react`, `telegram_forward`, `telegram_edit_own`, `telegram_delete_own` (destructive) | send `{chat_id,text}`; reply `{chat_id,reply_to_message_id,text}`; react `{chat_id,message_id,emoji}`; forward `{from_chat_id,message_id,chat_id}`; edit_own `{chat_id,message_id,text}`; delete_own `{chat_id,message_id}` | none. A direct call answers `isError` "runs only as the kernel's telegram.send record", as `slack_post` does. |
+| `telegram_send`, `telegram_reply`, `telegram_react`, `telegram_forward`, `telegram_edit_own`, `telegram_delete_own` (destructive) | send `{chat_id,text}`; reply `{chat_id,reply_to_message_id,text}`; react `{chat_id,message_id,emoji}`; forward `{from_chat_id,message_id,chat_id}`; edit_own `{chat_id,message_id,text}`; delete_own `{chat_id,message_id}` | none. A direct call answers `isError` "runs only as a kernel write record", as `slack_post` does. |
 
 The input shapes of the six destructive tools are pairwise distinct. The executor relies on that to infer `action`, because the proxy passes only `arguments` to `writes.request`.
 
@@ -651,11 +651,11 @@ connections:
       write: [ telegram_save_draft ]
       destructive: [ telegram_send, telegram_reply, telegram_react, telegram_forward, telegram_edit_own, telegram_delete_own ]
     events: { resource: "chat id", kinds: [ message ], filter: [ kind, author, label, bot ], reads: [ telegram_read_chat ] }
-writes:
+writes:   # one kind per action (send, reply, react, forward, edit, delete), each with its own schemas/<kind>.json and one tool
   send:
     args: schemas/send.json
     floor: 1
-    tools: [ telegram_send, telegram_reply, telegram_react, telegram_forward, telegram_edit_own, telegram_delete_own ]
+    tools: [ telegram_send ]
     card: { sentence: "Telegram, as you: {{what}} in {{chat}}.", changes: "{{changes}}", reads: "Nothing new: the text below.", cost: "No model cost.", details: "{{text}}" }
 settings:
   telegram_muted: { default: tagged, values: [ tagged, all ] }        # + the spec's comment, verbatim in meaning
@@ -757,7 +757,7 @@ Check these against `docs/configuration.md` while writing: the `links: [board]` 
 - [ ] **Step 2:** Run the compile with the real modules:
   `perl -e 'alarm shift; exec @ARGV' 600 node scripts/compile.ts` with a scratch instance that enables `telegram`, then one that does not.
   - Expected: no errors in either.
-  - Enabled: `config/kernel/writes.json` has `telegram.send` with floor 1 and six tools.
+  - Enabled: `config/kernel/writes.json` has `telegram.send`, `.reply`, `.react`, `.forward`, `.edit` and `.delete`, each floor 1 with one tool.
   - Enabled: grants give the chief of staff exactly the nine tools and intake the read tools.
   - Disabled: no `telegram-triage` routine and no `telegram_account` grants.
 - [ ] **Step 3:** Run every CI suite the change touches, each under the timeout, followed by `pkill -f "${WT:?}/"`:

@@ -74,13 +74,27 @@ export function createAuth(o: {
   const waiters = new Set<() => void>();
 
   const revokedReason = () => store.getKv("revoked") || undefined;
-  /** Tells the owner once per revoke; resolves once both reports are sent (each logs its own failure). */
+  // `revoked` (kv) is the status; `revoke_notified` is set only after both reports landed, so a crash before then retries them
+  // at the next start. `reporting` is the reports in flight: a Closed that follows LoggingOut waits on the same ones.
+  let reporting: Promise<unknown> | undefined;
+  /** Tells the owner once per revoke; resolves once both reports are sent (or failed, to be retried). */
   function revoked(why: string): Promise<unknown> {
-    if (ours || revokedReason()) return Promise.resolve();
-    store.setKv("revoked", why);
-    since = new Date(now()).toISOString();
-    log.warn({ why }, "telegram session revoked");
-    return Promise.all([kernel.need("expired", "Telegram signed AidenHQ out: reconnect on the board"), kernel.notify(NOTICE, "telegram:session")]);
+    if (ours) return Promise.resolve();
+    if (!revokedReason()) {
+      store.setKv("revoked", why);
+      since = new Date(now()).toISOString();
+      log.warn({ why }, "telegram session revoked");
+    }
+    if (store.getKv("revoke_notified")) return Promise.resolve();
+    reporting ??= Promise.all([kernel.need("expired", "Telegram signed AidenHQ out: reconnect on the board"), kernel.notify(NOTICE, "telegram:session")])
+      .then(() => store.setKv("revoke_notified", "1"))
+      .catch((err) => {
+        log.warn({ err: String(err).slice(0, 200) }, "revocation reports not delivered; retrying in a minute");
+        // Until the owner has been told (or signed in again), a minute later, and at every start.
+        setTimeout(() => void (revokedReason() && void revoked(revokedReason()!)), 60_000).unref?.();
+      })
+      .finally(() => void (reporting = undefined));
+    return reporting;
   }
 
   const wrapped: TdClient = {
@@ -104,6 +118,7 @@ export function createAuth(o: {
     if (s._ === "authorizationStateReady") {
       attempt = undefined;
       store.setKv("revoked", "");
+      store.setKv("revoke_notified", "");
       for (const fn of readyFns) fn(wrapped);
       void wrapped.invoke<Td.user>({ _: "getMe" }).then((u) => void (me = toMe(u)), (err) => log.warn({ err: String(err).slice(0, 200) }, "getMe failed"));
     }
@@ -149,6 +164,7 @@ export function createAuth(o: {
   }
 
   ensureClient(); // a session that exists already goes straight to Ready
+  if (revokedReason()) void revoked(revokedReason()!); // a revoke whose reports didn't land before the last exit
 
   const READY = "authorizationStateReady";
   return {
@@ -220,7 +236,7 @@ export function createAuth(o: {
       rmSync(`${o.dataDir}/tdlib`, { recursive: true, force: true });
       store.tx(() => {
         for (const t of ["checkpoint", "backfill", "ingested", "msg_root", "agent_pending"]) store.db.exec(`DELETE FROM ${t}`);
-        store.db.prepare(`DELETE FROM kv WHERE k IN ('backfill_started', 'revoked')`).run();
+        store.db.prepare(`DELETE FROM kv WHERE k IN ('backfill_started', 'revoked', 'revoke_notified')`).run();
       });
       log.info("telegram disconnected; restarting idle");
       setTimeout(() => exit(0), 200).unref?.(); // after the board has its answer

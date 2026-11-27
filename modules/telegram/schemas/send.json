@@ -1,14 +1,35 @@
 {
-  "type": "object", "additionalProperties": false, "required": ["action", "chat_id", "agent"],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "action",
+    "chat_id",
+    "text",
+    "agent"
+  ],
   "properties": {
-    "action": { "enum": ["send", "reply", "react", "forward", "edit", "delete"] },
-    "chat_id": { "type": "string", "pattern": "^-?[0-9]{1,20}$" },
-    "text": { "type": "string", "minLength": 1, "maxLength": 4096 },
-    "reply_to_message_id": { "type": "string", "pattern": "^[0-9]{1,20}$" },
-    "message_id": { "type": "string", "pattern": "^[0-9]{1,20}$" },
-    "from_chat_id": { "type": "string", "pattern": "^-?[0-9]{1,20}$" },
-    "emoji": { "type": "string", "minLength": 1, "maxLength": 16 },
-    "chat_title": { "type": "string", "maxLength": 200 },
-    "agent": { "type": "string", "minLength": 1, "maxLength": 100 }
+    "action": {
+      "enum": [
+        "send"
+      ]
+    },
+    "chat_id": {
+      "type": "string",
+      "pattern": "^-?[0-9]{1,20}$"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "chat_title": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "agent": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    }
   }
 }

@@ -238,8 +238,10 @@ The rules:
 | `destructive` | `telegram_send`, `telegram_reply`, `telegram_react`, `telegram_forward`, `telegram_edit_own`, `telegram_delete_own` |
 
 **Writes**
-- There is one write kind, `telegram.send`, with an `action` field (send, reply, react, forward, edit, delete) and a
-  card that names the action, the chat and the text. It is floor 1, so the AI reviewer decides every call first. The
+- There is one write kind per action (`telegram.send`, `.reply`, `.react`, `.forward`, `.edit`, `.delete`), each routing
+  exactly one tool, so a grant to `telegram_send` can never file a delete (the kernel authorises a kind by the tools a caller
+  holds). The record's args carry the `action`, and the executor's plan refuses args that aren't the kind's action. Each card
+  names the action, the chat and the text. It is floor 1, so the AI reviewer decides every call first. The
   floor is set by the executor, as `slack.post`'s is.
 - **The executor:**
   - persists the write id, the rate-limit state and TDLib's send outcome;

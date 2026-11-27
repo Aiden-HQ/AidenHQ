@@ -1,0 +1,40 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "action",
+    "chat_id",
+    "message_id",
+    "emoji",
+    "agent"
+  ],
+  "properties": {
+    "action": {
+      "enum": [
+        "react"
+      ]
+    },
+    "chat_id": {
+      "type": "string",
+      "pattern": "^-?[0-9]{1,20}$"
+    },
+    "message_id": {
+      "type": "string",
+      "pattern": "^[0-9]{1,20}$"
+    },
+    "emoji": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16
+    },
+    "chat_title": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "agent": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    }
+  }
+}

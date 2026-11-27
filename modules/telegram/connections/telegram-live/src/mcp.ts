@@ -181,8 +181,9 @@ export function buildServer(d: { td: TdClient | undefined; store: Store; me: () 
     },
   );
 
-  // The kernel files every call as telegram.send and runs it through the executor (send.ts) once approved. The six input
-  // shapes are pairwise distinct: the executor infers the action from them.
+  // The kernel files every call as its own kind (telegram.send, .reply, .react, .forward, .edit, .delete: one tool each) and runs
+  // it through the executor (send.ts) once approved. The six input shapes are pairwise distinct: the executor checks the args
+  // are the kind's action.
   const sends: [string, string, z.ZodRawShape][] = [
     ["telegram_send", "Send a message as the owner.", { chat_id: chatId, text: text4096 }],
     ["telegram_reply", "Reply to a message as the owner.", { chat_id: chatId, reply_to_message_id: msgId, text: text4096 }],
@@ -199,7 +200,7 @@ export function buildServer(d: { td: TdClient | undefined; store: Store; me: () 
         inputSchema: z.strictObject(shape),
         annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
       },
-      async () => fail(`${name} runs only as the kernel's telegram.send record`),
+      async () => fail(`${name} runs only as a kernel write record`),
     );
   }
   return server;
