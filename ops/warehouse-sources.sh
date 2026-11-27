@@ -18,7 +18,7 @@ fi
 
 pw() { if [ -s "$secrets/$1" ]; then tr -d '\n' < "$secrets/$1"; fi; }
 {
-  for s in slack github jira hubspot meetings docs security tasks; do printf '\\set pw_src_%s %s\n' "$s" "$(pw "warehouse_src_${s}_password")"; done
+  for s in slack telegram github jira hubspot meetings docs security tasks; do printf '\\set pw_src_%s %s\n' "$s" "$(pw "warehouse_src_${s}_password")"; done
   cat modules/warehouse/apps/warehouse/sources.sql
 } | docker exec -i "$container" psql -X -q -v ON_ERROR_STOP=1 -U warehouse -d warehouse >/dev/null
 echo "warehouse-sources: writer roles, schemas and src_meta are in place"

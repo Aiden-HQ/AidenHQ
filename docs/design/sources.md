@@ -17,6 +17,7 @@ SELECT on its views to `agents_open`. The roles, schemas and shared `src_meta` t
 | Schema | Writer | Covers |
 |---|---|---|
 | `src_slack` | slack-live | Every Socket Mode event the owner's token receives, before any filtering: bot posts, thread replies, edits (a new revision; the old text goes to the change log), deletes (tombstones that keep no copy of the text). A 15-minute gap sync with the owner's user token covers disconnects; a weekly full re-read of the last week tombstones what Slack no longer returns. |
+| `src_telegram` | telegram-live | Every chat of the owner's own Telegram account (TDLib, signed in by QR): messages with their reply and forward context, edits (a new revision; the old text goes to the change log), deletes (tombstones that keep no copy of the text), chats and users. Reading never marks a chat read. A first sync of the last `telegram_backfill_days` (30), newest chats first, then every update live. |
 | `src_github` | github-mcp | Issues and PRs in the configured orgs, and every Projects v2 board found in them (items and field values), using the owner's GitHub sign-in (background calls keep a 20% rate-limit reserve). Every 15 minutes. |
 | `src_jira` | jira-mcp | Issues, sprints and boards for the configured site, and Confluence pages (metadata and a search excerpt). Runs inside jira-mcp so there is one OAuth token pair and one refresh. |
 | `src_hubspot` | hubspot-mcp | Contacts, companies, deals and activities. Runs inside hubspot-mcp, sharing its OAuth token pair. |
