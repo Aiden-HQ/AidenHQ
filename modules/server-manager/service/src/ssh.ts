@@ -84,6 +84,16 @@ const SAFE_WORD = /^[A-Za-z0-9_@%+=:,.~\/\[\]{}-]+$/;
 /** One word for the host's shell: a word with a shell-special character (`~`, `[`, `{`) is single-quoted (no quotes can reach here, so no escaping). */
 const quote = (a: string) => (/^[A-Za-z0-9_@%+=:,.\/-]+$/.test(a) ? a : `'${a}'`);
 
+/** Whether one word may be sent to a host: the module's own values only (a package name=version, a path, a number, a flag). */
+export const commandWordOk = (a: string) => SAFE_WORD.test(a);
+
+/**
+ * The words as the host's shell receives them: each quoted, in order. ssh joins the words of its command into one line with single
+ * spaces, so `quoteWords(argv).join(" ")` is exactly what the host's shell parses. The live smoke test (test/live-apt.test.ts) runs
+ * that line, which is how it proves the words reach apt intact without a key or a real host.
+ */
+export const quoteWords = (argv: string[]) => argv.map(quote);
+
 const HOST_KEY_CHANGED = /REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed/i;
 
 /**
@@ -375,8 +385,8 @@ export class Connection {
    */
   async exec(argv: string[], timeoutMs = TIMEOUTS.read): Promise<ExecResult> {
     if (!this.keyFile) throw new Error("the connection was not opened");
-    for (const a of argv) if (!SAFE_WORD.test(a)) throw new Error(`${this.machine.name}: refused a command word outside the allowed characters`);
-    const r = await this.spawnRun([...this.baseArgs(), this.target(), ...argv.map(quote)], timeoutMs);
+    for (const a of argv) if (!commandWordOk(a)) throw new Error(`${this.machine.name}: refused a command word outside the allowed characters`);
+    const r = await this.spawnRun([...this.baseArgs(), this.target(), ...quoteWords(argv)], timeoutMs);
     if (r.code !== 0) throw new Error(`${this.machine.name}: ${this.reason(scrub(r.stderr || r.stdout, this.secret))}`);
     return { code: r.code, stdout: r.stdout, stderr: scrub(r.stderr, this.secret) };
   }
@@ -390,8 +400,8 @@ export class Connection {
    */
   async probe(argv: string[], timeoutMs = TIMEOUTS.read): Promise<ExecResult> {
     if (!this.keyFile) throw new Error("the connection was not opened");
-    for (const a of argv) if (!SAFE_WORD.test(a)) throw new Error(`${this.machine.name}: refused a command word outside the allowed characters`);
-    const r = await this.spawnRun([...this.baseArgs(), this.target(), ...argv.map(quote)], timeoutMs);
+    for (const a of argv) if (!commandWordOk(a)) throw new Error(`${this.machine.name}: refused a command word outside the allowed characters`);
+    const r = await this.spawnRun([...this.baseArgs(), this.target(), ...quoteWords(argv)], timeoutMs);
     if (r.code === 255 || HOST_KEY_CHANGED.test(r.stderr)) throw new Error(`${this.machine.name}: ${this.reason(scrub(r.stderr || r.stdout, this.secret))}`);
     return { code: r.code, stdout: scrub(r.stdout, this.secret), stderr: scrub(r.stderr, this.secret) };
   }
