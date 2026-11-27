@@ -238,11 +238,13 @@ async function main() {
   const structural = [
     ...diff.filter((f) => OTHER_LOCK.test(f) && textAt(head, f) !== undefined).map((f) => `${f}: Bun is the one package manager: install with bun (bun.lock), never another lockfile`),
     ...diff.filter((f) => /(^|\/)\.npmrc$/.test(f) && textAt(head, f) !== undefined).map((f) => `${f}: an .npmrc can point installs at another registry: none is allowed`),
-    // Every changed bun.lock has the canonical bunfig.toml beside it, and a changed (or deleted) bunfig.toml beside a bun.lock
-    // must stay canonical.
+    // Every changed bun.lock has the canonical bunfig.toml beside it, a changed bunfig.toml stays canonical, and one beside a
+    // bun.lock is never deleted.
     ...[...new Set([...files, ...diff.filter((f) => /(^|\/)bunfig\.toml$/.test(f))].map((f) => `${dirOf(f)}bunfig.toml`))]
-      .filter((f) => textAt(head, `${dirOf(f)}bun.lock`) !== undefined)
-      .map((f) => bunfigProblem(f, textAt(head, f))).filter((p): p is string => !!p),
+      .map((f) => ({ f, text: textAt(head, f) }))
+      // A missing one is a problem only beside a bun.lock; one that is there is always checked (a root bunfig governs subdirs' installs too).
+      .filter(({ f, text }) => text !== undefined || textAt(head, `${dirOf(f)}bun.lock`) !== undefined)
+      .map(({ f, text }) => bunfigProblem(f, text)).filter((p): p is string => !!p),
     ...files.flatMap((f) => { const t = textAt(head, f); return t === undefined ? [] : lockProblems(f, t); }),
   ];
   const changes = files.flatMap((f) => { const next = lockAt(head, f); return next ? changedEntries(lockAt(base, f), next) : []; });
