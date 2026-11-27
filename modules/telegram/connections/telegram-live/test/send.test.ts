@@ -77,3 +77,15 @@ test("edit plans refuse a message that is not the owner's, and nothing reads sta
   await expect(ex.plan(req)).rejects.toThrow("only your own messages");
   expect(fake.calls.filter((c) => READ_STATE_METHODS.has(c._))).toEqual([]);
 });
+
+test("plans put the words they act on in the card's details", async () => {
+  const { ex, fake } = setup();
+  fake
+    .on("getChat", { id: -1, title: "T", type: { _: "chatTypeSupergroup" } })
+    .on("getMessage", { id: 2, is_outgoing: true, content: { _: "messageText", text: { _: "formattedText", text: "old words", entities: [] } } });
+  const plan = (args: object) => ex.plan({ kind: "telegram.send", args, requester: { name: "Aiden" } as any, task: "t" });
+  expect((await plan({ chat_id: "-1", text: "hello" })).card?.details).toBe("hello");
+  expect((await plan({ chat_id: "-1", message_id: "2", text: "new words" })).card?.details).toBe("Was: old words\nNow: new words");
+  expect((await plan({ chat_id: "-1", message_id: "2" })).card?.details).toBe("Deletes for everyone: old words");
+  expect((await plan({ chat_id: "-1", from_chat_id: "-1", message_id: "2" })).card?.details).toBe("Forwards from T: old words");
+});

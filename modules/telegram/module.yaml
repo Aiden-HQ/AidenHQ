@@ -68,7 +68,7 @@ writes:
       changes: "{{changes}}"
       reads: "Nothing new: the text below."
       cost: "No model cost."
-      details: "{{text}}"
+      details: "{{details}}" # the planner fills it: the text, or the message a forward, edit or delete acts on
 settings:
   # Muted groups and channels: `tagged` stores muted groups but triages only messages that tag or reply to you, and skips
   # muted channels; `all` treats muted like unmuted.

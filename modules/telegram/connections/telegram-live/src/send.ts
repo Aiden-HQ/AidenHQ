@@ -29,6 +29,9 @@ const ID = /^-?[0-9]{1,20}$/;
 const UNKNOWN = "Outcome unknown: AidenHQ restarted while sending. Check the chat in Telegram before asking again.";
 const UNKNOWN_TIMEOUT = "Outcome unknown: Telegram didn't confirm the message in time. Check the chat in Telegram before asking again.";
 
+/** A message's words for a card: its text or caption, else its kind. */
+const bodyOf = (m: any): string => m?.content?.text?.text ?? m?.content?.caption?.text ?? `[${String(m?.content?._ ?? "message").replace(/^message/, "").toLowerCase()}]`;
+
 const str = (v: unknown) => (typeof v === "string" && v !== "" ? v : undefined);
 
 /** The record's args: the action is inferred from the arg shape (the six tool shapes are pairwise distinct). */
@@ -88,17 +91,24 @@ export function sender(d: {
       const a = normalise(req.args, String(req.requester?.name ?? ""));
       const chat = await td.invoke<any>({ _: "getChat", chat_id: Number(a.chat_id) });
       if (chat.type?._ === "chatTypeSecret") throw new Error("secret chats aren't supported");
+      // The card's details: the words the reviewer and the owner judge. A forward, an edit and a delete read the message they act on.
+      let details = a.text ?? "";
       if (a.action === "edit" || a.action === "delete") {
         const m = await td.invoke<any>({ _: "getMessage", chat_id: Number(a.chat_id), message_id: Number(a.message_id) });
         if (!m.is_outgoing) throw new Error("only your own messages can be edited or deleted");
-      }
+        details = a.action === "edit" ? `Was: ${bodyOf(m)}\nNow: ${a.text}` : `Deletes for everyone: ${bodyOf(m)}`;
+      } else if (a.action === "forward") {
+        const m = await td.invoke<any>({ _: "getMessage", chat_id: Number(a.from_chat_id), message_id: Number(a.message_id) });
+        const from = await td.invoke<any>({ _: "getChat", chat_id: Number(a.from_chat_id) });
+        details = `Forwards from ${String(from.title ?? a.from_chat_id).slice(0, 200)}: ${bodyOf(m)}`;
+      } else if (a.action === "react") details = a.emoji ?? "";
       const title = String(chat.title ?? a.chat_id).slice(0, 200);
       const what = { send: "send a message", reply: "reply to a message", react: `react ${a.emoji ?? ""} to a message`, forward: "forward a message", edit: "edit your message", delete: "delete your message" }[a.action];
       const who = chat.type?._ === "chatTypePrivate" ? `${title} sees it` : `Everyone in ${title} sees it`;
       return {
         args: { ...a, chat_title: title },
         targets: { chat_id: a.chat_id },
-        card: { what, chat: title, changes: `${who}, from your own Telegram account.` },
+        card: { what, chat: title, changes: `${who}, from your own Telegram account.`, details },
       };
     },
 
