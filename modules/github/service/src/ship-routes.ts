@@ -2,13 +2,14 @@
 // ship's own module token (the kernel vouches for it, GET /v1/whoami): the owner's sign-in stays here. Every route is ship's alone:
 //   POST /internal/ship/gh       {method, path, body?, deadline?} -> {status, body} | {thrown: {message, cause}}: one GitHub call,
 //                                background, from a fixed list (the loop's reads, check re-runs, update-branch, closing an abandoned
-//                                PR and deleting its branch, its comment), on a repo the fleet merges in. No merge. Its writes go as
-//                                the owner; its REST reads as the App where the App can read the repo (client.ts readerFor), and a head's
+//                                PR and deleting its branch, its comment), on a repo the fleet merges in. No merge. Each write goes as
+//                                the actor its row's op picks (client.ts actorFor: the App where installed and permitted, else the
+//                                owner); its REST reads as the App where the App can read the repo (client.ts readerFor), and a head's
 //                                check-run list (filter=latest) from the change feed's snapshot while it is fresh (feed.ts checkRuns)
 //                                and holds every check run the request's `covers` names (the PR's rollup, which ship read live).
-//                                POST /graphql is OPEN_PRS_QUERY with ship's {owner, repo, after}, never a query of ship's, always as
-//                                the owner (its merge and repair decisions read mergeStateStatus and code-owner reviewers as GitHub
-//                                shows them to the owner; GraphQL's own budget sits near idle).
+//                                POST /graphql is OPEN_PRS_QUERY with ship's {owner, repo, after}, never a query of ship's, read as the
+//                                repo's merge actor (its merge and repair decisions read mergeStateStatus and code-owner reviewers as
+//                                GitHub shows them to the identity that merges).
 //   POST /internal/ship/verdict  {repo, number, head} -> code review's verdict for that head (review-gate.ts; null: not gated)
 //   POST /internal/ship/decision {repo, number, head, pr?, main?} -> a PR's round decision (merges.ts decision: decide with ship's
 //                                context); `pr` and `main` are the list read's node and default branch (OPEN_PRS_QUERY), so the
@@ -19,26 +20,27 @@ import { withBranch } from "./branch-lock.ts";
 import { readPrTasks } from "./pr-tasks.ts";
 import { commentsAsk, type CommentsAsk } from "./member-comments.ts";
 import type { ReviewGate } from "./review-gate.ts";
+import type { Op } from "../../connections/github-mcp/src/client.ts";
 
 type Gh = (method: string, path: string, body?: unknown, o?: { background?: boolean; deadline?: number }) => Promise<{ status: number; body: any }>;
 type Json = any;
 const REPO = "([\\w.-]+/[\\w.-]+)";
-/** The GitHub calls the loop makes, and nothing else: [method, path, body check]. The repo is the path's first group. */
-const CALLS: [string, RegExp, ((b: Json) => boolean)?][] = [
+/** The GitHub calls the loop makes, and nothing else: [method, path, body check, the write's op (client.ts OPS)]. The repo is the path's first group. */
+const CALLS: [string, RegExp, ((b: Json) => boolean)?, Op?][] = [
   ["GET", new RegExp(`^/repos/${REPO}/commits/[0-9a-f]{4,40}/check-runs\\?[\\w=&]*$`)],
   // Ship's generated.ci: that workflow's runs on one head.
   ["GET", new RegExp(`^/repos/${REPO}/actions/workflows/[\\w.-]+\\.ya?ml/runs\\?head_sha=[0-9a-f]{40}&per_page=\\d{1,3}$`)],
   ["GET", new RegExp(`^/repos/${REPO}/actions/jobs/\\d+$`)],
-  ["POST", new RegExp(`^/repos/${REPO}/actions/jobs/\\d+/rerun$`)],
-  ["POST", new RegExp(`^/repos/${REPO}/actions/runs/\\d+/rerun-failed-jobs$`)],
+  ["POST", new RegExp(`^/repos/${REPO}/actions/jobs/\\d+/rerun$`), undefined, "actions"],
+  ["POST", new RegExp(`^/repos/${REPO}/actions/runs/\\d+/rerun-failed-jobs$`), undefined, "actions"],
   ["GET", new RegExp(`^/repos/${REPO}/actions/runs/\\d+/jobs$`)],
   ["GET", new RegExp(`^/repos/${REPO}/pulls/\\d+$`)],
   // A close carries the task it was decided for (expectTask): the route re-reads ownership under the branch lock and skips a PR a
   // successor took over while the cleanup waited (a delete carries it too).
-  ["PATCH", new RegExp(`^/repos/${REPO}/pulls/\\d+$`), (b) => b?.state === "closed" && Object.keys(b).every((k) => k === "state" || k === "expectTask") && (b.expectTask === undefined || typeof b.expectTask === "string")],
-  ["POST", new RegExp(`^/repos/${REPO}/issues/\\d+/comments$`), (b) => typeof b?.body === "string" && Object.keys(b).length === 1],
-  ["DELETE", new RegExp(`^/repos/${REPO}/git/refs/heads/[\\w./-]+$`)],
-  ["PUT", new RegExp(`^/repos/${REPO}/pulls/\\d+/update-branch$`)],
+  ["PATCH", new RegExp(`^/repos/${REPO}/pulls/\\d+$`), (b) => b?.state === "closed" && Object.keys(b).every((k) => k === "state" || k === "expectTask") && (b.expectTask === undefined || typeof b.expectTask === "string"), "pr"],
+  ["POST", new RegExp(`^/repos/${REPO}/issues/\\d+/comments$`), (b) => typeof b?.body === "string" && Object.keys(b).length === 1, "issue"],
+  ["DELETE", new RegExp(`^/repos/${REPO}/git/refs/heads/[\\w./-]+$`), undefined, "push"],
+  ["PUT", new RegExp(`^/repos/${REPO}/pulls/\\d+/update-branch$`), undefined, "update_branch"],
   ["GET", new RegExp(`^/repos/${REPO}/compare/[0-9a-f]{4,40}\\.\\.\\.[0-9a-f]{4,40}$`)],
   // The cleanups' own reads before a branch delete: the ref's current tip, and every open PR on the branch (a moved tip or any
   // open PR keeps it; a failed read keeps it too).
@@ -49,13 +51,13 @@ const CALLS: [string, RegExp, ((b: Json) => boolean)?][] = [
   ["GET", new RegExp(`^/repos/${REPO}/check-runs/\\d+$`)],
   // Hand-offs (handoff.ts, rounds.ts): a trigger's author's role, and the assignees ship adds on a hold and removes on a resume.
   ["GET", new RegExp(`^/repos/${REPO}/collaborators/[\\w-]+/permission$`)],
-  ["POST", new RegExp(`^/repos/${REPO}/issues/\\d+/assignees$`), (b) => Array.isArray(b?.assignees) && Object.keys(b).length === 1],
-  ["DELETE", new RegExp(`^/repos/${REPO}/issues/\\d+/assignees$`), (b) => Array.isArray(b?.assignees) && Object.keys(b).length === 1],
+  ["POST", new RegExp(`^/repos/${REPO}/issues/\\d+/assignees$`), (b) => Array.isArray(b?.assignees) && Object.keys(b).length === 1, "issue"],
+  ["DELETE", new RegExp(`^/repos/${REPO}/issues/\\d+/assignees$`), (b) => Array.isArray(b?.assignees) && Object.keys(b).length === 1, "issue"],
   // The repo's own steps and discovery (ship's actions.ts): the base branch's tree and its blobs, a workflow's dispatch (always
   // asking GitHub for the run it started), and that run.
   ["GET", new RegExp(`^/repos/${REPO}/git/trees/[\\w.-]+\\?recursive=1$`)],
   ["GET", new RegExp(`^/repos/${REPO}/git/blobs/[0-9a-f]{40}$`)],
-  ["POST", new RegExp(`^/repos/${REPO}/actions/workflows/[\\w.-]+\\.ya?ml/dispatches$`), (b) => typeof b?.ref === "string" && b.return_run_details === true && Object.keys(b).every((k) => k === "ref" || k === "return_run_details" || (k === "inputs" && typeof b.inputs === "object" && !Array.isArray(b.inputs)))],
+  ["POST", new RegExp(`^/repos/${REPO}/actions/workflows/[\\w.-]+\\.ya?ml/dispatches$`), (b) => typeof b?.ref === "string" && b.return_run_details === true && Object.keys(b).every((k) => k === "ref" || k === "return_run_details" || (k === "inputs" && typeof b.inputs === "object" && !Array.isArray(b.inputs))), "actions"],
   ["GET", new RegExp(`^/repos/${REPO}/actions/runs/\\d+$`)],
 ];
 /** The loop's one GraphQL read: a repo's open PRs (a page of them) with their checks, and its default branch's. Ship names only the
@@ -66,7 +68,7 @@ export const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: St
     defaultBranchRef { name target { oid ... on Commit { ${ROLLUP} } } }
     pullRequests(states: OPEN, first: $first, after: $after, orderBy: { field: CREATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
-      nodes { number url title createdAt isDraft mergeable mergeStateStatus reviewDecision isInMergeQueue latestOpinionatedReviews(first: 30) { nodes { state authorCanPushToRepository author { __typename login } commit { oid } } } reviewRequests(first: 10) { nodes { asCodeOwner requestedReviewer { __typename ... on Team { combinedSlug } ... on User { login } } } } isCrossRepository headRepository { nameWithOwner } headRefName headRefOid baseRefName authorAssociation author { __typename login } maintainerCanModify labels(first: 30) { nodes { name } } assignees(first: 10) { nodes { login } } timelineItems(last: 30, itemTypes: [LABELED_EVENT, UNLABELED_EVENT, ISSUE_COMMENT]) { nodes { __typename ... on LabeledEvent { id createdAt actor { __typename login } label { name } } ... on UnlabeledEvent { id createdAt actor { __typename login } label { name } } ... on IssueComment { id createdAt author { __typename login } body } } } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
+      nodes { number url title createdAt isDraft mergeable mergeStateStatus reviewDecision isInMergeQueue latestOpinionatedReviews(first: 30) { nodes { fullDatabaseId state authorCanPushToRepository author { __typename login } commit { oid } } } reviewRequests(first: 10) { nodes { asCodeOwner requestedReviewer { __typename ... on Team { combinedSlug } ... on User { login } } } } isCrossRepository headRepository { nameWithOwner } headRefName headRefOid baseRefName authorAssociation author { __typename login } maintainerCanModify labels(first: 30) { nodes { name } } assignees(first: 10) { nodes { login } } timelineItems(last: 30, itemTypes: [LABELED_EVENT, UNLABELED_EVENT, ISSUE_COMMENT]) { nodes { __typename ... on LabeledEvent { id createdAt actor { __typename login } label { name } } ... on UnlabeledEvent { id createdAt actor { __typename login } label { name } } ... on IssueComment { id createdAt author { __typename login } body } } } commits(last: 1) { nodes { commit { ${ROLLUP} } } } }
     }
   }
 }`;
@@ -75,6 +77,8 @@ export function shipRoutes(o: {
   gh: Gh; decision?: (repo: string, number: number, head: string, view?: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number; comments?: CommentsAsk }) => Promise<unknown>; gate: ReviewGate; cacheDir: string;
   /** A head's latest check runs in REST's shape from the change feed's snapshot, or undefined when it has no fresh read of them. */
   checkRuns?: (repo: string, sha: string) => Json[] | undefined;
+  /** One write attempt's actor for `op` on `repo` (client.ts actorFor): the App where installed and permitted, else the owner. */
+  actorFor: (repo: string, op: Op) => Promise<{ rest: Gh }>;
   /** Whether the fleet works this repo (git-auth.ts mergeable): ship's calls reach no other. */
   allowed: (repo: string) => boolean;
   /** Whether a bearer is the ship module's own token (undefined: the kernel couldn't say now). */
@@ -137,7 +141,9 @@ export function shipRoutes(o: {
         const covers: unknown = b.covers;
         const snap = listed && Array.isArray(covers) && covers.length <= 500 && covers.every((c) => typeof c === "string") ? o.checkRuns?.(repo, listed[1]!) : undefined;
         if (snap && (covers as string[]).every((id) => snap.some((r) => r.node_id === id))) return send(res, 200, { status: 200, body: { total_count: snap.length, check_runs: snap } }), true;
-        const run = () => o.gh(method, path, body, { background: true, ...(typeof deadline === "number" ? { deadline } : {}) });
+        // A write goes as its row's op's actor; the open-PR read as the repo's merge actor (it decides merges); other reads as the client picks.
+        const op: Op | undefined = read ? "merge" : call?.[3];
+        const run = async () => (op ? (await o.actorFor(repo, op)).rest : o.gh)(method, path, body, { background: true, ...(typeof deadline === "number" ? { deadline } : {}) });
         if (branch && (method === "DELETE" || (method === "PATCH" && b.body?.state === "closed"))) {
           /** Ownership as pr-tasks.json has it once the lock is ours: a successor that published and was recorded while this cleanup
            *  waited is the PR's task now, and its PR is not the earlier task's to close (the head is unchanged, so no tip read can say so). */

@@ -7,6 +7,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createService } from "../service/src/service.ts";
+import { withActors } from "./actors.ts";
 import { serveOps } from "../service/src/ops.ts";
 import * as setup from "../service/src/setup.ts";
 
@@ -15,7 +16,7 @@ const ALLOW = [".deepsec/data/*/INFO.md", ".deepsec/deepsec.config.ts", ".deepse
 const args = (over = {}) => ({ repo: "acme/widgets", files: { ".deepsec/data/w/INFO.md": "# widgets\n", ".deepsec/deepsec.config.ts": "export default {};\n" }, allow: ALLOW, title: "Add deepsec", body: "Setup.", ...over });
 
 /** The record's args as the plan binds them (it adds the reviewed default branch and its head). */
-const runOf = (api: any, a: any) => setup.run(api, { base: "main", base_head: HEAD, ...a });
+const runOf = (api: any, a: any) => setup.run(api, async () => api, { base: "main", base_head: HEAD, ...a });
 const BRANCH = `aidenhq/setup-${COMMIT.slice(0, 12)}`;
 const earlierPr = { number: 4, html_url: "https://github.com/acme/widgets/pull/4", title: "Earlier setup", head: { ref: "aidenhq/setup-111111111111", sha: "1".repeat(40), repo: { full_name: "acme/widgets" } }, base: { ref: "main" } };
 
@@ -67,7 +68,7 @@ test("one PR per repo: an earlier setup PR and its branch are closed once the ne
   const g = github({ open: [earlierPr, { ...earlierPr, number: 5, head: { ref: "feature/x", repo: { full_name: "acme/widgets" } } }, { ...earlierPr, number: 6, base: { ref: "release" } }] });
   const p = await setup.plan(g.api, args());
   assert.deepEqual(p.args.supersede, [{ number: 4, head: "1".repeat(40) }], "the plan names the PRs and heads the reviewer sees");
-  await setup.run(g.api, p.args);
+  await setup.run(g.api, async () => g.api, p.args);
   assert.deepEqual(calls(g).slice(3), ["POST /pulls", "PATCH /pulls/4", "DELETE /git/refs/heads/aidenhq/setup-111111111111"]);
   assert.deepEqual(g.writes.find((w) => w.method === "PATCH")!.body, { state: "closed" });
   assert.match((await setup.plan(g.api, args())).facts.sentence, /earlier setup PR \("Earlier setup" https:\/\/github.com\/acme\/widgets\/pull\/4\) will be closed/);
@@ -77,7 +78,7 @@ test("only the setup PRs the reviewer saw, at the heads they saw, are closed: on
   const g = github({ open: [earlierPr] });
   const p = await setup.plan(g.api, args());
   const later = github({ open: [{ ...earlierPr, head: { ...earlierPr.head, sha: "2".repeat(40) } }, { ...earlierPr, number: 7, head: { ref: "aidenhq/setup-777777777777", sha: "7".repeat(40), repo: { full_name: "acme/widgets" } } }] });
-  await setup.run(later.api, p.args);
+  await setup.run(later.api, async () => later.api, p.args);
   assert.deepEqual(calls(later), ["POST /git/trees", "POST /git/commits", "POST /git/refs", "POST /pulls"]);
 });
 
@@ -111,11 +112,11 @@ test("the plan binds the default branch's name and head; the run refuses when ei
   assert.match(p.facts.diff, /--- new file \.deepsec\/data\/w\/INFO\.md ---\n# widgets/);
   assert.match(p.facts.diff, /the pull request as it will be published ---\nAdd deepsec\n\nSetup\./);
   const moved = github({ head: "b".repeat(40) });
-  await assert.rejects(setup.run(moved.api, p.args), /ask again/);
+  await assert.rejects(setup.run(moved.api, async () => moved.api, p.args), /ask again/);
   const renamed = github({ def: "trunk" });
-  await assert.rejects(setup.run(renamed.api, p.args), /default branch is now trunk/);
+  await assert.rejects(setup.run(renamed.api, async () => renamed.api, p.args), /default branch is now trunk/);
   assert.deepEqual([...moved.writes, ...renamed.writes], []);
-  await assert.rejects(setup.run(g.api, args()), /unrecorded head/);
+  await assert.rejects(setup.run(g.api, async () => g.api, args()), /unrecorded head/);
 });
 
 test("a default branch with no head is a clear error, and a PR text naming something private is refused", async () => {
@@ -138,7 +139,7 @@ async function host(t: any, decide: { state: string; outcome?: any }) {
     connected: () => true, scopes: () => [], status: () => ({}), token: async () => "tok", identity: async () => ({ login: "o", name: "O", email: "o@example.com" }), graphql: async () => ({}),
     rest: async (m: string, p: string, b: any) => { ghCalls.push({ m, p, b }); return { status: 200, body: {}, headers: new Headers() }; },
   };
-  const handle = createService({ key: "ch-key", kernelUrl: kernel.url, cacheDir: mkdtempSync(join(tmpdir(), "setup-op-")), access, fleetOrg: "acme-agents", ops: serveOps, allowedOrgs: ["acme"], reviewGate: async () => undefined } as any);
+  const handle = createService({ key: "ch-key", kernelUrl: kernel.url, cacheDir: mkdtempSync(join(tmpdir(), "setup-op-")), access: withActors(access), fleetOrg: "acme-agents", ops: serveOps, allowedOrgs: ["acme"], reviewGate: async () => undefined } as any);
   const svc = await listen((req: any, res: any) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
   const call = async (body: object, key = "ch-key") => { const r = await fetch(`${svc.url}/ops/setup`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify(body) }); return { status: r.status, json: await r.json() as any }; };

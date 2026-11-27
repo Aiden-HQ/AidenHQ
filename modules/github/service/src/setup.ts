@@ -79,27 +79,32 @@ export async function plan(api: Api, input: SetupArgs, leak?: (text: string) => 
   };
 }
 
-/** The approved write. Refuses when the default branch is not the one (name and head) the reviewer read. */
-export async function run(api: Api, input: SetupArgs, signedAs = "Aiden"): Promise<{ ok: boolean; text: string; objects?: string[] }> {
+/**
+ * The approved write. Refuses when the default branch is not the one (name and head) the reviewer read. `as` is the write's actor
+ * per op (client.ts actorFor): the commit and its branch as `push`'s, the PRs as `pr`'s. The commit carries no custom author, so
+ * as the App it is the App's.
+ */
+export async function run(api: Api, as: (op: "push" | "pr") => Promise<Api>, input: SetupArgs, signedAs = "Aiden"): Promise<{ ok: boolean; text: string; objects?: string[] }> {
   const a = check(input);
   const s = await read(api, a);
+  const pusher = await as("push"), opener = await as("pr");
   if (a.base !== s.def || a.base_head !== s.head) throw fail(409, `${a.base ?? "the default branch"} at ${a.base_head ? a.base_head.slice(0, 12) : "an unrecorded head"} is the setup's reviewed base, but the default branch is now ${s.def} at ${s.head.slice(0, 12)}: ask again`);
   if (!s.missing.length) return { ok: true, text: JSON.stringify({ pr_url: null, nothing_to_add: true }) };
   const base = await api("GET", `/repos/${a.repo}/commits/${s.head}`);
-  const tree = await api("POST", `/repos/${a.repo}/git/trees`, { base_tree: base.commit.tree.sha, tree: s.missing.map((path) => ({ path, mode: "100644", type: "blob", content: a.files[path] })) });
-  const commit = await api("POST", `/repos/${a.repo}/git/commits`, { message: withTrailer(`Add the setup files (${s.missing.join(", ")})`, signedAs), tree: tree.sha, parents: [s.head] });
+  const tree = await pusher("POST", `/repos/${a.repo}/git/trees`, { base_tree: base.commit.tree.sha, tree: s.missing.map((path) => ({ path, mode: "100644", type: "blob", content: a.files[path] })) });
+  const commit = await pusher("POST", `/repos/${a.repo}/git/commits`, { message: withTrailer(`Add the setup files (${s.missing.join(", ")})`, signedAs), tree: tree.sha, parents: [s.head] });
   const tip = String(commit.sha);
   // The branch is named from the commit and created in the same call that points it there (it fails when the name exists), so
   // the PR opened from it is on exactly this commit.
   const branch = `${BRANCH}${tip.slice(0, 12)}`;
-  await api("POST", `/repos/${a.repo}/git/refs`, { ref: `refs/heads/${branch}`, sha: tip });
-  const pr = await api("POST", `/repos/${a.repo}/pulls`, { title: a.title, body: withFooter(a.body, signedAs), head: branch, base: s.def })
-    .catch(async (e: Error) => { await api("DELETE", `/repos/${a.repo}/git/refs/heads/${branch}`).catch(() => {}); throw e; });
+  await pusher("POST", `/repos/${a.repo}/git/refs`, { ref: `refs/heads/${branch}`, sha: tip });
+  const pr = await opener("POST", `/repos/${a.repo}/pulls`, { title: a.title, body: withFooter(a.body, signedAs), head: branch, base: s.def })
+    .catch(async (e: Error) => { await pusher("DELETE", `/repos/${a.repo}/git/refs/heads/${branch}`).catch(() => {}); throw e; });
   // One PR per repo: those earlier setup PRs and their branches go. A failure here leaves one to be closed by the next setup.
   // Only the PRs the reviewer was shown, still open at the head they were shown at: anything else changed since and stays.
   for (const old of s.earlier.filter((p) => a.supersede?.some((r) => r.number === p.number && r.head === p.head.sha))) {
-    await api("PATCH", `/repos/${a.repo}/pulls/${old.number}`, { state: "closed" }).catch(() => {});
-    await api("DELETE", `/repos/${a.repo}/git/refs/heads/${old.head.ref}`).catch(() => {});
+    await opener("PATCH", `/repos/${a.repo}/pulls/${old.number}`, { state: "closed" }).catch(() => {});
+    await pusher("DELETE", `/repos/${a.repo}/git/refs/heads/${old.head.ref}`).catch(() => {});
   }
   return { ok: true, text: JSON.stringify({ pr_url: pr.html_url, branch, tip }), objects: [`github:${a.repo.toLowerCase()}#${Number(pr.number)}`] };
 }

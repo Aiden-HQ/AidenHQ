@@ -1,9 +1,8 @@
-// The owner's optional GitHub App for code review's writes (spec 2026-11-22-github-app-review-writer), made through GitHub's
-// manifest flow from the kernel's admin pages (admin.ts /setup/github-app): a signed-in owner picks the account or org that owns
-// it, GitHub hands back a one-time code, and the kernel converts it and writes the App's id, key and slug into the github module's
-// own vault dir (`modules/github/github-app/{app_id,key.pem,slug}`, 0600), which the github process reads at /state. The key goes from
-// GitHub to the vault and nowhere else: never the board, never a chat. Restored from #1134's kernel/src/github-app.ts, cut to
-// what code review's writes need.
+// The instance's optional GitHub App (docs/design/github-identity.md), made through GitHub's manifest flow from the kernel's admin
+// pages (admin.ts /setup/github-app): a signed-in owner picks the account or org that owns it, GitHub hands back a one-time code,
+// and the kernel converts it and writes the App's id and key into the github module's own vault dir
+// (`modules/github/github-app/{app_id,key.pem}`, 0600), which the github process reads at /state. Who the App is (its slug, its
+// bot) is read from GitHub, never stored. The key goes from GitHub to the vault and nowhere else: never the board, never a chat.
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -11,12 +10,12 @@ import { join } from "node:path";
 export const ORG = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 
 /**
- * The App's manifest: public (any org may install it on the repos code review watches), no webhook. Writes: pull requests (the
- * review, its comments, the summary, resolving threads, the acknowledgement on the PR's conversation), commit statuses
- * (`aidenhq/review`) and contents (the repo-narrowed, one-hour installation tokens a session box's `git push` uses,
- * kernel/src/jobtools.ts gitToken). Reads: checks, actions and issues, so the fleet's repo reads (the change feed, ship, code review,
- * the agents' read tools) go as the App instead of the owner (github-mcp client.ts readerFor). An install made before a permission
- * was asked must accept it on GitHub; until then the owner makes those reads.
+ * The App's manifest: public (any org may install it on its repos), no webhook. Every GitHub write goes as the App wherever its
+ * installation has accepted the permissions the write needs (github-mcp client.ts OPS), so it asks for the writes the fleet makes:
+ * contents and workflows (pushes, signed commits, merges, releases), pull requests, issues (comments, labels, assignees), commit
+ * statuses, actions (re-runs, dispatch), and organization projects; checks and metadata to read. Never administration or
+ * self-hosted runners: repo creation and runner registration stay the owner's. An install made before a permission was asked
+ * keeps its old set until its owner accepts the new one on GitHub; until then the ops that need it go as the owner there.
  */
 export function manifest(name: string, redirect: string) {
   return {
@@ -25,7 +24,7 @@ export function manifest(name: string, redirect: string) {
     hook_attributes: { url: "https://example.invalid", active: false },
     redirect_url: redirect,
     public: true,
-    default_permissions: { pull_requests: "write", statuses: "write", contents: "write", checks: "read", actions: "read", issues: "read", metadata: "read" },
+    default_permissions: { contents: "write", workflows: "write", pull_requests: "write", issues: "write", statuses: "write", actions: "write", checks: "read", metadata: "read", organization_projects: "write" },
     default_events: [],
   };
 }
@@ -44,16 +43,15 @@ export async function convert(code: string, fetchImpl: typeof fetch = fetch): Pr
   return { id: app.id, slug: app.slug, pem: app.pem, owner: String(app.owner?.login ?? "") };
 }
 
-/** Writes the App into `dir` (the github module's vault dir), each file in place (a container sees an in-place write), 0600. */
+/** Writes the App's id and key into `dir` (the github module's vault dir), each file in place (a container sees an in-place write), 0600. */
 export function saveApp(app: MadeApp, dir: string) {
   const to = join(dir, "github-app");
   mkdirSync(to, { recursive: true, mode: 0o700 });
   writeFileSync(join(to, "key.pem"), app.pem, { mode: 0o600 });
-  writeFileSync(join(to, "slug"), `${app.slug}\n`, { mode: 0o600 });
   writeFileSync(join(to, "app_id"), `${app.id}\n`, { mode: 0o600 });
 }
 
-/** Removes the App from `dir`: code review posts as the owner everywhere from its next write. (The App itself stays on GitHub.) */
+/** Removes the App from `dir`: every write goes as the owner from the next one. (The App itself stays on GitHub.) */
 export function removeApp(dir: string) {
   rmSync(join(dir, "github-app"), { recursive: true, force: true });
 }

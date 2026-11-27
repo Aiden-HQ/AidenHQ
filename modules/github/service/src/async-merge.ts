@@ -3,6 +3,11 @@
 // read at its own GET until it is terminal (`merged`, `enqueued` or `failed`).
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
+/** Who made a request (client.ts Actor: its pacing key and its REST), and how to call again as the identity a key names. */
+export type Asker = { key: string; rest: Gh };
+export type ByKey = (key: string) => Promise<{ rest: Gh }>;
+/** A pending request: GitHub's id for it, and the actor key that made it (read back only as that identity). */
+export type Kept = { uuid: string; actor: string };
 
 /** How long an async merge request is polled for its result (two minutes), and how often: one write's execution is bounded, so
  * the wait is short and a still-pending answer is reported as pending (ship's next round asks again, and GitHub answers the
@@ -15,23 +20,28 @@ export const asyncPath = (repo: string, number: number) => `/repos/${repo}/pulls
 
 /** A request's result at its own GET: its `status` word and details, or the HTTP answer that wasn't one (`got` is its status). */
 export async function readAsync(gh: Gh, repo: string, number: number, uuid: string): Promise<{ got: number; status: string; details: any; message: string }> {
-  const r = await gh("GET", `${asyncPath(repo, number)}/${uuid}`).catch((e: Error) => ({ status: 0, body: { message: String(e.message).slice(0, 200) } }));
+  // An identity that can't read it any more (its App or installation gone: app_refused) is GitHub no longer holding it for us (404).
+  const r = await gh("GET", `${asyncPath(repo, number)}/${uuid}`).catch((e: Error & { need?: { cause?: string } }) => ({ status: e.need?.cause === "app_refused" ? 404 : 0, body: { message: String(e.message).slice(0, 200) } }));
   return { got: r.status, status: String(r.body?.status ?? ""), details: r.body?.details ?? {}, message: String(r.body?.message ?? "") };
 }
 
 /**
  * The request GitHub holds for a PR at a head, across rounds: its id is the only way back to a result whose PUT answer is spent,
  * and GitHub names it on a repeat (409) only while it is pending. Kept in a file beside the caller's other state, keyed by the head
- * it was bound to, so a request that outlives one execution is read to its end instead of a fresh one being made.
+ * it was bound to, with the actor that made it, so a request that outlives one execution is read to its end, as that identity,
+ * instead of a fresh one being made.
  */
 export function requestStore(file: string, log: (msg: string, f?: Record<string, unknown>) => void = () => {}) {
-  const held = (): { [k: string]: string } => { try { return JSON.parse(readFileSync(file, "utf8")); } catch { return {}; } };
+  const held = (): { [k: string]: Kept } => { try { return JSON.parse(readFileSync(file, "utf8")); } catch { return {}; } };
   return {
-    get: (key: string) => String(held()[key] ?? ""),
-    /** Keeps `uuid` for `key`; no uuid drops it. */
-    set(key: string, uuid?: string) {
+    get(key: string): Kept | undefined {
+      const k = held()[key];
+      return k && typeof k === "object" && typeof k.uuid === "string" && k.uuid && typeof k.actor === "string" ? k : undefined;
+    },
+    /** Keeps `entry` for `key`; none drops it. */
+    set(key: string, entry?: Kept) {
       const all = held();
-      if (uuid) all[key] = uuid; else delete all[key];
+      if (entry) all[key] = entry; else delete all[key];
       const kept = Object.fromEntries(Object.entries(all).slice(-500));
       try { writeFileSync(`${file}.tmp`, JSON.stringify(kept)); renameSync(`${file}.tmp`, file); } catch (e) { log("async request id not kept", { key, err: String((e as Error).message).slice(0, 120) }); }
     },
@@ -45,12 +55,12 @@ export const requestKey = (repo: string, number: number, head: string) => `${rep
  * a 200 (GitHub's answer for a PR already merged or queued: never proof of this call's merge), a 409 naming a pending request and a failed read throw with
  * no status, so the caller reads the PR itself and credits only a commit this call made. `failed` throws a 409: GitHub's refusal.
  */
-export async function mergeDirect(gh: Gh, repo: string, number: number, body: { sha: string; merge_method: string; commit_message?: string }, polls: number, pollMs: number, store: ReturnType<typeof requestStore>, record: string): Promise<string> {
+export async function mergeDirect(actor: Asker, byKey: ByKey, repo: string, number: number, body: { sha: string; merge_method: string; commit_message?: string }, polls: number, pollMs: number, store: ReturnType<typeof requestStore>, record: string): Promise<string> {
   const unanswered = (why: string) => new Error(`GitHub didn't settle the async merge: ${why}`);
   // Bound to the record that made the request: another record at the same head never claims its result.
   const key = `${requestKey(repo, number, body.sha)}#${record}`;
   /** The request read to its terminal result within the budget. */
-  const settle = async (uuid: string, status = "pending", details: any = {}): Promise<string> => {
+  const settle = async (gh: Gh, uuid: string, status = "pending", details: any = {}): Promise<string> => {
     for (let i = 0; status === "pending" && i < polls; i++) {
       if (i) await new Promise((done) => setTimeout(done, pollMs));
       const got = await readAsync(gh, repo, number, uuid);
@@ -63,13 +73,22 @@ export async function mergeDirect(gh: Gh, repo: string, number: number, body: { 
     throw unanswered(status || "no status");
   };
   const known = store.get(key);
-  if (known) return settle(known);
-  const r = await gh("PUT", asyncPath(repo, number), { ...body, merge_action: "direct_merge" });
+  if (known) {
+    // Read back only as the identity that made it. One that can't be used any more (the App removed) drops the request: this
+    // attempt reads the PR back (unanswered), never asks as another identity, and the next pass decides afresh.
+    const by = known.actor === actor.key ? actor : await byKey(known.actor).catch((e: Error & { need?: { cause?: string } }) => {
+      // Only a definite answer (the App gone) drops it; a transient failure keeps it for the next pass.
+      if (e.need?.cause === "app_refused") { store.set(key); throw unanswered(`the identity that made request ${known.uuid} can't be used any more (${String(e.message).slice(0, 150)}); dropped`); }
+      throw unanswered(`the identity that made request ${known.uuid} couldn't be resolved now (${String(e.message).slice(0, 150)})`);
+    });
+    return settle(by.rest, known.uuid);
+  }
+  const r = await actor.rest("PUT", asyncPath(repo, number), { ...body, merge_action: "direct_merge" });
   // A 409 that names a request (a uuid) is one already pending or queued: read as unanswered. Any other 409 is GitHub's refusal, in its words.
   if (r.status === 409 && !r.body?.details?.uuid) throw Object.assign(new Error(`HTTP 409: ${String(r.body?.message ?? r.body?.details?.message ?? "").slice(0, 300)}`), { status: 409 });
   if (r.status >= 400 && r.status !== 409) throw Object.assign(new Error(`HTTP ${r.status}: ${String(r.body?.message ?? "").slice(0, 300)}`), { status: r.status });
   if (r.status !== 202) throw unanswered(`HTTP ${r.status}`);
   const details = r.body?.details ?? {};
-  if (r.body?.status === "pending" && details.uuid) store.set(key, String(details.uuid));
-  return settle(String(details.uuid ?? ""), String(r.body?.status ?? ""), details);
+  if (r.body?.status === "pending" && details.uuid) store.set(key, { uuid: String(details.uuid), actor: actor.key });
+  return settle(actor.rest, String(details.uuid ?? ""), String(r.body?.status ?? ""), details);
 }

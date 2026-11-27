@@ -2,13 +2,14 @@
 // kernel tiers each record with plan.ts and calls execute only for an approved, claimed and revalidated one), and typed
 // GitHub operations for other modules (/ops/snapshot, /ops/bundle here; fetch, head, read, comment, commit and
 // runner_token in ops.ts), which only the kernel calls: it checks each module's grant (its own module.yaml `codehost:`) at
-// POST /v1/codehost/:op and calls here with this service's key. Every GitHub call is the owner's (spec
-// 2026-11-20-github-owner-identity): `access` holds the sign-in, and no answer ever carries its token.
+// POST /v1/codehost/:op and calls here with this service's key. Each write goes as the actor `access.actorFor` picks for its op
+// (docs/design/github-identity.md): the instance's GitHub App where it is installed on the target with the op's permissions, else
+// the owner's sign-in, one actor per write attempt; no answer ever carries a token.
 //
 // Repo code never runs here. Every git command carries SAFE_GIT_ARGS and no global or system config but the service's own
 // (no hooks, no filters, no fsmonitor); a job's commits come in by a fetch from the bundle its box wrote (copied out, never followed) into this
-// service's bare cache clone, which is never checked out; the owner's token lives only in the env of the one git call that needs it.
-// Every commit it makes is the owner's with the AidenHQ trailer. An approved write that finds GitHub disconnected is held
+// service's bare cache clone, which is never checked out; a token lives only in the env of the one git call that needs it.
+// A commit it makes locally is the owner's with the AidenHQ trailer; one GitHub makes (createCommitOnBranch) is its actor's. An approved write that finds GitHub disconnected is held
 // (held.json) and runs once by id after the reconnect. An approved merge runs as a queue (merges.ts) whose outcome
 // comes once its PRs merged at their approved heads, or it stopped.
 //
@@ -28,8 +29,9 @@ import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import { serveExecutor, type Executor, type PlanRequest } from "./aidenhq-sdk/executor.ts";
 import { CREDENTIAL_ARGS, disconnected, hasTrailer, identityEnv, inOrg, needOf, ownRepo, withFooter, withTrailer, type Gh } from "./git-auth.ts";
-import type { GitHubAccess } from "../../connections/github-mcp/src/client.ts";
+import type { Actor, GitHubAccess, Op } from "../../connections/github-mcp/src/client.ts";
 import { approvedAt, HOLD_LABEL } from "./merge-gate.ts";
+import { approvals } from "./approvals.ts";
 import { contextRank } from "./aidenhq-sdk/checks.ts";
 import { ASYNC_POLLS, ASYNC_POLL_MS, asyncPath, readAsync, requestKey, requestStore } from "./async-merge.ts";
 import { createMerges } from "./merges.ts";
@@ -67,14 +69,14 @@ export const SAFE_GIT_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmo
 
 export type Options = {
   key: string; kernelUrl: string; cacheDir: string; tasksDir?: string;
-  /** GitHub as the owner (github-mcp client.ts): the one sign-in, limiter and typed needs. */
+  /** GitHub (github-mcp client.ts): the owner's sign-in, the App, the one actor chooser, limiter and typed needs. */
   access: GitHubAccess; remoteUrl?: (slug: string) => string;
   /** github-mcp's retrying need queue (main.ts): a need met outside a tool call is kept and retried, never a one-shot POST. */
   reportNeed?: (need: { cause: "scope"; scope: string }, detail: string) => Promise<void>;
   /** The typed ops other modules get through the kernel (ops.ts serveOps: fetch, head, read, comment, commit, runner_token), run
    * here with the owner's token and never answering it; unset: those ops answer 404. */
   ops?: (req: IncomingMessage, res: ServerResponse, ctx: OpsContext) => Promise<void>;
-  /** The owner's one GitHub App, for the `app_token` op (ops.ts). */
+  /** The instance's GitHub App, for the `app_token` op (ops.ts) and its identity (GET /aidenhq/v1/app). */
   app?: OpsContext["app"];
   /** github_fleet_org: where the fleet's repos live on GitHub ("" while unset). */
   fleetOrg: string; allowedOrgs?: string[]; instanceRepo?: string; productRepo?: string;
@@ -98,33 +100,7 @@ export type Options = {
    * doesn't answer throws, and the write is refused until it does.
    */
   ship?: ShipAdoptions;
-  /**
-   * The reviewer App's REST on a repo where it is installed (the owner's one GitHub App, the identity code review posts as), and
-   * its bot login; undefined where it isn't (no approval is posted then: one as the owner would count as a person's).
-   */
-  reviewer?: (repo: string) => Promise<{ login: string; rest: Gh; /** An installation token, for a git push (a fork PR's branch). */ token: () => Promise<string> } | undefined>;
 };
-/**
- * The reviewer App (github-mcp's gitHubApp over the owner's one App, `<state>/github-app/`, the identity code review posts as) as `Options.reviewer`: its
- * REST with an installation token on a repo it is installed on, and its bot login; undefined where it isn't (or isn't set up).
- */
-export function reviewerOf(app: { installation(repo: string): Promise<number | null>; token(installation: number, fresh?: boolean): Promise<string>; slug(): string | undefined }, fetchFn: typeof fetch = fetch): (repo: string) => Promise<{ login: string; rest: Gh; token: () => Promise<string> } | undefined> {
-  return async (repo) => {
-    const installation = await app.installation(repo);
-    const slug = app.slug();
-    if (installation === null || !slug) return undefined;
-    const call = async (method: string, path: string, body: unknown, fresh: boolean) => {
-      const r = await fetchFn(`https://api.github.com${path}`, { method, headers: { authorization: `Bearer ${await app.token(installation, fresh)}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq", ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(20_000) });
-      return { status: r.status, body: await r.json().catch(() => ({})), headers: r.headers };
-    };
-    // A token GitHub rejects (401: revoked before its expiry) is fetched fresh once.
-    const rest: Gh = async (method, path, body) => {
-      const r = await call(method, path, body, false);
-      return r.status === 401 ? call(method, path, body, true) : r;
-    };
-    return { login: `${slug}[bot]`, rest, token: () => app.token(installation) };
-  };
-}
 /** Ship's answer for one PR (its GET /v1/generation?repo&pr → { generation, hold, task? }): `generation` null when it isn't adopted
  * now, and the hold it sits on when it is. A `stalled` hold leaves the adoption in place: the push that resumes it may land, and
  * nothing else. */
@@ -199,14 +175,10 @@ const slugOf = (repo: unknown) => {
 };
 
 /** A PR's merge-queue state, for an enqueue and its reconcile. */
-const QUEUE_READ = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { id state headRefOid baseRefName authorAssociation labels(first: 100) { nodes { name } } isInMergeQueue reviewDecision latestOpinionatedReviews(first: 30) { nodes { state authorCanPushToRepository author { __typename login } commit { oid } } } } } }`;
+const QUEUE_READ = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { id state headRefOid baseRefName authorAssociation labels(first: 100) { nodes { name } } isInMergeQueue reviewDecision latestOpinionatedReviews(first: 30) { nodes { fullDatabaseId state authorCanPushToRepository author { __typename login } commit { oid } } } } } }`;
 
-/** One commit GitHub makes and signs (verified), appended to a branch only while it is at `expectedHeadOid`. */
-/** A ref update bound to the ref's current sha (beforeOid): an all-zero afterOid deletes it, only while it is still there. */
-const UPDATE_REFS = `mutation($input: UpdateRefsInput!) { updateRefs(input: $input) { clientMutationId } }`;
-const COMMIT_ON_BRANCH = `mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid tree { oid } } } }`;
-/** GitHub's removal of a PR from its merge queue. */
-const DEQUEUE = `mutation($id: ID!) { dequeuePullRequest(input: { id: $id }) { mergeQueueEntry { state } } }`;
+/** Whether a PR (by node id) is in its merge queue: read before a hold dequeues it. */
+const IN_QUEUE = `query($id: ID!) { node(id: $id) { ... on PullRequest { isInMergeQueue } } }`;
 /** The outcome of an accepted async merge request that is still being processed: nothing is wrong (ship asks again next round),
  * and nothing is queued yet either, so it is neither a hold nor a done. */
 const PENDING = "ship-enqueue-pending:";
@@ -232,17 +204,25 @@ export function createService(o: Options) {
   const rawGit = (dir: string, env: NodeJS.ProcessEnv = ENV): Raw => async (args) => (await run("git", [...SAFE_GIT_ARGS, "--literal-pathspecs", "--git-dir", dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout;
   const initBare = async (dir: string) => void (await run("git", [...SAFE_GIT_ARGS, "init", "--quiet", "--bare", dir], { env: ENV }));
   const access = o.access;
-  /** The owner's token, for one git child's env only. */
+  /** The owner's token, for one git child's env only: a fetch (a push takes its actor's token). */
   const token = () => access.token();
+  /** One write attempt's actor (client.ts actorFor): the App where installed on `repo` and permitted for `op`, else the owner. */
+  const actorOn = (repo: string, op: Op) => access.actorFor({ repo }, op);
+  /** A REST write as `actor`, answered as `api` answers (a non-2xx throws). */
+  async function apiAs(actor: Actor, method: string, path: string, body?: unknown) {
+    const r = await actor.rest(method, path, body);
+    if (r.status >= 300) throw fail(502, `GitHub ${method} ${path.split("?")[0]}: ${r.status} ${r.body?.message ?? ""}`.trim());
+    return r.body;
+  }
   /**
-   * One push with the owner's token: GitHub's `workflow`-scope refusal is the owner's typed need. It is handed to github-mcp's
-   * need queue (which keeps and retries a report the kernel couldn't take) and thrown typed, never as a bare git failure. The push
-   * is always attempted: GitHub permits a workflow file that already exists unchanged, so its answer is the only authority on
-   * whether the scope is needed. Any other failure is git's own and stays as it was.
+   * One push with `actor`'s token. GitHub's `workflow`-scope refusal (the owner's OAuth grant without it) is the owner's typed need:
+   * handed to github-mcp's need queue (which keeps and retries a report the kernel couldn't take) and thrown typed, never as a bare
+   * git failure. The push is always attempted: GitHub permits a workflow file that already exists unchanged, so its answer is the
+   * only authority on whether the scope is needed. Any other failure is git's own and stays as it was.
    */
-  async function push(dir: string, args: string[]): Promise<string> {
+  async function push(actor: Actor, dir: string, args: string[]): Promise<string> {
     try {
-      return await git(dir, args, await token());
+      return await git(dir, args, await actor.gitToken());
     } catch (e) {
       if (!workflowRefusal(e)) throw e;
       return needWorkflow();
@@ -515,15 +495,14 @@ export function createService(o: Options) {
         diff = await diffOf(head.dir, mb || EMPTY_TREE, head.sha);
         files = (await git(head.dir, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", mb || EMPTY_TREE, head.sha])).split("\0").filter(Boolean);
       }
-      // GitHub refuses an approval from the PR's own author: the code host's account where no reviewer App is installed.
+      // An approval is the App's alone, and never of a PR the App opened (that one waits for a person's approval).
       if (kind.endsWith(".approve")) {
-        const app = await o.reviewer?.(s.slug);
-        if (!app) ship.noApp = "the GitHub App isn't installed on this repo";
-        else if (same(String(pr.user?.login ?? ""), app.login)) ship.noApp = "the GitHub App opened it, and GitHub won't let it approve its own PR";
+        const who = await approver(s.slug, pr);
+        if ("noApp" in who) ship.noApp = who.noApp;
       }
       const url = `https://github.com/${s.slug}/pull/${n}`;
       const at = `at \`${String(a.head).slice(0, 12)}\``;
-      const what = kind.endsWith(".approve") ? (a.dismiss === true ? `Dismiss the reviewer App's approvals of ${url} (made on another commit or under another review policy), as the App` : `Approve ${url} ${at}, as the reviewer App`) : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : kind.endsWith(".retarget") ? `Retarget ${url} ${at} from \`${a.base}\` (its merged base PR's branch) to \`${a.to}\`` : kind.endsWith(".retitle") ? `Retitle ${url} ${at} to \`${String(a.title).replace(/`/g, "")}\` (only the title: the PR's head, base and body stay as they are)` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair), as the code host`;
+      const what = kind.endsWith(".approve") ? (a.dismiss === true ? `Dismiss the GitHub App's approvals of ${url} (made on another commit or under another review policy), as the App` : `Approve ${url} ${at}, as the GitHub App`) : kind.endsWith(".enqueue") ? `Add ${url} to its merge queue ${at}` : kind.endsWith(".retarget") ? `Retarget ${url} ${at} from \`${a.base}\` (its merged base PR's branch) to \`${a.to}\`` : kind.endsWith(".retitle") ? `Retitle ${url} ${at} to \`${String(a.title).replace(/`/g, "")}\` (only the title: the PR's head, base and body stay as they are)` : `Merge its base into ${url} ${at} and regenerate its generated files (ship's repair)`;
       return { ...(kind.endsWith(".retitle") ? { from: String(pr.title ?? "") } : {}), state: { ...base, prs: [{ repo: s.slug, number: n, head: pr.head?.sha, base: pr.base?.sha, headMatches: pr.head?.sha === a.head, checks: kind.endsWith(".enqueue") ? await checksAt(s, String(pr.head?.sha)) : [], ship, ...(files ? { files } : {}),
         // A product enqueue takes the product merge's eligibility: ci-required green and code review's pass on this head.
         ...(kind.endsWith(".enqueue") && same(s.slug, o.productRepo) ? { verdict: await o.reviewGate(s.slug, n, String(pr.head?.sha), { base: String(pr.base?.ref ?? ""), association: String(pr.author_association ?? "") }) } : {}),
@@ -698,7 +677,7 @@ export function createService(o: Options) {
       // A merge is its own durable queue, which waits for the reconnect itself (merges.ts, work.waiting reason github).
       if (rec.kind.endsWith(".merge")) return merges.enqueue(rec.id, rec.args ?? {}, rec.task, rec.identifier, rec.tier, filedByShip(rec));
       // A setup is never held for a reconnect: asked again, it re-reads the branch and the reviewer reads it again.
-      if (rec.kind.endsWith(".setup")) return access.connected() ? setupWrite.run(api, rec.args) : { ok: false, text: "GitHub isn't connected: ask again once it is." };
+      if (rec.kind.endsWith(".setup")) return access.connected() ? setupWrite.run(api, async (op) => { const actor = await actorOn(String(rec.args?.repo ?? ""), op); return (method: string, path: string, body?: unknown) => apiAs(actor, method, path, body); }, rec.args) : { ok: false, text: "GitHub isn't connected: ask again once it is." };
       // Nor is a share: it is bound to the tip the owner previewed, so it runs now or he previews again.
       if (rec.kind.endsWith(".publish_module")) return access.connected() ? publishModule(rec.args) : { ok: false, text: "GitHub isn't connected: preview again once it is." };
       // An approval or an enqueue is never held: its adoption and head are read again by the next round, which files a new one.
@@ -718,7 +697,7 @@ export function createService(o: Options) {
    * one is not what was reviewed). Both filters are GitHub's, so paging can't hide it. Run under the branch lock with the push that
    * precedes it, so the ownership it records (notePrTask) is never seen lagging the ref it describes.
    */
-  async function openOrUpdatePr(s: ReturnType<typeof slugOf>, b: { branch: string }, def: string, rec: { kind: string; args: any }, sha: string, objects: string[], done: string[], targetBase: string, byOwner = false) {
+  async function openOrUpdatePr(s: ReturnType<typeof slugOf>, b: { branch: string }, def: string, rec: { kind: string; args: any }, sha: string, objects: string[], done: string[], targetBase: string, byOwner: boolean, pushedBy: string) {
     const a = rec.args ?? {};
     const ref = (slug: string) => `github:${slug.toLowerCase()}`;
     // The PR this publish is for, whatever base it targets: an already-owned one (recorded to this task, or the cancelled task's it
@@ -728,7 +707,9 @@ export function createService(o: Options) {
     // base it targets, or the open PR into the default branch), and the ownership write below moves all of them to this task. A
     // branch with no PR of this task's reads only the default-base one, as before. GitHub's head filter, so paging can't hide one.
     const head = `/repos/${s.slug}/pulls?state=open&head=${encodeURIComponent(`${s.org}:${b.branch}`)}`;
-    const got = await api("GET", byOwner ? head : `${head}&base=${encodeURIComponent(def)}`);
+    // One actor for the PR write and the read that decides it.
+    const prActor = await actorOn(s.slug, "pr");
+    const got = await apiAs(prActor, "GET", byOwner ? head : `${head}&base=${encodeURIComponent(def)}`);
     const onBranch: any[] = byOwner && Array.isArray(got) ? got : [];
     const open = (Array.isArray(got) ? got : []).filter((p: { html_url?: string; base?: { ref?: string } }) =>
       (!byOwner || String(p.base?.ref ?? "") === targetBase) && (!byOwner || prTasks()[String(p.html_url ?? "").toLowerCase()]?.task));
@@ -747,10 +728,10 @@ export function createService(o: Options) {
     const owned0 = open[0] as { html_url?: string } | undefined;
     if (owned0?.html_url) notePrTask(o.cacheDir, String(owned0.html_url), { task: a.workspace, branch: b.branch });
     const pr = open[0]
-      ? (Object.keys(text ?? {}).length ? await api("PATCH", `/repos/${s.slug}/pulls/${open[0].number}`, text) : open[0])
+      ? (Object.keys(text ?? {}).length ? await apiAs(prActor, "PATCH", `/repos/${s.slug}/pulls/${open[0].number}`, text) : open[0])
       // A new PR targets the base the plan reviewed against: the default, or the one an owned PR on the branch already had (a handoff
       // that lost its PR to a close between the plan and this push still lands where the reviewer read it).
-      : await api("POST", `/repos/${s.slug}/pulls`, { ...opened, head: b.branch, base: byOwner ? targetBase : def });
+      : await apiAs(prActor, "POST", `/repos/${s.slug}/pulls`, { ...opened, head: b.branch, base: byOwner ? targetBase : def });
     // The head GitHub holds, by its full sha: a merge names exactly that head (`aidenhq merge <PR> <head>`), never the box's commit.
     done.push(`${pr.html_url ?? `${s.slug}#${pr.number}`} at \`${sha}\``);
     if (pr.number && !open[0]) objects.push(`${ref(s.slug)}#${Number(pr.number)}`); // ours only when this write opened it
@@ -770,21 +751,30 @@ export function createService(o: Options) {
     // A lift keeps the hold recorded until the label is gone, so a failed lift is retried by the next publish.
     if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch, held: (a.hold === true && !theirs) || (!a.hold && wasHeld) }); // the PR watch works the PR for the task that published it
     if (a.hold) {
-      if (!theirs) await api("POST", `/repos/${s.slug}/issues/${Number(pr.number)}/labels`, { labels: [HOLD_LABEL] });
-      // A PR already in GitHub's native merge queue leaves it: the label alone doesn't stop a queued merge (not queued: GitHub says so, ignored).
-      if (pr.node_id) await gh("POST", "/graphql", { query: DEQUEUE, variables: { id: pr.node_id } }).catch(() => undefined);
+      if (!theirs) await apiAs(await actorOn(s.slug, "issue"), "POST", `/repos/${s.slug}/issues/${Number(pr.number)}/labels`, { labels: [HOLD_LABEL] });
+      // A PR already in GitHub's native merge queue leaves it: the label alone doesn't stop a queued merge. Read first, as the
+      // dequeue's actor: a PR not in the queue has nothing to leave, and a refusal to dequeue a queued one is an error.
+      if (pr.node_id) {
+        const dq = await actorOn(s.slug, "dequeue");
+        const q = await dq.rest("POST", "/graphql", { query: IN_QUEUE, variables: { id: pr.node_id } });
+        if (q.status >= 300 || q.body?.errors?.length) throw fail(502, `GitHub couldn't say whether ${pr.html_url} is in its merge queue: ${String(q.body?.errors?.[0]?.message ?? q.status).slice(0, 200)}`);
+        if (q.body?.data?.node?.isInMergeQueue === true) {
+          const d = await dq.mutate("DEQUEUE", { id: pr.node_id });
+          if (d.status >= 300 || d.body?.errors?.length) throw fail(502, `GitHub could not take ${pr.html_url} out of its merge queue: ${String(d.body?.errors?.[0]?.message ?? d.status).slice(0, 200)}`);
+        }
+      }
     } else if (wasHeld) {
-      const r = await gh("DELETE", `/repos/${s.slug}/issues/${Number(pr.number)}/labels/${encodeURIComponent(HOLD_LABEL)}`);
+      const r = await (await actorOn(s.slug, "issue")).rest("DELETE", `/repos/${s.slug}/issues/${Number(pr.number)}/labels/${encodeURIComponent(HOLD_LABEL)}`);
       if (r.status >= 300 && r.status !== 404) throw fail(502, `GitHub could not lift the hold on ${pr.html_url}: ${r.status} ${r.body?.message ?? ""}`.trim());
       notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch, held: false });
     }
     // Flow: the PR opened when this write created it, a head it moves is a push, and CI starts on every head it publishes.
     const n = Number(pr.number);
-    if (!open[0]) flow.opened(s.slug, n, sha, b.branch, pr.created_at, a.workspace, undefined, { title: String(pr.title ?? text?.title ?? ""), author: String(pr.user?.login ?? (await ownerLogin()) ?? "ghost"), author_kind: "agent" });
+    if (!open[0]) flow.opened(s.slug, n, sha, b.branch, pr.created_at, a.workspace, undefined, { title: String(pr.title ?? text?.title ?? ""), author: String(pr.user?.login ?? "ghost"), author_kind: "agent" });
     else if (open[0].head?.sha && open[0].head.sha !== sha) {
       // Forced: the old head is no ancestor of the new one.
       const cmp = await api("GET", `/repos/${s.slug}/compare/${open[0].head.sha}...${sha}`).catch(() => undefined);
-      flow.pushed(s.slug, n, sha, String(open[0].head.sha), cmp ? !["ahead", "identical"].includes(String(cmp.status)) : false, String((await ownerLogin()) ?? "ghost"), undefined, a.workspace);
+      flow.pushed(s.slug, n, sha, String(open[0].head.sha), cmp ? !["ahead", "identical"].includes(String(cmp.status)) : false, pushedBy, undefined, a.workspace);
     }
     flow.checksStarted(s.slug, n, sha, undefined, a.workspace);
   }
@@ -834,6 +824,8 @@ export function createService(o: Options) {
             // The default branch only ever moves forward: its push carries no force and no lease, exactly as before. A task branch may
             // be rewritten, but only from the head its write was planned at, and never rewound.
             const isDef = b.branch === def;
+            // This push's one actor: the git push, or every write of the signed publish.
+            const pusher = await actorOn(s.slug, "push");
             const head = isDef ? undefined : await publishHead(dir, s.slug, b.branch);
             // What this write was planned against: the head the plan read, bound into the record's own args (null: the branch was
             // absent then), so a card can never be widened by a later plan of the same request. A record filed before heads were
@@ -870,7 +862,7 @@ export function createService(o: Options) {
               const last = await git(dir, ["rev-parse", "--verify", "--quiet", publishedRef(b.branch)]).catch(() => "");
               const lastBox = last ? await git(dir, ["rev-parse", `${last}^1`]).catch(() => "") : "";
               if (last && lastBox !== b.sha && (await isAncestor(dir, b.sha, last))) throw refused(b.sha, head);
-              const made = already ? { sha: head!, wrote: false } : await publishSigned({ s, dir, branch: b.branch, sha: b.sha, head, base: base0, isDef, record: rec.id, ...at });
+              const made = already ? { sha: head!, wrote: false } : await publishSigned({ s, dir, branch: b.branch, sha: b.sha, head, base: base0, isDef, record: rec.id, actor: pusher, ...at });
               sha = made.sha;
               // Every box commit this branch was published from, as the parents of one bookkeeping commit (the newest first).
               const kept = await git(dir, ["-c", "user.name=AidenHQ", "-c", "user.email=codehost@aidenhq.invalid", "commit-tree", `${b.sha}^{tree}`, "-p", b.sha, ...(last ? ["-p", last] : []), "-m", "published"]);
@@ -895,7 +887,7 @@ export function createService(o: Options) {
               // rather than taking its push as a fast-forward. A lease never widens what may move -- git forces a refspec it can -- so
               // the checks above are what keep a stale bundle from winding the branch back. A branch that already holds the commit
               // needs no push at all.
-              if (head !== b.sha) await push(dir, isDef
+              if (head !== b.sha) await push(pusher, dir, isDef
                 ? ["push", "--quiet", "--no-verify", remote(s.slug), `${b.sha}:refs/heads/${b.branch}`]
                 : ["push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${b.branch}:${head ?? ""}`, remote(s.slug), `${b.sha}:refs/heads/${b.branch}`])
                 .catch(async (e: Error) => {
@@ -910,7 +902,7 @@ export function createService(o: Options) {
               objects.push(`${ref(s.slug)}@${b.sha}`);
             }
             try {
-              if (action === "pr") await openOrUpdatePr(s, b, def, rec, sha, objects, done, base0, gatedOwnership && (ownership === "own" || handoff));
+              if (action === "pr") await openOrUpdatePr(s, b, def, rec, sha, objects, done, base0, gatedOwnership && (ownership === "own" || handoff), (await pusher.identity()).login);
               else {
                 // A push-only handoff still takes the PR over: notePrTask is what the watcher reads for the PR's task, so without it a
                 // successor's push would leave the PR looking cancelled and unworked. Any open PR on the branch moves to this task.
@@ -930,7 +922,7 @@ export function createService(o: Options) {
       if (action === "close") {
         for (const p of a.prs) {
           const s = slugOf(p.repo);
-          const closed = await api("PATCH", `/repos/${s.slug}/pulls/${Number(p.number)}`, { state: "closed" });
+          const closed = await apiAs(await actorOn(s.slug, "pr"), "PATCH", `/repos/${s.slug}/pulls/${Number(p.number)}`, { state: "closed" });
           if (closed?.head?.sha) flow.closed(s.slug, Number(p.number), String(closed.head.sha));
           done.push(`${s.slug}#${p.number}`);
         }
@@ -962,7 +954,8 @@ export function createService(o: Options) {
     const s = slugOf(a.repo);
     const n = Number(a.number);
     const url = `https://github.com/${s.slug}/pull/${n}`;
-    const pr = await api("GET", `/repos/${s.slug}/pulls/${n}`);
+    const actor = await actorOn(s.slug, "pr");
+    const pr = await apiAs(actor, "GET", `/repos/${s.slug}/pulls/${n}`);
     if (pr.base?.ref === a.to) return { ok: true, text: `${url} targets \`${a.to}\`.` };
     if (pr.state !== "open") return { ok: false, text: `${url} is ${pr.state}: not retargeted.` };
     if (pr.base?.ref !== a.base) return { ok: false, text: `ship-scope: ${url} now targets \`${pr.base?.ref}\`, not \`${a.base}\`: not retargeted.` };
@@ -970,7 +963,7 @@ export function createService(o: Options) {
     if (a.to !== await defaultBranch(s.slug)) return { ok: false, text: `ship-scope: \`${a.to}\` isn't ${s.slug}'s default branch: not retargeted.` };
     const ended = await adoptionEnded(s.slug, n, a.generation, String(a.head));
     if (ended) return { ok: false, text: ended };
-    const r = await gh("PATCH", `/repos/${s.slug}/pulls/${n}`, { base: a.to });
+    const r = await actor.rest("PATCH", `/repos/${s.slug}/pulls/${n}`, { base: a.to });
     return r.status < 300 ? { ok: true, text: `${url} now targets \`${a.to}\`.` } : { ok: false, text: `GitHub refused the retarget of ${url}: HTTP ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
   }
   /**
@@ -982,7 +975,8 @@ export function createService(o: Options) {
     const s = slugOf(a.repo);
     const n = Number(a.number);
     const url = `https://github.com/${s.slug}/pull/${n}`;
-    const pr = await api("GET", `/repos/${s.slug}/pulls/${n}`);
+    const actor = await actorOn(s.slug, "pr");
+    const pr = await apiAs(actor, "GET", `/repos/${s.slug}/pulls/${n}`);
     if (pr.state !== "open") return { ok: false, text: `${url} is ${pr.state}: not retitled.` };
     if (pr.head?.sha !== a.head) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head?.sha).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not retitled.` };
     const ended = await adoptionEnded(s.slug, n, a.generation, String(a.head));
@@ -991,7 +985,7 @@ export function createService(o: Options) {
     if (pr.title === a.title) return { ok: true, text: `${url} is titled \`${a.title}\`.` };
     // The title the plan read: an author's own correction while the record waited is theirs, not overwritten.
     if (pr.title !== a.from) return { ok: false, text: `ship-scope: ${url}'s title changed since the write was filed (it now reads ${JSON.stringify(String(pr.title).slice(0, 80))}): read it again.` };
-    const r = await gh("PATCH", `/repos/${s.slug}/pulls/${n}`, { title: a.title });
+    const r = await actor.rest("PATCH", `/repos/${s.slug}/pulls/${n}`, { title: a.title });
     return r.status < 300 ? { ok: true, text: `${url} is now titled \`${a.title}\`.` } : { ok: false, text: `GitHub refused the retitle of ${url}: HTTP ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
   }
   /**
@@ -1010,11 +1004,9 @@ export function createService(o: Options) {
     return undefined;
   }
 
-  /** The code host's own sign-in (the fleet's one write identity), for the content writes ship makes: never the reviewer App. */
-  const writer = async () => ({ login: String((await ownerLogin()) ?? "ghost"), rest: gh, token: async () => token() });
   /**
-   * A push onto an adopted PR's branch (ship), written as commits GitHub makes and signs itself, as the code host's sign-in (the
-   * identity every ordinary task push uses), so a repository rule requiring verified signatures takes them: the PR is read again
+   * A push onto an adopted PR's branch (ship), written as commits GitHub makes and signs itself, as the branch repo's push actor (the
+   * App where installed and permitted, else the owner), so a repository rule requiring verified signatures takes them: the PR is read again
    * here (a Tier 0 push runs right after its plan, with no revalidation), and the box's commits from `expected` to the branch's
    * commit land as one commit bound to `expected` (createCommitOnBranch), or, where they merge the base, as GitHub's own merge
    * (mergeSigned). A contributor's push in between refuses it (ship-head-moved), never overwritten. The commit is not noted as
@@ -1034,8 +1026,10 @@ export function createService(o: Options) {
     const ended = await adoptionEnded(s.slug, Number(a.pr.number), a.generation, String(a.expected), undefined, true);
     if (ended) return { ok: false, text: ended };
     if (pr.head.sha !== a.expected) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.head.sha).slice(0, 12)}\`, not \`${String(a.expected).slice(0, 12)}\`: nothing was pushed; read it again.` };
-    const who = await writer();
-    // A fork's branch: the code host's sign-in pushes the commits as they are, leased on the head the write expects.
+    // The branch's repo (the base, or the fork) decides who pushes: one actor for every write of this push.
+    const who = await actorOn(into, "push");
+    const whoLogin = (await who.identity()).login;
+    // A fork's branch: the commits go as they are, leased on the head the write expects.
     if (fork) {
       // The lease guards a race; the fix itself must build on the head, never rewrite the contributor's history.
       if (!(await git(dir, ["merge-base", "--is-ancestor", String(a.expected), String(b.sha)]).then(() => true, () => false))) return { ok: false, text: `ship-scope: \`${String(b.sha).slice(0, 12)}\` doesn't build on ${url}'s head \`${String(a.expected).slice(0, 12)}\`: nothing was pushed.` };
@@ -1043,9 +1037,9 @@ export function createService(o: Options) {
       if (late) return { ok: false, text: late };
       const pushed = await forkPush(dir, into, String(pr.head.ref), String(a.expected), String(b.sha), who, url);
       if (pushed) return pushed;
-      flow.pushed(s.slug, Number(a.pr.number), b.sha, String(a.expected), false, who.login, undefined, a.workspace);
+      flow.pushed(s.slug, Number(a.pr.number), b.sha, String(a.expected), false, whoLogin, undefined, a.workspace);
       flow.checksStarted(s.slug, Number(a.pr.number), b.sha, undefined, a.workspace);
-      return { ok: true, text: `Pushed ${url} \`${pr.head.ref}\` (${into}) from \`${String(a.expected).slice(0, 12)}\` to \`${String(b.sha).slice(0, 12)}\` as ${who.login}.`, objects: [`github:${into.toLowerCase()}@${b.sha}`] };
+      return { ok: true, text: `Pushed ${url} \`${pr.head.ref}\` (${into}) from \`${String(a.expected).slice(0, 12)}\` to \`${String(b.sha).slice(0, 12)}\` as ${whoLogin}.`, objects: [`github:${into.toLowerCase()}@${b.sha}`] };
     }
     // The commits from the head to the box's commit, on the head's own first-parent chain: a merge made the other way round (the
     // PR branch merged into a base checkout) has the base tip as its first parent, and writing it would drop the head's content.
@@ -1063,15 +1057,15 @@ export function createService(o: Options) {
       if (again.base?.ref !== pr.base?.ref) return `ship-scope: ${url} was retargeted during the push (it now targets \`${String(again.base?.ref)}\`, not \`${String(pr.base?.ref)}\`): nothing was pushed.`;
       return undefined;
     };
-    const at = { s, n: Number(a.pr.number), url, into, ref: String(pr.head.ref), dir };
+    const at = { s, n: Number(a.pr.number), url, into, ref: String(pr.head.ref), dir, actor: who };
     const made = plan.merge
       ? await mergeSigned(at, { head: String(a.expected), baseSha: plan.merge.base, base: String(pr.base.ref), want: String(b.sha), message: plan.message, still })
       : await commitSigned(at, String(a.expected), await git(dir, ["rev-parse", `${a.expected}^{tree}`]), String(b.sha), plan.message, false, still);
     if ("baseMoved" in made) return { ok: false, text: `ship-scope: \`${pr.base.ref}\` moved to \`${made.baseMoved.slice(0, 12)}\` since the push merged \`${plan.merge!.base.slice(0, 12)}\` (${url}): nothing was pushed; fetch \`${pr.base.ref}\`, merge it again and push.` };
     if ("text" in made) return { ok: false, text: made.text };
-    flow.pushed(s.slug, Number(a.pr.number), made.sha, String(a.expected), false, who.login, undefined, a.workspace);
+    flow.pushed(s.slug, Number(a.pr.number), made.sha, String(a.expected), false, whoLogin, undefined, a.workspace);
     flow.checksStarted(s.slug, Number(a.pr.number), made.sha, undefined, a.workspace);
-    return { ok: true, text: `Wrote ${url} \`${pr.head.ref}\` from \`${String(a.expected).slice(0, 12)}\` to \`${made.sha.slice(0, 12)}\` as ${who.login} (commits GitHub signs).`, objects: [`github:${into.toLowerCase()}@${made.sha}`] };
+    return { ok: true, text: `Wrote ${url} \`${pr.head.ref}\` from \`${String(a.expected).slice(0, 12)}\` to \`${made.sha.slice(0, 12)}\` as ${whoLogin} (commits GitHub signs).`, objects: [`github:${into.toLowerCase()}@${made.sha}`] };
   }
 
   /**
@@ -1080,9 +1074,9 @@ export function createService(o: Options) {
    * code: what it keeps is untrusted. So the merge is made here, in the cache (`git merge-tree`), and the box's files are taken
    * only on generated paths (the plan's globs) and known lockfiles, as regular files or symlinks, never under `.github/` unless
    * they are the base's own; every conflict must be on such a path. On the base repo the result is written as commits GitHub makes
-   * and signs, as the code host's sign-in (mergeSigned: GitHub's own merge of the base, then the kept files on top), so a rule
+   * and signs, as the branch repo's push actor (mergeSigned: GitHub's own merge of the base, then the kept files on top), so a rule
    * requiring verified signatures takes it; to a fork whose author allows maintainer edits it is one merge commit (parents: the
-   * head and the base's tip), a leased git push as that same sign-in (the base repo's rules don't govern a fork's branch). Leftover conflicts and a
+   * head and the base's tip), a leased git push as that same actor (the base repo's rules don't govern a fork's branch). Leftover conflicts and a
    * failed generator come back as the outcome, `leftover: <path>` lines and `ship-generator:`, for ship's next round.
    */
   async function repairPr(a: any): Promise<{ ok: boolean; text: string; objects?: string[] }> {
@@ -1097,8 +1091,9 @@ export function createService(o: Options) {
     const fork = !pr.head?.repo || !same(String(pr.head.repo.full_name), s.slug);
     if (fork && (!pr.head?.repo || pr.maintainer_can_modify !== true)) return { ok: false, text: `ship-fork: ${url}'s head is in a fork that doesn't allow maintainer edits: nothing was changed.` };
     const into = slugOf(pr.head.repo.full_name).slug;
-    // The code host's sign-in writes the repair (the identity every ordinary task push uses); the reviewer App only reviews.
-    const who = await writer();
+    // The branch's repo decides who writes the repair: one actor for every write of it.
+    const who = await actorOn(into, "push");
+    const whoLogin = (await who.identity()).login;
     // The base branch's live tip, never the PR's `base.sha`: GitHub leaves that at the base the head was last pushed onto, so a
     // repair right after an author's rebase merged a stale tip (a no-op) while the branch had moved on.
     const baseRef = await gh("GET", refPath(s.slug, String(a.base)));
@@ -1132,7 +1127,8 @@ export function createService(o: Options) {
     // so ship waits for that CI on the head this writes.
     let forCi = 0;
     try {
-      const env = { ...ENV, GIT_INDEX_FILE: join(tmp, "index"), ...identityEnv(await access.identity()) };
+      // A fork's merge commit is made here and pushed by the repair's actor, so it is that actor's.
+      const env = { ...ENV, GIT_INDEX_FILE: join(tmp, "index"), ...identityEnv(await who.identity()) };
       const g = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--literal-pathspecs", "--git-dir", dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
       const raw = rawGit(dir, env);
       const blobAt = async (tree: string, p: string) => (await g(["ls-tree", "-z", tree, "--", p])).split("\0")[0]?.split(/[ \t]/) ?? [];
@@ -1185,26 +1181,26 @@ export function createService(o: Options) {
       const refused = await forkPush(dir, into, String(pr.head.ref), String(a.head), made!, who, url);
       if (refused) return refused;
     } else {
-      const signed = await mergeSigned({ s, n, url, into, ref: String(pr.head.ref), dir }, { head: String(a.head), baseSha, base: String(a.base), want: final, message: `Regenerate the generated files after merging ${a.base}`, still: () => adoptionEnded(s.slug, n, a.generation, String(a.head)) });
+      const signed = await mergeSigned({ s, n, url, into, ref: String(pr.head.ref), dir, actor: who }, { head: String(a.head), baseSha, base: String(a.base), want: final, message: `Regenerate the generated files after merging ${a.base}`, still: () => adoptionEnded(s.slug, n, a.generation, String(a.head)) });
       // The base moved while the box ran: a run that didn't finish, which ship asks for once more (ship-repair).
       if ("baseMoved" in signed) return { ok: false, text: `ship-repair: \`${a.base}\` moved to \`${signed.baseMoved.slice(0, 12)}\` during the repair of ${url}: nothing was changed.` };
       if ("text" in signed) return { ok: false, text: signed.text };
       made = signed.sha;
     }
     const tip = made!;
-    flow.pushed(s.slug, n, tip, String(a.head), false, who.login, undefined, undefined);
+    flow.pushed(s.slug, n, tip, String(a.head), false, whoLogin, undefined, undefined);
     flow.checksStarted(s.slug, n, tip, undefined, undefined);
-    return { ok: true, text: `Repaired ${url}: merged \`${a.base}\` and regenerated (${result.changed} file(s)) at \`${tip.slice(0, 12)}\`, as ${who.login}${fork ? ` (pushed to ${into})` : " (commits GitHub signs)"}.${forCi ? ` It took the base side of ${forCi} generated file(s) for the repo's CI to regenerate.` : ""}`, objects: [`github:${into.toLowerCase()}@${tip}`] };
+    return { ok: true, text: `Repaired ${url}: merged \`${a.base}\` and regenerated (${result.changed} file(s)) at \`${tip.slice(0, 12)}\`, as ${whoLogin}${fork ? ` (pushed to ${into})` : " (commits GitHub signs)"}.${forCi ? ` It took the base side of ${forCi} generated file(s) for the repo's CI to regenerate.` : ""}`, objects: [`github:${into.toLowerCase()}@${tip}`] };
   }
 
   /**
-   * A push to a fork PR's head branch as the code host's sign-in (GitHub lets it where the author allows maintainer edits),
+   * A push to a fork PR's head branch as `who` (the fork's push actor; GitHub lets it where the author allows maintainer edits),
    * leased on the head the write expects: a contributor's push in between wins (ship-head-moved). Anything else GitHub
    * refuses (no access, a rule requiring signed commits) is its own reason (ship-refused). Undefined when it pushed.
    */
-  async function forkPush(dir: string, into: string, ref: string, expected: string, sha: string, who: { token: () => Promise<string> }, url: string): Promise<{ ok: false; text: string } | undefined> {
+  async function forkPush(dir: string, into: string, ref: string, expected: string, sha: string, who: Actor, url: string): Promise<{ ok: false; text: string } | undefined> {
     try {
-      await git(dir, ["push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${ref}:${expected}`, remote(into), `${sha}:refs/heads/${ref}`], await who.token());
+      await git(dir, ["push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${ref}:${expected}`, remote(into), `${sha}:refs/heads/${ref}`], await who.gitToken());
       return undefined;
     } catch (e) {
       const said = String((e as Error).message ?? e);
@@ -1271,10 +1267,10 @@ export function createService(o: Options) {
     return { additions, deletions };
   }
   /** Where a signed write lands: `url` names it in outcomes (the PR, or the repo and branch), `n` is the PR GitHub's merge goes through, `publish` a task publish (its refusal is the task's, not ship's). */
-  type At = { s: ReturnType<typeof slugOf>; n?: number; url: string; into: string; ref: string; dir: string; publish?: boolean };
+  type At = { s: ReturnType<typeof slugOf>; n?: number; url: string; into: string; ref: string; dir: string; publish?: boolean; /** The write attempt's push actor: every commit and ref write of it. */ actor: Actor };
   /**
    * One commit on the PR's branch that turns tree `fromTree` (the tree at `expected`) into `to`'s, made by GitHub itself
-   * (createCommitOnBranch, as the code host's sign-in): GitHub signs it, so a rule requiring verified signatures takes it. It is
+   * (createCommitOnBranch, as the attempt's actor, with no custom author): GitHub signs it, so a rule requiring verified signatures takes it. It is
    * bound to `expected` (expectedHeadOid): a push in between refuses it, and the branch read back tells that (ship-head-moved)
    * from GitHub's own refusal of the write (a rule). The tree GitHub built must be git's own. `partial`: an earlier commit of the
    * same push already landed, so any failure leaves the branch mid-way and is a refusal ship holds on.
@@ -1288,7 +1284,7 @@ export function createService(o: Options) {
     if (stopped) return { text: stopped };
     const [headline, ...body] = (message || "Update").split("\n");
     const input = { branch: { repositoryNameWithOwner: at.into, branchName: at.ref }, expectedHeadOid: expected, message: { headline: headline!.slice(0, 250), body: body.join("\n").trim() }, fileChanges: changes };
-    const r = await gh("POST", "/graphql", { query: COMMIT_ON_BRANCH, variables: { input } });
+    const r = await at.actor.mutate("CREATE_COMMIT", { input });
     const made = r.body?.data?.createCommitOnBranch?.commit;
     if (r.status < 300 && !r.body?.errors?.length && made?.oid) {
       if (made.tree?.oid !== want) return { text: refusedPush(at, `GitHub's commit holds tree \`${String(made.tree?.oid).slice(0, 12)}\`, not git's \`${want.slice(0, 12)}\` (a file mode its signed commits don't keep)`, String(made.oid)) };
@@ -1398,7 +1394,8 @@ export function createService(o: Options) {
           if (now.body?.object?.sha !== m.baseSha) return { baseMoved: String(now.body?.object?.sha ?? "") };
         }
         sent = "merge";
-        const u = await gh("PUT", `/repos/${at.s.slug}/pulls/${at.n}/update-branch`, { expected_head_sha: head });
+        // GitHub's merge of the base: its own op (pull requests on the base, contents on the branch, which is the base repo's here).
+        const u = await (await actorOn(at.s.slug, "update_branch")).rest("PUT", `/repos/${at.s.slug}/pulls/${at.n}/update-branch`, { expected_head_sha: head });
         if (u.status >= 300) {
           const now = await gh("GET", refPath(at.into, at.ref));
           const moved = now.status < 300 && now.body?.object?.sha !== head;
@@ -1458,7 +1455,7 @@ export function createService(o: Options) {
     return { tip, mb: await mbOf(sha), headBase: head === undefined ? undefined : await mbOf(head) };
   }
   /**
-   * A task branch published as commits GitHub makes and signs itself (createCommitOnBranch, as the code host's sign-in), so a
+   * A task branch published as commits GitHub makes and signs itself (createCommitOnBranch, as the push's actor), so a
    * repository rule requiring verified signatures takes it. The box's commits collapse into one that brings the branch to the box
    * commit's tree (a squash merge carries the PR's title anyway), with the box tip's message, bound to the branch's head
    * (expectedHeadOid: the lease). The branch stays on the base it was reviewed against:
@@ -1470,9 +1467,9 @@ export function createService(o: Options) {
    * - the default branch: forward only, from its head.
    * The sha is GitHub's: the caller binds that one, never the box's (`wrote`: false where the branch already held the tree).
    */
-  async function publishSigned(p: { s: ReturnType<typeof slugOf>; dir: string; branch: string; sha: string; head?: string; base: string; isDef: boolean; record: string; tip?: string; mb?: string; headBase?: string }): Promise<{ sha: string; wrote: boolean }> {
+  async function publishSigned(p: { s: ReturnType<typeof slugOf>; dir: string; branch: string; sha: string; head?: string; base: string; isDef: boolean; record: string; tip?: string; mb?: string; headBase?: string; actor: Actor }): Promise<{ sha: string; wrote: boolean }> {
     const label = `${p.s.slug} \`${p.branch}\` (its rules require signed commits)`;
-    const at: At = { s: p.s, url: label, into: p.s.slug, ref: p.branch, dir: p.dir, publish: true };
+    const at: At = { s: p.s, url: label, into: p.s.slug, ref: p.branch, dir: p.dir, publish: true, actor: p.actor };
     const message = await git(p.dir, ["log", "-1", "--format=%B", p.sha]);
     const tree = (x: string) => git(p.dir, ["rev-parse", `${x}^{tree}`]);
     const again = (tip: string) => `ship-head-moved: \`${p.base}\` moved on to \`${tip.slice(0, 12)}\` since ${label} was built on it: nothing was pushed; fetch it, build on it and publish again.`;
@@ -1493,7 +1490,7 @@ export function createService(o: Options) {
       // Every file change must be one GitHub can write before the branch is created at all.
       const changes = await fileChanges(p.dir, p.mb, p.sha);
       if ("refused" in changes) throw fail(422, `${changes.refused} (${label}): nothing was pushed.`);
-      const made = await gh("POST", `/repos/${p.s.slug}/git/refs`, { ref: `refs/heads/${p.branch}`, sha: p.mb });
+      const made = await p.actor.rest("POST", `/repos/${p.s.slug}/git/refs`, { ref: `refs/heads/${p.branch}`, sha: p.mb });
       const said = `${made.status} ${String(made.body?.message ?? "")}`.trim();
       if (made.status === 422 && /exist/i.test(said)) throw fail(409, `ship-head-moved: ${label} appeared since the write read it absent: nothing was pushed to it; read it again.`);
       if (made.status >= 500 || made.status === 429) throw fail(502, `GitHub didn't answer creating ${label}: ${said.slice(0, 200)}`);
@@ -1508,7 +1505,7 @@ export function createService(o: Options) {
       // The delete is bound to `mb` (updateRefs' beforeOid): a branch someone moved since is left where it is.
       const drop = async () => {
         const repo = await gh("GET", `/repos/${p.s.slug}`).catch(() => undefined);
-        if (repo?.body?.node_id) await gh("POST", "/graphql", { query: UPDATE_REFS, variables: { input: { repositoryId: repo.body.node_id, refUpdates: [{ name: `refs/heads/${p.branch}`, beforeOid: p.mb, afterOid: "0".repeat(40) }] } } }).catch(() => undefined);
+        if (repo?.body?.node_id) await p.actor.mutate("UPDATE_REFS", { input: { repositoryId: repo.body.node_id, refUpdates: [{ name: `refs/heads/${p.branch}`, beforeOid: p.mb, afterOid: "0".repeat(40) }] } }).catch(() => undefined);
         await git(p.dir, ["update-ref", "-d", createdRef(p.branch, p.record)]).catch(() => undefined);
       };
       const r = await commitSigned(at, p.mb, await tree(p.mb), p.sha, message).catch(async (e: { need?: unknown }) => { if (e?.need) await drop(); throw e; });
@@ -1532,10 +1529,23 @@ export function createService(o: Options) {
     return landed(await mergeSigned({ ...at, n }, { head: p.head, baseSha: p.mb, base: p.base, want: p.sha, message, still }));
   }
 
+  /** The approvals ship's approve write made as the App (approvals.ts): the only App approvals that count. */
+  const appApprovals = approvals(o.cacheDir);
   /**
-   * The reviewer App's approval of an adopted PR at exactly its head (`commit_id`), never the owner's account (that would count
-   * as a person's, a code owner's included): no App on the repo, or the App's own PR, is "approval needs a human". The head is read
-   * once before posting; GitHub binds the review to `commit_id`, so an approval that raced a push stands on the old head only.
+   * Who approves a PR: the App's actor where it is installed on the repo with pull requests write, and never on a PR the App
+   * opened (GitHub refuses an author's own approval, and that PR waits for a person's). An approval is never the owner's: one as
+   * the owner would count as a person's, a code owner's included.
+   */
+  async function approver(slug: string, pr: { user?: { id?: unknown } }): Promise<{ actor: Actor } | { noApp: string }> {
+    const actor = await actorOn(slug, "pr");
+    if (actor.kind !== "app") return { noApp: "the GitHub App isn't installed on this repo with pull requests write" };
+    if (actor.botId !== undefined && Number(pr.user?.id) === actor.botId) return { noApp: "the GitHub App opened it, so it waits for a person's approval" };
+    return { actor };
+  }
+  /**
+   * The App's approval of an adopted PR at exactly its head (`commit_id`), never the owner's account: no App on the repo, or the
+   * App's own PR, is "approval needs a person". The head is read once before posting; GitHub binds the review to `commit_id`, so
+   * an approval that raced a push stands on the old head only. Its review id is recorded (approvals.ts): only those count.
    */
   async function approve(a: any): Promise<{ ok: boolean; text: string }> {
     const s = slugOf(a.repo);
@@ -1547,9 +1557,10 @@ export function createService(o: Options) {
     // review passed this head), with the live base and author.
     const ended = await adoptionEnded(s.slug, n, a.generation, String(a.head), a.dismiss === true ? undefined : { do: "approve", head: a.head, base: String(pr.base?.ref ?? ""), association: String(pr.author_association ?? ""), ...(typeof a.policy === "string" ? { policy: a.policy } : {}) });
     if (ended) return { ok: false, text: ended };
-    const app = await o.reviewer?.(s.slug);
-    if (!app) return { ok: false, text: `ship-no-app: ${url}: approval needs a human (the GitHub App isn't installed on this repo).` };
-    if (same(String(pr.user?.login ?? ""), app.login)) return { ok: false, text: `ship-no-app: ${url}: approval needs a human (the GitHub App opened it).` };
+    const who = await approver(s.slug, pr);
+    if ("noApp" in who) return { ok: false, text: `ship-no-app: ${url}: approval needs a person (${who.noApp}).` };
+    const app = who.actor;
+    const login = (await app.identity()).login;
     // An App approval made on another commit or under another review policy is dismissed (ship files it before anything it must
     // not count for): every approval of this PR the App made, whatever its head.
     if (a.dismiss === true) {
@@ -1559,7 +1570,7 @@ export function createService(o: Options) {
         const list = await app.rest("GET", `/repos/${s.slug}/pulls/${n}/reviews?per_page=100&page=${page}`);
         if (list.status >= 300) return { ok: false, text: `GitHub refused to list ${url}'s reviews: ${list.status}` };
         const got = list.body as any[];
-        mine.push(...got.filter((r) => r.state === "APPROVED" && same(String(r.user?.login ?? ""), app.login)));
+        mine.push(...got.filter((r) => r.state === "APPROVED" && Number(r.user?.id) === app.botId));
         if (got.length < 100 || page >= 20) break;
       }
       for (const r of mine) {
@@ -1570,8 +1581,9 @@ export function createService(o: Options) {
     }
     const r = await app.rest("POST", `/repos/${s.slug}/pulls/${n}/reviews`, { event: "APPROVE", commit_id: a.head });
     if (r.status >= 300) return { ok: false, text: `GitHub refused the approval of ${url}: ${r.status} ${String(r.body?.message ?? "").slice(0, 200)}` };
+    if (r.body?.id != null) appApprovals.record(s.slug, n, r.body.id);
     // No object: an approval makes nothing the fleet owns (the PR stays its author's).
-    return { ok: true, text: `Approved ${url} at \`${String(a.head).slice(0, 12)}\` as ${app.login}.` };
+    return { ok: true, text: `Approved ${url} at \`${String(a.head).slice(0, 12)}\` as ${login}.` };
   }
 
   /**
@@ -1580,7 +1592,7 @@ export function createService(o: Options) {
    * GET until it is terminal. `409` names the request already pending for this PR, which is read instead of a second one being
    * made. Nothing here reports a merge GitHub didn't report as `merged`.
    */
-  async function enqueueAsync(s: ReturnType<typeof slugOf>, n: number, a: any, url: string,
+  async function enqueueAsync(actor: Actor, s: ReturnType<typeof slugOf>, n: number, a: any, url: string,
     /** The PR read back (a merge or a queue entry at this head), for a request that is still pending: its own words then. */
     settle: () => Promise<{ ok: boolean; text: string } | undefined>,
     /** Read again right before the request goes out, and empty only while the write still stands: the REST call binds the head
@@ -1599,10 +1611,10 @@ export function createService(o: Options) {
     const pending = (why: string) => ({ ok: false, text: `${PENDING} ${url}: ${why} not merged.` }) as { ok: boolean; text: string };
     const store = requestStore(join(o.cacheDir, "async-requests.json"), log);
     const key = requestKey(s.slug, n, String(a.head));
-    const keep = (uuid?: string) => store.set(key, uuid);
+    const keep = (uuid?: string) => store.set(key, uuid ? { uuid, actor: actor.key } : undefined);
     /** A request's result, read at its own GET; `again` while GitHub has not settled it (a transient read included). */
-    const poll = async (uuid: string): Promise<{ out?: { ok: boolean; text: string }; again?: true; gone?: true; transient?: string }> => {
-      const got = await readAsync(gh, s.slug, n, uuid);
+    const poll = async (uuid: string, by: Pick<Actor, "rest"> = actor): Promise<{ out?: { ok: boolean; text: string }; again?: true; gone?: true; transient?: string }> => {
+      const got = await readAsync(by.rest, s.slug, n, uuid);
       // Its result is kept 24 hours: a request GitHub no longer holds is not a merge this record can claim.
       if (got.got === 404) return { gone: true };
       if (got.got >= 300 || !got.status) return { transient: `GitHub answered ${got.got} reading it: ${got.message.slice(0, 160)}` };
@@ -1612,19 +1624,33 @@ export function createService(o: Options) {
     const until = o.asyncPolls ?? ASYNC_POLLS;
     const wait = async (i: number) => { if (i) await new Promise((done) => setTimeout(done, o.asyncPollMs ?? ASYNC_POLL_MS)); };
     /** A request already in hand from an earlier round: read it before a new one is made, so its terminal result is never lost. */
-    const known = store.get(key);
-    if (known) {
-      const first = await poll(known);
+    const kept = store.get(key);
+    // Read back as the identity that made it (its own GET answers only to that identity).
+    const known = kept?.uuid;
+    // One that can't be used any more (the App removed) is dropped, loudly, and the PR is read back: never asked as another identity.
+    // Only a definite answer (the App gone: app_refused) drops it; a transient failure fails this attempt and keeps it for the next.
+    const by = kept && kept.actor !== actor.key ? await access.actorByKey(kept.actor).catch((e: Error & { need?: { cause?: string } }) => {
+      if (e.need?.cause !== "app_refused") throw e;
+      log("kept async merge request dropped: its identity can't be used", { pr: url, actor: kept.actor, err: String(e.message).slice(0, 200) });
+      keep();
+      return undefined;
+    }) : actor;
+    if (known && !by) {
+      const back = await settle();
+      return back ?? pending(`the identity that made async merge request ${known} for ${head} can't be used any more, so it was dropped; the next round asks afresh:`);
+    }
+    if (known && by) {
+      const first = await poll(known, by);
       if (first.out) { keep(); return first.out; }
       if (first.gone) keep();
       else if (first.again || first.transient) {
         for (let i = 1; i < until; i++) {
           await wait(i);
-          const next = await poll(known);
+          const next = await poll(known, by);
           if (next.out) { keep(); return next.out; }
           if (next.gone) { keep(); break; }
         }
-        if (store.get(key) === known) {
+        if (store.get(key)?.uuid === known) {
           // The PR read back as merged or queued at this head settles it even while the request still polls: the kept id is
           // dropped with it, so a later re-enqueue after a removal never reads this request's stale answer.
           const back = await settle();
@@ -1636,7 +1662,11 @@ export function createService(o: Options) {
     const refused = await precheck();
     if (refused) return { ok: false, text: refused };
     let r: { status: number; body: any } | undefined;
-    try { r = await gh("PUT", path, { sha: a.head, merge_action: "merge_queue" }); } catch (e) { log("async merge request unanswered", { pr: url, err: String((e as Error).message).slice(0, 200) }); }
+    try { r = await actor.rest("PUT", path, { sha: a.head, merge_action: "merge_queue" }); } catch (e) {
+      // GitHub refused the App (a 403 the client throws typed): its refusal, said, never a request that may have gone through.
+      if ((e as { status?: number }).status === 403) return { ok: false, text: `GitHub refused to queue ${url}: ${String((e as Error).message).slice(0, 300)}` };
+      log("async merge request unanswered", { pr: url, err: String((e as Error).message).slice(0, 200) });
+    }
     // No answer at all (a timeout, a 5xx): the request may have been made and GitHub names it on a repeat (409) while it is
     // pending, so the caller reads the PR back and, not queued, asks again next round — never a hold on an answer that never came.
     if (!r || r.status >= 500) return { ok: false, ambiguous: true, text: `${PENDING} ${url}: GitHub didn't answer the async merge request for ${head}: not merged.` };
@@ -1688,8 +1718,10 @@ export function createService(o: Options) {
     const s = slugOf(a.repo);
     const n = Number(a.number);
     const url = `https://github.com/${s.slug}/pull/${n}`;
+    // One actor for the enqueue and every read that decides it (mergeStateStatus and the like are the viewer's).
+    const actor = await actorOn(s.slug, "merge");
     const read = async () => {
-      const r = await gh("POST", "/graphql", { query: QUEUE_READ, variables: { owner: s.org, repo: s.name, number: n } });
+      const r = await actor.rest("POST", "/graphql", { query: QUEUE_READ, variables: { owner: s.org, repo: s.name, number: n } });
       const pr = r.body?.data?.repository?.pullRequest;
       if (r.status >= 300 || r.body?.errors?.length || !pr) throw fail(502, `GitHub couldn't read ${url}'s queue entry: ${r.body?.errors?.[0]?.message ?? r.status}`);
       return pr;
@@ -1731,9 +1763,9 @@ export function createService(o: Options) {
     if (pr.headRefOid !== a.head) return { ok: false, text: `ship-head-moved: ${url} is at \`${String(pr.headRefOid).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not queued.` };
     // Where GitHub's rules ask for a review, an approval on this exact head (merge-gate approvedAt), read right before the enqueue:
     // GitHub may still count an earlier commit's.
-    const app = (await o.reviewer?.(s.slug).catch(() => undefined))?.login.replace(/\[bot\]$/, "");
-    if ((pr.reviewDecision === "REVIEW_REQUIRED" || pr.reviewDecision === "APPROVED") && !approvedAt(pr, a.head, app)) return { ok: false, text: `ship-tier-pending: ${url} has no approval on \`${String(a.head).slice(0, 12)}\` from someone who can push: not queued; queued again once it has one.` };
-    const out = await enqueueAsync(s, n, a, url, async () => { const back = await read().catch(() => undefined); return back && settled(back); }, async () => {
+    const mine = appApprovals.of(s.slug, n);
+    if ((pr.reviewDecision === "REVIEW_REQUIRED" || pr.reviewDecision === "APPROVED") && !approvedAt(pr, a.head, mine)) return { ok: false, text: `ship-tier-pending: ${url} has no approval on \`${String(a.head).slice(0, 12)}\` from someone who can push: not queued; queued again once it has one.` };
+    const out = await enqueueAsync(actor, s, n, a, url, async () => { const back = await read().catch(() => undefined); return back && settled(back); }, async () => {
       // Every gate that authorized this write is read again right before the request goes out (a kept request is read first, which
       // takes minutes): the REST request binds the head alone, never the approval, the code-review pass, the base or the hold.
       const now = await read().catch(() => undefined);
@@ -1743,7 +1775,7 @@ export function createService(o: Options) {
       if (now.headRefOid !== a.head) return `ship-head-moved: ${url} is at \`${String(now.headRefOid).slice(0, 12)}\`, not \`${String(a.head).slice(0, 12)}\`: not queued.`;
       if (now.baseRefName !== a.base) return `ship-scope: ${url}'s base changed: it now targets \`${now.baseRefName}\`, not \`${a.base}\`: not queued.`;
       if ((now.labels?.nodes ?? []).some((l: { name?: string }) => l?.name === HOLD_LABEL)) return `${url} carries the \`${HOLD_LABEL}\` label: not queued; queued once it is removed.`;
-      if ((now.reviewDecision === "REVIEW_REQUIRED" || now.reviewDecision === "APPROVED") && !approvedAt(now, a.head, app)) return `ship-tier-pending: ${url} has no approval on \`${String(a.head).slice(0, 12)}\` from someone who can push: not queued; queued again once it has one.`;
+      if ((now.reviewDecision === "REVIEW_REQUIRED" || now.reviewDecision === "APPROVED") && !approvedAt(now, a.head, appApprovals.of(s.slug, n))) return `ship-tier-pending: ${url} has no approval on \`${String(a.head).slice(0, 12)}\` from someone who can push: not queued; queued again once it has one.`;
       const gate = await o.reviewGate(s.slug, n, a.head, { base: String(now.baseRefName ?? ""), association: String(now.authorAssociation ?? "") });
       // `ship-tier-pending`: a gate that closed or can't be reached is asked again next round. A plain "not queued" would hold the PR for good.
       if (gate && "wait" in gate) return `ship-tier-pending: not queued: ${gate.wait}${gate.unblock ? ` (${gate.unblock})` : ""}`;
@@ -1761,7 +1793,8 @@ export function createService(o: Options) {
    * repo never creates one. "exists" when GitHub says the name is taken.
    */
   async function createRepo(s: ReturnType<typeof slugOf>): Promise<"exists" | "created"> {
-    const r = await gh("POST", `/orgs/${s.org}/repos`, { name: s.name, private: true, auto_init: true });
+    // create_repo asks no App permission (OPS): the owner's, by the rule.
+    const r = await (await access.actorFor({ org: s.org }, "create_repo")).rest("POST", `/orgs/${s.org}/repos`, { name: s.name, private: true, auto_init: true });
     if (r.status === 201) return "created";
     if (r.status === 422 && /already exists/i.test(JSON.stringify(r.body?.errors ?? r.body?.message ?? ""))) return "exists";
     throw fail(502, `couldn't create ${s.slug}: GitHub said ${r.status} ${r.body?.message ?? ""}`.trim());
@@ -1895,6 +1928,7 @@ export function createService(o: Options) {
     repos: async () => (access.connected() ? managedRepos() : []),
     gh: (method, path, opts) => gh(method, path, undefined, { background: true, ...opts }),
     self: ownerLogin,
+    bot: async () => (await o.app?.identity())?.login,
     ours,
     fetchDefault: async (repo) => {
       const s = slugOf(repo);
@@ -1905,7 +1939,8 @@ export function createService(o: Options) {
     git: (dir, args) => git(dir, args),
   });
   const merges = createMerges({
-    ship: o.ship, reviewer: o.reviewer,
+    ship: o.ship, approvals: (repo: string, n: number) => appApprovals.of(repo, n), actorFor: (repo: string) => actorOn(repo, "merge"), actorByKey: (key: string) => access.actorByKey(key),
+    bot: async () => (await o.app?.identity())?.login,
     flow, taskOf: (repo, n) => flow.taskOf(repo, n),
     taskStatus: async (task) => String(((await kernel("GET", `/v1/work?task=${encodeURIComponent(task)}`)) as { status?: unknown })?.status ?? "") || null,
     // A task's id from its identifier: the kernel's work read resolves it by its jobs, which carry the id.
@@ -2045,7 +2080,7 @@ export function createService(o: Options) {
     if (off.to !== null && JSON.stringify(off.from) !== JSON.stringify(off.to)) throw fail(422, "not landed: it adds or moves an `aidenhq` marketplace pin; the official modules come with the product pin");
     // The apply lands the exact commit it approved (the kernel applies that sha), which only a git push keeps.
     if (await signedOnly(c.s.slug, c.def)) throw fail(409, `${c.s.slug}'s ${c.def} requires signed commits, and an apply lands its exact approved commit, which GitHub's signed commits can't keep: lift the rule on ${c.def} for the instance repo`);
-    await push(c.dir, ["push", "--quiet", "--no-verify", remote(c.s.slug), `${c.sha}:refs/heads/${c.def}`]);
+    await push(await actorOn(c.s.slug, "push"), c.dir, ["push", "--quiet", "--no-verify", remote(c.s.slug), `${c.sha}:refs/heads/${c.def}`]);
     log("instance landed", { repo: c.s.slug, sha: c.sha });
     return { landed: c.sha };
   }
@@ -2184,10 +2219,11 @@ export function createService(o: Options) {
       await g(["add", "--all", "--force", "."]);
       const sha = await g(["commit-tree", await g(["write-tree"]), "-p", parent, "-m", withTrailer("chore: start from the app starter\n\nWritten by the code host when it created this repository; no agent wrote it.", "code host")]);
       // A default branch whose rules require signed commits takes the starter as GitHub's own commit on the README.
+      const pusher = await actorOn(s.slug, "push");
       if (await signedOnly(s.slug, def)) {
-        const made = await commitSigned({ s, url: `${s.slug} \`${def}\` (its rules require signed commits)`, into: s.slug, ref: def, dir, publish: true }, parent, await git(dir, ["rev-parse", `${parent}^{tree}`]), sha, await git(dir, ["log", "-1", "--format=%B", sha]));
+        const made = await commitSigned({ s, url: `${s.slug} \`${def}\` (its rules require signed commits)`, into: s.slug, ref: def, dir, publish: true, actor: pusher }, parent, await git(dir, ["rev-parse", `${parent}^{tree}`]), sha, await git(dir, ["log", "-1", "--format=%B", sha]));
         if (!("sha" in made)) throw new Error(made.text);
-      } else await push(dir, ["push", "--quiet", "--no-verify", remote(s.slug), `${sha}:refs/heads/${def}`]);
+      } else await push(pusher, dir, ["push", "--quiet", "--no-verify", remote(s.slug), `${sha}:refs/heads/${def}`]);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -2230,13 +2266,14 @@ export function createService(o: Options) {
     // Only onto the tip the owner previewed: the push fails if the branch moved, was reset or was deleted since. A branch whose rules
     // require signed commits takes it as GitHub's own commit, bound to that tip (expectedHeadOid).
     const dir = await cache(s, "ws");
+    const pusher = await actorOn(s.slug, "push");
     if (await signedOnly(s.slug, a.ref)) {
-      const made = await commitSigned({ s, url: `${s.slug} \`${a.ref}\` (its rules require signed commits)`, into: s.slug, ref: a.ref, dir, publish: true }, a.base, await git(dir, ["rev-parse", `${a.base}^{tree}`]), sha, await git(dir, ["log", "-1", "--format=%B", sha]));
+      const made = await commitSigned({ s, url: `${s.slug} \`${a.ref}\` (its rules require signed commits)`, into: s.slug, ref: a.ref, dir, publish: true, actor: pusher }, a.base, await git(dir, ["rev-parse", `${a.base}^{tree}`]), sha, await git(dir, ["log", "-1", "--format=%B", sha]));
       if (!("sha" in made)) return { ok: false, text: made.text };
       log("module published", { repo: s.slug, ref: a.ref, module: a.module, sha: made.sha });
       return { ok: true, text: `Published the ${a.module} module to ${s.slug} \`${a.ref}\` at ${made.sha.slice(0, 12)}.`, objects: [`github:${s.slug.toLowerCase()}@${made.sha}`] };
     }
-    await push(dir, ["push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${a.ref}:${a.base}`, remote(s.slug), `${sha}:refs/heads/${a.ref}`]);
+    await push(pusher, dir, ["push", "--quiet", "--no-verify", `--force-with-lease=refs/heads/${a.ref}:${a.base}`, remote(s.slug), `${sha}:refs/heads/${a.ref}`]);
     log("module published", { repo: s.slug, ref: a.ref, module: a.module, sha });
     return { ok: true, text: `Published the ${a.module} module to ${s.slug} \`${a.ref}\` at ${sha.slice(0, 12)}.`, objects: [`github:${s.slug.toLowerCase()}@${sha}`] };
   }
@@ -2313,6 +2350,12 @@ export function createService(o: Options) {
         if (!access.connected()) return send(res, 503, { error: "GitHub isn't connected" });
         const me = await access.identity();
         return send(res, 200, { name: me.name, email: me.email });
+      }
+      // Who the instance's GitHub App is (the kernel's CI tier payload: its PRs are a member's), read from GitHub; {} without one.
+      if (req.url === "/aidenhq/v1/app" && req.method === "GET") {
+        if (!keyed(req)) return send(res, 401, { error: "the kernel's executor key only" });
+        const bot = await o.app?.identity();
+        return send(res, 200, bot ? { login: bot.login, id: bot.botId } : {});
       }
       if (req.url === "/aidenhq/v1/executor/status" && req.method === "POST") return await status(req, res);
       if (await exec(req, res)) return;

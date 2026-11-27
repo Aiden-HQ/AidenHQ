@@ -158,7 +158,7 @@ function shipEffectPart(action: "approve" | "enqueue" | "repair" | "retarget", p
   if (!p.ship.byShip) return REJECT("ship-only", `${ref}: only the ship module files a ${action}`);
   const refused = shipRefusal(p.ship, ref);
   if (refused) return refused;
-  if (action === "approve" && p.ship.noApp) return REJECT("ship-no-app", `${ref}: approval needs a human (${p.ship.noApp})`);
+  if (action === "approve" && p.ship.noApp) return REJECT("ship-no-app", `${ref}: approval needs a person (${p.ship.noApp})`);
   return T(0, `ship-${action}`, `${ref}: adopted at generation ${p.ship.generation}, at its head \`${p.ship.expected.slice(0, 12)}\``);
 }
 

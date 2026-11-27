@@ -154,11 +154,14 @@ test("no op answer carries the token", async (t) => {
   const access = {
     token: async () => TOKEN,
     identity: async () => ({ login: "owner", name: "Owner", email: "1+owner@users.noreply.github.com" }),
+    // The chooser (github-mcp client.ts actorFor): the owner here, every write through the same fake.
+    actorFor: async () => ({ kind: "owner", key: "owner", identity: () => access.identity(), rest: (m, p, b) => access.rest(m, p, b), mutate: (name, variables) => access.rest("POST", "/graphql", { query: name === "CREATE_COMMIT" ? "mutation createCommitOnBranch" : name, variables }), gitToken: async () => TOKEN }),
     rest: async (method, path, body) => {
       calls.push({ method, path, body });
       const ok = (b, status = 200) => ({ status, body: b, headers: new Headers() });
       if (path.endsWith("/branches/feat")) return ok({ commit: { sha: "a".repeat(40) } });
-      if (path.includes("/contents/")) return method === "PUT" ? ok({ commit: { sha: "b".repeat(40) } }, 201) : ok({ message: "Not Found" }, 404);
+      // The registry commit: GitHub's own (createCommitOnBranch), bound to the branch's head.
+      if (path === "/graphql" && String(body?.query).includes("createCommitOnBranch")) return body.variables.input.expectedHeadOid === "a".repeat(40) ? ok({ data: { createCommitOnBranch: { commit: { oid: "b".repeat(40) } } } }) : ok({ data: null, errors: [{ type: "STALE_DATA", message: "Expected branch to point to another head" }] });
       if (path.endsWith("/comments")) return ok({ id: 99 }, 201);
       if (path.endsWith("/registration-token")) return ok({ token: "AAAREG", expires_at: "2026-11-20T10:00:00Z" }, 201);
       if (path === "/repos/acme/x/pulls?state=open&per_page=100&page=1") return ok([{ number: 3, head: { sha: "c".repeat(40), repo: { full_name: "acme/x" } }, base: { ref: "main" } }]);
@@ -195,9 +198,9 @@ test("no op answer carries the token", async (t) => {
   await op.op("m", "comment", { repo: "acme/x", number: 3, body: "again" }, res);
   assert.deepEqual([sent.head, JSON.parse(sent.body), noted], [200, { id: 99 }, [["github:acme/x#3/comment/99", "codehost:m"]]]);
   assert.equal((await ask("commit", { repo: "acme/x", branch: "feat", path: "apps.yaml", content: "a: 1\n", parent: sha, message: "tune" })).status, 200);
-  const put = calls.find((c) => c.method === "PUT").body;
-  assert.match(put.message, /\n\nCo-authored-by: AidenHQ m <noreply@aidenhq\.ai>$/);
-  assert.deepEqual(put.committer, { name: "Owner", email: "1+owner@users.noreply.github.com" });
+  const commit = calls.find((c) => c.path === "/graphql").body.variables.input;
+  assert.match(`${commit.message.headline}\n\n${commit.message.body}`, /\n\nCo-authored-by: AidenHQ m <noreply@aidenhq\.ai>$/);
+  assert.equal(commit.expectedHeadOid, "a".repeat(40), "bound to the parent; no custom author");
   assert.equal((await ask("commit", { repo: "acme/x", branch: "feat", path: "apps.yaml", content: "a: 1\n", parent: "d".repeat(40), message: "tune" })).status, 409, "the branch is not at parent");
   assert.equal((await ask("runner_token", { org: "acme" })).status, 200);
   assert.equal((await ask("read", { repo: "acme/x", kind: "pr", number: 1 })).status, 502, "an error that echoed the token");

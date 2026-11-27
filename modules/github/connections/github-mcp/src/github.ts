@@ -1,15 +1,15 @@
-// GitHub REST client for AidenHQ's GitHub tools, as the owner (the one sign-in, client.ts), which can do anything the owner
-// can (push, delete branches, change settings). The only thing standing between that sign-in and these requests is `guard`:
+// GitHub REST client for AidenHQ's GitHub tools. Each write goes as the actor client.ts's actorFor picks for it (the instance's
+// GitHub App where it is installed with the permissions, else the owner's sign-in, which can do anything the owner can: push,
+// delete branches, change settings). The only thing standing between those credentials and these requests is `guard`:
 // every request goes through it, and it allows a fixed list of read endpoints plus the writes an agent asks for: a comment on
 // an issue or pull request, a new issue, and adding that issue to an organization project with a status, through the GraphQL
 // documents fixed in `GRAPHQL`; and closing or reopening an issue, its labels and assignees, a comment review on a pull
-// request (never an approval: an agent's review mustn't count as the owner's), and re-running failed CI jobs. Text it posts
+// request (never an approval: an agent's review never counts as a person's), and re-running failed CI jobs. Text it posts
 // ends with the AidenHQ footer naming the agent. Which repos a write may touch is the AI reviewer's call on each record, plus
-// what the owner's account can reach. Never add a route or a GraphQL document without checking what it does.
-
+// what the chosen identity can reach. Never add a route or a GraphQL document without checking what it does.
 import { hasFooter, withFooter } from "./aidenhq-sdk/attribution.js";
 import { CLOSED_EVENT_SELECTION, closedBy } from "./aidenhq-sdk/closed-event.js";
-import { GitHubNeed, type GitHubAccess, type Identity } from "./client.js";
+import { GitHubNeed, MUTATIONS, RESOLVE_MAX, resolveThreadsDoc, type Actor, type GitHubAccess, type Op, type Target } from "./client.js";
 
 const API = "https://api.github.com";
 const NAME = "[A-Za-z0-9_.-]{1,100}";
@@ -93,19 +93,16 @@ const COMMENT_FIELDS = ["path", "line", "side", "start_line", "start_side", "bod
 /** The only GraphQL the token may send: read an organization project, add an issue to it, set its status. */
 export const GRAPHQL = {
   project: `query($org: String!, $number: Int!) { organization(login: $org) { projectV2(number: $number) { id title url closed field(name: "Status") { ... on ProjectV2SingleSelectField { id options { id name } } } items(last: 50) { nodes { content { ... on Issue { repository { nameWithOwner } } } } } } } }`,
-  addItem: `mutation($project: ID!, $content: ID!) { addProjectV2ItemById(input: { projectId: $project, contentId: $content }) { item { id } } }`,
-  setStatus: `mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) { updateProjectV2ItemFieldValue(input: { projectId: $project, itemId: $item, fieldId: $field, value: { singleSelectOptionId: $option } }) { projectV2Item { id } } }`,
+  addItem: MUTATIONS.ADD_PROJECT_ITEM,
+  setStatus: MUTATIONS.SET_PROJECT_FIELD,
   issueCloser: `query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { ${CLOSED_EVENT_SELECTION} } } }`,
   // Review threads of a pull request (their first comment's author and body, and the replies) and resolving one by id
   // (review-post.ts resolves only the threads it posted itself).
   // Comment ids are 64-bit: `fullDatabaseId` (a BigInt, a JSON string). `databaseId` is the deprecated 32-bit Int and isn't read.
   reviewThreads: `query($owner: String!, $name: String!, $number: Int!, $after: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated viewerCanResolve path line comments(first: 100) { nodes { fullDatabaseId url body author { __typename login } } } } } } } }`,
 } as const;
-/** The most threads one resolve request takes (a post resolves at most 100). */
-export const RESOLVE_MAX = 100;
-/** One request resolving `n` threads: aliased mutations `t0..t<n-1>`, each with its own `$t<i>` variable. */
-const resolveDoc = (n: number) => `mutation(${Array.from({ length: n }, (_, i) => `$t${i}: ID!`).join(", ")}) { ${Array.from({ length: n }, (_, i) => `t${i}: resolveReviewThread(input: { threadId: $t${i} }) { thread { id isResolved } }`).join(" ")} }`;
-const GRAPHQL_DOCS = new Set<string>([...Object.values(GRAPHQL), ...Array.from({ length: RESOLVE_MAX }, (_, i) => resolveDoc(i + 1))]);
+export { RESOLVE_MAX };
+const GRAPHQL_DOCS = new Set<string>([...Object.values(GRAPHQL), ...Array.from({ length: RESOLVE_MAX }, (_, i) => resolveThreadsDoc(i + 1))]);
 
 export class GitHubRefused extends Error {}
 
@@ -246,13 +243,18 @@ export class GitHub {
   constructor(
     private readonly access: GitHubAccess,
     private readonly fetchImpl: Fetch = fetch,
-    /** Another identity than the owner's (code review's App installation, review-post.ts reviewWriter); the same guard. */
-    private readonly identity?: Identity,
+    /** Who every request goes as (client.ts actorFor); unset: reads as the client picks, and each write chooses its own. */
+    readonly actor?: Actor,
   ) {}
 
-  /** The same client, every request as `identity`. */
-  as(identity: Identity): GitHub {
-    return new GitHub(this.access, this.fetchImpl, identity);
+  /** The same client, every request as `actor`. */
+  with(actor: Actor): GitHub {
+    return new GitHub(this.access, this.fetchImpl, actor);
+  }
+
+  /** The client one write attempt goes through: its bound actor, else the one actorFor chooses for `op` on `target`. */
+  async on(target: Target, op: Op): Promise<GitHub> {
+    return this.actor ? this : this.with(await this.access.actorFor(target, op));
   }
 
   available(): boolean {
@@ -267,18 +269,18 @@ export class GitHub {
     for (const [k, v] of Object.entries(opts.query ?? {})) url.searchParams.set(k, String(v));
     if (!opts.text) {
       // Through the owner's client: its rate limiter, and a typed need (client.ts) for what the owner must fix.
-      const r = await this.access.rest(method, `${url.pathname}${url.search}`, opts.body, this.identity ? { as: this.identity } : {});
+      const r = await this.access.rest(method, `${url.pathname}${url.search}`, opts.body, this.actor ? { actor: this.actor } : {});
       // GitHub answers 404 for private repositories the account can't see.
       if (r.status >= 300) throw new GitHubHttpError(r.status, `GitHub ${r.status} for ${method} ${url.pathname}${r.status === 404 ? " (not found, or the user has no access)" : ""}: ${errorDetail(r.body)}`);
       // DELETE …/labels answers with the remaining labels; some writes answer 201/204 with nothing.
       return (r.body ?? {}) as T;
     }
-    // A job's log answers with a redirect to a pre-signed download: asked for with the owner's token, followed once without it.
-    if (this.identity) throw new GitHubRefused("a job log is read as the owner only");
+    // A job's log answers with a redirect to a pre-signed download: asked for with the actor's token, followed once without it.
+    if (!this.actor) throw new GitHubRefused("a job log is read through its actor (actions_read)");
     const res = await this.fetchImpl(url, {
       method,
       redirect: "manual",
-      headers: { authorization: `Bearer ${await this.access.token()}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq-github-mcp" },
+      headers: { authorization: `Bearer ${await this.actor.gitToken()}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq-github-mcp" },
       signal: AbortSignal.timeout(30_000),
     });
     {
@@ -370,7 +372,7 @@ export class GitHub {
   /** The tail of a failed (or any finished) job's log, at most LOG_BYTES characters. */
   async jobLog(repo: string, jobId: number): Promise<unknown> {
     const { owner, name } = splitRepo(repo);
-    const { tail, total, capped } = await this.request<{ tail: string; total: number; capped: boolean }>("GET", `/repos/${owner}/${name}/actions/jobs/${jobId}/logs`, { text: true });
+    const { tail, total, capped } = await (await this.on({ repo: `${owner}/${name}` }, "actions_read")).request<{ tail: string; total: number; capped: boolean }>("GET", `/repos/${owner}/${name}/actions/jobs/${jobId}/logs`, { text: true });
     const clipped = capped || total > LOG_BYTES;
     return { repo: `${owner}/${name}`, job_id: jobId, clipped, ...(clipped ? { note: capped ? `the log is over ${LOG_READ_MAX} bytes: ${total ? "the tail of its first part" : "not read"}` : `only the last ${LOG_BYTES} of ${total} bytes` } : {}), log: tail };
   }
@@ -411,7 +413,7 @@ export class GitHub {
 
   /** A comment as the owner, signed by `agent` (the AidenHQ footer); `objects` names it for AidenHQ's records. */
   async comment(ref: Ref, body: string, agent: string): Promise<{ url: string; id: number; objects: string[] }> {
-    const c = await this.request<GhComment>("POST", `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments`, { body: { body: withFooter(body, agent) } });
+    const c = await (await this.on({ repo: `${ref.owner}/${ref.repo}` }, "issue")).request<GhComment>("POST", `/repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments`, { body: { body: withFooter(body, agent) } });
     return { url: c.html_url, id: c.id, objects: [`${objectRef(ref)}/comment/${c.id}`] };
   }
 
@@ -455,13 +457,14 @@ export class GitHub {
     const add = input.addLabels?.length ? await this.matchLabels(ref.owner, ref.repo, input.addLabels) : [];
     const remove = (input.removeLabels ?? []).map((l) => current.find((c) => c.toLowerCase() === l.trim().toLowerCase())).filter((l): l is string => Boolean(l));
     const done: string[] = [];
-    if (input.body !== undefined) await this.request("PATCH", base, { body: { body: withFooter(input.body, agent) } }), done.push("replaced the body");
-    if (add.length) await this.request("POST", `${base}/labels`, { body: { labels: add } }), done.push(`added labels ${add.join(", ")}`);
-    for (const l of remove) await this.request("DELETE", `${base}/labels/${encodeURIComponent(l)}`), done.push(`removed label ${l}`);
-    if (input.addAssignees?.length) await this.request("POST", `${base}/assignees`, { body: { assignees: input.addAssignees } }), done.push(`assigned ${input.addAssignees.join(", ")}`);
-    if (input.removeAssignees?.length) await this.request("DELETE", `${base}/assignees`, { body: { assignees: input.removeAssignees } }), done.push(`unassigned ${input.removeAssignees.join(", ")}`);
+    const w = await this.on({ repo: `${ref.owner}/${ref.repo}` }, "issue");
+    if (input.body !== undefined) await w.request("PATCH", base, { body: { body: withFooter(input.body, agent) } }), done.push("replaced the body");
+    if (add.length) await w.request("POST", `${base}/labels`, { body: { labels: add } }), done.push(`added labels ${add.join(", ")}`);
+    for (const l of remove) await w.request("DELETE", `${base}/labels/${encodeURIComponent(l)}`), done.push(`removed label ${l}`);
+    if (input.addAssignees?.length) await w.request("POST", `${base}/assignees`, { body: { assignees: input.addAssignees } }), done.push(`assigned ${input.addAssignees.join(", ")}`);
+    if (input.removeAssignees?.length) await w.request("DELETE", `${base}/assignees`, { body: { assignees: input.removeAssignees } }), done.push(`unassigned ${input.removeAssignees.join(", ")}`);
     if (input.state && input.state !== issue.state) {
-      await this.request("PATCH", base, { body: { state: input.state, ...(input.state === "closed" ? { state_reason: input.reason ?? "completed" } : {}) } });
+      await w.request("PATCH", base, { body: { state: input.state, ...(input.state === "closed" ? { state_reason: input.reason ?? "completed" } : {}) } });
       done.push(input.state === "closed" ? `closed as ${(input.reason ?? "completed").replace("_", " ")}` : "reopened");
     }
     const after = await this.request<GhIssue>("GET", base);
@@ -479,7 +482,7 @@ export class GitHub {
     if (!body.trim()) throw new GitHubRefused("a review comment needs text");
     const comments = opts.comments?.map((c) => ({ path: c.path, line: c.end_line && c.end_line > c.line ? c.end_line : c.line, side: "RIGHT", ...(c.end_line && c.end_line > c.line ? { start_line: c.line, start_side: "RIGHT" } : {}), body: c.body }));
     // Reviewed at the head we looked at: if someone pushes meanwhile, GitHub refuses rather than reviewing unseen commits.
-    const r = await this.request<{ id: number; html_url: string; state: string }>("POST", `${base}/reviews`, { body: { event: "COMMENT", commit_id: pr.head.sha, body: withFooter(body, agent), ...(comments?.length ? { comments } : {}) } });
+    const r = await (await this.on({ repo: `${ref.owner}/${ref.repo}` }, "pr")).request<{ id: number; html_url: string; state: string }>("POST", `${base}/reviews`, { body: { event: "COMMENT", commit_id: pr.head.sha, body: withFooter(body, agent), ...(comments?.length ? { comments } : {}) } });
     return { url: r.html_url, id: r.id, state: r.state };
   }
 
@@ -525,7 +528,7 @@ export class GitHub {
   async reply(ref: Ref, comment: number, body: string, agent: string): Promise<{ url: string; id: number }> {
     if (!body.trim()) throw new GitHubRefused("a reply needs text");
     const { root, owner, repo } = await this.threadRoot(ref, comment);
-    const r = await this.request<{ id: number; html_url: string }>("POST", `/repos/${owner}/${repo}/pulls/${ref.number}/comments/${root}/replies`, { body: { body: withFooter(body, agent) } });
+    const r = await (await this.on({ repo: `${owner}/${repo}` }, "pr")).request<{ id: number; html_url: string }>("POST", `/repos/${owner}/${repo}/pulls/${ref.number}/comments/${root}/replies`, { body: { body: withFooter(body, agent) } });
     return { url: r.html_url, id: r.id };
   }
 
@@ -538,7 +541,7 @@ export class GitHub {
       const t = d.repository?.pullRequest?.reviewThreads;
       if (!t) break;
       const thread = t.nodes.find((n) => String(n.comments.nodes[0]?.fullDatabaseId) === String(root));
-      if (thread) return { resolved: (await this.resolveThreads([thread.id])).length === 1 };
+      if (thread) return { resolved: (await (await this.on({ repo: `${owner}/${repo}` }, "pr")).resolveThreads([thread.id])).length === 1 };
       if (!t.pageInfo.hasNextPage) break;
       after = t.pageInfo.endCursor;
     }
@@ -568,7 +571,7 @@ export class GitHub {
     const targets = runs.filter(failed);
     const rerun: { name: string; url: string }[] = [];
     for (const r of targets) {
-      await this.request("POST", `/repos/${owner}/${repo}/actions/runs/${r.id}/rerun-failed-jobs`);
+      await (await this.on({ repo: `${owner}/${repo}` }, "actions")).request("POST", `/repos/${owner}/${repo}/actions/runs/${r.id}/rerun-failed-jobs`);
       rerun.push({ name: r.name, url: r.html_url });
     }
     return { repo: `${owner}/${repo}`, rerun, not_failed: runs.filter((r) => !failed(r)).map((r) => ({ name: r.name, status: r.status, conclusion: r.conclusion })) };
@@ -582,7 +585,7 @@ export class GitHub {
 
   /** Resolves the review threads (at most RESOLVE_MAX) in one request; returns the ids GitHub resolved (a stale id fails alone). */
   async resolveThreads(ids: string[]): Promise<string[]> {
-    const res = await this.request<{ data?: Record<string, unknown> | null; errors?: { message: string }[] }>("POST", "/graphql", { body: { query: resolveDoc(ids.length), variables: Object.fromEntries(ids.map((id, i) => [`t${i}`, id])) } });
+    const res = await this.request<{ data?: Record<string, unknown> | null; errors?: { message: string }[] }>("POST", "/graphql", { body: { query: resolveThreadsDoc(ids.length), variables: Object.fromEntries(ids.map((id, i) => [`t${i}`, id])) } });
     if (!res.data) throw new Error(`GitHub GraphQL: ${res.errors?.map((e) => e.message).join("; ").slice(0, 300) ?? "no data"}`);
     return ids.filter((_, i) => res.data![`t${i}`]);
   }
@@ -632,15 +635,19 @@ export class GitHub {
 
     const labels = input.labels?.length ? await this.matchLabels(owner, name, input.labels) : [];
 
-    const issue = await this.request<GhIssue & { node_id: string }>("POST", `/repos/${owner}/${name}/issues`, { body: { title: input.title, body: withFooter(input.body, agent), ...(labels.length ? { labels } : {}) } });
+    const issue = await (await this.on({ repo: `${owner}/${name}` }, "issue")).request<GhIssue & { node_id: string }>("POST", `/repos/${owner}/${name}/issues`, { body: { title: input.title, body: withFooter(input.body, agent), ...(labels.length ? { labels } : {}) } });
     const out: IssueCreated = { repo: `${owner}/${name}`, number: issue.number, url: issue.html_url, labels: labelNames(issue), objects: [objectRef({ owner, repo: name, number: issue.number })] };
     if (!project) return out;
     out.project = { title: project.title, url: project.url };
     try {
-      const added = await this.graphql<{ addProjectV2ItemById: { item: { id: string } } }>("addItem", { project: project.id, content: issue.node_id });
+      // The App adds the issue only where it can read it: its installation on the issue's repo, in the project's own org (the
+      // project permission is an org one). An issue in another org's repo goes on the board as the owner.
+      const org = parseProject(input.project!).org;
+      const board = this.actor ? this : this.with(org.toLowerCase() === owner.toLowerCase() ? await this.access.actorFor({ repo: `${owner}/${name}` }, "project") : await this.access.actorByKey("owner"));
+      const added = await board.graphql<{ addProjectV2ItemById: { item: { id: string } } }>("addItem", { project: project.id, content: issue.node_id });
       out.project.added = true;
       if (project.option && project.field) {
-        await this.graphql("setStatus", { project: project.id, item: added.addProjectV2ItemById.item.id, field: project.field.id, option: project.option.id });
+        await board.graphql("setStatus", { project: project.id, item: added.addProjectV2ItemById.item.id, field: project.field.id, option: project.option.id });
         out.project.status = project.option.name;
       }
     } catch (err) {

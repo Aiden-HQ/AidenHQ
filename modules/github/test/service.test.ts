@@ -9,6 +9,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createService, workflowNeedError, workflowRefusal } from "../service/src/service.ts";
+import { withActors } from "./actors.ts";
 import { serveOps } from "../service/src/ops.ts";
 import { render, validate } from "../../../kernel/src/writes.ts";
 import { githubWrites } from "./fake-github-writes.ts";
@@ -110,7 +111,7 @@ async function setup(t, { routes = () => undefined, listed, connected = () => tr
     graphql: async () => ({}),
   };
   const handle = createService({
-    key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), access,
+    key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), access: withActors(access),
     reportNeed,
     remoteUrl: (slug) => join(root, "github", `${slug}.git`), fleetOrg: "acme-agents", instanceRepo: "acme-agents/aidenhq-instance",
     ops: serveOps, productRepo: "acme/aidenhq", allowedOrgs: ["acme-agents", "partner"], listed, reviewGate: async () => undefined,
@@ -841,7 +842,7 @@ test("editing a comment is allowed only for one the kernel recorded as ours", as
 });
 
 test("a comment with a marker and no id edits this account's own comment that carries it, else posts once; a deleted id falls back to the marker", async (t) => {
-  const mine = { id: 55, user: { login: "Owner" }, body: "<!-- m -->\nold" };
+  const mine = { id: 55, user: { login: "Owner1" }, body: "<!-- m -->\nold" };
   const mention = { id: 54, user: { login: "owner" }, body: "see <!-- m --> quoted" };
   const quoted = { id: 56, user: { login: "someone" }, body: "<!-- m -->\nquoting it" };
   let comments = [quoted, mention, mine];

@@ -20,6 +20,7 @@ import { MEMBER_COMMENTS_QUERY, openMemberComments, readMemberComments, type Com
 import { ASYNC_POLL_MS, DIRECT_POLLS, mergeDirect, requestStore } from "./async-merge.ts";
 import { HOLD_LABEL, PR_FILES_QUERY, PR_QUERY, allPrFiles, decide, headChecks, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
+import type { Actor } from "../../connections/github-mcp/src/client.ts";
 import type { ShipAdoptions } from "./service.ts";
 
 /** GitHub as the owner, background (git-auth.ts Gh with background set). */
@@ -64,8 +65,13 @@ export function createMerges(d: {
   fleetOrg: string; productRepo?: string;
   /** Ship's adoptions (service.ts ShipAdoptions): an adopted PR's merge is still its adoption's (not on hold, not paused) at the call. */
   ship?: ShipAdoptions;
-  /** The reviewer App on a repo (service.ts Options.reviewer): its approval of a head counts in ship's decision. */
-  reviewer?: (repo: string) => Promise<{ login: string } | undefined>;
+  /** The review ids ship's approve write made as the App on a PR (approvals.ts): only those App approvals count. */
+  approvals?: (repo: string, n: number) => string[];
+  /** A merge attempt's actor on `repo` (client.ts actorFor, op merge), and the actor a kept request's key names. */
+  actorFor: (repo: string) => Promise<Pick<Actor, "key" | "rest">>;
+  actorByKey: (key: string) => Promise<Pick<Actor, "rest">>;
+  /** The instance App's bot login (`<slug>[bot]`), whose signed replies answer members' comments. */
+  bot?: () => Promise<string | undefined>;
   /** The listed repos ("owner/name": the Maintainer's and Ship's lists): merged here as in the agents org, read when each PR is polled. */
   listed?: string[];
   /** Code review's verdict for a PR head (undefined: may merge; wait: why not yet). */
@@ -100,9 +106,6 @@ export function createMerges(d: {
   now?: () => Date;
   everyMs?: number;
 }) {
-  /** The reviewer App's login as GraphQL names its Bot (no `[bot]`), the one bot whose approval counts (merge-gate approvedAt);
-   * unreadable or not installed, none does. */
-  const reviewerLogin = async (repo: string) => (await d.reviewer?.(repo).catch(() => undefined))?.login.replace(/\[bot\]$/, "");
   const log = d.log ?? (() => {});
   const now = d.now ?? (() => new Date());
   const platform = [d.productRepo].filter(Boolean) as string[];
@@ -152,7 +155,8 @@ export function createMerges(d: {
       if (r.status >= 300 || r.body?.errors?.length || !node) throw new Error(`GitHub GraphQL: the PR's comments couldn't be read (${r.status})`);
       return node;
     }, c.since);
-    return openMemberComments(pr, { ...c, isMember: (login, association) => d.flow!.isMember(login, association, repo) });
+    const bot = String((await d.bot?.().catch(() => undefined)) ?? "").replace(/\[bot\]$/i, "");
+    return openMemberComments(pr, { ...c, isMember: (login, association) => d.flow!.isMember(login, association, repo), ...(bot ? { bot } : {}) });
   }
   /**
    * The pull request's complete file list: the pages after the first while GitHub says there are more (merge-gate.ts allPrFiles).
@@ -309,7 +313,8 @@ export function createMerges(d: {
     if (labels.status < 300 && (labels.body ?? []).some((l: { name?: string }) => l?.name === HOLD_LABEL)) throw Object.assign(new Error(`held: it carries the \`${HOLD_LABEL}\` label`), { status: 409 });
     // GitHub's async merge API, the one merge call (a PR in a native stack is refused by every other): its result is polled for
     // a short while, and a request still pending is the next poll's to read from the PR itself (an unanswered call).
-    return mergeDirect(d.gh, repo, number, { sha, merge_method: method, ...message }, d.asyncPolls ?? DIRECT_POLLS, d.asyncPollMs ?? ASYNC_POLL_MS, requests, id);
+    // The merge attempt's one actor: the App where installed with contents write, else the owner (client.ts actorFor).
+    return mergeDirect(await d.actorFor(repo), d.actorByKey, repo, number, { sha, merge_method: method, ...message }, d.asyncPolls ?? DIRECT_POLLS, d.asyncPollMs ?? ASYNC_POLL_MS, requests, id);
   }
   /**
    * What this poll proves about who merged the PR: its sha only when the merge commit is the one this queue's own merge call made.
@@ -397,9 +402,9 @@ export function createMerges(d: {
       // Unreadable rules (an error, or a 403 that is not the plan's) wait for a check to judge; a plan with no rules has none to read.
       if (open && !rules && !required.length && !rr?.noPlan) { const why = "no checks have reported on its head yet, and the branch's rules can't be read"; return wait(why, why); }
       // Code review's verdict is read below, once decide says merge (its wait is the record's reason there).
-      // The reviewer App's approval on the head counts as in ship's own decision (reviewerLogin).
-      const app = open ? await reviewerLogin(p.repo) : undefined;
-      const ship = open ? { queue: false, approve: false, required, checks, ...(app ? { app } : {}) } : undefined;
+      // Ship's own App approvals on the head count as in ship's own decision (approvals.ts).
+      const mine = open ? d.approvals?.(p.repo, p.number) ?? [] : [];
+      const ship = open ? { queue: false, approve: false, required, checks, mine } : undefined;
       // A repo with no CI at all (GitHub lists no workflow) never reports a check: with none on the head and GitHub calling the PR
       // CLEAN, decide goes on without them. A repo that has workflows always waits for their checks.
       const pr0 = data.repository.pullRequest;
@@ -811,8 +816,8 @@ export function createMerges(d: {
       const { required: rules, queue } = await rulesOf(repo, String(data.repository.defaultBranchRef?.name ?? ""));
       const required = rules ?? fallbackRequired(checks);
       if (!rules && !required.length) return { do: "wait" as const, why: "no checks have reported on its head yet, and the branch's rules can't be read", failing: [] as string[], redChecks: [] as string[], dirty: false, queue };
-      const app = await reviewerLogin(repo);
-      const ctx = { queue, verdict: g, required, checks, ...(app ? { app } : {}), ...(view?.stackedOn ? { stackedOn: view.stackedOn } : {}) };
+      const mine = d.approvals?.(repo, number) ?? [];
+      const ctx = { queue, verdict: g, required, checks, mine, ...(view?.stackedOn ? { stackedOn: view.stackedOn } : {}) };
       // Members' open review comments (member-comments.ts), asked for by ship where its `fix` includes review: read only once no earlier
       // gate (a repair, red CI) decides, since they come after those. A read that fails throws: nothing merges on a PR not read.
       const first = decide(data, head, { ...ctx, approve: false });

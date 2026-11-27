@@ -1,9 +1,9 @@
-// Git and GitHub as the owner, inside the GitHub process (spec 2026-11-20-github-owner-identity §1, §4): the owner's token
-// reaches a git child only through its env (never argv, a URL or .git/config), and every commit the code host makes carries the
-// AidenHQ trailer naming the agent (aidenhq-sdk/attribution.ts). Which repos are the fleet's own (the fleet org's and the product repo) decides where it merges.
+// Git and GitHub inside the GitHub process (docs/design/github-identity.md): a token (the write's actor's: the App's installation
+// or the owner's) reaches a git child only through its env (never argv, a URL or .git/config), and every commit the code host
+// makes carries the AidenHQ trailer naming the agent (aidenhq-sdk/attribution.ts). Which repos are the fleet's own (the fleet org's and the product repo) decides where it merges.
 import type { GitHubAccess } from "../../connections/github-mcp/src/client.ts";
 
-/** GitHub as the code host calls it: the owner's client (rate limiter, typed needs). */
+/** GitHub as the code host calls it (github-mcp client.ts: reads, and writes through an actor; rate limiter, typed needs). */
 export type Gh = GitHubAccess["rest"];
 
 export { trailer, withTrailer, hasTrailer, footer, withFooter, hasFooter } from "./aidenhq-sdk/attribution.ts";

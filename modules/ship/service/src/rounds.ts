@@ -591,7 +591,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
         if (dismissing) return dismissing;
         if (risk?.approve !== "on" || !j?.ok) return "nothing";
         // No App that may approve it (github refuses at planning or at the effect): a person's approval is what it waits for, said once.
-        const NO_APP = /ship-no-app|approval needs a human/;
+        const NO_APP = /ship-no-app|approval needs a person/;
         const person = (text: string) => {
           a = { ...a!, approve: { head: pr.head, attempt: a!.approve?.attempt ?? 1, record: a!.approve?.record ?? "", why: text.slice(0, 300) }, did: [...(a!.did ?? []), `the App can't approve at \`${pr.head.slice(0, 12)}\` (${text.slice(0, 200)}): a person approves it`] };
           return "acted" as const;
@@ -600,7 +600,10 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           if (a!.approve.why) return "nothing";
           const r = await d.kernel.call("GET", `/v1/writes/${a!.approve.record}`);
           if (r.state === "owner") ownerWait = true;
-          if (OPEN.includes(String(r.state)) || r.state === "done") return "nothing";
+          if (OPEN.includes(String(r.state))) return "nothing";
+          // A completed approval the gate doesn't count at this head (one made before its review id was recorded) is asked for once
+          // more: the new one is recorded and counts. Only once: a renewed one that still doesn't count waits.
+          if (r.state === "done" && a!.approve.attempt > 1) return "nothing";
           const text = String(r.outcome?.text ?? r.reason ?? "");
           if (/^ship-head-moved/.test(text)) return "nothing";
           if (NO_APP.test(text)) return person(text);
