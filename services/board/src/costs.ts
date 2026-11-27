@@ -15,9 +15,9 @@ const DAY = 864e5;
 /**
  * A call's run attribution (RunIdentity in kernel/src/gateway/lib.ts, plus how the call went); every field optional. See
  * UsageRecord. These are labels on a billed call, never a reason to drop it: one the board can't read becomes null (`.catch`),
- * so its dollars still land. `costUsd` and the token counts, the ledger's real content, are the only fields that can refuse a
- * record. A check job's `subject` (its component, `code-review:run1`) and a CI review's (`<owner>/<repo>#<pr>`) share the
- * field but not the shape, so it takes any short string.
+ * so its dollars still land. `key`, `at`, the token counts and `costUsd` are the ledger's content; only they can refuse a
+ * record. The gateway's own label shapes are its to change (a closed `kind` enum once cost the board every check job's spend),
+ * so none of them is a schema the board may enforce at the cost of a call.
  */
 const Attribution = {
   runKey: z.string().regex(/^[\w:.-]{1,128}$/).nullable().optional().catch(null),
@@ -29,7 +29,7 @@ const Attribution = {
   kind: z.string().min(1).max(40).nullable().optional().catch(null),
   ms: z.number().int().min(0).nullable().optional().catch(null),
   status: z.string().regex(/^[a-z0-9_]{1,40}$/).nullable().optional().catch(null),
-  /** App CI code review `<owner>/<repo>#<pr>`, or a check job's own label (`code-review:run1`, `eval:<head>`). */
+  /** App CI code review `<owner>/<repo>#<pr>` (the gateway sends it only for that kind). */
   subject: z.string().min(1).max(200).nullable().optional().catch(null),
 };
 

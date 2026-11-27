@@ -4,7 +4,8 @@ import { Store } from "../src/store.js";
 
 const at = new Date().toISOString();
 const rec = (key: string, kind: string, costUsd: number) => ({ key, at, agentId: null, component: kind, model: "m", input: 1, cached: 0, output: 1, costUsd, kind, status: "ok" });
-// A check job's call as the gateway files it: no agent, its component as `subject` (`code-review:<run>`, `eval:<head>`).
+// A check job's call as the gateway files it: kind `check`, no agent, component `Check jobs`. `subject` is optional here: the
+// gateway sends it only for a CI review today, but it is a label the board must tolerate rather than refuse a call over.
 const check = (key: string, costUsd: number, at = new Date().toISOString(), subject = `code-review:${"a".repeat(40)}`) => ({ key, at, agentId: null, component: "Check jobs", model: "m", input: 1, cached: 0, output: 1, costUsd, runKey: "f".repeat(64), runId: null, issueId: null, rev: null, kind: "check", ms: 5, status: "ok", subject });
 
 describe("the day's cost", () => {
@@ -17,7 +18,7 @@ describe("the day's cost", () => {
 });
 
 describe("a check job's call", () => {
-  it("lands with its dollars: a null agent and a long subject are labels, never a reason to drop it", () => {
+  it("lands with its dollars: a null agent and a label the old schema refused are never a reason to drop it", () => {
     const store = new Store(":memory:");
     const sent = [check("c1", 2.5), check("c2", 3.25, new Date().toISOString(), "eval:" + "b".repeat(64)), { ...rec("a", "agent", 1), agentId: "ag1" }];
     for (const r of pulledRecords({ records: sent })) store.addUsage({ ...r, component: r.component ?? "agent" });
@@ -52,7 +53,9 @@ describe("the usage pull", () => {
   it("re-reads the ledger a board's earlier pull skipped: a stale cursor still brings a day's check calls in", async () => {
     const http = await import("node:http");
     const day = "2026-11-25";
-    const sent = [check("d1", 40, `${day}T02:00:00.000Z`), check("d2", 60, `${day}T09:30:00.000Z`, "eval:" + "c".repeat(64))];
+    // What the gateway still keeps: a day of check calls the board's table never got (a closed kind enum dropped them, or a
+    // pre-paging /usage answer cut them off at 20,000 rows and the pull moved its cursor past them anyway).
+    const sent = [check("d1", 40, `${day}T02:00:00.000Z`), check("d2", 60, `${day}T09:30:00.000Z`)];
     const asked: string[] = [];
     const server = http.createServer((req, res) => {
       let b = "";
@@ -66,22 +69,33 @@ describe("the usage pull", () => {
       });
     });
     await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
-    const store = new Store(":memory:");
-    // The board's cursor sits two days past the day whose rows are missing: only a re-read brings them back.
-    store.setMeta("usage_pulled_at", "2026-11-27T00:00:00.000Z");
-    const { pullUsage } = await import("../src/costs.js");
     const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const { pullUsage } = await import("../src/costs.js");
     const settle = async (n: number) => { for (let i = 0; i < 200 && asked.length < n; i++) await new Promise((ok) => setTimeout(ok, 10)); };
-    pullUsage({ url, token: "t" }, store, { warn: () => {} } as never, 3600_000);
+    const window = [`${day}T00:00:00.000Z`, "2026-11-26T00:00:00.000Z"] as const;
+    const dayTotal = (store: Store) => store.usageDaily(...window).reduce((n, r) => n + r.costUsd, 0);
+
+    // The cursor alone cannot recover it: a board that has already re-read once pulls from its cursor and gets nothing for that day.
+    const caughtUp = new Store(":memory:");
+    caughtUp.setMeta("usage_pulled_at", "2026-11-27T00:00:00.000Z");
+    caughtUp.setMeta("usage_pulled_at_backfilled", "2026-11-27T00:00:00.000Z");
+    pullUsage({ url, token: "t" }, caughtUp, { warn: () => {} } as never, 3600_000);
     await settle(1);
-    const rows = store.usageDaily(`${day}T00:00:00.000Z`, "2026-11-26T00:00:00.000Z");
-    expect(rows.reduce((n, r) => n + r.costUsd, 0)).toBe(100);
-    // The re-read is the whole kept ledger (`since: ""`), not the cursor that had moved past the gap.
-    expect(asked[0]).toBe("");
-    // And the next pull is incremental again, from the cursor less the 10-minute margin.
-    pullUsage({ url, token: "t" }, store, { warn: () => {} } as never, 3600_000);
+    expect(asked[0]).toMatch(/^2026-11-26T23:50:00\.000Z$/); // the cursor less the 10-minute margin, past the missing day
+    expect(dayTotal(caughtUp)).toBe(0);
+
+    // A board that has not re-read yet does: the first pull is the whole kept ledger, and the day's check calls land.
+    const fresh = new Store(":memory:");
+    fresh.setMeta("usage_pulled_at", "2026-11-27T00:00:00.000Z");
+    pullUsage({ url, token: "t" }, fresh, { warn: () => {} } as never, 3600_000);
     await settle(2);
+    expect(asked[1]).toBe("");
+    expect(dayTotal(fresh)).toBe(100);
+
+    // And the next pull is incremental again.
+    pullUsage({ url, token: "t" }, fresh, { warn: () => {} } as never, 3600_000);
+    await settle(3);
     server.close();
-    expect(asked[1]).toMatch(/^20\d\d-\d\d-\d\dT/);
+    expect(asked[2]).toMatch(/^20\d\d-\d\d-\d\dT/);
   });
 });
