@@ -1875,6 +1875,7 @@ export function writeKinds(name: string, def: Obj, root: string, instanceWrites:
   const ex = def.providers?.executor;
   if (!ex || typeof ex !== "object" || !/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(ex.url ?? "")) fail(`module ${name}: write kinds need providers.executor.url (http://<service>:<port>/<path>)`);
   if (!ownSecrets(def).includes(ex.auth)) fail(`module ${name}: providers.executor.auth must name one of its own secrets`);
+  const rev = moduleRev(root); // one hash of the folder for all its kinds
   const used = new Set(Object.values<Obj>(taken).flatMap((k) => k.tools));
   for (const [k, w] of entries) {
     const id = `${name}.${k}`;
@@ -1906,7 +1907,7 @@ export function writeKinds(name: string, def: Obj, root: string, instanceWrites:
       args = JSON.parse(readFileSync(file, "utf8"));
     }
     const floor = Math.max(w.floor, Number(instanceWrites[id]?.floor ?? 0));
-    out[id] = { module: name, floor, ...(w.panel ? { panel: true } : {}), ...(binds ? { binds } : {}), ...(w.filed_by ? { filed_by: w.filed_by } : {}), ...(w.filer ? { filer: w.filer } : {}), ...(w.stale ? { stale: w.stale } : {}), tools, card, ...(args ? { args } : {}), executor: { url: ex.url, auth_secret: ex.auth, rev: moduleRev(root) } };
+    out[id] = { module: name, floor, ...(w.panel ? { panel: true } : {}), ...(binds ? { binds } : {}), ...(w.filed_by ? { filed_by: w.filed_by } : {}), ...(w.filer ? { filer: w.filer } : {}), ...(w.stale ? { stale: w.stale } : {}), tools, card, ...(args ? { args } : {}), executor: { url: ex.url, auth_secret: ex.auth, rev } };
   }
   return out;
 }

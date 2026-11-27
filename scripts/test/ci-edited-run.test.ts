@@ -204,7 +204,7 @@ test("an edit's ci-required restates the head's real verdict: a fixed title clea
       const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
       // The step builds GitHub's URL; point it at the fake. Asynchronous, so the in-process server can answer while it runs.
       const script = run.replace("https://api.github.com", url);
-      const child = spawn("bash", ["-c", script], { env: { ...process.env, GITHUB_TOKEN: "t", REPO: "acme/x", SHA: "a".repeat(40), TITLE: title, FORK: fork }, stdio: "ignore" });
+      const child = spawn("bash", ["-c", script], { env: { ...process.env, GITHUB_TOKEN: "t", REPO: "acme/x", SHA: "a".repeat(40), TITLE: title, FORK: fork, POLL_MS: "20" }, stdio: "ignore" });
       child.on("close", (code) => { server.close(); ok(code ?? 1); });
     }));
   };

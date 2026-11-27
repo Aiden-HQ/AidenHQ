@@ -249,7 +249,7 @@ function world() {
   git(root, "clone", "-q", d("i.git"), "inst");
   const env = () => ({
     PATH: `${d("bin")}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: d("home"), AIDENHQ_STATE_DIR: d("state"), AIDENHQ_INSTANCE_DIR: d("inst"),
-    CTRL: d("ctrl"), CALLS: d("calls"), AIDENHQ_HEALTH_DEADLINE_S: "2", AIDENHQ_KERNEL_DEADLINE_S: "2", AIDENHQ_HEALTH_INTERVAL_S: "1",
+    CTRL: d("ctrl"), CALLS: d("calls"), AIDENHQ_HEALTH_DEADLINE_S: "2", AIDENHQ_KERNEL_DEADLINE_S: "2", AIDENHQ_HEALTH_INTERVAL_S: "1", AIDENHQ_KERNEL_READ_S: "1",
     GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com",
   });
   const sh = (script, ...args) => new Promise((resolve) => {
@@ -1048,7 +1048,7 @@ test("a /healthz timeout bounds a stalled journal read and still records the rea
   writeFileSync(w.d("ctrl/stuck-journal"), "");
   const started = Date.now();
   const g = await timedOut(w);
-  // The fake ignores SIGTERM, so it outlives timeout's own 5s and only the apply's own bound ends the wait.
+  // The fake ignores SIGTERM, so it outlives timeout's own 1s and only the apply's own bound ends the wait.
   assert.ok(Date.now() - started < 25000, "the bounded read did not wait out the stall");
   assert.match(g.reason, /unit ActiveState=activating Result=exit-code NRestarts=2/);
   assert.match(g.reason, /last journal unavailable, journalctl timed out/);
@@ -1231,6 +1231,14 @@ test("the kernel restarts when a file it loads at startup changed, and only then
   const settings = await w.run();
   assert.equal(settings.status, 0, settings.out);
   assert.equal(restarts(from), 1, settings.out);
+});
+
+// The host's own files, in a world of their own (these chains of applies run side by side).
+test("the kernel restarts when the host's .env or job tuning it reads at startup changed, and only then", async () => {
+  const w = world();
+  const restarts = (from) => (w.calls().slice(from).match(/systemctl --user restart aidenhq-kernel\n/g) ?? []).length;
+  assert.equal((await w.run()).status, 0);
+  let from;
 
   // The host's .env is read by the kernel at boot (kernel/src/env.ts), not tracked, so its content is part of what the
   // kernel loads: a changed one restarts it, and an unchanged one does not.
@@ -1254,15 +1262,22 @@ test("the kernel restarts when a file it loads at startup changed, and only then
   from = w.calls().length;
   assert.equal((await w.run("--force")).status, 0);
   assert.equal(restarts(from), 0, w.calls().slice(from));
+});
+
+test("the kernel restarts for the GitHub App setup, a stopped unit and an unreadable closure, and only then", async () => {
+  const w = world();
+  const restarts = (from) => (w.calls().slice(from).match(/systemctl --user restart aidenhq-kernel\n/g) ?? []).length;
+  assert.equal((await w.run()).status, 0);
+  let from;
 
   // The one module-table decision made at kernel start is whether the GitHub App setup exists (kernel/src/main.ts reads
   // `github` once; the rest of the table is watched live). Enabling github restarts it, an unrelated module does not, and
   // an unchanged table does not.
-  w.commitInstance(p4, "modules: monitoring\n");
+  w.commitInstance(w.p1, "modules: monitoring\n");
   from = w.calls().length;
   assert.equal((await w.run("--force")).status, 0);
   assert.equal(restarts(from), 0, w.calls().slice(from));
-  w.commitInstance(p4, "modules: monitoring, github\n");
+  w.commitInstance(w.p1, "modules: monitoring, github\n");
   from = w.calls().length;
   assert.equal((await w.run("--force")).status, 0);
   assert.equal(restarts(from), 1, w.calls().slice(from));

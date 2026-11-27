@@ -1150,18 +1150,18 @@ switchOver() {
 # journalctl stuck in uninterruptible I/O keeps even SIGKILL pending until the I/O returns, so the apply would wait with it.
 # The read therefore runs in the background, writing to a file instead of a pipe this shell reads to EOF, with the inherited
 # apply lock closed (fd 9): a reader that outlives the deadline holds neither the lock nor this shell, so the rollback still
-# starts. `timeout -k 2 5` still ends an ordinary stuck reader early; this shell's own bound is a second longer than that
+# starts. `timeout -k 2 $AIDENHQ_KERNEL_READ_S` (default 5 s) still ends an ordinary stuck reader early; this shell's own bound is a second longer than that
 # timeout's SIGKILL, so it holds only when the kill cannot land, and it reports 124 (or timeout's own 124/137) so the caller
 # says the read timed out.
 # The reader is not waited on once the deadline ended it: a SIGKILL it cannot take is a `wait` that never returns, so it is
 # reaped only on the branch where it has already exited. A temporary file that cannot be created fails the read at once
 # (125) instead of running the query against an empty name, and the status returned is always a number.
 kernelRead() {
-  local f d i=0 status=124
+  local f d i=0 status=124 s="${AIDENHQ_KERNEL_READ_S:-5}"
   f="$(mktemp 2>/dev/null)" && [ -n "$f" ] || return 125
-  timeout -k 2 5 "$@" </dev/null >"$f" 2>/dev/null 9>&- &
+  timeout -k 2 "$s" "$@" </dev/null >"$f" 2>/dev/null 9>&- &
   d=$!
-  while kill -0 "$d" 2>/dev/null && [ "$i" -lt 80 ]; do sleep 0.1; i=$(( i + 1 )); done
+  while kill -0 "$d" 2>/dev/null && [ "$i" -lt $(( (s + 3) * 10 )) ]; do sleep 0.1; i=$(( i + 1 )); done
   if kill -0 "$d" 2>/dev/null; then
     kill -KILL "$d" 2>/dev/null || true
   elif wait "$d" 2>/dev/null; then status=0

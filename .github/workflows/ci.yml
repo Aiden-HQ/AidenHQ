@@ -2,8 +2,9 @@
 # one per CPU (.github/ci/run-suites.sh), each with a timeout from its measured time (`secs` in .github/ci/areas.json), in
 # at most 3 shards (.github/ci/select.ts). Nothing is ever re-run: a flaky test is removed (owner, 2026-11-20). Offline: no
 # secrets are used, except the reviewer eval's model key (the `reviewer-eval` job, in its one step). A pull request runs the
-# suites its change touches (the map is read from the tested tree: agents are trusted); the slow end-to-end ones (areas.json
-# `main: true`: the SDK twin) run only on pushes to main.
+# suites its change touches (the map is read from the tested tree: agents are trusted), and so does a push to main (the diff
+# of what it replaced) and a merge train (the diff from main); a diff that can't be computed runs every suite. The slow
+# end-to-end ones (areas.json `main: true`: the SDK twin) run only on pushes to main.
 # Jobs run on GitHub-hosted runners (this repository is public, so it costs nothing, but the free plan runs ~20 jobs at
 # once). The heavy jobs (packages, board) overflow to our self-hosted runners (modules/ci, labels self-hosted +
 # aidenhq) only when hosted capacity is saturated (checks' `runner` step), the repository variable CI_SELF_HOSTED is
@@ -233,10 +234,24 @@ jobs:
       PUSH_BEFORE: ${{ github.event.before }}
       HEAD_SHA: ${{ github.sha }}
     steps:
+      # Depth 2: a pull request's merge commit and both its parents (HEAD^1 is main now); a push's HEAD~1 is the fallback base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: 2
           persist-credentials: false
+      # The rest of the bases, each at depth 1 (a diff reads two trees, never the history between them): a push to main's is the
+      # commit it replaced (`before`; missing after a force push, which runs every suite), anything else's is main.
+      - name: Fetch the base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The checkout keeps no credentials: pass the read-only token for these fetches.
+          fetch() { git -c "http.extraheader=Authorization: Basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch --no-tags --depth=1 origin "$@"; }
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null || fetch "$PUSH_BEFORE" || echo "::warning::the commit this push replaced (${PUSH_BEFORE:0:12}) is gone: every suite runs"
+          else
+            fetch +refs/heads/main:refs/remotes/origin/main
+          fi
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
@@ -282,16 +297,18 @@ jobs:
         env:
           IMAGE: ${{ steps.promtool.outputs.image }}
         run: docker run --rm --entrypoint /bin/promtool -v "$PWD/modules/monitoring/prometheus:/rules:ro" -w /rules "$IMAGE" test rules rules.test.yml
-      # The suites to test (.github/ci/select.ts over .github/ci/areas.json, both from the tested tree): on a pull request,
-      # those its changed files touch; every suite on a push to main or a merge train.
+      # The suites to test (.github/ci/select.ts over .github/ci/areas.json, both from the tested tree): those the change's
+      # changed files touch, from its base; every suite when the base can't be had (select.ts).
       - id: tests
         run: |
-          # a push to main or a merge train tests every suite; a pull request, those its changes touch
-          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then export ALL="a push to main or a merge train"; fi
-          base=$(git rev-parse HEAD^1) # the PR merge commit's first parent: main now
-          export BASE="$base" HEAD="$HEAD_SHA"
-          # the slow suites (areas.json `main: true`) run only on a push to main
-          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then export MAIN=1; fi
+          # the base: a push to main's is the commit it replaced, a merge train's is main, a pull request's is the merge
+          # commit's first parent (main now)
+          case "$GITHUB_REF" in
+            refs/heads/main) export BASE="$PUSH_BEFORE" MAIN=1 ;; # the slow suites (areas.json `main: true`) run only here
+            refs/heads/merge-train/*) export BASE=$(git rev-parse origin/main) ;;
+            *) export BASE=$(git rev-parse HEAD^1) ;;
+          esac
+          export HEAD="$HEAD_SHA"
           out=$(node .github/ci/select.ts)
           tests=$(jq -c .tests <<< "$out")
           echo "Suites to test: $(jq -r 'map(.name) | join(" ")' <<< "$tests")"
@@ -335,10 +352,10 @@ jobs:
       - id: eval
         run: |
           [ "$GITHUB_EVENT_NAME" = pull_request ] && PR_BASE=$(git rev-parse HEAD^1) # the payload's base.sha goes stale as main moves; the merge commit's first parent is main now
-          case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE= ;; esac
+          case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE=$(git rev-parse origin/main) ;; esac
           base="${PR_BASE:-$PUSH_BEFORE}"
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
+            base=$(git rev-parse "$HEAD_SHA~1")
           fi
           src="$PR_BASE"
           case "$GITHUB_REF" in refs/heads/merge-train/*) src=$(git rev-parse origin/main) ;; refs/heads/main) src="" ;; esac
@@ -365,10 +382,10 @@ jobs:
           set -f # DOCKERFILES is split on spaces below, never globbed
           # a merge train is a push of main plus the PRs: its base is main, never an earlier train commit
           [ "$GITHUB_EVENT_NAME" = pull_request ] && PR_BASE=$(git rev-parse HEAD^1) # the payload's base.sha goes stale as main moves; the merge commit's first parent is main now
-          case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE= ;; esac
+          case "$GITHUB_REF" in refs/heads/merge-train/*) PUSH_BEFORE=$(git rev-parse origin/main) ;; esac
           base="${PR_BASE:-$PUSH_BEFORE}"
           if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            base=$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null || git rev-parse "$HEAD_SHA~1")
+            base=$(git rev-parse "$HEAD_SHA~1")
           fi
           changed=$(git diff --name-only "$base" "$HEAD_SHA")
           found=""
@@ -718,7 +735,8 @@ jobs:
               }
               return out;
             };
-            for (let waited = 0; ; waited += 10000) {
+            const poll = Number(process.env.POLL_MS) || 10000; // the tests shorten it
+            for (let waited = 0; ; waited += poll) {
               const pending = judged.filter((r) => r.status !== "completed");
               if (!pending.length) break;
               if (waited >= 540000) {
@@ -726,7 +744,7 @@ jobs:
                 process.exit(1);
               }
               console.log(`waiting for ${pending.map((r) => r.name).join(", ")}`);
-              await new Promise((r) => setTimeout(r, 10000));
+              await new Promise((r) => setTimeout(r, poll));
               const again = new Map();
               for (const r of await read()) {
                 if (r.name === "ci-required") continue;

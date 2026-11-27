@@ -65,20 +65,20 @@ test("with no marker the entry point takes data/apply.lock at its fixed path and
 
 test("a second apply waits for the first, then runs: never refused for being second", { skip: NOT_LINUX }, async () => {
   const dir = checkout();
-  // The first apply gets a checkout to work on and a `git` that takes a moment, so it is still inside the apply (holding
-  // the lock) when the second one starts. Both go through the real entry point.
+  // The first apply gets a checkout to work on and a `git` whose first call takes a moment, so it is still inside the apply
+  // (holding the lock) when the second one starts. Both go through the real entry point.
   mkdirSync(join(dir, "inst"), { recursive: true });
   writeFileSync(join(dir, ".env"), `AIDENHQ_INSTANCE_DIR=${join(dir, "inst")}\n`);
-  writeFileSync(join(dir, "bin/git"), "#!/usr/bin/env bash\nsleep 1.5\nexit 0\n");
+  writeFileSync(join(dir, "bin/git"), "#!/usr/bin/env bash\n[ -e \"$0.ran\" ] || { : > \"$0.ran\"; sleep 1; }\nexit 0\n");
   chmodSync(join(dir, "bin/git"), 0o755);
   const first = run(dir, `bash ops/apply-config.sh`).then((r) => ({ ...r, end: Date.now() }));
   await new Promise((r) => setTimeout(r, 300));
-  const second = await run(dir, `bash ops/apply-config.sh`);
+  const second = await run(dir, `bash ops/apply-config.sh`).then((r) => ({ ...r, end: Date.now() }));
   const a = await first;
   assert.match(second.out, /another apply is running: this one waits its turn/, second.out);
   assert.doesNotMatch(second.out, /refusing/, second.out);
-  // It ran the apply only once the first had let the lock go.
-  assert.ok(Date.now() - a.end >= 1000, "the second apply's own git steps ran after the first ended");
+  // It ran the apply only once the first had let the lock go: with no git wait of its own, it could not end after the first otherwise.
+  assert.ok(second.end >= a.end, "the second apply ended before the first: it did not wait");
   assert.match(second.out, /apply timing: instance/, `the second ran the apply:\n${second.out}`);
   assert.match(a.out, /apply timing: instance/, `the holder ran the apply:\n${a.out}`);
 });
