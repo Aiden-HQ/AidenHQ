@@ -1392,6 +1392,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const enabledSkills = skills.filter((s) => s.enabled);
   if (enabledSkills.length) paperclip.skills = Object.fromEntries(enabledSkills.map((s) => [s.id, { dir: dirname(s.file), description: s.summary }]));
   const skillCatalog = Object.fromEntries(skills.map((s) => [s.id, s.enabled]));
+  const skillTools: Record<string, string[]> = Object.fromEntries(enabledSkills.map((s) => [s.id, s.tools]));
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     const ids = effectiveSkills(key, a, instance.overrides?.agents?.[key]?.skills, skillCatalog, (m) => warnings.push(m));
     const from: Obj = {};
@@ -1399,6 +1400,10 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       const [module, name] = [id.slice(0, id.indexOf(".")), id.slice(id.indexOf(".") + 1)];
       if (from[name]) fail(`agent ${key}: modules ${from[name]} and ${module} both give it a skill named ${name}`);
       from[name] = module;
+    }
+    for (const id of ids) {
+      const missing = (skillTools[id] ?? []).filter((t) => !a.enabled_tools?.[t.split(".")[0]!]?.includes(t.split(".")[1]));
+      if (missing.length) fail(`agent ${key}: skill ${id} calls ${missing.join(", ")}, which the agent is not granted (grant them in its connections)`);
     }
     if (ids.length) a.skills = ids;
     else delete a.skills;
@@ -2181,21 +2186,23 @@ export function promptEntries(name: string, def: Obj, root: string): Obj[] {
  * job's engine home, never from the handbook.
  */
 /** A module's skills; `check: false` (a disabled module) lists their ids only, its SKILL.md text read and checked once it is on. */
-export function skillEntries(name: string, root: string, check = true): { id: string; file: string; summary: string }[] {
+export function skillEntries(name: string, root: string, check = true): { id: string; file: string; summary: string; tools: string[] }[] {
   const dir = join(root, "skills");
   return (existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []).filter((d) => d.isDirectory() && existsSync(join(dir, d.name, "SKILL.md"))).map((d) => {
     const file = join(dir, d.name, "SKILL.md");
-    if (!check) return { id: `${name}.${d.name}`, file, summary: "" };
+    if (!check) return { id: `${name}.${d.name}`, file, summary: "", tools: [] };
     if (!/^[a-z0-9][a-z0-9-]*$/.test(d.name)) fail(`module ${name}: skill ${d.name}: a skill's folder name is a-z, 0-9 and -`);
     // A skill is the module's own files: its folder resolves inside the module (jobs get a copy of it).
     if (!realpathSync(join(dir, d.name)).startsWith(realpathSync(root) + sep)) fail(`module ${name}: skill ${d.name}: its folder must be inside the module`);
-    const { name: skillName, description, ...meta } = frontmatter(readFileSync(file, "utf8")).meta;
+    const { name: skillName, description, tools, ...meta } = frontmatter(readFileSync(file, "utf8")).meta;
     if (skillName !== d.name) fail(`module ${name}: skill ${d.name}: its SKILL.md name must be its folder name (${d.name})`);
     const extra = Object.keys(meta).find((k) => !["license", "metadata", "allowed-tools"].includes(k));
-    if (extra) fail(`module ${name}: skill ${d.name}: unknown frontmatter ${extra} (allowed: license, metadata, allowed-tools; an agent lists the skills it uses in skills:)`);
+    if (extra) fail(`module ${name}: skill ${d.name}: unknown frontmatter ${extra} (allowed: license, metadata, allowed-tools, tools; an agent lists the skills it uses in skills:)`);
     const summary = typeof description === "string" ? description.trim() : "";
     if (!summary || summary.includes("\n")) fail(`module ${name}: skill ${d.name}: needs a one-line description`);
-    return { id: `${name}.${d.name}`, file, summary };
+    // `tools: [<connection>.<tool>]`: the connection tools the skill's steps call; an agent listing it must be granted each (compile checks).
+    if (tools != null && (!Array.isArray(tools) || tools.some((t) => typeof t !== "string" || !/^[a-z0-9_]+\.[A-Za-z0-9_]+$/.test(t)))) fail(`module ${name}: skill ${d.name}: tools is a list of <connection>.<tool>`);
+    return { id: `${name}.${d.name}`, file, summary, tools: tools ?? [] };
   });
 }
 /**

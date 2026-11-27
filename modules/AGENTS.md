@@ -94,6 +94,8 @@ routine or memory.
   only; `skills/<name>/SKILL.md` is the how-to. An agent grants a connection as `connection: read|write|[tools]`.
 - **Skills.** Each agent lists every skill it uses in `skills:`; the effective list is
   `(skills ∪ overrides.agents.<key>.skills.add) − overrides.agents.<key>.skills.remove`.
+  A skill that calls connection tools declares them in its SKILL.md frontmatter (`tools: [ <connection>.<tool> ]`); compile
+  fails for an agent that lists the skill without a grant reaching each.
 - **Teammates.** See "Teammates" below.
 - **Moving work between agents** changes both agents' `skills:` lists and grants. The skill text stays where it is.
 - **Routines** run on a schedule or on events: `event: { connection, resource, filter }`. The run reads its batch with
