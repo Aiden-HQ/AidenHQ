@@ -16,17 +16,37 @@ const state = (s: Record<string, unknown>) => ({ _: "updateAuthorizationState", 
 const user = { _: "user", id: 42, first_name: "Owner", last_name: "", usernames: { active_usernames: ["owner"] }, type: { _: "userTypeRegular" } };
 
 describe("auth", () => {
-  it("cancelling a QR attempt ends it in TDLib: the shown code never signs in, and the service restarts idle", async () => {
-    const td = new FakeTd();
-    td.on("requestQrCodeAuthentication", () => (td.emit(state({ _: "authorizationStateWaitOtherDeviceConfirmation", link: "tg://login?token=L1" })), { _: "ok" }));
-    const { a, exits } = auth(td);
-    td.emit(state({ _: "authorizationStateWaitPhoneNumber" }));
-    await a.deviceStart();
+  it("cancelling a QR attempt closes its client in process: the old code never signs in, and an immediate start gives a fresh code", async () => {
+    const tds = [new FakeTd(), new FakeTd()];
+    tds.forEach((td, i) => td.on("requestQrCodeAuthentication", () => (td.emit(state({ _: "authorizationStateWaitOtherDeviceConfirmation", link: `tg://login?token=L${i + 1}` })), { _: "ok" })));
+    const exits: number[] = [];
+    let opened = 0;
+    const a = createAuth({ configured: () => true, open: () => { const t = tds[opened++]!; queueMicrotask(() => t.emit(state({ _: "authorizationStateWaitPhoneNumber" }))); return t; }, store: openStore(tmpDb()), dataDir: "/nonexistent", kernel: fakeKernel(), log: { info() {}, warn() {}, error() {} }, exit: (c) => void exits.push(c) });
+    expect((await a.deviceStart()).qr).toBe("tg://login?token=L1");
     a.cancel();
     expect(a.deviceState()).toEqual({ state: "cancelled" });
-    await new Promise((r) => setTimeout(r, 300));
-    expect(td.closed).toBe(true);
-    expect(exits).toEqual([0]);
+    const next = await a.deviceStart(); // at once, with no wait after the cancel
+    expect(next.qr).toBe("tg://login?token=L2");
+    expect(tds[0]!.closed).toBe(true);
+    tds[0]!.emit(state({ _: "authorizationStateReady" })); // the old attempt cannot complete
+    expect(a.deviceState()).toMatchObject({ state: "pending", qr: "tg://login?token=L2" });
+    expect(exits).toEqual([]);
+  });
+
+  it("disconnect clears every per-account table, the outbox included", async () => {
+    const td = new FakeTd();
+    td.on("logOut", () => (td.emit(state({ _: "authorizationStateClosed" })), { _: "ok" }));
+    const store = openStore(tmpDb());
+    const exits: number[] = [];
+    const a = createAuth({ configured: () => true, open: () => td, store, dataDir: "/nonexistent", kernel: fakeKernel(), log: { info() {}, warn() {}, error() {} }, exit: (c) => void exits.push(c) });
+    td.emit(state({ _: "authorizationStateReady" }));
+    store.db.prepare(`INSERT INTO outbox (target, payload, created_at) VALUES ('kernel', '{}', 1), ('warehouse', '{}', 1)`).run();
+    store.db.prepare(`INSERT INTO writes (id, state, at) VALUES ('w', 'done', 1)`).run();
+    store.db.prepare(`INSERT INTO send_log (at, chat_id) VALUES (1, 2)`).run();
+    store.db.prepare(`INSERT INTO agent_sent (chat_id, message_id) VALUES (1, 2)`).run();
+    await a.disconnect();
+    for (const t of ["outbox", "writes", "send_log", "agent_sent", "checkpoint", "ingested"])
+      expect(store.db.prepare(`SELECT count(*) AS n FROM ${t}`).get(), t).toEqual({ n: 0 });
   });
 
   it("qr then password then ready", async () => {

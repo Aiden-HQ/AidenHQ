@@ -4,6 +4,7 @@
 // id) and a persisted rate cap (send_log). A send whose outcome is ambiguous (a restart mid-send, no TDLib answer in 60 s) is
 // never retried blind: it answers "outcome unknown".
 import type { Executor } from "./aidenhq-sdk/executor.js";
+import { fence } from "./aidenhq-sdk/fence.js";
 import type { Store } from "./store.js";
 import { TdError, type TdClient } from "./td.js";
 
@@ -102,16 +103,17 @@ export function sender(d: {
       const a = normalise(req.args, String(req.requester?.name ?? ""), req.kind);
       const chat = await td.invoke<any>({ _: "getChat", chat_id: Number(a.chat_id) });
       if (chat.type?._ === "chatTypeSecret") throw new Error("secret chats aren't supported");
-      // The card's details: the words the reviewer and the owner judge. A forward, an edit and a delete read the message they act on.
+      // The card's details: Telegram's words (a forwarded, edited or deleted message, a chat title) are fenced as data; the agent's own new text is not. The words the reviewer and the owner judge. A forward, an edit and a delete read the message they act on.
       let details = a.text ?? "";
       if (a.action === "edit" || a.action === "delete") {
         const m = await td.invoke<any>({ _: "getMessage", chat_id: Number(a.chat_id), message_id: Number(a.message_id) });
         if (!m.is_outgoing) throw new Error("only your own messages can be edited or deleted");
-        details = a.action === "edit" ? `Was: ${bodyOf(m)}\nNow: ${a.text}` : `Deletes for everyone: ${bodyOf(m)}`;
+        const was = fence(bodyOf(m), `telegram:${a.chat_id}`);
+        details = a.action === "edit" ? `Was: ${was}\nNow: ${a.text}` : `Deletes for everyone: ${was}`;
       } else if (a.action === "forward") {
         const m = await td.invoke<any>({ _: "getMessage", chat_id: Number(a.from_chat_id), message_id: Number(a.message_id) });
         const from = await td.invoke<any>({ _: "getChat", chat_id: Number(a.from_chat_id) });
-        details = `Forwards from ${String(from.title ?? a.from_chat_id).slice(0, 200)}: ${bodyOf(m)}`;
+        details = `Forwards from ${fence(String(from.title ?? a.from_chat_id).slice(0, 200), `telegram:${a.from_chat_id}`)}: ${fence(bodyOf(m), `telegram:${a.from_chat_id}`)}`;
       } else if (a.action === "react") details = a.emoji ?? "";
       const title = String(chat.title ?? a.chat_id).slice(0, 200);
       const what = { send: "send a message", reply: "reply to a message", react: `react ${a.emoji ?? ""} to a message`, forward: "forward a message", edit: "edit your message", delete: "delete your message" }[a.action];
@@ -119,7 +121,7 @@ export function sender(d: {
       return {
         args: { ...a, chat_title: title },
         targets: { chat_id: a.chat_id },
-        card: { what, chat: title, changes: `${who}, from your own Telegram account.`, details },
+        card: { what, chat: fence(title, `telegram:${a.chat_id}`), changes: `${who}, from your own Telegram account.`, details },
       };
     },
 

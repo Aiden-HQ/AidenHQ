@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { READ_STATE_METHODS } from "../src/td.js";
-import { NOW_MS, chat, ingestOn, msg, newMessage, openStore, outbox, scriptedTd, tmpDb } from "./helpers.js";
+import { NOW_MS, chat, ingestOn, msg, newMessage, openStore, outbox, scriptedTd, tmpDb, fakeKernel, fakeWarehouse } from "./helpers.js";
 
 describe("ingest", () => {
   it("agent send fires nothing", async () => {
@@ -69,4 +69,37 @@ describe("ingest", () => {
     expect(items[4].row).toMatchObject({ chat_id: "7", message_id: "1", deleted: true, text: null });
     ingest.stop();
   });
+
+  it("a row the warehouse rejects for good is set aside; the rows behind it still land, and a transient error still retries", async () => {
+    const store = openStore(tmpDb());
+    const { td } = scriptedTd([chat(7, "supergroup")], {});
+    const ingest = ingestOn(store, td);
+    const push = store.db.prepare(`INSERT INTO outbox (target, payload, created_at) VALUES ('warehouse', ?, 1)`);
+    for (const id of ["bad", "good"]) push.run(JSON.stringify({ t: "chat", row: { chat_id: id } }));
+    const wh = fakeWarehouse();
+    let calls = 0;
+    (wh.store as any).upsert = async (_t: unknown, row: any) => {
+      calls++;
+      if (row.chat_id === "bad") throw Object.assign(new Error("invalid byte sequence"), { code: "22021" });
+      wh.writes.push({ table: "chat", row, baseline: false });
+    };
+    await ingest.drain({ warehouse: wh.store, kernel: fakeKernel() as any });
+    expect(wh.writes.map((w) => w.row.chat_id)).toEqual(["good"]);
+    expect(store.db.prepare(`SELECT dead FROM outbox WHERE target = 'warehouse'`).all()).toEqual([{ dead: 1 }]);
+    store.db.prepare(`INSERT INTO outbox (target, payload, created_at) VALUES ('warehouse', ?, 1)`).run(JSON.stringify({ t: "chat", row: { chat_id: "t" } }));
+    (wh.store as any).upsert = async () => { throw new Error("connection reset"); };
+    await expect(ingest.drain({ warehouse: wh.store, kernel: fakeKernel() as any })).rejects.toThrow("connection reset");
+    expect(calls).toBe(2);
+    ingest.stop();
+  });
+});
+
+it("an outbox from before the dead flag is migrated, queued rows kept", async () => {
+  const path = tmpDb();
+  const Database = (await import("better-sqlite3")).default;
+  const old = new Database(path);
+  old.exec(`CREATE TABLE outbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, target TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL); INSERT INTO outbox (target, payload, created_at) VALUES ('kernel', '{}', 1);`);
+  old.close();
+  const store = openStore(path);
+  expect(store.db.prepare(`SELECT dead FROM outbox`).all()).toEqual([{ dead: 0 }]);
 });

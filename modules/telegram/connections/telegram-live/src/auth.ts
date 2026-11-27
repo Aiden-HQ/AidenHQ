@@ -69,6 +69,8 @@ export function createAuth(o: {
   let attempt: { started: number; cancelled?: boolean; detail?: string } | undefined;
   let me: Me | undefined;
   let ours = false;
+  let generation = 0; // each opened client's updates count only while it is the current one
+  let closing: Promise<void> | undefined; // a cancelled attempt's client, closing: the next start waits for it
   let progress: () => Line | undefined = () => undefined;
   const readyFns: ((td: TdClient) => void)[] = [];
   const waiters = new Set<() => void>();
@@ -141,8 +143,9 @@ export function createAuth(o: {
 
   function ensureClient(): void {
     if (client || !o.configured()) return;
+    const gen = ++generation;
     client = o.open();
-    client.onUpdate(onUpdate);
+    client.onUpdate((u) => void (gen === generation && onUpdate(u)));
   }
 
   /** Resolves once the state is one of `states` (now, or within `ms`), else rejects. */
@@ -182,6 +185,7 @@ export function createAuth(o: {
 
     async deviceStart() {
       if (!o.configured()) throw new AuthInputError("Paste the api_id and api_hash from my.telegram.org first.");
+      await closing;
       ensureClient();
       if (state === READY) throw new AuthInputError("Telegram is signed in already.");
       attempt = { started: now() };
@@ -220,14 +224,23 @@ export function createAuth(o: {
     cancel() {
       if (!attempt) return;
       attempt.cancelled = true;
-      // A QR already shown stays scannable in TDLib (and a password step stays open): end the attempt by restarting idle, as Disconnect does.
-      if (client && state !== READY) {
+      // A QR already shown stays scannable in TDLib (and a password step stays open): close that client, in process, and let the
+      // next start open a fresh one (no restart: the board's Connect again follows a cancel at once).
+      const old = client;
+      if (old && state !== READY) {
         ours = true;
-        void client.close().finally(() => setTimeout(() => exit(0), 200).unref?.());
+        generation++; // the old client's late updates are ignored
+        closing = old.close().catch((err) => void log.warn({ err: String(err).slice(0, 200) }, "closing the cancelled attempt failed")).finally(() => {
+          client = undefined;
+          state = link = hint = undefined;
+          ours = false;
+          closing = undefined;
+        });
       }
     },
 
     async disconnect() {
+      await closing; // a cancelled attempt's client is closing: wait, then log out only what is open
       ours = true;
       if (client) {
         await client.invoke({ _: "logOut" });
@@ -235,7 +248,8 @@ export function createAuth(o: {
       }
       rmSync(`${o.dataDir}/tdlib`, { recursive: true, force: true });
       store.tx(() => {
-        for (const t of ["checkpoint", "backfill", "ingested", "msg_root", "agent_pending"]) store.db.exec(`DELETE FROM ${t}`);
+        // Everything per account: another account signing in next must inherit none of it. (kv keeps only settings-like keys.)
+        for (const t of ["checkpoint", "backfill", "ingested", "msg_root", "agent_pending", "agent_sent", "outbox", "writes", "send_log"]) store.db.exec(`DELETE FROM ${t}`);
         store.db.prepare(`DELETE FROM kv WHERE k IN ('backfill_started', 'revoked', 'revoke_notified')`).run();
       });
       log.info("telegram disconnected; restarting idle");

@@ -105,12 +105,16 @@ export function userRow(u: Td.user): Row {
   };
 }
 
+const noNul = (v: unknown): unknown =>
+  typeof v === "string" ? v.replaceAll("\0", "") : Array.isArray(v) ? v.map(noNul) : v && typeof v === "object" && !(v instanceof Date) ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, noNul(x)])) : v;
+
 /**
  * Writes one outbox item. A history read never revives a deleted message and never overwrites a newer edit; a tombstone also
  * blanks the message's earlier text revisions in the change log, so deleted content stays readable nowhere.
  */
 export async function writeRow(store: SourceStore, item: WarehouseItem): Promise<void> {
-  const row = item.row;
+  // Postgres text refuses NUL: strip it from every text field (Telegram text, titles, names) so the common bad row never fails.
+  const row = noNul(item.row) as Row;
   if (item.history && item.t === "message") {
     const cur = (await store.pool.query(`SELECT deleted, edited_at FROM src_telegram.message WHERE chat_id = $1 AND message_id = $2`, [row.chat_id, row.message_id])).rows[0] as { deleted?: boolean; edited_at?: Date | string | null } | undefined;
     if (cur?.deleted) return;

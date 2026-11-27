@@ -32,7 +32,8 @@ export function openStore(path: string): Store {
       seq INTEGER PRIMARY KEY AUTOINCREMENT,
       target TEXT NOT NULL CHECK (target IN ('warehouse', 'kernel')),
       payload TEXT NOT NULL,
-      created_at INTEGER NOT NULL);
+      created_at INTEGER NOT NULL,
+      dead INTEGER NOT NULL DEFAULT 0); -- dead: a row its sink rejected for good; kept for inspection, never retried
     CREATE INDEX IF NOT EXISTS outbox_target_seq ON outbox (target, seq);
 
     CREATE TABLE IF NOT EXISTS backfill (
@@ -58,6 +59,9 @@ export function openStore(path: string): Store {
     -- the send rate cap
     CREATE TABLE IF NOT EXISTS send_log (at INTEGER NOT NULL, chat_id INTEGER NOT NULL);
   `);
+
+  // The outbox's dead flag arrived after the table did.
+  if (!(db.pragma("table_info(outbox)") as { name: string }[]).some((c) => c.name === "dead")) db.exec(`ALTER TABLE outbox ADD COLUMN dead INTEGER NOT NULL DEFAULT 0`);
 
   const kvGet = db.prepare(`SELECT v FROM kv WHERE k = ?`);
   const kvSet = db.prepare(`INSERT OR REPLACE INTO kv (k, v) VALUES (?, ?)`);

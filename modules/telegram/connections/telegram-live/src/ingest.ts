@@ -48,6 +48,8 @@ export function markAgentSend(store: Store, chatId: number, tempId: number, writ
 }
 
 const SCOPE_TD: Record<Scope, string> = { private: "notificationSettingsScopePrivateChats", group: "notificationSettingsScopeGroupChats", channel: "notificationSettingsScopeChannelChats" };
+/** A Postgres data (22xxx) or integrity-constraint (23xxx) error: the same row fails the same way every time. */
+const permanent = (e: unknown) => /^2[23]/.test(String((e as { code?: unknown })?.code ?? ""));
 const transient = (e: unknown) => !(e instanceof TdError) || e.code === 429 || e.code >= 500 || e.retryAfterS !== undefined;
 const RETRY_MS = 30_000;
 const STRIKES = 3;
@@ -62,8 +64,9 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
     root: db.prepare(`SELECT root_id FROM msg_root WHERE chat_id = ? AND message_id = ?`),
     setRoot: db.prepare(`INSERT OR IGNORE INTO msg_root (chat_id, message_id, root_id) VALUES (?, ?, ?)`),
     outbox: db.prepare(`INSERT INTO outbox (target, payload, created_at) VALUES (?, ?, ?)`),
-    next: db.prepare(`SELECT seq, payload FROM outbox WHERE target = ? ORDER BY seq LIMIT 100`),
+    next: db.prepare(`SELECT seq, payload FROM outbox WHERE target = ? AND dead = 0 ORDER BY seq LIMIT 100`),
     done: db.prepare(`DELETE FROM outbox WHERE seq = ?`),
+    dead: db.prepare(`UPDATE outbox SET dead = 1 WHERE seq = ?`),
     cp: db.prepare(`SELECT last_message_id AS id FROM checkpoint WHERE chat_id = ?`),
     cps: db.prepare(`SELECT chat_id AS id FROM checkpoint`),
     seedCp: db.prepare(`INSERT OR IGNORE INTO checkpoint (chat_id, last_message_id) VALUES (?, ?)`),
@@ -413,7 +416,15 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
       const rows = q.next.all(target) as { seq: number; payload: string }[];
       if (!rows.length || stopped) return n;
       for (const r of rows) {
-        await deliver(JSON.parse(r.payload));
+        try {
+          await deliver(JSON.parse(r.payload));
+        } catch (err) {
+          // A row Postgres rejects for good (data or constraint error) is set aside so the rows behind it still land; anything else retries.
+          if (!permanent(err)) throw err;
+          log.error({ target, seq: r.seq, err: String((err as Error).message ?? err).slice(0, 300) }, "outbox row rejected for good; set aside");
+          q.dead.run(r.seq);
+          continue;
+        }
         q.done.run(r.seq);
         n++;
       }
