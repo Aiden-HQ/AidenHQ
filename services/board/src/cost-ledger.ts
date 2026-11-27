@@ -6,8 +6,9 @@
 //  - top: one agent's or model's most expensive runs and tasks in the range, for the drill-down.
 import { BadRequest } from "./board.js";
 import { departmentOf } from "./activity.js";
-import type { KeyUsage, Prices, SpendSummary } from "./costs.js";
+import type { KeyUsage, SpendSummary } from "./costs.js";
 import type { Agent } from "./paperclip.js";
+import type { CatalogModel } from "./model-catalog.js";
 import type { LedgerFilter, LedgerMetrics, Store } from "./store.js";
 
 const DAY = 864e5;
@@ -71,8 +72,8 @@ export interface LedgerDeps {
   spend: () => Promise<SpendSummary | null>;
   /** Tasks' identifiers, titles and statuses by id, in one read (the kernel's issue mirror); without it the task figures are left out. */
   issues?: (ids: string[]) => Promise<Map<string, TaskNames>>;
-  /** OpenRouter's list prices, for the cache savings; without them the savings are left out. */
-  prices?: () => Promise<Prices>;
+  /** OpenRouter's models as the gateway lists them (their prices feed the cache savings); without them the savings are left out. */
+  catalog?: () => Promise<CatalogModel[] | null>;
 }
 
 export async function ledgerSummary(d: LedgerDeps, r: LedgerRange, now = Date.now()) {
@@ -171,15 +172,15 @@ export function coverage(periods: { name: string; from: number; real: number; le
 
 /**
  * What caching saved: cached input tokens × (the model's list price for fresh input minus its list price for cached input). List
- * prices only (OpenRouter's /models); routing can bill more than list, so it is an estimate. Models with no cached price are left out.
+ * prices only (the gateway's catalog of OpenRouter's /models, USD per million tokens); routing can bill more than list, so it is an estimate. Models with no cached price are left out.
  */
-export function cacheSavings(models: { model: string; cached: number }[], prices: Prices | null | undefined) {
-  if (!prices?.size) return null;
-  const n = (s?: string) => Number(s ?? 0) || 0;
+export function cacheSavings(models: { model: string; cached: number }[], catalog: CatalogModel[] | null | undefined) {
+  if (!catalog?.length) return null;
+  const byId = new Map(catalog.map((m) => [m.id, m]));
   let saved = 0;
   for (const m of models) {
-    const p = prices.get(m.model.replace(/^openrouter\//, ""));
-    if (p?.input_cache_read !== undefined) saved += m.cached * Math.max(0, n(p.prompt) - n(p.input_cache_read));
+    const p = byId.get(m.model.replace(/^openrouter\//, ""));
+    if (p?.cached_in != null) saved += (m.cached * Math.max(0, p.in - p.cached_in)) / 1e6;
   }
   return saved;
 }
@@ -218,12 +219,12 @@ async function ledgerInsights(d: LedgerDeps, r: LedgerRange, cube: ReturnType<St
 
   // Cache: hit rate over the range and what it saved at list prices.
   const total = rollup(cube, () => "", all)[0]?.[1] ?? ZERO;
-  const prices = await d.prices?.().catch(() => null);
+  const catalog = await d.catalog?.().catch(() => null);
   const cache = {
     hit: total.input + total.cached ? total.cached / (total.input + total.cached) : null,
     cached: total.cached,
     input: total.input,
-    savedUsd: cacheSavings(rollup(cube, (c) => c.model, all).map(([model, m]) => ({ model, cached: m.cached })), prices),
+    savedUsd: cacheSavings(rollup(cube, (c) => c.model, all).map(([model, m]) => ({ model, cached: m.cached })), catalog),
   };
 
   // Departments: each agent's own `department:` (the registry compile resolved), system calls apart.

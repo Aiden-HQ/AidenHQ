@@ -2,7 +2,7 @@
 //  - the model gateway's ledger: every model call, with what OpenRouter billed for it, mirrored into the board's usage table every
 //    minute (pullUsage), so the tab can group it in SQL;
 //  - the kernel's spend summary: the install's day and month against its spend limits, as the gateway enforces them (spendSummary);
-//  - OpenRouter's own figures for the key (keyUsage) and its list prices (prices).
+//  - OpenRouter's own figures for the key (keyUsage); list prices come from the gateway's model catalog (modelCatalog).
 import { readFileSync } from "node:fs";
 import type { Logger } from "pino";
 import { z } from "zod";
@@ -45,24 +45,6 @@ export const UsageSchema = z
     ...Attribution,
   })
   .strict();
-
-/** OpenRouter's per-token list prices (USD strings), by model id. */
-type Pricing = { prompt?: string; completion?: string; input_cache_read?: string };
-export type Prices = Map<string, Pricing>;
-let priceCache: { at: number; prices: Prices } | undefined;
-/** OpenRouter's public model list, refreshed every 6 hours; an empty map (no dollars, tokens still shown) when unreachable. */
-export async function prices(): Promise<Prices> {
-  if (priceCache && Date.now() - priceCache.at < 6 * 3600_000) return priceCache.prices;
-  try {
-    const res = await fetch(`${OPENROUTER}/models`, { signal: AbortSignal.timeout(15_000) });
-    if (!res.ok) throw new Error(String(res.status));
-    const data = ((await res.json()) as { data?: { id: string; pricing?: Pricing }[] }).data ?? [];
-    priceCache = { at: Date.now(), prices: new Map(data.map((m) => [m.id, m.pricing ?? {}])) };
-  } catch {
-    if (!priceCache) return new Map();
-  }
-  return priceCache!.prices;
-}
 
 /** limit: the key's spend limit (null: none), limit_remaining what is left of it, limit_reset how often it resets (monthly, ...). */
 export type KeyUsage = { usage_daily: number; usage_weekly: number; usage_monthly: number; limit: number | null; limit_remaining: number | null; limit_reset: string | null };

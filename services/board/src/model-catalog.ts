@@ -2,7 +2,7 @@
 // pure rules that turn it into the picker's list (shared with the web app: no node imports here).
 
 /** One model: USD per million tokens, `created` in unix seconds (the gateway's CatalogModel). */
-export interface CatalogModel { id: string; name: string; provider: string; created: number; context: number; in: number; out: number; tools: boolean; reasoning: boolean }
+export interface CatalogModel { id: string; name: string; provider: string; created: number; context: number; in: number; cached_in: number | null; out: number; tools: boolean; reasoning: boolean }
 
 /** What an engine can run, as its module declares it: one provider's models (`provider`), and models that call tools (`tools`). */
 export interface Accepts { provider?: string; tools?: boolean }
