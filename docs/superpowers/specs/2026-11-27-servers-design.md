@@ -69,7 +69,8 @@ only thing in the fleet that holds a server's private key or talks to a server.
   server-manager, view: "ui://server-manager/page", tools: [ server_manager_config, server_manager_status,
   server_manager_check, server_manager_patch, server_manager_reboot, server_manager_host_key_reset ], settings:
   [ servers_machines ], secret_maps: [ { secret: servers_keys, keys_from: "servers_machines[].key", fields: [ { name:
-  private_key, label: "Private key", kind: key } ] } ] }`. The page's settings list is what the page may propose; the owner's
+  private_key, label: "Private key", kind: key, maxLength: 4096 } ] } ] }`. The page's settings list is what the page may
+  propose; the owner's
   Save outside the frame is the gate. `icon` must be one of the board's own enum (`shield` is), and `view` must start
   `ui://server-manager/`.
 - `contributes.warehouse.sources`: `src_servers`, with a `servers` view (§8).
@@ -253,7 +254,7 @@ of this spec got wrong:
   a whole pasted secret at 300 too. The board's Sign-ins panel renders `kind: text | password | totp` only, as a
   single-line input.
 
-So the platform change is four small, specific things, in `modules/board` and the kernel — the shared path, not a
+So the platform change is five small, specific things, in `modules/board` and the kernel — the shared path, not a
 private trick inside one module (`modules/AGENTS.md`: a new building block goes in the schema and the board, for every
 module):
 
@@ -269,8 +270,9 @@ module):
    `maxLength` (300 when the field is not declared, so every other module is unchanged); a whole-map paste through
    `save_secret` parses the JSON and applies the same per-field caps, with a 64 KB total; and `auth-api.ts`'s request
    cap (`value` at most 1000 characters, 4000 when `key` is set) rises to 64 KB for a secret that declares fields,
-   because at 1000 a three-kilobyte private key cannot be pasted at all. The map's own JSON is still validated against
-   the `setup:` pattern.
+   because the request cap is below the declared field cap once JSON escaping is counted, and a whole-map paste
+   (`value` with no `key`) is capped at 1000 characters and cannot hold even one key. The map's own JSON is still
+   validated against the `setup:` pattern.
 3. **The check runs on a clear too.** `saveKey` calls `check` with the key and a null entry when an entry is being
    removed; `auth-api.ts` passes that through as `{ secret: { name }, key }` with no value; and
    `kernel/src/module-validate.ts` gains an optional `key` on `ValidateInput` and forwards it, since today it forwards
@@ -279,15 +281,23 @@ module):
 4. **The hook's answer is not a new branch.** `server-manager.validate` answers for `servers_keys`: a clear of a key a
    machine still names is refused with a message naming the machines; a replace is allowed, because that is how a key is
    rotated. The rule stays with the thing that knows what "in use" means, which is the module.
+5. **The board's route, which sees the value first.** `services/board/src/app.ts`'s page-secret handler caps every
+   submitted value at 300 (`z.record(z.string(), z.string().max(300))`) and trims every field but a `password`
+   (`f.kind === "password" ? v : v?.trim()`), both before the kernel is called. It takes the caps from the page's
+   declared fields — `z.string().max(declared maxLength, 300 when undeclared)` per field, and a 64 KB body — and it
+   keeps a `key` field's whitespace exactly, like a `password`: an OpenSSH key's trailing newline is part of the file,
+   and trimming it is how a valid key becomes an invalid one. `text` and `totp` still trim.
 
 Each of those gets a test in the named-secret PR: a `key` field over 4096 refused, a `key` field with newlines stored
-whole, a three-kilobyte key pasted whole is stored and read back, a map paste over 64 KB is refused, a clear refused by
-a module that answers no, a clear allowed when nothing references the key, and a clear still working for a module with
-no `validate:` hook.
+whole, a three-kilobyte key pasted whole is stored and read back, a map paste over 64 KB is refused, a key over its
+declared `maxLength` is refused by the board's route before the kernel is called, a key field's trailing newline
+survives the panel route byte for byte, and a `text` field is still trimmed; a clear refused by a module that answers
+no, a clear allowed when nothing references the key, and a clear still working for a module with no `validate:` hook.
 
-**Verified, not assumed.** The two code facts above (`if (entry) await check(...)`, and the 300-character cap in both
-places) were read in the product repo at `main` on 2026-11-27, and they are what the first PR changes. If either has
-moved by then, the PR follows the code, not this paragraph.
+**Verified, not assumed.** The code facts above (`if (entry) await check(...)`, and the 300-character cap in three
+places (`saveKey`, `secretFits`, and the board's page-secret route in `services/board/src/app.ts`), and the board
+route's trim of every field but a `password`) were read in the product repo at `main` on 2026-11-27, and they are what
+the first PR changes. If any has moved by then, the PR follows the code, not this paragraph.
 
 In this module: `setup:` declares one secret (`servers_keys`, the JSON map); the page declares its `secret_maps` entry
 with `keys_from: servers_machines[].key`, so a key's name is exactly what a machine entry holds; the SSH service mounts
@@ -567,6 +577,11 @@ named `private_key`, the name the service reads, not `key`; security classificat
 rather than apt's `Origin:`, which is `Debian` or `Ubuntu` and never ends `-security`, so nothing would ever have
 counted as a security update; and §9's `address` pattern had four backslashes where it needs two, so it did not
 compile.
+A second pass, on that follow-up's own review, found three more: the field declaration carried no `maxLength`, so the
+`key` kind would have fallen back to 300 characters and refused a real key; the board's page-secret route caps every
+value at 300 and trims every field but a `password`, so it would have refused the key and stripped its trailing newline
+before the kernel saw either; and one sentence in §7 still gave a false reason (a request cap of 1000) for raising the
+kernel's limit, when the cap is 4000 with a key set.
 
 **Left to the build, not to the review:** the page's icon and order, the exact wording of a failed run's report, and
 whether `expected_fingerprint` should ever default to anything but empty. All three are in §17.
