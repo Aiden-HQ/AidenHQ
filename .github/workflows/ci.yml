@@ -764,6 +764,9 @@ jobs:
           SHA: ${{ github.sha }}
           # This run's own title verdict: definitive, where a read of the check runs could race the API's write.
           TITLE: ${{ needs.policy.result }}
+          # A fork PR's aggregate can fail on its own reviewer-eval guard, which no component check shows (ci-required below):
+          # there a prior aggregate red is never excused by a green title, only a full run clears it.
+          FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
           node --input-type=module -e '
             const { REPO, SHA, GITHUB_TOKEN } = process.env;
@@ -831,12 +834,13 @@ jobs:
             const red = judged.filter((r) => ["failure", "timed_out", "action_required"].includes(String(r.conclusion ?? "").toLowerCase()));
             // A failure the components do not show is still the head own: the newest real aggregate can fail for a reason of its
             // own (the reviewer-eval guard on a fork PR), and the edit did not re-run the jobs that would show it. The one
-            // exception is `policy`: the edit runs the whole job on the same head (title and supply-chain vets), so its green
-            // clears an aggregate that failed because `policy` was red, and a supply-chain red is not excused by a green title.
+            // exception is `policy` on a same-repo PR: the edit runs the whole job on the same head (title and supply-chain
+            // vets), so its green clears an aggregate that failed because `policy` was red, and a supply-chain red is not
+            // excused by a green title. A fork PR keeps its red: its aggregate can fail for the reviewer-eval guard alone.
             const failing = (r) => ["failure", "timed_out", "action_required"].includes(String(r.conclusion ?? "").toLowerCase());
             const priorGate = gateRuns.filter((r) => r.id <= cut).sort((a, b) => b.id - a.id)[0];
             const priorPolicy = runs.filter((r) => r.name === "policy" && r.id <= cut).sort((a, b) => b.id - a.id)[0];
-            const policyOnly = Boolean(priorPolicy && failing(priorPolicy) && process.env.TITLE === "success");
+            const policyOnly = Boolean(priorPolicy && failing(priorPolicy) && process.env.TITLE === "success" && process.env.FORK !== "true");
             if (priorGate && failing(priorGate) && !policyOnly && !red.length) {
               console.log(`::error::ci-required failed on this head for a reason no component check shows; the edit did not re-run it`);
               process.exit(1);

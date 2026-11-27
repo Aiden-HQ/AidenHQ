@@ -194,7 +194,7 @@ test("an edit's ci-required restates the head's real verdict: a fixed title clea
   for (const m of run.matchAll(/check-runs\?([^`\s&]*)/g)) assert.match(m[1]!, /^filter=all/, `a read without filter=all: ${m[0]}`);
   const at = (name: string, conclusion: string, id: number) => ({ id, name, status: "completed", conclusion });
   // A tiny GitHub: the head's check runs, newest `policy` from the edit; `ci-required` itself is never read back.
-  const gate = (runs: ReturnType<typeof at>[], title = "success") => {
+  const gate = (runs: ReturnType<typeof at>[], title = "success", fork = "false") => {
     const server = createServer((req, res) => {
       if (!req.url!.startsWith("/repos/acme/x/commits/" + "a".repeat(40) + "/check-runs")) { res.writeHead(404); res.end(); return; }
       res.writeHead(200, { "content-type": "application/json" });
@@ -204,7 +204,7 @@ test("an edit's ci-required restates the head's real verdict: a fixed title clea
       const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
       // The step builds GitHub's URL; point it at the fake. Asynchronous, so the in-process server can answer while it runs.
       const script = run.replace("https://api.github.com", url);
-      const child = spawn("bash", ["-c", script], { env: { ...process.env, GITHUB_TOKEN: "t", REPO: "acme/x", SHA: "a".repeat(40), TITLE: title }, stdio: "ignore" });
+      const child = spawn("bash", ["-c", script], { env: { ...process.env, GITHUB_TOKEN: "t", REPO: "acme/x", SHA: "a".repeat(40), TITLE: title, FORK: fork }, stdio: "ignore" });
       child.on("close", (code) => { server.close(); ok(code ?? 1); });
     }));
   };
@@ -226,6 +226,10 @@ test("an edit's ci-required restates the head's real verdict: a fixed title clea
   assert.equal(await gate([at("packages (2)", "failure", 1), at("ci-required", "failure", 2), at("ci-required", "skipped", 3), at("packages (2)", "skipped", 4),
     { ...at("ci-required", "success", 9), status: "in_progress", conclusion: null }]), 1,
     "the running aggregate is not the cutoff");
+  // A fork PR's aggregate can fail on its own reviewer-eval guard, which no component check shows: a green title does not
+  // prove the aggregate red was the title, so it is not excused there.
+  assert.equal(await gate([at("policy", "failure", 1), at("ci-required", "failure", 2), at("ci-required", "skipped", 3), at("policy", "success", 4)], "success", "true"), 1,
+    "a fork PR's aggregate red is not excused by a green title");
   // A prior `policy` failure is only cleared by this edit running the whole job green on the same head: the job covers the
   // supply-chain vets too, so a title that passes while the job is red is not a title-only red.
   assert.equal(await gate([at("policy", "failure", 1), at("ci-required", "failure", 2), at("ci-required", "skipped", 3)], "failure"), 1,
