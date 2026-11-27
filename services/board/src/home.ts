@@ -191,8 +191,10 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
   for (const t of told ?? []) if (SINCE_KINDS.includes(t.kind)) items.push({ teammate: face(t.source === "kernel" ? "" : t.source), text: toldLine(t.text), at: t.at, task: t.task, kind: t.kind as SinceItem["kind"] });
   for (const i of closed) {
     const at = i.completedAt ?? i.cancelledAt;
-    if (!at || at < since_from || !i.assigneeAgentId || labelled(i, "chat")) continue;
-    items.push({ teammate: face(keyOfAgent(i.assigneeAgentId)), text: `${i.completedAt ? "Done" : "Cancelled"}: ${i.title}`, at, task: i.identifier, kind: "closed" });
+    // An agent's own task, or an owner task its filer closed on evidence (label auto-closed, skill owner-triage).
+    const by = i.assigneeAgentId ?? (labelled(i, "auto-closed") ? i.createdByAgentId : null);
+    if (!at || at < since_from || !by || labelled(i, "chat")) continue;
+    items.push({ teammate: face(keyOfAgent(by)), text: `${i.completedAt ? "Done" : "Cancelled"}: ${i.title}`, at, task: i.identifier, kind: "closed" });
   }
   items.sort((a, b) => b.at.localeCompare(a.at));
   const seenTask = new Set<string>();

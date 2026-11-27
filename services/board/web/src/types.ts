@@ -332,6 +332,8 @@ export interface IssueView extends Omit<Card, "scheduled" | "recurring" | "worki
   working: Working | null;
   description: string;
   bucket: Bucket | null;
+  /** Why an agent placed it in its column (first-pass triage), until the owner moves it. */
+  placed?: { by: string; reason: string } | null;
   editable: boolean;
   /** Settled out of the active lists (finished work the owner put away). */
   settled?: boolean;

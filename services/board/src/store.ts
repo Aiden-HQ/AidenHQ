@@ -27,6 +27,9 @@ export interface Placement {
   rank: number;
   /** How many rollovers the task has stayed in Today through, unfinished (0 once it's moved or kept). */
   carried: number;
+  /** Why an agent (or the stale rule) put it here, and who: gone once the owner moves it. */
+  reason?: string;
+  by?: string;
 }
 
 export interface NewIssue {
@@ -93,6 +96,10 @@ export class Store {
     `);
     const columns = (this.db.prepare("PRAGMA table_info(placements)").all() as { name: string }[]).map((c) => c.name);
     if (!columns.includes("carried")) this.db.exec("ALTER TABLE placements ADD COLUMN carried INTEGER NOT NULL DEFAULT 0");
+    // First-pass triage (skill owner-triage): the one-line reason an agent placed the task with, and the agent's name.
+    if (!columns.includes("reason")) this.db.exec("ALTER TABLE placements ADD COLUMN reason TEXT; ALTER TABLE placements ADD COLUMN placed_by TEXT");
+    // The owner's New tasks idle 14 days that the daily brief was given (task_stale): moved to Later once a brief after it is out.
+    this.db.exec("CREATE TABLE IF NOT EXISTS stale_mentions (issue_id TEXT PRIMARY KEY, at TEXT NOT NULL)");
     // A move that parks the card where it waits until its date (a snooze): the rollover leaves it to applySchedules(). A database
     // from before this column recorded nothing, and the rollover then held every pending move out of its way; so rows that
     // predate the column are marked parked, which keeps that behaviour until they are replaced or run. New rows say it themselves.
@@ -124,8 +131,8 @@ export class Store {
 
   /** Gateway refusals and upstream failures since `from`: the run each belonged to (when known) and when. Not the agent's fault. */
   placements(): Map<string, Placement> {
-    const rows = this.db.prepare("SELECT issue_id, bucket, rank, carried FROM placements").all() as { issue_id: string; bucket: string; rank: number; carried: number }[];
-    return new Map(rows.filter((r) => isBucket(r.bucket)).map((r) => [r.issue_id, { bucket: r.bucket as Bucket, rank: r.rank, carried: r.carried }]));
+    const rows = this.db.prepare("SELECT issue_id, bucket, rank, carried, reason, placed_by FROM placements").all() as { issue_id: string; bucket: string; rank: number; carried: number; reason: string | null; placed_by: string | null }[];
+    return new Map(rows.filter((r) => isBucket(r.bucket)).map((r) => [r.issue_id, { bucket: r.bucket as Bucket, rank: r.rank, carried: r.carried, ...(r.reason ? { reason: r.reason, by: r.placed_by ?? "" } : {}) }]));
   }
 
   /** New tasks land at the top of Triage, newest first (Paperclip backlog tasks go to Backlog). */
@@ -136,6 +143,29 @@ export class Store {
     this.tx(() => {
       for (const i of fresh) this.put(i.id, i.status === "backlog" ? "backlog" : "triage", "top");
     });
+  }
+
+  /** An agent's placement (first-pass triage): the top of `bucket`, with the reason the task shows and who placed it. */
+  place(issueId: string, bucket: Bucket, reason: string, by: string): void {
+    this.tx(() => {
+      this.put(issueId, bucket, "top");
+      this.db.prepare("UPDATE placements SET reason = ?, placed_by = ? WHERE issue_id = ?").run(reason, by, issueId);
+      this.unschedule(issueId);
+    });
+  }
+
+  /** Record that the brief was given these stale tasks (an earlier mention keeps its time). */
+  mentionStale(ids: string[], at = new Date().toISOString()): void {
+    const stmt = this.db.prepare("INSERT INTO stale_mentions (issue_id, at) VALUES (?, ?) ON CONFLICT(issue_id) DO NOTHING");
+    this.tx(() => ids.forEach((id) => stmt.run(id, at)));
+  }
+
+  staleMentions(): Map<string, string> {
+    return new Map((this.db.prepare("SELECT issue_id, at FROM stale_mentions").all() as { issue_id: string; at: string }[]).map((r) => [r.issue_id, r.at]));
+  }
+
+  clearStale(issueId: string): void {
+    this.db.prepare("DELETE FROM stale_mentions WHERE issue_id = ?").run(issueId);
   }
 
   /** Move one task to the top or bottom of a bucket. A move by hand replaces a scheduled one. */
@@ -153,7 +183,7 @@ export class Store {
   setOrder(bucket: Bucket, ids: string[]): void {
     const now = new Date().toISOString();
     const stmt = this.db.prepare(
-      "INSERT INTO placements (issue_id, bucket, rank, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(issue_id) DO UPDATE SET carried = CASE WHEN placements.bucket = excluded.bucket THEN placements.carried ELSE 0 END, bucket = excluded.bucket, rank = excluded.rank, updated_at = excluded.updated_at",
+      "INSERT INTO placements (issue_id, bucket, rank, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(issue_id) DO UPDATE SET carried = CASE WHEN placements.bucket = excluded.bucket THEN placements.carried ELSE 0 END, reason = CASE WHEN placements.bucket = excluded.bucket THEN placements.reason END, placed_by = CASE WHEN placements.bucket = excluded.bucket THEN placements.placed_by END, bucket = excluded.bucket, rank = excluded.rank, updated_at = excluded.updated_at",
     );
     const before = this.placements();
     this.tx(() =>
@@ -260,7 +290,7 @@ export class Store {
         // applySchedules() has nothing left to move. Only a parked card is skipped: a move filed from where the card already
         // sits leaves it to the normal rollover until its date.
         const rows = this.db.prepare("SELECT p.issue_id FROM placements p WHERE p.bucket = 'tomorrow' AND NOT EXISTS (SELECT 1 FROM scheduled_moves m WHERE m.issue_id = p.issue_id AND m.parked = 1) ORDER BY p.rank").all() as { issue_id: string }[];
-        const stmt = this.db.prepare("UPDATE placements SET bucket = 'today', rank = ?, carried = 0, updated_at = ? WHERE issue_id = ?");
+        const stmt = this.db.prepare("UPDATE placements SET bucket = 'today', rank = ?, carried = 0, reason = NULL, placed_by = NULL, updated_at = ? WHERE issue_id = ?");
         const now = new Date().toISOString();
         rows.forEach((r, i) => stmt.run(max + 1 + i, now, r.issue_id));
         moved = rows.length;
@@ -368,7 +398,7 @@ export class Store {
     const agg = position === "top" ? "MIN(rank) - 1" : "MAX(rank) + 1";
     const rank = (this.db.prepare(`SELECT ${agg} AS r FROM placements WHERE bucket = ? AND issue_id != ?`).get(bucket, issueId) as { r: number | null }).r ?? 0;
     this.db
-      .prepare("INSERT INTO placements (issue_id, bucket, rank, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(issue_id) DO UPDATE SET bucket = excluded.bucket, rank = excluded.rank, carried = 0, updated_at = excluded.updated_at")
+      .prepare("INSERT INTO placements (issue_id, bucket, rank, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(issue_id) DO UPDATE SET bucket = excluded.bucket, rank = excluded.rank, carried = 0, reason = NULL, placed_by = NULL, updated_at = excluded.updated_at")
       .run(issueId, bucket, rank, new Date().toISOString());
   }
 

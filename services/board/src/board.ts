@@ -162,6 +162,14 @@ export function workCard(issue: Issue, list: Assignee[], state: ShownState | nul
 }
 
 const isBrief = (i: Issue) => (i.labels ?? []).some((l) => l.name === BRIEF_LABEL);
+/** An agent's report (label `report`: a weekly review, a digest): read from its notice, never a task in the owner's columns. */
+export const REPORT_LABEL = "report";
+const isReport = (i: Issue) => (i.labels ?? []).some((l) => l.name === REPORT_LABEL);
+/**
+ * Whether a task gets a place in the owner's columns: the owner's tasks (held by them, or made by them for an agent). A task an
+ * agent made that an agent holds is that agent's work (Agent work shows it), never one to sort.
+ */
+export const inColumns = (i: { assigneeAgentId?: string | null; createdByAgentId?: string | null }) => !(i.assigneeAgentId && i.createdByAgentId);
 /** The owner's settings task as the board files it (made by no agent, held by none): a label alone hides nothing. */
 const isSettings = (i: Issue) => !i.assigneeAgentId && !i.createdByAgentId && (i.labels ?? []).some((l) => l.name === SETTINGS_LABEL);
 /** A task My day holds (app.ts mine(), and older search hits): assigned to a crew agent, or else to the owner. */
@@ -212,7 +220,7 @@ export function buildBoard(input: BoardInput): Board {
     return card;
   };
   for (const issue of unique.values()) {
-    if (isBrief(issue) || isSettings(issue) || folded.has(issue.id)) continue;
+    if (isBrief(issue) || isReport(issue) || isSettings(issue) || folded.has(issue.id) || !inColumns(issue)) continue;
     const card = withCrew(toCard(issue, input.assignees, seen(issue.id)), issue);
     const rule = input.recurring?.get(issue.id);
     if (rule) {
