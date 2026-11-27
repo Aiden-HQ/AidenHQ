@@ -126,7 +126,7 @@ const IMAGE_FILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
  */
 export function skippedImageScan(pr: Json): boolean {
   const nodes = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
-  const scans = judgedOnHead(contextChecks({ contexts: { nodes } })).filter((c) => c.name === "image-scan");
+  const scans = latestChecks(judgedOnHead(contextChecks({ contexts: { nodes } })).filter((c) => c.name === "image-scan"));
   if (!scans.some((c) => c.status === "SKIPPED")) return false;
   return !pr.files || pr.files.pageInfo?.hasNextPage || (pr.files.nodes ?? []).some((f: Json) => IMAGE_FILE.test(f.path ?? ""));
 }

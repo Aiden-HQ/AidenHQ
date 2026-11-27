@@ -128,12 +128,12 @@ export type Action = "wait" | "repair" | "fix_ci" | "fix_review" | "approve" | "
 export type ShipContext = { queue: boolean; approve: boolean; verdict?: Verdict; /** The reviewer App's login on this repo (GraphQL's Bot login, no `[bot]`), where it is installed: its approval counts. */ app?: string; required: string[]; checks: NamedCheck[]; /** The open PR whose head branch this PR's base is (a stack): it waits on that PR. */ stackedOn?: number; /** Members' review comments nobody has answered (member-comments.ts): open like findings. */ comments?: boolean };
 
 /**
- * The title the head's newest `policy` run judged, where the newest aggregate report is an edit's skip: that run is the one
- * check an `edited` run makes, so it is judged on its own. A `policy` that skipped or was cancelled judged nothing and is no
- * title verdict (undefined). Outside an edit the title is already inside the aggregate's verdict, so this asks nothing.
+ * The title the head's newest `policy` run judged, always: the title is not part of the commit, so the aggregate's verdict on
+ * it goes stale the moment the title changes. An edit that runs only `policy` posts the newest title check, and it must hold
+ * even when the full run posts a newer `ci-required` afterwards (that aggregate judged the title it read before the edit). A
+ * `policy` that skipped or was cancelled judged nothing and is no title verdict (undefined).
  */
 export function editedTitleCheck(checks: NamedCheck[]): NamedCheck | undefined {
-  if (!newestGateSkipped(checks)) return undefined;
   const titles = headChecks(checks.filter((c) => c.name === POLICY_CHECK && judgedSomething(c)));
   return titles.find((c) => !(c.ok ?? c.success) && !c.pending) ?? titles.find((c) => c.pending) ?? titles[0];
 }
