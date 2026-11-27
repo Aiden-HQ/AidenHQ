@@ -385,7 +385,7 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
       if (n < STRIKES) return retryLater(id);
       strikes.delete(id);
       const c = chats.get(id);
-      const since = new Date(now()).toISOString().slice(0, 16).replace("T", " ");
+      const since = new Date(now()).toISOString().slice(0, 16).replace("T", " "); // UTC, said in the notice
       log.error({ chat: id, err: String(err).slice(0, 200) }, "reconcile gave up; owner told");
       void o.kernel?.notify(`Telegram: messages in ${c?.title ?? `chat ${id}`} since checkpoint ${cp} could not be recovered (checked ${since} UTC). Open the chat in Telegram to read them.`, `telegram:gap:${id}`);
       q.advanceCp.run(id, Math.max(newest, c?.last?.id ?? 0));
