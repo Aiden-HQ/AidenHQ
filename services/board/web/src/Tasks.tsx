@@ -68,7 +68,7 @@ function blocksOf(p: TasksProps, allNew: boolean): Block[] {
   if (p.tab === "work") {
     return DELEGATED.map(({ id, name }) => ({
       id,
-      name,
+      name: id === "done" && p.narrowed ? "Done" : name,
       glyph: id,
       edge: EDGE[id],
       count: p.delegated[id].length,
@@ -91,7 +91,7 @@ const clock = (iso: string) => new Date(iso).toLocaleTimeString(undefined, clock
 /** The one time column of a row: how long ago for New and delegated work, a clock time for today's activity, else how long ago. */
 function timeOf(it: Item, board: Board): string {
   const c = it.card as WorkCard;
-  if (!it.mine) return it.group === "done" && c.closedAt ? clock(c.closedAt) : agoLabel(c.activityAt);
+  if (!it.mine) return it.group === "done" && c.closedAt ? (new Date(c.closedAt).toDateString() === new Date().toDateString() ? clock(c.closedAt) : when(c.closedAt)) : agoLabel(c.activityAt);
   if (it.group === "new") return ago(c.createdAt);
   if (c.carried) return `Carried ${c.carried}d`;
   if (it.group === "later" && !c.scheduled) return "Someday";
@@ -146,7 +146,12 @@ export function TasksList(p: TasksProps) {
     if (!next) return;
     setAt(next.card.id);
     if (open) setOpen(next.card.id);
-    requestAnimationFrame(() => document.querySelector(`[data-row="${CSS.escape(next.card.id)}"]`)?.scrollIntoView({ block: "nearest" }));
+    requestAnimationFrame(() => {
+      const row = document.querySelector(`[data-row="${CSS.escape(next.card.id)}"]`);
+      row?.scrollIntoView({ block: "nearest" });
+      // Focus follows the pick, so Enter and the action keys act on the row that is highlighted.
+      if (!open) row?.querySelector<HTMLElement>(".ui-digest-open")?.focus({ preventScroll: true });
+    });
   }, [rows, at, open]);
 
   // The list's keys. Typing, a modifier or another layer (a dialog, the palette, the task page) over the list turns them off;

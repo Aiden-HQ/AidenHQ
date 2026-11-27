@@ -419,7 +419,7 @@ export function App() {
   const setQuery = (text: string) => tb.setFilters((f) => ({ ...f, text }));
   // The search field's answer (search.ts): the hits every filter's text term reads, and the closed hits Done shows.
   // Mine shows only the owner's and the crew's hits; Delegated shows every hit.
-  const found = useTaskSearch(query, (c) => (tb.tab === "work" || c.mine !== false) && cardMatches(c, { ...tb.filters, text: "" }), view === "tasks", !tb.filters.state?.length || tb.filters.state.includes("done"));
+  const found = useTaskSearch(query, (c) => (tb.tab === "work" ? !!c.assignee && c.assignee !== "me" : c.mine !== false) && cardMatches(c, { ...tb.filters, text: "" }), view === "tasks", !tb.filters.state?.length || tb.filters.state.includes("done"));
   useEffect(() => setDoneShown(DONE_PAGE), [query]);
   const filtering = !isEmpty(tb.filters);
   const [saveOpen, setSaveOpen] = useState(0);
