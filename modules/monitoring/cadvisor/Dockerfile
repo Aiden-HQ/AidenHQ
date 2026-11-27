@@ -2,7 +2,7 @@
 # is still built on Alpine 3.23, whose image ships libcrypto3/libssl3 3.5.8-r0, krb5-libs 1.22.1-r0, musl 1.2.5-r23 and zlib
 # 1.3.2-r0 (v3.23 main carries openssl 3.5.9-r0 at most): the final stage here is Alpine 3.24 instead, with the base's
 # packages upgraded to the v3.24 repository's.
-FROM ghcr.io/google/cadvisor:v0.60.6@sha256:b8e7d1093144fd088f425ff003d75a4aa405de075db78dae3bc563730b1bd07a AS upstream
+FROM ghcr.io/google/cadvisor:v0.61.1@sha256:4929b70e82079d001d0028b85d6a4dd25ad4666b719455c9542b983489963916 AS upstream
 
 FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
