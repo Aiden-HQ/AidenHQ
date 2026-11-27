@@ -35,8 +35,10 @@ export function moveStale(open: Issue[], briefs: Issue[], store: Store, me: stri
       store.clearStale(id);
       continue;
     }
-    // A brief published (or republished: the chief of staff updates the day's brief) after the mention.
-    if (!briefs.some((b) => (b.updatedAt ?? b.createdAt) > at)) continue;
+    // An open brief written (or rewritten: the chief of staff updates the day's brief) after the mention that names the task
+    // (a list may cut a long description short: a cut one is taken as naming it).
+    const issue = open.find((i) => i.id === id)!;
+    if (!briefs.some((b) => !["done", "cancelled"].includes(b.status) && (b.updatedAt ?? b.createdAt) > at && (b.descriptionTruncated || String(b.description ?? "").includes(issue.identifier)))) continue;
     store.place(id, "backlog", STALE_REASON, "Board");
     store.clearStale(id);
     moved.push(id);

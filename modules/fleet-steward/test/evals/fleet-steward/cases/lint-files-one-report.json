@@ -1,6 +1,6 @@
 {
  "name": "lint-files-one-report",
- "why": "The weekly lint files exactly one report and never messages the owner.",
+ "why": "The weekly lint files exactly one report (label report, off the owner's columns) and announces it with one digest.",
  "routine": "knowledge-lint",
  "input": "Run task: \"Librarian weekly lint\". Today is 2026-11-18, now 2026-11-18T14:00:00+04:00.\n\nobsidian_read_document_map -> [{\"page\":\"Projects/Atlas\",\"updated\":\"2026-03-01\",\"text\":\"Atlas launches next quarter (currently in beta).\"}]\nknowledge_list -> []\nwarehouse_query src_meta.people_identities status=proposed -> []\nhandbook_list -> [{\"key\":\"open-loops\"}]\nhandbook_read open-loops -> \"Closes loops.\"\nfleet_catalog -> [{\"key\":\"open-loops\",\"tools\":[\"task_comment\"]}]\ntask_list label correction (7d) -> []\n",
  "expect": [
@@ -8,11 +8,10 @@
    "tool": "task_create",
    "marker": "librarian-report",
    "count": 1
-  }
- ],
- "forbid": [
+  },
   {
-   "tool": "notify"
+   "tool": "notify",
+   "count": 1
   }
  ]
 }

@@ -46,7 +46,7 @@ describe("first-pass triage", () => {
     const fresh = issue({ id: "i2", identifier: "WOR-2", lastActivityAt: "2026-11-25T08:00:00.000Z" });
     expect(staleTasks([old, fresh], store, "me", now).map((x) => x.issue.id)).toEqual(["i1"]);
     // Not mentioned yet: nothing moves, whatever briefs exist.
-    const brief = (at: string) => issue({ id: `b${at}`, createdAt: at, updatedAt: at, labels: [{ id: "l", name: "daily-brief", color: "#000" }] });
+    const brief = (at: string) => issue({ id: `b${at}`, createdAt: at, updatedAt: at, description: "Moving to Later: WOR-1", labels: [{ id: "l", name: "daily-brief", color: "#000" }] });
     expect(moveStale([old], [brief("2026-11-27T09:00:00.000Z")], store, "me", now)).toEqual([]);
     store.mentionStale(["i1"], "2026-11-27T04:00:00.000Z");
     expect(moveStale([old], [brief("2026-11-26T04:00:00.000Z")], store, "me", now)).toEqual([]);
