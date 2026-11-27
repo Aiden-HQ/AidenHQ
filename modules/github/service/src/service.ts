@@ -1387,14 +1387,14 @@ export function createService(o: Options) {
     const parents = ((c.body?.parents ?? []) as { sha?: unknown }[]).map((p) => String(p?.sha));
     if (!/^[0-9a-f]{40}$/.test(sha) || c.body?.tree?.sha !== wantTree || parents.length !== 2 || parents[0] !== m.head || parents[1] !== m.baseSha) return { text: refusedPush(at, `GitHub's commit \`${sha.slice(0, 12)}\` isn't the planned merge of \`${m.baseSha.slice(0, 12)}\` into \`${m.head.slice(0, 12)}\` with tree \`${wantTree.slice(0, 12)}\``) };
     if (c.body?.verification?.verified !== true) return { text: refusedPush(at, `GitHub didn't sign the merge commit (${String(c.body?.verification?.reason ?? "no verification")}), so it isn't written`) };
+    const repo = await gh("GET", `/repos/${at.into}`);
+    if (repo.status >= 300 || !repo.body?.node_id) throw fail(502, `GitHub GET ${at.into}: ${repo.status}`);
     // The write's authority and the base it records, read once the commit is ready, right before the one write that moves the branch.
     const stopped = await m.still();
     if (stopped) return { text: stopped };
     const baseNow = await gh("GET", refPath(at.s.slug, m.base));
     if (baseNow.status >= 300) throw fail(502, `GitHub GET ${m.base}'s tip: ${baseNow.status}`);
     if (baseNow.body?.object?.sha !== m.baseSha) return { baseMoved: String(baseNow.body?.object?.sha ?? "") };
-    const repo = await gh("GET", `/repos/${at.into}`);
-    if (repo.status >= 300 || !repo.body?.node_id) throw fail(502, `GitHub GET ${at.into}: ${repo.status}`);
     // A lost answer is read back from the branch: at the merge, it landed; still at the head, the error stands; else someone moved it.
     const settle = async (e: unknown): Promise<{ sha: string } | { text: string }> => {
       const tip = await tipOf(at);
@@ -1415,6 +1415,8 @@ export function createService(o: Options) {
     const tip = await tipOf(at);
     if (tip === sha) return { sha };
     if (tip && tip !== m.head) return { text: `ship-head-moved: ${at.url} moved while writing (it is at \`${tip.slice(0, 12)}\`, not \`${m.head.slice(0, 12)}\`): nothing was pushed; read it again.` };
+    // GitHub's generic execution error (its answer to a stale lease too) with the branch still at the head: an error, asked again.
+    if (!tip || /something went wrong/i.test(why)) throw fail(502, `GitHub didn't move ${at.url}'s branch: ${why.slice(0, 200)}`);
     return { text: refusedPush(at, `GitHub refused moving the branch to the merge: ${why}`) };
   }
 
