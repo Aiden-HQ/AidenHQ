@@ -135,7 +135,7 @@ export async function ledgerSummary(d: LedgerDeps, r: LedgerRange, now = Date.no
   const monday = midnight - ((new Date(now).getUTCDay() + 6) % 7) * DAY;
   // The owner's day so far, against yesterday up to the same quarter hour (a 23- or 25-hour day shifts the match by an hour).
   const tz = d.timezone ?? "UTC", ownerMidnight = dayStart(ownerDay(now, tz), tz), ownerYesterday = dayStart(addDays(ownerDay(now, tz), -1), tz);
-  const W = { today: [midnight, end], yesterday: [midnight - DAY, end - DAY], ownerToday: [ownerMidnight, end], ownerYesterday: [ownerYesterday, floor(end - (ownerMidnight - ownerYesterday))], week: [week, end], prevWeek: [2 * week - end, week], month: [month, end], prevMonth: [2 * month - end, month], prev: [2 * from - to, from], monthStart: [monthStart, end], monday: [monday, end] } satisfies Record<string, [number, number]>;
+  const W = { today: [midnight, end], yesterday: [midnight - DAY, end - DAY], ownerToday: [ownerMidnight, end], ownerYesterday: [ownerYesterday, Math.min(floor(end - (ownerMidnight - ownerYesterday)), ownerMidnight)], week: [week, end], prevWeek: [2 * week - end, week], month: [month, end], prevMonth: [2 * month - end, month], prev: [2 * from - to, from], monthStart: [monthStart, end], monday: [monday, end] } satisfies Record<string, [number, number]>;
   const names = Object.keys(W) as (keyof typeof W)[];
   const [agents, key, spend, s] = await Promise.all([
     d.agents().catch(() => [] as Agent[]),

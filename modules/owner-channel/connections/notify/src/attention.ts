@@ -19,7 +19,9 @@ export type Attend = { do: "pass" } | { do: "block" | "limit"; note: string } | 
 type Item = { id?: string; agent: string; task?: string; text: string; source?: string; kind?: string; at?: number; told?: true };
 
 /** The owner's calendar day: the daily cap resets at midnight in their timezone. */
-const dayOf = (now: number, timezone: string) => new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+const dayOf = (now: number, timezone: string) => {
+  try { return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now); } catch { return new Date(now).toISOString().slice(0, 10); } // an unknown zone reads as UTC
+};
 
 /** What happens to one normal message. `conversing`: the owner is writing on its chat, so the reply goes straight back. */
 export function attend(store: Store, cfg: AttentionConfig, who: { id: string; key: string; roles: string[] } | undefined, kind: Kind, o: { conversing: boolean; buttons: boolean }, now = Date.now()): Attend {

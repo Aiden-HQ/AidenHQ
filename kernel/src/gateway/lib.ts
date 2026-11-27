@@ -54,7 +54,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { ownerDay, ownerMonth, zone } from "../owner-day.ts";
+import { addDays, dayStart, ownerDay, ownerMonth, zone } from "../owner-day.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { CI_KIND, CI_PREFIX, ciBodyProblem, githubKeys, verifyGithubOidc } from "./ci.ts";
@@ -525,7 +525,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     trueUp: db.prepare("UPDATE calls SET status = 'interrupted', model = ?, input = ?, cached = ?, output = ?, cost_usd = ? WHERE key = ? AND status = 'unsettled'"),
     ciToken: db.prepare("SELECT * FROM ci_tokens WHERE hash = ?"),
     addCiToken: db.prepare("INSERT OR IGNORE INTO ci_tokens (hash, repo, pr, head, gh_run, attempt, exp, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
-    ciIssued: db.prepare("SELECT COUNT(*) AS n FROM ci_tokens WHERE repo = ? AND substr(at, 1, 10) = ?"),
+    ciIssued: db.prepare("SELECT COUNT(*) AS n FROM ci_tokens WHERE repo = ? AND at >= ? AND at < ?"),
     ciSpent: db.prepare("SELECT COALESCE(SUM(nano), 0) AS n FROM spend_day WHERE kind = 'ci-code-review' AND day = ?"),
     // Today's billed spend and refusals by agent and kind (the metrics).
     dayRows: db.prepare("SELECT agent, kind, billed, refused FROM spend_day WHERE day = ?"),
@@ -825,7 +825,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     issued.byRepo.set(claims.repo, n);
     if (n > CI_TOKENS_PER_MIN) throw fail(429, "too_many_tokens", `${claims.repo} has had ${CI_TOKENS_PER_MIN} CI tokens this minute`);
     const t = now();
-    if ((q.ciIssued.get(claims.repo, day(t)) as { n: number }).n >= CI_TOKENS_PER_DAY) throw fail(429, "too_many_tokens", `${claims.repo} has had ${CI_TOKENS_PER_DAY} CI tokens today`);
+    if ((q.ciIssued.get(claims.repo, new Date(dayStart(day(t), tz())).toISOString(), new Date(dayStart(addDays(day(t), 1), tz())).toISOString()) as { n: number }).n >= CI_TOKENS_PER_DAY) throw fail(429, "too_many_tokens", `${claims.repo} has had ${CI_TOKENS_PER_DAY} CI tokens today`);
     const token = `${CI_PREFIX}${randomBytes(32).toString("base64url")}`;
     const head = /^[0-9a-f]{40}$/.test(String(body.head ?? "")) ? (body.head as string) : null; // advisory: the job says so
     const exp = new Date(t + CI_TTL_MS).toISOString();

@@ -219,7 +219,7 @@ export function createRouting(d: RoutingDeps) {
       const out: Dict = {};
       for (const t of teams()) {
         const c = current[t.name] ?? {};
-        out[t.name] = { weights: { ...DEFAULT_WEIGHTS, ...(c.routing?.weights ?? {}) }, members: Object.fromEntries(Object.entries(isMap(c.members) ? c.members : {}).map(([k, m]) => [k, { repos: (m as Dict)?.repos ?? [] }])), decisions: await outcomes(t.key, today - days * DAY_MS, today) };
+        out[t.name] = { weights: { ...DEFAULT_WEIGHTS, ...(c.routing?.weights ?? {}) }, members: Object.fromEntries(Object.entries(isMap(c.members) ? c.members : {}).map(([k, m]) => [k, { repos: (m as Dict)?.repos ?? [] }])), decisions: await outcomes(t.key, since, today) };
       }
       const filedToday = (q("SELECT COUNT(*) AS n FROM routing_experiments WHERE day = ? AND state != 'abandoned'").get(day(now())) as { n: number }).n;
       return { base_sha: base, window: { since: new Date(since).toISOString(), until: new Date(today).toISOString() }, teams: out, open_experiment: view(open()) ?? null, may_propose_today: !open() && !filedToday, metrics: METRICS };
