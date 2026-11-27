@@ -1596,7 +1596,7 @@ const TOOLS: Record<string, Tool> = {
     },
   },
   task_update: {
-    description: "Update a Paperclip task's title, description, priority or project (e.g. refresh today's brief). The source markers are preserved. A task the owner created keeps its description (their words): add context as a comment.",
+    description: "Update a Paperclip task's title, description, priority or project (e.g. refresh today's brief). The source markers are preserved.",
     inputSchema: {
       type: "object",
       properties: {
