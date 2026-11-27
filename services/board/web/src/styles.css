@@ -580,6 +580,7 @@ kbd {
 .approval-card.ap-pending.inline .approval-head .chat-title { color: var(--warn-text); font-weight: 550; }
 .approval-card.ap-applied .approval-outcome > b { color: var(--ok-text); }
 .btn.approve { padding: 7px 20px; font-weight: 600; }
+.btn.approve.sm { padding: 4px 12px; }
 .approval-head { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: var(--text-base); }
 .approval-head .muted { flex: none; }
 .approval-sentence { margin: 0; font-weight: 650; font-size: var(--text-lg); line-height: 1.4; }

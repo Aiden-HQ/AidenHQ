@@ -30,7 +30,6 @@ export const home = {
   since: null,
   world: { waiting_on: null, today: null },
   team: [],
-  idea: null,
 };
 const roster = [
   { id: "a1", key: "chief-of-staff", name: "Aiden", title: "Chief of staff", system: false, department: { id: "ops", name: "Ops", order: 0 }, teammate: { job: "Chief of staff", sample: "Ask me", staff: [], controls: [], face: null }, model: null, reportsTo: null, state: "idle", running: 0, queued: 0, workingSince: null, schedules: [], lastRunAt: null, lastRunStatus: null },
