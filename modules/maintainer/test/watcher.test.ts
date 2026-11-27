@@ -20,7 +20,7 @@ const repo = (o = {}) => parseRepos(JSON.stringify([{ repo: R, ...o }]))[0];
 const ev = (seq, kind, data = {}, o = {}) => ({ seq, resource: R, id: `${kind}:${seq}`, kind, data: { number: 1, ...data }, ...o });
 /** The kernel's log and github-mcp's reads, faked: `log` is every event so far; a look reads those after its cursor. */
 function world(o = {}) {
-  const w = { log: [], gap: false, boots: 0, reads: [], bootstrap: { repos: [{ repo: R, issues: [], builds: [], featured: [] }] }, ones: {}, fired: [], triaged: [], store: kv(), logs: logs(), repos: [repo({ triage: "new", triage_cap_per_author_day: 1 })], ...o };
+  const w = { log: [], gap: false, boots: 0, reads: [], bootstrap: { repos: [{ repo: R, issues: [], builds: [], featured: [] }] }, ones: {}, fired: [], triaged: [], store: kv(), logs: logs(), repos: [repo({ triage: "new" })], ...o };
   const deps = (extra = {}) => ({
     feed: async (after) => (after === undefined ? { events: [], next: w.log.at(-1)?.seq ?? 0, gap: false } : { events: w.log.filter((e) => e.seq > after), next: w.log.at(-1)?.seq ?? after, gap: w.gap }),
     bootstrap: async () => (w.boots++, w.bootstrap),
@@ -108,7 +108,7 @@ test("a failed first bootstrap keeps the first watermark, so what was opened mea
 });
 
 test("a reopened issue is read afresh, an unlabelled feature-request leaves the valid reports, and an issue opened and closed in one read is not triaged", async () => {
-  const w = world({ repos: [repo({ preset: "full" })], ones: { "7:agent-fix": issue(7), "7:feature-request": issue(7) } });
+  const w = world({ repos: [repo({ features: true, triage: "new+backlog" })], ones: { "7:agent-fix": issue(7), "7:feature-request": issue(7) } });
   await w.look();
   w.log.push(ev(1, "issues.reopened", { number: 7 }));
   assert.equal(await w.look(), 1);
@@ -129,7 +129,7 @@ test("a reopened issue is read afresh, an unlabelled feature-request leaves the 
 });
 
 test("agent-build and feature-request need features on; a trusted feature request joins the valid reports", async () => {
-  const w = world({ repos: [repo({ preset: "full" })], ones: { "5:agent-build": issue(5), "6:feature-request": issue(6) } });
+  const w = world({ repos: [repo({ features: true, triage: "new+backlog" })], ones: { "5:agent-build": issue(5), "6:feature-request": issue(6) } });
   await w.look();
   w.log.push(ev(1, "issues.labeled", { number: 5, label: "agent-build" }), ev(2, "issues.labeled", { number: 6, label: "feature-request" }));
   assert.equal(await w.look(), 1);
@@ -169,23 +169,25 @@ test("triage runs are capped a day per author, the rest held until a slot frees 
   const w = world();
   await w.look();
   const opened = (seq, number, author, o = {}) => ev(seq, "issues.opened", { number, author_kind: "outside", member: false, created_at: new Date().toISOString(), ...o }, { author, labels: [] });
-  w.log.push(opened(1, 1, "spam"), opened(2, 2, "Spam"), opened(3, 3, "ada"), opened(4, 4, "bob", { author_kind: "agent", member: true }), { ...opened(5, 5, "eve"), labels: ["agent-fix"] });
+  // Five a day per outside author (TRIAGE_CAP_PER_AUTHOR_DAY): spam's four earlier issues and #1 fill it, so #2 is held.
+  w.log.push(...[31, 32, 33, 34].map((n, i) => opened(i + 1, n, "spam")));
+  w.log.push(opened(5, 1, "spam"), opened(6, 2, "Spam"), opened(7, 3, "ada"), opened(8, 4, "bob", { author_kind: "agent", member: true }), { ...opened(9, 5, "eve"), labels: ["agent-fix"] });
   await w.look();
-  assert.deepEqual(w.triaged, [1, 3, 4], "the fleet's own issue is triaged like any other");
+  assert.deepEqual(w.triaged, [31, 32, 33, 34, 1, 3, 4], "the fleet's own issue is triaged like any other");
   assert.deepEqual(w.logs.infoLines.filter((l) => /triage limit reached/.test(l.m)).map((l) => l.o.issue), [2]);
   assert.deepEqual(w.state().repos[R.toLowerCase()].held.map((h) => h.number), [2]);
   // The held issue's author proves valid (a fix label on #1 lands): the slot frees and #2 files on the next look.
   w.ones["1:agent-fix"] = issue(1);
-  w.log.push(ev(6, "issues.labeled", { number: 1, label: "agent-fix" }));
+  w.log.push(ev(10, "issues.labeled", { number: 1, label: "agent-fix" }));
   await w.look();
-  assert.deepEqual(w.triaged, [1, 3, 4, 2]);
-  w.log.push(...[10, 11, 12, 13, 14, 15, 16].map((n) => opened(n, n, "member", { author_kind: "owner", member: true })));
+  assert.deepEqual(w.triaged, [31, 32, 33, 34, 1, 3, 4, 2]);
+  w.log.push(...[10, 11, 12, 13, 14, 15, 16].map((n) => opened(n + 1, n, "member", { author_kind: "owner", member: true })));
   await w.look();
-  assert.deepEqual(w.triaged.slice(4), [10, 11, 12, 13, 14, 15, 16], "a member past the cap is never held");
-  w.log.push(opened(20, 20, "forger", { author_kind: "agent" }), opened(21, 21, "forger", { author_kind: "agent" }));
+  assert.deepEqual(w.triaged.slice(8), [10, 11, 12, 13, 14, 15, 16], "a member past the cap is never held");
+  w.log.push(...[20, 21, 22, 23, 24, 25].map((n) => opened(n, n, "forger", { author_kind: "agent" })));
   await w.look();
-  assert.deepEqual(w.state().repos[R.toLowerCase()].held.map((h) => h.number), [21], "a footer makes author_kind agent, not a member: the cap still holds");
-  const off = world({ repos: [repo()] });
+  assert.deepEqual(w.state().repos[R.toLowerCase()].held.map((h) => h.number), [25], "a footer makes author_kind agent, not a member: the cap still holds");
+  const off = world({ repos: [repo({ triage: "off" })] });
   await off.look();
   off.log.push(opened(1, 1, "ada"));
   await off.look();
@@ -219,14 +221,16 @@ test("one repo's incomplete bootstrap files what it read and is read again, and 
 });
 
 test("new-issue triage follows the repo's triage setting alone, and with `new` a held issue waits for a slot instead of expiring", async () => {
-  const w = world({ repos: [repo({ fixes: false, triage: "new", triage_cap_per_author_day: 1 })] });
+  const w = world({ repos: [repo({ fixes: false, triage: "new" })] });
   await w.look();
   const old = new Date(Date.now() - 2 * 86_400_000).toISOString();
-  w.log.push(ev(1, "issues.opened", { number: 1, author_kind: "outside", created_at: new Date().toISOString() }, { author: "ada", labels: [] }), ev(2, "issues.opened", { number: 2, author_kind: "outside", created_at: old }, { author: "ada", labels: [] }));
+  // Five a day per outside author (TRIAGE_CAP_PER_AUTHOR_DAY): the sixth is held.
+  for (let n = 1; n <= 5; n++) w.log.push(ev(n, "issues.opened", { number: n, author_kind: "outside", created_at: new Date().toISOString() }, { author: "ada", labels: [] }));
+  w.log.push(ev(6, "issues.opened", { number: 6, author_kind: "outside", created_at: old }, { author: "ada", labels: [] }));
   await w.look();
-  assert.deepEqual(w.triaged, [1]);
-  assert.deepEqual(w.state().repos[R.toLowerCase()].held.map((h) => h.number), [2], "held past a day, since `new` has no daily pass to take it");
-  w.repos = [repo({ fixes: false, triage: "new+backlog", triage_cap_per_author_day: 1 })];
+  assert.deepEqual(w.triaged, [1, 2, 3, 4, 5]);
+  assert.deepEqual(w.state().repos[R.toLowerCase()].held.map((h) => h.number), [6], "held past a day, since `new` has no daily pass to take it");
+  w.repos = [repo({ fixes: false, triage: "new+backlog" })];
   await w.look();
   assert.deepEqual(w.state().repos[R.toLowerCase()].held, [], "with the backlog on, the daily run has an issue held over a day");
 });
@@ -247,10 +251,10 @@ test("a long silence bootstraps again, an old mixed-case state is kept, features
   const t = world();
   await t.look();
   const o = (seq, n) => ev(seq, "issues.opened", { number: n, author_kind: "outside", created_at: new Date().toISOString() }, { author: "ada", labels: [] });
-  t.log.push(o(1, 1), o(2, 2));
+  t.log.push(...[1, 2, 3, 4, 5, 6].map((n) => o(n, n)));
   await t.look();
-  t.log.push(ev(3, "issues.labeled", { number: 1, label: "agent-fix" }), o(4, 3));
+  t.log.push(ev(7, "issues.labeled", { number: 1, label: "agent-fix" }), o(8, 7));
   t.ones["1:agent-fix"] = issue(1);
   await t.look();
-  assert.deepEqual(t.triaged, [1, 2], "the older held issue took the freed slot; the newer one waits behind");
+  assert.deepEqual(t.triaged, [1, 2, 3, 4, 5, 6], "the older held issue took the freed slot; the newer one waits behind");
 });

@@ -11,53 +11,54 @@ export const TRUST_ROLES = ["admin", "maintain", "write"] as const;
 const DEFAULT_TRUSTED = ["admin", "maintain"];
 export const DEPENDABOT = ["off", "failing", "all"] as const;
 export const TRIAGE = ["off", "new", "new+backlog"] as const;
-export const PRESET_NAMES = ["quiet", "triage", "full"] as const;
-/** What a preset sets for a repo that doesn't say: its feature-request duty and how much triage it gets. An entry's own field wins. */
-export const PRESETS = {
-  quiet: { features: false, triage: "off" },
-  triage: { features: false, triage: "new" },
-  full: { features: true, triage: "new+backlog" },
-} as const;
-/** What triage may close (the skill `triage` reads the repo's list); anything else it comments on and leaves open. */
-export const CLOSE_REASONS = ["duplicate", "invalid", "empty", "incorrect"] as const;
-/** Labels that keep an issue out of the resolved-check and the stale-issue sweep, unless the entry names its own. */
-export const EXEMPT_LABELS = ["roadmap", "wip", "blocked"];
-const KEYS = ["repo", "fix_label", "trusted", "fixes", "features", "dependabot", "contributor_prs", "stale_days", "preset", "triage", "triage_cap_per_author_day", "triage_labels", "close", "needs_info_close_days", "stale_issues", "resolved_check"];
-const SHAPE = "{ repo, fix_label, trusted, fixes, features, dependabot, contributor_prs, stale_days, preset, triage, triage_cap_per_author_day, triage_labels, close, needs_info_close_days, stale_issues, resolved_check }";
+/** What happens to an issue triage (or the resolved-check) finds a duplicate, not a bug or request, or already fixed: always a comment
+ * saying why; `label` adds the verdict's label (its name, below) and leaves the issue open; `close` closes it. */
+export const ACTIONS = ["comment", "label", "close"] as const;
+export const VERDICTS = ["duplicate", "invalid", "fixed"] as const;
+/** The label each verdict adds under `label`: GitHub's own names, the same on every repo. */
+export const VERDICT_LABELS: Record<(typeof VERDICTS)[number], string> = { duplicate: "duplicate", invalid: "invalid", fixed: "fixed" };
+/** Labels every automatic close skips, unless the entry names its own list. */
+export const PROTECTED_LABELS = ["roadmap", "wip", "blocked"];
+/** Product constants, not settings: triage runs a day per outside author on invalid issues, closes per resolved-check run, and the days
+ * between an inactive issue's notice and its close. */
+export const TRIAGE_CAP_PER_AUTHOR_DAY = 5;
+export const RESOLVED_CLOSES_PER_RUN = 10;
+export const INACTIVE_GRACE_DAYS = 14;
+const KEYS = ["repo", "fixes", "triage", "features", "dependabot", "quiet_pr_days", "actions", "no_reply_days", "inactive_issue_days", "fix_label", "trusted", "protected_labels"];
+const SHAPE = `{ ${KEYS.join(", ")} }`;
+/** Keys an older entry may still carry, with what replaced each: named in the refusal. */
+const REMOVED: Record<string, string> = {
+  label: "it is now fix_label", issues: "it is now fixes", preset: "removed: set triage and features", triage_labels: "removed",
+  close: "removed: see actions", triage_cap_per_author_day: "removed: 5 a day is fixed", resolved_check: "removed: see actions.fixed and protected_labels",
+  needs_info_close_days: "it is now no_reply_days", stale_issues: "it is now inactive_issue_days", contributor_prs: "it is now quiet_pr_days",
+  stale_days: "it is now quiet_pr_days",
+};
 
 export interface MaintainedRepo {
   repo: string;
   owner: string;
   name: string;
+  /** Validate `fix_label` issues, hand fixes over and see them through (default on). */
+  fixes: boolean;
+  /** Whether unlabelled issues are triaged: no, each new one, or each new one and the backlog (default new). */
+  triage: (typeof TRIAGE)[number];
+  /** Triage feature requests, and build the ones carrying BUILD_LABEL (default off). */
+  features: boolean;
+  /** Which Dependabot PRs get an Engineer task: none, only the ones whose checks fail, or all of them (default off). */
+  dependabot: (typeof DEPENDABOT)[number];
+  /** Nudge a quiet human PR after this many days, close it after as many more (drafts double); null leaves them alone (default). */
+  quiet_pr_days: number | null;
+  /** What each verdict does (default label for all three). */
+  actions: Record<(typeof VERDICTS)[number], (typeof ACTIONS)[number]>;
+  /** Close an issue this many days after asking its reporter for details with no reply; null leaves it open (default). */
+  no_reply_days: number | null;
+  /** Give an issue quiet this many days one notice, close it INACTIVE_GRACE_DAYS later; null leaves it open (default). */
+  inactive_issue_days: number | null;
   /** The label that asks for a fix. */
   fix_label: string;
   trusted: string[];
-  /** Validate `fix_label` issues, hand fixes over and see them through (default on). */
-  fixes: boolean;
-  /** Triage feature requests, and build the ones carrying BUILD_LABEL (default from the preset: off). */
-  features: boolean;
-  /** Which Dependabot PRs get an Engineer task: none, only the ones whose checks fail, or all of them (default failing). */
-  dependabot: (typeof DEPENDABOT)[number];
-  /** Nudge, then close, quiet human PRs (default off). */
-  contributor_prs: boolean;
-  /** Quiet days before the nudge, and again before the close; drafts get double. */
-  stale_days: number;
-  /** The bundle `features` and `triage` default from (default quiet). */
-  preset: (typeof PRESET_NAMES)[number];
-  /** Whether unlabelled issues are triaged: no, each new one, or each new one and the backlog (default from the preset). */
-  triage: (typeof TRIAGE)[number];
-  /** The most invalid new issues one author gets triaged in a day (default 5). */
-  triage_cap_per_author_day: number;
-  /** Whether triage may add labels (the fix label, feature-request) rather than only comment (default true). */
-  triage_labels: boolean;
-  /** What triage may close (default duplicate only). */
-  close: (typeof CLOSE_REASONS)[number][];
-  /** Days an issue waiting on its reporter's details is left before it is closed; null never closes it (default null). */
-  needs_info_close_days: number | null;
-  /** Nudge an issue quiet for `days`, then close it after `grace_days` more, skipping `exempt_labels`; null leaves quiet issues alone (default null). */
-  stale_issues: { days: number; grace_days: number; exempt_labels: string[] } | null;
-  /** The sweep of recently merged PRs against open issues: the most it closes a run (0 switches it off) and the labels it leaves alone. */
-  resolved_check: { max_closes: number; exempt_labels: string[] };
+  /** Labels every automatic close skips. */
+  protected_labels: string[];
 }
 
 const whole = (v: unknown, min: number) => typeof v === "number" && Number.isInteger(v) && v >= min;
@@ -86,8 +87,7 @@ export function parseRepos(raw: string): MaintainedRepo[] {
     const e = typeof entry === "string" ? { repo: entry } : entry;
     if (!e || typeof e !== "object" || Array.isArray(e)) throw new Error(`${where}: an entry is ${SHAPE}`);
     const unknown = Object.keys(e).filter((k) => !KEYS.includes(k));
-    const renamed: Record<string, string> = { label: "fix_label", issues: "fixes" };
-    if (unknown.length) throw new Error(`${where}: unknown key ${unknown.map((k) => (renamed[k] ? `${k} (it is now ${renamed[k]})` : k)).join(", ")}`);
+    if (unknown.length) throw new Error(`${where}: unknown key ${unknown.map((k) => (REMOVED[k] ? `${k} (${REMOVED[k]})` : k)).join(", ")}`);
     const m = String(e.repo ?? "").trim().match(/^([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})$/);
     if (!m) throw new Error(`${where}: repo must be owner/name`);
     const key = `${m[1]}/${m[2]}`.toLowerCase();
@@ -95,6 +95,7 @@ export function parseRepos(raw: string): MaintainedRepo[] {
     seen.add(key);
     const fix_label = e.fix_label === undefined ? AGENT_FIX : String(e.fix_label);
     if (!/^[A-Za-z0-9][A-Za-z0-9 ._:-]{0,49}$/.test(fix_label)) throw new Error(`${where}: fix_label must be 1-50 letters, digits, spaces or ._:-`);
+    if ([...Object.values(VERDICT_LABELS), FEATURE_LABEL, BUILD_LABEL].includes(fix_label.toLowerCase())) throw new Error(`${where}: fix_label ${fix_label} is a label the Maintainer uses for something else`);
     const trusted = e.trusted === undefined ? DEFAULT_TRUSTED : e.trusted;
     if (!Array.isArray(trusted) || !trusted.length || trusted.some((r) => !(TRUST_ROLES as readonly string[]).includes(r)))
       throw new Error(`${where}: trusted must be one or more of ${TRUST_ROLES.join(", ")}`);
@@ -103,35 +104,26 @@ export function parseRepos(raw: string): MaintainedRepo[] {
       if (typeof e[k] !== "boolean") throw new Error(`${where}: ${k} must be true or false`);
       return e[k] as boolean;
     };
-    const one = <T extends string>(k: string, values: readonly T[], dflt: T): T => {
-      if (e[k] === undefined) return dflt;
-      if (!values.includes(e[k])) throw new Error(`${where}: ${k} must be one of ${values.join(", ")}${typeof e[k] === "boolean" ? ` (${e[k]} is ${e[k] ? "all" : "off"})` : ""}`);
-      return e[k] as T;
-    };
-    const days = (k: string, v: unknown, dflt: number, min = 1) => {
+    const one = <T extends string>(k: string, v: unknown, values: readonly T[], dflt: T): T => {
       if (v === undefined) return dflt;
-      if (!whole(v, min)) throw new Error(`${where}: ${k} must be a whole number${min ? `, ${min} or more` : ""}`);
-      return v as number;
+      if (!values.includes(v as T)) throw new Error(`${where}: ${k} must be one of ${values.join(", ")}${typeof v === "boolean" ? ` (${v} is ${v ? "all" : "off"})` : ""}`);
+      return v as T;
     };
-    const preset = one("preset", PRESET_NAMES, "quiet");
-    const close = e.close === undefined ? ["duplicate"] : e.close;
-    if (!Array.isArray(close) || close.some((c) => !(CLOSE_REASONS as readonly string[]).includes(c))) throw new Error(`${where}: close is a list of ${CLOSE_REASONS.join(", ")}`);
-    const nic = e.needs_info_close_days === undefined || e.needs_info_close_days === null ? null : days("needs_info_close_days", e.needs_info_close_days, 1);
-    let stale_issues: MaintainedRepo["stale_issues"] = null;
-    if (e.stale_issues !== undefined && e.stale_issues !== null) {
-      const s = e.stale_issues;
-      if (typeof s !== "object" || Array.isArray(s) || Object.keys(s).some((k) => !["days", "grace_days", "exempt_labels"].includes(k))) throw new Error(`${where}: stale_issues is { days, grace_days, exempt_labels }`);
-      stale_issues = { days: days("stale_issues.days", s.days, 60), grace_days: days("stale_issues.grace_days", s.grace_days, 14), exempt_labels: s.exempt_labels === undefined ? EXEMPT_LABELS : labelList(where, "stale_issues.exempt_labels", s.exempt_labels) };
-    }
-    const rc = e.resolved_check ?? {};
-    if (typeof rc !== "object" || Array.isArray(rc) || Object.keys(rc).some((k) => !["max_closes", "exempt_labels"].includes(k))) throw new Error(`${where}: resolved_check is { max_closes, exempt_labels }`);
+    const days = (k: string) => {
+      if (e[k] === undefined || e[k] === null) return null;
+      if (!whole(e[k], 1)) throw new Error(`${where}: ${k} must be a whole number of days, 1 or more, or null (off)`);
+      return e[k] as number;
+    };
+    const a = e.actions ?? {};
+    if (typeof a !== "object" || Array.isArray(a) || Object.keys(a).some((k) => !(VERDICTS as readonly string[]).includes(k))) throw new Error(`${where}: actions is { ${VERDICTS.join(", ")} }, each ${ACTIONS.join(" | ")}`);
+    const actions = Object.fromEntries(VERDICTS.map((v) => [v, one(`actions.${v}`, a[v], ACTIONS, "label")])) as MaintainedRepo["actions"];
     return {
-      repo: `${m[1]}/${m[2]}`, owner: m[1]!, name: m[2]!, fix_label, trusted: [...new Set(trusted as string[])],
-      fixes: bool("fixes", true), features: bool("features", PRESETS[preset].features), contributor_prs: bool("contributor_prs", false), stale_days: days("stale_days", e.stale_days, 7),
-      dependabot: one("dependabot", DEPENDABOT, "failing"), preset, triage: one("triage", TRIAGE, PRESETS[preset].triage),
-      triage_cap_per_author_day: days("triage_cap_per_author_day", e.triage_cap_per_author_day, 5, 0), triage_labels: bool("triage_labels", true),
-      close: [...new Set(close as MaintainedRepo["close"])], needs_info_close_days: nic, stale_issues,
-      resolved_check: { max_closes: days("resolved_check.max_closes", rc.max_closes, 10, 0), exempt_labels: rc.exempt_labels === undefined ? EXEMPT_LABELS : labelList(where, "resolved_check.exempt_labels", rc.exempt_labels) },
+      repo: `${m[1]}/${m[2]}`, owner: m[1]!, name: m[2]!,
+      fixes: bool("fixes", true), triage: one("triage", e.triage, TRIAGE, "new"), features: bool("features", false),
+      dependabot: one("dependabot", e.dependabot, DEPENDABOT, "off"), quiet_pr_days: days("quiet_pr_days"), actions,
+      no_reply_days: days("no_reply_days"), inactive_issue_days: days("inactive_issue_days"),
+      fix_label, trusted: [...new Set(trusted as string[])],
+      protected_labels: e.protected_labels === undefined ? PROTECTED_LABELS : labelList(where, "protected_labels", e.protected_labels),
     };
   });
 }

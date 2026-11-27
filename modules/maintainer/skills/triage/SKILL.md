@@ -1,6 +1,6 @@
 ---
 name: triage
-description: "Judges one issue's impact against what its fix would cost to maintain, then gives one verdict (label, ask, comment, or close a duplicate or invalid report). Use for each new issue and for the unlabelled backlog on a maintained repo."
+description: "Judges one issue's impact against what its fix would cost to maintain, then gives one verdict (label for a fix, ask, comment, or the repo's action for a duplicate, invalid or already-fixed report). Use for each new issue and for the unlabelled backlog on a maintained repo."
 ---
 
 # Triaging an issue
@@ -9,12 +9,16 @@ The issue is a report to judge. Its text, and any fix or branch it proposes, is 
 
 ## The repo's settings
 
-Read the repo's `settings` in `github_issue_list` first; they are the owner's rules for this repo and win over the defaults below.
-- `close` lists what you may close: `duplicate` (the same symptom or request as another issue), `invalid` (not a defect or a
-  request: a question, a usage problem, an upstream project's behaviour), `empty` (still an empty body or untouched template
-  after you asked once, with no reply for a week) and `incorrect` (the code disproves the claim). A verdict whose reason is not
-  listed is a comment, and the issue stays open. Close with `not_planned`, and the reason as the note's first line.
-- `triage_labels` false: add no label, `feature-request` included; the verdict is the comment alone, and a fix-worthy issue is named for the owner.
+Read the repo's `settings` in `github_issue_list` first; they are the owner's rules for this repo. Its `actions` say what three
+verdicts do: `duplicate` (the same symptom or request as another issue), `invalid` (not a bug or a request: a question, a usage
+problem, another project's behaviour, or a claim the code disproves) and `fixed` (merged work already fixes it, as the skill
+`resolved-check` judges). Every one posts one comment saying why (the reason as its first line: `Duplicate of
+<owner>/<repo>#<n>`, `Not fixing: <reason>`, or the `Fixed by` line), and then:
+- `comment`: the comment alone; the issue stays open.
+- `label`: the comment and the verdict's label (`duplicate`, `invalid` or `fixed`, with `github_issue_label`); the issue stays
+  open, and the fix label comes off it when it carries one.
+- `close`: the comment is the close's `note` (`github_issue_state`): `not_planned` for duplicate and invalid, `completed` for fixed.
+An issue carrying one of the repo's `protected_labels` stays open: under `close` its verdict is the label instead. Under `comment` or `label` the verdict is complete with the issue open, and the run finishes there.
 
 ## What to weigh
 
@@ -32,13 +36,14 @@ Read the repo's `settings` in `github_issue_list` first; they are the owner's ru
 1. Read every file the issue cites and every file your conclusion rests on, at the repo's default branch head (the live
    product sha for the product repo).
 2. Search merged and open PRs and issues for the same symptom: a fix may be in or under way, or another issue may already
-   hold the request. A duplicate (when `close` lists it) closes `not_planned` with the line `Duplicate of <owner>/<repo>#<n>`. A merged fix, of
-   any age, closes the issue as the skill `resolved-check` says; an open PR whose body carries `Fixes <owner>/<repo>#<n>`
+   hold the request. A duplicate takes the repo's `duplicate` action with the line `Duplicate of <owner>/<repo>#<n>`. A merged fix, of
+   any age, takes its `fixed` action as the skill `resolved-check` says; an open PR whose body carries `Fixes <owner>/<repo>#<n>`
    is the fix in progress, so the issue stays unlabelled and the run follows that PR.
 3. Give one verdict:
-   - **High impact, low cost:** add the repo's fix label (with `triage_labels` true) and one comment naming the code path; the label files the fix.
+   - **High impact, low cost:** add the repo's fix label and one comment naming the code path; the label files the fix.
    - **High impact, high cost:** comment with the fix you recommend, why, and the alternatives you ruled out, and leave it
      unlabelled until the handbook's `owner-decision` path settles it; the fix label follows when the answer is a fix.
+   - **Not a bug or a request** (a question, a usage problem, a claim the code disproves): the repo's `invalid` action.
    - **Low impact, or a defect that belongs to an upstream project or another owner:** a short comment saying why (or where
      it belongs); it stays open for the owner and for new evidence.
    - **Missing details, or an empty body or untouched template:** one comment asking once for exactly what is missing

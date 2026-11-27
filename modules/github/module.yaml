@@ -68,18 +68,22 @@ settings:
   release_window_minutes:
     default: 60
     pattern: '^([5-9]|[1-9][0-9]{1,2}|1[0-3][0-9]{2}|14[0-3][0-9]|1440)$'
-  # The repos the Maintainer watches, triages and fixes, each reachable by the owner's GitHub sign-in:
-  # [{ repo: owner/name, fix_label: agent-fix, trusted: [admin, maintain] }]. `fix_label` is the label that asks
-  # for a fix (default agent-fix). `trusted` is who may vouch for it (the owner's login is an admin): admin, maintain or write (default
-  # admin and maintain; github-mcp refuses any other role). It lists every role that counts: [write] alone trusts no admin. Duties, each per repo: `fixes` (default true: validate `fix_label` issues and see
-  # fixes through), `features` (default false: triage feature requests, label feature-request, and build those the owner or
-  # a trusted collaborator labels agent-build), `dependabot` (off, failing, all; default failing: the ship module files an Engineer task for the open Dependabot PRs whose checks fail, or for every one with `all`), `contributor_prs` (default false: the ship module has the Maintainer nudge, then close, a human's PR that has been quiet), `stale_days` (default 7: quiet
-  # days before the nudge and again before the close; drafts wait twice as long). The Maintainer's other per-repo rules, all optional (the
-  # Maintainer page edits them; kernel/sdk/src/maintained-repos.ts checks them): `preset` (quiet, triage, full: what `features` and `triage` default to),
-  # `triage` (off, new, new+backlog), `triage_cap_per_author_day` (5 a day per outside author; members and collaborators have no limit), `triage_labels` (true), `close` (what triage may close: duplicate, invalid, empty,
-  # incorrect; default duplicate), `needs_info_close_days` (null), `stale_issues` ({ days, grace_days, exempt_labels }; null), `resolved_check` ({ max_closes, exempt_labels }). A listed repo is also where the fleet's
-  # work may merge and close, with no duty on. Read by github-mcp (maintainer.ts), which the Maintainer's tools and the
-  # Maintainer's watcher go through (kernel/sdk/src/maintained-repos.ts parses it).
+  # The repos the Maintainer watches, triages and fixes, each reachable by the owner's GitHub sign-in: a bare "owner/name"
+  # (every default) or { repo, ... } with any of these fields (kernel/sdk/src/maintained-repos.ts parses and defaults them;
+  # the Maintainer page edits them). Duties: `fixes` (default true: validate `fix_label` issues and see fixes through), `triage`
+  # (off, new, new+backlog; default new), `features` (default false: label feature requests feature-request and build those
+  # a trusted collaborator labels agent-build), `dependabot` (off, failing, all; default off: the ship module files an
+  # Engineer task for the open Dependabot PRs whose checks fail, or for every one with `all`), `quiet_pr_days` (default null,
+  # off: the ship module has the Maintainer nudge a human's PR quiet that many days, then close it after as many more; drafts
+  # wait twice as long). `actions` ({ duplicate, invalid, fixed }, each comment, label or close; default label): what a verdict
+  # does, always with a comment saying why; label adds the verdict's label (duplicate, invalid, fixed) and leaves the issue
+  # open. `no_reply_days` (null): close an issue that many days after asking its reporter for details with no reply.
+  # `inactive_issue_days` (null): one notice after that many quiet days, the close 14 days later. `fix_label` (default
+  # agent-fix). `trusted`: who may vouch for a label (the owner's login is an admin): admin, maintain or write (default admin
+  # and maintain; github-mcp refuses any other role); it lists every role that counts: [write] alone trusts no admin.
+  # `protected_labels` (default roadmap, wip, blocked): skipped by every automatic close. A listed repo is also where the
+  # fleet's work may merge and close, with no duty on. Read by github-mcp (maintainer.ts), which the Maintainer's tools and
+  # watcher go through, and by ship.
   maintainer_repos:
     default: []
     entry: repo
@@ -90,8 +94,8 @@ settings:
       - { path: "*", new: true }
       - { path: "*.repo", new: true }
       - { path: "*.features", to: true, default: false }
-      - { path: "*.dependabot", to: all, default: failing }
-      - { path: "*.contributor_prs", to: true, default: false }
+      - { path: "*.dependabot", to: all, default: "off" }
+      - { path: "*.quiet_pr_days", to: number, default: null }
   # Paths the churn pass ignores (service/src/churn.ts; kernel/sdk/src/churn.ts): globs, one per entry.
   churn_exclude:
     default: [ "**/package-lock.json", "**/dist/**", "**/vendor/**", "**/*.min.*" ]

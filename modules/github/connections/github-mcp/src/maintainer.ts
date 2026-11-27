@@ -8,7 +8,7 @@ import { GitHubNeed, writeBudgetDeadline, writeBudgetSpent } from "./client.js";
 import { publicText } from "./scrub.js";
 import { withFooter } from "./aidenhq-sdk/attribution.js";
 import type { GitHubAccess } from "./client.js";
-import { BUILD_LABEL, FEATURE_LABEL, type MaintainedRepo } from "./aidenhq-sdk/maintained-repos.js";
+import { BUILD_LABEL, FEATURE_LABEL, VERDICT_LABELS, type MaintainedRepo } from "./aidenhq-sdk/maintained-repos.js";
 
 const PAGE_CAP = 10;
 const ISSUE_CAP = 200;
@@ -370,15 +370,15 @@ export class Maintainer {
     return { repo: r.repo, prs };
   }
 
-  /** The watcher's read: each repo with `contributor_prs` on, its quiet window and open PRs (one repo's failure is its `error`). */
+  /** Ship's read: each repo with `quiet_pr_days` set, that window and its open PRs (one repo's failure is its `error`). */
   async prRepos() {
     if (this.repos instanceof Error) throw new GitHubRefused(`maintainer_repos is invalid: ${this.repos.message}`);
-    const out: { repo: string; stale_days: number; prs?: MaintainerPr[]; error?: string }[] = [];
-    for (const r of this.repos.filter((x) => x.contributor_prs)) {
+    const out: { repo: string; quiet_pr_days: number; prs?: MaintainerPr[]; error?: string }[] = [];
+    for (const r of this.repos.filter((x) => x.quiet_pr_days !== null)) {
       try {
-        out.push({ repo: r.repo, stale_days: r.stale_days, prs: (await this.prList(r.repo)).prs });
+        out.push({ repo: r.repo, quiet_pr_days: r.quiet_pr_days!, prs: (await this.prList(r.repo)).prs });
       } catch (err) {
-        out.push({ repo: r.repo, stale_days: r.stale_days, error: (err as Error).message.slice(0, 300) });
+        out.push({ repo: r.repo, quiet_pr_days: r.quiet_pr_days!, error: (err as Error).message.slice(0, 300) });
       }
     }
     return { repos: out };
@@ -496,14 +496,14 @@ export class Maintainer {
   }
 
   /**
-   * Add or remove the repo's fix label or `feature-request`, and nothing else (`agent-build` is a trusted collaborator's, never
-   * this tool's), refusing an issue whose current fix label is untrusted.
+   * Add or remove the repo's fix label, `feature-request` or a verdict label (`duplicate`, `invalid`, `fixed`), and nothing else
+   * (`agent-build` is a trusted collaborator's, never this tool's), refusing an issue whose current fix label is untrusted.
    */
   async label(repo: string | undefined, number: number, action: "add" | "remove", label?: string) {
     const r = this.target(repo);
     if (label !== undefined && same(label, BUILD_LABEL)) throw new GitHubRefused(`${BUILD_LABEL} is the owner's label`);
-    const which = label === undefined || same(label, r.fix_label) ? r.fix_label : same(label, FEATURE_LABEL) ? FEATURE_LABEL : undefined;
-    if (!which) throw new GitHubRefused(`only the ${r.fix_label} and ${FEATURE_LABEL} labels may be changed on ${r.repo}`);
+    const which = label === undefined || same(label, r.fix_label) ? r.fix_label : [FEATURE_LABEL, ...Object.values(VERDICT_LABELS)].find((l) => same(label, l));
+    if (!which) throw new GitHubRefused(`only the ${[r.fix_label, FEATURE_LABEL, ...Object.values(VERDICT_LABELS)].join(", ")} labels may be changed on ${r.repo}`);
     const cur = await this.assertTrusted(r, number);
     const present = cur.labels.some((l) => named(l, which));
     const out = (changed: boolean) => ({ repo: r.repo, number, label: which, action, changed,  });

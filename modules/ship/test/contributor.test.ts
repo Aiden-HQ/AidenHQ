@@ -1,4 +1,4 @@
-// The contributor_prs duty (moved from the Maintainer's watcher): a quiet human PR is nudged, then closed after another quiet spell.
+// The quiet_pr_days duty (moved from the Maintainer's watcher): a quiet human PR is nudged, then closed after another quiet spell.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { prTick } from "../service/src/contributor.ts";
@@ -17,7 +17,7 @@ const pr = (o = {}) => ({ number: 1, author_kind: "human", draft: false, review_
 test("a quiet PR is nudged, then closed after another quiet spell; an active author after the nudge is not closed", async () => {
   const store = kv(), log = logs(), tasks = [];
   let now = NOW, rows = [pr({ number: 1 }), pr({ number: 2 })];
-  const prs = async () => ({ repos: [{ repo: R, stale_days: 7, prs: rows }] });
+  const prs = async () => ({ repos: [{ repo: R, quiet_pr_days: 7, prs: rows }] });
   const firePr = async (_r, t) => (tasks.push(`${t.kind}:${t.number}`), true);
   const look = () => prTick({ prs, firePr, store, log, now });
   assert.equal(await look(), 2);

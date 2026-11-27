@@ -749,7 +749,7 @@ export function appEvidence(app: any, name: string | undefined): any {
  * A GitHub issue ("owner/name#number") as evidence: its state and how it closed (GitHub's own closer, or the Maintainer's one
  * `Fixed by <owner>/<repo>#<n> (merge <sha>)` line), its labels, and whether the PR it names is merged at that sha, each read by
  * code. The newest comments go fenced as ISSUE_COMMENTS (strangers' words, data), each with its author's association so an owner's
- * word shows. An open issue is evidence too: its criteria are unmet, and the task goes back. deps.issue(repo, n), deps.pr(repo, n).
+ * word shows. An open issue is evidence too: the rubric decides whether its labels and verdict comment resolve it. deps.issue(repo, n), deps.pr(repo, n).
  */
 export async function issueEvidence(ref: string, deps: any): Promise<any> {
   const [, repo = "", n = ""] = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(ref) ?? [];

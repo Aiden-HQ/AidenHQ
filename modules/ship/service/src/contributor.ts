@@ -1,4 +1,4 @@
-// The contributor_prs duty (moved from the Maintainer's watcher, lane C): on each maintained repo with `contributor_prs` on,
+// The quiet_pr_days duty (moved from the Maintainer's watcher, lane C): on each maintained repo with `quiet_pr_days` set,
 // `prTick` (at most hourly) reads its open PRs through github-mcp and files a nudge task for a quiet human PR, then a close task
 // once it stayed quiet after the nudge (`prDue`); an author's activity in between clears the nudge. The tasks go to the
 // Maintainer's role (its handbook's "A nudge task" and "A close task"); ship only decides when they are due.
@@ -17,9 +17,9 @@ export interface PrRow {
   review_requested: boolean;
   waiting_on_author: string | null;
 }
-/** Each repo with `contributor_prs` on: its quiet window and its open PRs, or why they couldn't be read. */
+/** Each repo with `quiet_pr_days` set: its quiet window and its open PRs, or why they couldn't be read. */
 export interface MaintainerPrBatch {
-  repos: { repo: string; stale_days: number; prs?: PrRow[]; error?: string }[];
+  repos: { repo: string; quiet_pr_days: number; prs?: PrRow[]; error?: string }[];
 }
 type Prs = () => Promise<MaintainerPrBatch>;
 /** What the Maintainer is asked about one PR: a nudge, or the close that follows a nudge the author never answered. */
@@ -64,7 +64,7 @@ interface PrState {
 }
 
 /**
- * One look at every repo with `contributor_prs` on (at most hourly): files a nudge or close task for each PR that is due,
+ * One look at every repo with `quiet_pr_days` set (at most hourly): files a nudge or close task for each PR that is due,
  * once, and drops a nudge the author answered or whose PR is gone. A refused filing is retried on the next look. Returns how
  * many tasks were filed.
  */
@@ -96,9 +96,9 @@ export async function prTick(d: { prs: Prs; firePr: FirePr; store: Kv; log: Log;
     for (const pr of b.prs) {
       const before = nudged[pr.number];
       if (before && Date.parse(pr.last_author_activity) > Date.parse(before.author_activity_at)) delete nudged[pr.number];
-      const due = prDue(pr, nudged[pr.number], b.stale_days, now);
+      const due = prDue(pr, nudged[pr.number], b.quiet_pr_days, now);
       if (!due) continue;
-      const window = b.stale_days * DAY * (pr.draft ? 2 : 1);
+      const window = b.quiet_pr_days * DAY * (pr.draft ? 2 : 1);
       const task = { number: pr.number, kind: due, waiting: pr.waiting_on_author, close_by: new Date((due === "nudge" ? now : Date.parse(nudged[pr.number]!.at)) + window).toISOString().slice(0, 10), activity: pr.last_author_activity };
       if (!(await d.firePr(b.repo, task).catch(() => false))) {
         d.log.warn({ repo: b.repo, pr: pr.number, kind: due }, "maintainer PR task not filed; the next look retries it");
@@ -112,7 +112,7 @@ export async function prTick(d: { prs: Prs; firePr: FirePr; store: Kv; log: Log;
   return count;
 }
 
-/** github-mcp's internal read of each repo's open PRs (the repos with `contributor_prs` on), as this module. */
+/** github-mcp's internal read of each repo's open PRs (the repos with `quiet_pr_days` set), as this module. */
 export function contributorPrs(o: { url: string; token: () => string }): Prs {
   return async () => {
     const res = await fetch(o.url, { headers: { authorization: `Bearer ${o.token()}` }, signal: AbortSignal.timeout(120_000) });
