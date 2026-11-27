@@ -65,7 +65,9 @@ const capped = (r: Response) => readCapped(r, MAX_ANSWER).catch((e) => { throw e
  */
 const PATCH = ["title", "description", "priority", "assigneeAgentId", "assigneeUserId", "labelIds", "blockedByIssueIds", "project"];
 const CREATE = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "parentId", "idempotencyKey", "allowDuplicate", "project"];
-type Issue = { id: string; identifier?: string; companyId?: string; projectId?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; parentId?: string | null; status?: string; originKind?: string | null };
+type Issue = { id: string; identifier?: string; companyId?: string; projectId?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; parentId?: string | null; status?: string; description?: string | null; originKind?: string | null };
+/** A source marker an agent adds to an owner task it matched: `<!-- source:<marker> -->` (tasks-mcp's marker grammar). */
+const SOURCE_ADDED = /^(?:<!-- source:[A-Za-z0-9:._\/-]{3,200} -->\s*)+$/;
 /** The role that settles stuck work on another agent's task (the Fleet Steward): see `settle` above. */
 export const SETTLE = "fleet-settle";
 
@@ -297,6 +299,18 @@ export function createCp({ whoami, asserter, plugin, once, sawn = () => 0, agent
       return Array.isArray(kids) && kids.some((k) => k.parentId === t.id && k.createdByAgentId === agent && k.status !== "cancelled");
     }
 
+    /**
+     * A source marker a filing agent adds to an owner task it matched (a duplicate ask): the description may only gain
+     * `<!-- source:... -->` lines, so the incoming thread stays findable without changing anything else on the task.
+     */
+    function sourceAppend(t: Issue, patch: Record<string, unknown>): boolean {
+      if (!t.assigneeUserId || t.assigneeAgentId || !t.createdByAgentId || t.createdByUserId) return false;
+      if (Object.keys(patch).length !== 1 || typeof patch.description !== "string") return false;
+      const had = String(t.description ?? "").trimEnd();
+      const next = String(patch.description);
+      return next.startsWith(had) && SOURCE_ADDED.test(next.slice(had.length).trim());
+    }
+
     // A comment, or a PATCH: on a task the job may write on.
     const ref = decodeURIComponent(/^\/api\/issues\/([^/]+)/.exec(path)![1]!);
     const t = await issue(ref);
@@ -311,7 +325,8 @@ export function createCp({ whoami, asserter, plugin, once, sawn = () => 0, agent
     // A settler acts as one on any task it may settle, its own and its delegations included.
     const settling = settleScope(t) === "settle";
     const evidence = await evidenceClose(t, status, patch, comment);
-    const scope = evidence ? "evidence" : (await scopeOf(t)) ?? (settling ? "settle" : undefined) ?? (status === undefined && !Object.keys(patch).length ? commentScope(t) : undefined) ?? refuse(t);
+    const source = status === undefined && !evidence && sourceAppend(t, patch);
+    const scope = evidence ? "evidence" : source ? "source" : (await scopeOf(t)) ?? (settling ? "settle" : undefined) ?? (status === undefined && !Object.keys(patch).length ? commentScope(t) : undefined) ?? refuse(t);
     // On a task it holds by settling alone, a settler changes only what settling needs: the status, who holds it (an agent; never
     // handed to a person) and its blockers (a cycle broken); never its title, brief, priority or labels.
     if (scope === "settle") {

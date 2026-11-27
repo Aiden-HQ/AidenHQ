@@ -621,7 +621,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const folded = foldedChildren([...open, ...closed], ctx.assignees);
     store.placeNew(open.filter((i) => !folded.has(i.id) && inColumns(i)).map((i) => ({ id: i.id, createdAt: i.createdAt, status: i.status })));
     // Stale owner tasks the brief has mentioned go to Later once a brief after the mention is out (stale.ts).
-    const briefs = [...open, ...closed].filter((i) => (i.labels ?? []).some((l) => l.name === BRIEF_LABEL));
+    const listedBriefs = [...open, ...closed].filter((i) => (i.labels ?? []).some((l) => l.name === BRIEF_LABEL));
+    // A list row cuts a long description: read the whole brief before trusting its "Moving to Later" line.
+    const briefs = await Promise.all(listedBriefs.map(async (b) => (b.descriptionTruncated ? await pc.issue(b.id).catch(() => b) : b)));
     const moved = moveStale(open, briefs, store, ctx.me);
     if (moved.length) log.info({ moved: moved.length }, "stale tasks moved to Later");
   }

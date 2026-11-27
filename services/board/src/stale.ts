@@ -11,6 +11,10 @@ const DAY = 86_400_000;
 export const STALE_REASON = `No activity for ${STALE_DAYS} days`;
 
 const idleDays = (i: Issue, now: number) => Math.floor((now - Date.parse(i.lastActivityAt ?? i.updatedAt)) / DAY);
+/** The brief's one "Moving to Later" line (the part the owner is told about); a cut brief names nothing. */
+const laterLine = (b: Issue) => /(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?Moving to Later:?(?:\*\*)?[^\n]*/i.exec(String(b.description ?? ""))?.[0] ?? "";
+/** Exact identifiers on that line: `WOR-12` does not stand for `WOR-123`. */
+const namedLater = (b: Issue, identifier: string) => new Set(laterLine(b).match(/\b[A-Z][A-Z0-9]{1,9}-\d{1,7}\b/g) ?? []).has(identifier);
 
 /** The owner's open tasks still in New and idle for STALE_DAYS or more, oldest activity first. */
 export function staleTasks(open: Issue[], store: Store, me: string, now = Date.now()): { issue: Issue; idle_days: number }[] {
@@ -36,9 +40,9 @@ export function moveStale(open: Issue[], briefs: Issue[], store: Store, me: stri
       continue;
     }
     // An open brief written (or rewritten: the chief of staff updates the day's brief) after the mention that names the task
-    // (a list may cut a long description short: a cut one is taken as naming it).
+    // in its "Moving to Later" line (the caller reads a cut brief in full first; one it couldn't read names nothing).
     const issue = open.find((i) => i.id === id)!;
-    if (!briefs.some((b) => !["done", "cancelled"].includes(b.status) && (b.updatedAt ?? b.createdAt) > at && (b.descriptionTruncated || String(b.description ?? "").includes(issue.identifier)))) continue;
+    if (!briefs.some((b) => !["done", "cancelled"].includes(b.status) && (b.updatedAt ?? b.createdAt) > at && namedLater(b, issue.identifier))) continue;
     store.place(id, "backlog", STALE_REASON, "Board");
     store.clearStale(id);
     moved.push(id);

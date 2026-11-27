@@ -151,6 +151,7 @@ export class Store {
       this.put(issueId, bucket, position);
       this.db.prepare("UPDATE placements SET reason = ?, placed_by = ? WHERE issue_id = ?").run(reason, by, issueId);
       this.unschedule(issueId);
+      this.clearStale(issueId);
     });
   }
 
@@ -173,6 +174,7 @@ export class Store {
     this.tx(() => {
       this.put(issueId, bucket, position);
       this.unschedule(issueId);
+      this.clearStale(issueId);
     });
   }
 
@@ -191,6 +193,8 @@ export class Store {
         stmt.run(id, bucket, i, now);
         // Dragged here from another column: that replaces a scheduled move.
         if (before.get(id)?.bucket !== bucket) this.unschedule(id);
+        // The owner moved it by hand: a brief's earlier mention no longer speaks for it.
+        this.clearStale(id);
       }),
     );
   }
@@ -316,6 +320,7 @@ export class Store {
       for (const id of [...ids].reverse()) {
         this.put(id, bucket, "top");
         this.unschedule(id);
+        this.clearStale(id);
       }
     });
   }

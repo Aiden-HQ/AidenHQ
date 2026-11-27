@@ -13,8 +13,9 @@ it. The owner can move or reopen anything; their move always wins (a placement i
 Look for an open owner task with the same person and the same ask before you `task_create`: `task_search` the person's
 name and the ask's key words (a Slack thread, a meeting action and a pin about one commitment are one task). A match:
 file with `related_markers: ["<its marker>"]`, which returns that task (`deduplicated: true`) and files nothing new; when it
-is yours, one `task_comment` with the new source link. A search that failed or returned an error is not a "no match":
-file as usual.
+is yours, one `task_comment` with the new source link. The new source is recorded on a survivor an agent filed, so the
+thread's answer still finds it. A match the owner made is theirs: file nothing and leave it to them. A search that failed or
+returned an error is not a "no match": file as usual.
 
 ## Placing a new task
 
@@ -42,6 +43,11 @@ A message that only says "on it", a removed pin with no answer, or a read that f
 A duplicate you filed is `task_cancel` with "Duplicate of <identifier>". The close is the record: one call, no separate
 "answered" comment. The owner sees each close on Home with one-tap Reopen; a task they reopened closes again only on new evidence after the reopen.
 
+A task another agent filed is closed by that agent (or a fleet settler): when your source shows it finished, do not force it.
+`task_create` one task for the agent in its `filed_by` (`assignee` that key, marker
+`owner-triage:evidence:<identifier>:<date>`), naming the task and the evidence link, so it closes it; a fleet settler closes
+it directly.
+
 ## Reports
 
 A report you file for the owner to read (a weekly review, a digest, a summary) carries the label `report`, which keeps it
@@ -51,8 +57,9 @@ also goes out through your asking section, never only in the report.
 
 ## The re-triage pass (Fleet Steward)
 
-On the "Owner tasks: re-triage" run, over every open task the owner holds that an agent filed (`task_list`, then
-`task_comments` on each): close the ones whose comments or source already cite delivery, an answer or a merge (the link
+On the "Owner tasks: re-triage" run, over every open task the owner holds that an agent filed (`task_list`: each row's
+`filed_by` names its filer, `user` for the owner's own, so skip those; then `task_comments` on each): close the ones whose
+comments or source already cite delivery, an answer or a merge (the link
 is the evidence); cancel the later of two tasks for the same person and ask ("Duplicate of <identifier>"); place the rest
 still in New by the rules above, with `later`/`backlog` for owner commitments with no near date ("Later: no date, nothing
 waiting"). List owner tasks whose next step an agent can prepare (research, a data pull, a draft) in one `task_create` for

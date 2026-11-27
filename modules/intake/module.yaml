@@ -35,8 +35,8 @@ routines:
     agent: inbox-agent
     description: |
       Today is {{date}}. Your user's email address is ${settings.owner_email}. Follow your triage-email skill: one task per
-      thread labelled Aiden in Gmail and per new inbox thread that genuinely needs the owner (deduplicated), mark tasks whose
-      label was removed as answered (a comment, left open for them), then finish this task with a count summary.
+      thread labelled Aiden in Gmail and per new inbox thread that genuinely needs the owner (deduplicated), close a task
+      whose label was removed as the skill says, then finish this task with a count summary.
     concurrency: skip_if_active
     schedules:
       - { cron: "*/30 8-19 * * 1-5", timezone: "${settings.timezone}", label: "work hours" }

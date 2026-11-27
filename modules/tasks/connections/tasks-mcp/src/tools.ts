@@ -186,6 +186,20 @@ async function assigneeOf(i: Json) {
   return { assignee: i.assigneeUserId ? "user" : null };
 }
 
+/**
+ * Who filed the task: the agent's key, `user` for the owner's own, null when neither. Trusted provenance for a re-triage
+ * pass that may only close agent-filed tasks.
+ */
+async function filerOf(i: Json) {
+  if (i.createdByAgentId && !i.createdByUserId) {
+    const g = dirAgents()[i.createdByAgentId];
+    const name = await nameOf(i.createdByAgentId);
+    return { filed_by: String(g?.key ?? name ?? i.createdByAgentId), ...(name ? { filed_by_name: name } : {}) };
+  }
+  if (i.createdByUserId && !i.createdByAgentId) return { filed_by: "user" };
+  return {};
+}
+
 /** A task as an agent sees it: never Paperclip's status; `state` (the kernel's row, when asked for) is where it stands. */
 const brief = async (i: Json, s?: Json) => ({
   id: i.id,
@@ -195,6 +209,7 @@ const brief = async (i: Json, s?: Json) => ({
   priority: i.priority,
   labels: (i.labels ?? []).map((l: Json) => l.name),
   ...(await assigneeOf(i)),
+  ...(await filerOf(i)),
   ...(i.parentId ? { parent: i.parentId } : {}),
   createdAt: i.createdAt,
   updatedAt: i.updatedAt,
@@ -392,6 +407,18 @@ async function findByMarker(marker: string, statuses = OPEN_STATUSES) {
   // A task merged into another (the board's merge) left its source there as merged-source.
   const needles = [`<!-- source:${marker} -->`, `<!-- merged-source:${marker} -->`];
   return list.find((i: Json) => needles.some((n) => String(i.description ?? "").includes(n)));
+}
+
+/**
+ * A new source that deduped onto a task another agent filed joins that task: the marker is appended to its description, so
+ * the later answer in this thread still finds the survivor (the kernel allows only source markers, nothing else).
+ */
+async function appendSource(i: Json, marker: string) {
+  if (["done", "cancelled"].includes(String(i.status))) return;
+  const needle = `<!-- source:${marker} -->`;
+  const full = await api("GET", `/api/issues/${issueRef(i.id)}`);
+  if (String(full.description ?? "").includes(needle)) return;
+  await api("PATCH", `/api/issues/${issueRef(i.id)}`, { description: `${String(full.description ?? "").trimEnd()}\n\n${needle}` });
 }
 
 // Marker → idempotency key, mirroring ops-mcp, so re-runs never duplicate tasks.
@@ -1422,7 +1449,11 @@ const TOOLS: Record<string, Tool> = {
         const existing = await findByMarker(k, statuses);
         // A graded task left parked by a failed rubric filing: this retry files it and starts it.
         if (existing && start && parked(existing, { id: g.id }, grade)) return { ...(await brief(existing)), deduplicated: true, ...(await startGraded(existing, grade)) };
-        if (existing) return { ...(await brief(existing)), deduplicated: true };
+        if (existing) {
+          // A related marker is an incoming source: it stays on the survivor, findable when that thread answers the ask.
+          if (k !== m && ownerFiled(existing)) await appendSource(existing, m);
+          return { ...(await brief(existing)), deduplicated: true };
+        }
       }
       // A new filing only: an existing task returned above is a retry, not a new PR, so the instance-repo refusal never blocks it.
       refuseInstanceRepoPr(deliverable, (Array.isArray(rubric) ? rubric : []).map((c) => String(c).trim()).filter(Boolean), description);

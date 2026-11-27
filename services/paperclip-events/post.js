@@ -28,7 +28,7 @@ import { HOST_PARAMS, SKEW_MS, verify } from "./sign.js";
 
 export const STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const PARAMS = ["sig", "ts", "tag", "again", "scope", "issueId", "body", "status", "blockedBy", "gated", "patch", "child", "delegateTo"];
-const SCOPES = ["own", "child", "created", "part", "admin", "listed", "settle", "evidence"];
+const SCOPES = ["own", "child", "created", "part", "admin", "listed", "settle", "evidence", "source"];
 const PATCH_KEYS = ["title", "description", "priority", "assigneeAgentId", "assigneeUserId", "blockedByIssueIds", "labelIds", "projectId"];
 const CHILD_KEYS = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "projectId"];
 /** The origin kind of every task this action makes (Paperclip allows a plugin only its own, `plugin:<id>`): a retry finds its task by it. */
@@ -92,6 +92,7 @@ function invalid(p) {
   if ((scope === "admin" || scope === "listed") && (p.status !== undefined || p.patch !== undefined || p.child !== undefined)) return `scope ${scope} writes a comment only`;
   if (scope === "settle" && p.child !== undefined) return "scope settle changes a task; it makes none";
   if (scope === "evidence" && (p.child !== undefined || p.body === undefined || !["done", "cancelled"].includes(p.status) || Object.keys(p.patch ?? {}).some((k) => k !== "labelIds"))) return "scope evidence closes a task with a comment, and at most a label";
+  if (scope === "source" && (p.child !== undefined || p.body !== undefined || p.status !== undefined || !p.patch || Object.keys(p.patch).some((k) => k !== "description"))) return "scope source adds source markers to a task's description only";
   if (scope === "part" && (p.body !== undefined || p.status !== undefined || p.patch !== undefined)) return "scope part makes a task (child) only";
   if (scope === "part" && p.child?.assigneeAgentId === undefined) return "scope part makes a task assigned to the caller";
   if (p.body !== undefined && (typeof p.body !== "string" || !p.body.trim())) return "body must be text";
@@ -138,6 +139,7 @@ export async function post(ctx, params, context, postKey, now = Date.now()) {
   if (issue && scope === "created" && issue.createdByAgentId !== agent) return { refused: "this agent didn't create the task" };
   if (issue && scope === "child" && (!issue.parentId || (await ctx.issues.get(issue.parentId, companyId))?.assigneeAgentId !== agent)) return { refused: "the task's parent isn't assigned to this agent" };
   if (issue && scope === "evidence" && (!issue.assigneeUserId || issue.assigneeAgentId || !issue.createdByAgentId || issue.createdByUserId)) return { refused: "scope evidence closes only a task an agent made that the owner holds" };
+  if (issue && scope === "source" && (!issue.assigneeUserId || issue.assigneeAgentId || !issue.createdByAgentId || issue.createdByUserId)) return { refused: "scope source adds a source marker to an owner task an agent filed" };
   if (scope === "part" && p.child.assigneeAgentId !== agent) return { refused: "a part is assigned to the agent itself" };
   const may = (to) => !to || to === agent || (p.delegateTo ?? []).includes(to);
   if (!may(p.child?.assigneeAgentId) || !may(p.patch?.assigneeAgentId)) return { refused: "a task goes to the agent itself or one it delegates to" };
@@ -150,6 +152,11 @@ export async function post(ctx, params, context, postKey, now = Date.now()) {
   if (change.description !== undefined) {
     const had = issue?.id ? (await ctx.issues.get(issue.id, companyId))?.description : undefined;
     change.description = keep(had, text(change.description, MAX));
+    if (scope === "source") {
+      const before = String(had ?? "").trimEnd();
+      const after = String(change.description ?? "");
+      if (!after.startsWith(before) || !/^(?:<!-- source:[A-Za-z0-9:._\/-]{3,200} -->\s*)+$/.test(after.slice(before.length).trim())) return { refused: "scope source adds source markers only" };
+    }
   }
   if (Object.keys(change).length) {
     try {
