@@ -111,17 +111,18 @@ const VERBS: Record<string, RegExp> = {
   resume: /\b(resume|restart|unpause)\b/i,
 };
 
+const ANY_VERB = Object.values(VERBS).map((r) => r.source).join("|");
 const NEGATION = /\b(don['’]?t|do not|never|no|not|stop|cancel|hold off on|avoid)\b/i;
 
 /**
- * True when a match of `verb` inside `q` (found at `at` in `text`, the owner's whole message) is a request for `named`: the target is in the words that follow that verb (up to the next verb or sentence
+ * True when a match of `verb` inside `q` (found at `at` in `text`, the owner's whole message) is a request for `named`: the target is in the words that follow that verb (up to the next verb of any kind or sentence
  * end, so "don't run the daily brief, run the weekly brief" does not run the daily one), and no negation word sits in the 3 words before it within the same clause ("don't run", "never ever run"). Negation is read from the
  * message, not only the quote, so where the caller starts the quote changes nothing. "Don't forget to run" asks; "stop it and run" asks.
  */
 function asks(text: string, at: number, q: string, verb: RegExp, named: string): boolean {
   for (const m of q.matchAll(new RegExp(verb.source, "gi"))) {
     const rest = q.slice(m.index + m[0].length);
-    const end = rest.search(new RegExp(`${verb.source}|[.;!?\\n]`, "i"));
+    const end = rest.search(new RegExp(`${ANY_VERB}|[.;!?\\n]`, "i"));
     const seg = m[0] + " " + (end < 0 ? rest : rest.slice(0, end));
     if (!` ${words(seg)} `.includes(` ${named} `)) continue;
     const clause = text.slice(0, at + m.index).split(/[.,;:!?\n]|\b(?:and|then|but)\b/i).pop()!.replace(/\b(don['’]?t|do not) (forget|hesitate) to\b/gi, "");

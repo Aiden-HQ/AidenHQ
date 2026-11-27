@@ -97,6 +97,9 @@ describe("fleet owner-words gate", () => {
     const q = "don't run the daily brief, run the weekly brief";
     await expect(gate(pcWith(q), "run_routine", "daily brief", q)).rejects.toThrow(Refused);
     await expect(gate(pcWith(q), "run_routine", "weekly brief", q)).resolves.toBe("c1");
+    const mixed = "run the daily brief and stop the weekly brief";
+    await expect(gate(pcWith(mixed), "run_routine", "weekly brief", mixed)).rejects.toThrow(Refused);
+    await expect(gate(pcWith(mixed), "run_routine", "daily brief", mixed)).resolves.toBe("c1");
     await expect(gate(pcWith("hold off on pause the slack scout"), "pause_agent", "slack scout", "hold off on pause the slack scout")).rejects.toThrow(Refused);
     await expect(gate(pcWith("stop it and run the daily brief"), "run_routine", "daily brief", "stop it and run the daily brief")).resolves.toBe("c1");
   });
