@@ -1451,9 +1451,17 @@ const TOOLS: Record<string, Tool> = {
         // A graded task left parked by a failed rubric filing: this retry files it and starts it.
         if (existing && start && parked(existing, { id: g.id }, grade)) return { ...(await brief(existing)), deduplicated: true, ...(await startGraded(existing, grade)) };
         if (existing) {
-          // A related marker is an incoming source: it stays on the caller's own survivor, findable when that thread answers.
-          if (k !== m && ownerFiled(existing) && existing.createdByAgentId === g.id) await appendSource(existing, m);
-          return { ...(await brief(existing)), deduplicated: true };
+          // A related marker is an incoming source. The caller's own survivor records it directly; another agent's
+          // survivor is its filer's to record, so the source is surfaced (with that filer) rather than dropped silently.
+          if (k !== m && ownerFiled(existing)) {
+            if (existing.createdByAgentId === g.id) await appendSource(existing, m);
+            else {
+              const { filed_by } = await filerOf(existing);
+              const who = filed_by ?? "another agent";
+              warning = [warning, `source ${m} was not recorded on ${existing.identifier ?? existing.id}: ${who} filed it, so ask ${who} to record it (task_update) before this thread's answer needs it`].filter(Boolean).join(" ");
+            }
+          }
+          return { ...(await brief(existing)), deduplicated: true, ...(warning ? { warning } : {}) };
         }
       }
       // A new filing only: an existing task returned above is a retry, not a new PR, so the instance-repo refusal never blocks it.

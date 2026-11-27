@@ -14,9 +14,9 @@ Look for an open owner task with the same person and the same ask before you `ta
 name and the ask's key words (a Slack thread, a meeting action and a pin about one commitment are one task). A match:
 file with `related_markers: ["<its marker>"]`, which returns that task (`deduplicated: true`) and files nothing new; when it
 is yours, one `task_comment` with the new source link. The new source is recorded on a survivor you filed, so the thread's
-answer still finds it; a survivor another agent filed is its filer's to record (route the source to it below). A match the
-owner made is theirs: file nothing and leave it to them. A search that failed or returned an error is not a "no match":
-file as usual.
+answer still finds it; when `task_create` warns it was not recorded because another agent filed the survivor, that filer
+records it (route the source to it below). A match the owner made is theirs: file nothing and leave it to them. A search
+that failed or returned an error is not a "no match": file as usual.
 
 ## Placing a new task
 

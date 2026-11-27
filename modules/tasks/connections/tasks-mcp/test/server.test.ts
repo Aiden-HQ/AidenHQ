@@ -190,6 +190,9 @@ test("task_create leaves another agent's survivor for its filer to record", asyn
   const { call } = bridge({ handler, agents: { cos: { key: "chief-of-staff" } } });
   const out = parse(await call("task_create", { title: "Slack ask", description: "d", marker: "source:slack:C1:2", related_markers: ["source:meeting:m2"] }));
   assert.equal(out.out.deduplicated, true);
+  // Not dropped silently: the caller is told which filer records the incoming source.
+  assert.match(out.out.warning, /source slack:C1:2 was not recorded on WOR-10/);
+  assert.match(out.out.warning, /chief-of-staff filed it/);
   assert.deepEqual(patches, []);
 });
 
