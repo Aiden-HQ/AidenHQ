@@ -169,15 +169,19 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
   const asks = shown.map((p) => p.build()).sort((a, b) => a.since.localeCompare(b.since));
   // People waiting on the owner's reply come after the teammates' asks (those hold a teammate's work), oldest first: a long
   // run of replies never buries a card.
-  const asked = new Set(pending.map((p) => p.id));
+  // (A task with an ask or a card on it is already a row above.)
+  const asked = new Set([...pending.map((p) => p.id), ...cards.map((c) => c.issueId), ...states.map((st) => st.task)]);
   const replies = open
     .filter((i) => labelled(i, "needs-response") && !labelled(i, "idea") && !asked.has(i.id) && !snoozed.has(i.id))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .slice(0, REPLIES)
     .map((i): NeedRow => {
+      // Intake's task format: the description opens with `Type:` (Slack, Email) and `From:`; the title is "Reply to <person>: <topic>".
+      const field = (k: string) => new RegExp(`^${k}:[ \\t]*(.+)$`, "im").exec(i.description ?? "")?.[1]?.trim();
+      const type = field("Type")?.toLowerCase() ?? "";
+      const source: Reply["source"] = type.startsWith("slack") ? "slack" : type.startsWith("email") ? "gmail" : /\bsource:(slack|gmail)\b/i.test(i.description ?? "") ? (/\bsource:slack\b/i.test(i.description ?? "") ? "slack" : "gmail") : null;
       const m = /^Reply to (.+?):\s*(.*)$/i.exec(i.title);
-      const source = /\bsource:(slack|gmail)\b/i.exec(i.description ?? "")?.[1]?.toLowerCase() as Reply["source"] | undefined;
-      return { id: i.id, kind: "open", teammate: face(keyOfAgent(i.assigneeAgentId)), since: i.createdAt, task: ref(i), question: m?.[2] || i.title, reply: { person: m?.[1] ?? null, source: source ?? null } };
+      return { id: i.id, kind: "open", teammate: face(keyOfAgent(i.assigneeAgentId)), since: i.createdAt, task: ref(i), question: m?.[2] || i.title, reply: { person: field("From") ?? m?.[1] ?? null, source } };
     });
   const needs = [...asks, ...replies];
 

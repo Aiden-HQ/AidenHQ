@@ -70,6 +70,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   // only one that shows something newer than the last mark. (A mark emits `home`, which refetches: marking every snapshot
   // would loop.)
   const seen = useRef<string | null>(null);
+  const [pane, setPane] = useState<Pane>(null);
   // Since is the digest the cursor stands for: with one on the page, the mark waits until it has been in the viewport.
   const [sinceEl, setSinceEl] = useState<HTMLElement | null>(null);
   const [sinceInView, setSinceInView] = useState(false);
@@ -80,7 +81,8 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
     io.observe(sinceEl);
     return () => io.disconnect();
   }, [sinceEl]);
-  const sinceReady = !data?.since || sinceInView;
+  // On a phone the pane is a full-screen sheet over Home: what is behind it hasn't been seen.
+  const sinceReady = !data?.since || (sinceInView && !(mobile && pane));
   // Only while Home is in front: a task or run drawer over it (full screen on a phone) hides the snapshot.
   useLayoutEffect(() => {
     if (!front || !data || seen.current === data.as_of || !data.since_complete || !fresh || !sinceReady) return;
@@ -98,7 +100,6 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   // Answered and decided rows keep their receipt for this visit, even when a refetch still lists them.
   const [receipts, setReceipts] = useState<Map<string, Receipt>>(() => new Map());
   const receipt = useCallback((row: NeedRow, r: Omit<Receipt, "row"> | null) => setReceipts((m) => { const n = new Map(m); if (r) n.set(rkey(row), { ...r, row }); else n.delete(rkey(row)); return n; }), []);
-  const [pane, setPane] = useState<Pane>(null);
   const [selecting, setSelecting] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   const [batching, setBatching] = useState<"approve" | "reject" | null>(null);
@@ -248,12 +249,12 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
               {rows.map((r, i) => (
                 <div key={rkey(r)} id={`need-${r.id}`} role="option" aria-selected={keys.at === r.id} onClick={() => keys.setAt(r.id)}>
                   <DecisionRow
-                    face={r.reply?.person ? <Monogram name={r.reply.person} size={40} /> : face(r.teammate, 40, "needs")}
-                    who={r.reply?.person ?? r.teammate.name}
-                    role={r.reply ? replyRole(r.reply) : r.teammate.job}
+                    face={r.kind === "open" && r.reply?.person ? <Monogram name={r.reply.person} size={40} /> : face(r.teammate, 40, "needs")}
+                    who={(r.kind === "open" && r.reply?.person) || r.teammate.name}
+                    role={r.kind === "open" && r.reply ? replyRole(r.reply) : r.teammate.job}
                     question={r.question}
                     detail={r.kind === "answer" ? r.detail : undefined}
-                    meta={r.reply ? `Waiting ${ago(r.since)}` : ago(r.since)}
+                    meta={r.kind === "open" && r.reply ? `Waiting ${ago(r.since)}` : ago(r.since)}
                     active={keys.at === r.id || (pane?.kind === "row" && pane.id === r.id)}
                     onOpen={() => (keys.setAt(r.id), setPane({ kind: "row", id: r.id }))}
                     i={i}
