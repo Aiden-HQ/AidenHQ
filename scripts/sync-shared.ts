@@ -59,6 +59,7 @@ export function sharedCopies(root = repo) {
     "modules/jira/connections/jira-mcp/src",
     "modules/meetings/connections/ops-mcp/src",
     "modules/slack/connections/slack-live/src",
+    "modules/telegram/connections/telegram-live/src",
     "modules/chat-lane/connections/lane/src",
     "modules/primer/connections/primer-mcp/src",
     "modules/slack/connections/slack-mcp/src",
@@ -82,7 +83,7 @@ export function sharedCopies(root = repo) {
   // session's generated tool files import; and the ui-review engine's (`ui-review put` and `get`: evidence files to the design tools).
   "kernel/sdk/src/tools-client.ts": ["services/computer/images/engineer/lib/tools.ts", "services/computer/images/agent-base/ui-review/tools-client.ts"],
   // The executor side of write kinds (executor@1), in each module server that declares an executor.
-  "kernel/sdk/src/executor.ts": ["modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts", "modules/slack/connections/slack-live/src/aidenhq-sdk/executor.ts", "modules/hubspot/connections/hubspot-mcp/src/aidenhq-sdk/executor.ts", "modules/github/service/src/aidenhq-sdk/executor.ts", "modules/code-review/service/src/aidenhq-sdk/executor.ts"],
+  "kernel/sdk/src/executor.ts": ["modules/apps-platform/apps-mcp/src/aidenhq-sdk/executor.ts", "modules/primer/connections/primer-mcp/src/aidenhq-sdk/executor.ts", "modules/slack/connections/slack-live/src/aidenhq-sdk/executor.ts", "modules/telegram/connections/telegram-live/src/aidenhq-sdk/executor.ts", "modules/hubspot/connections/hubspot-mcp/src/aidenhq-sdk/executor.ts", "modules/github/service/src/aidenhq-sdk/executor.ts", "modules/code-review/service/src/aidenhq-sdk/executor.ts"],
   // A change's tests (the secret scan, supply chain, lint, tests and build), run the same for a change request on this server.
   ...Object.fromEntries(["tests.sh", "history.sh"].map((f) => [`modules/github/checks/${f}`, [`modules/codehost-local/checks/${f}`]])),
   // The vendor connections' shared pass-through (owner, 2026-11-18: every connection exposes its vendor's whole MCP server),
@@ -127,6 +128,7 @@ export function sharedCopies(root = repo) {
   ...Object.fromEntries(["code-review.ts", "review-tools.ts"].map((f) => [`modules/ci/template/.github/${f}`, [`modules/code-review/recipe/${f}`]])),
   "kernel/sdk/src/source-store.ts": [
     "modules/slack/connections/slack-live/src/source-store.ts",
+    "modules/telegram/connections/telegram-live/src/source-store.ts",
     "modules/github/connections/github-mcp/src/source-store.ts",
     "modules/hubspot/connections/hubspot-mcp/src/source-store.ts",
     "modules/jira/connections/jira-mcp/src/source-store.ts",
