@@ -81,8 +81,9 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
     io.observe(sinceEl);
     return () => io.disconnect();
   }, [sinceEl]);
-  // On a phone the pane is a full-screen sheet over Home: what is behind it hasn't been seen.
-  const sinceReady = !data?.since || (sinceInView && !(mobile && pane));
+  // On a phone the pane is a full-screen sheet over Home: what is behind it hasn't been seen (a row's pane closes when the row leaves).
+  const sheetOpen = !!pane && (pane.kind !== "row" || !!data?.needs.some((n) => n.id === pane.id));
+  const sinceReady = !data?.since || (sinceInView && !(mobile && sheetOpen));
   // Only while Home is in front: a task or run drawer over it (full screen on a phone) hides the snapshot.
   useLayoutEffect(() => {
     if (!front || !data || seen.current === data.as_of || !data.since_complete || !fresh || !sinceReady) return;

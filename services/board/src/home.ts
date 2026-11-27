@@ -170,9 +170,9 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
   // People waiting on the owner's reply come after the teammates' asks (those hold a teammate's work), oldest first: a long
   // run of replies never buries a card.
   // (A task with an ask or a card on it is already a row above.)
-  const asked = new Set([...pending.map((p) => p.id), ...cards.map((c) => c.issueId), ...states.map((st) => st.task)]);
+  const asked = new Set(asks.flatMap((a) => [a.id, ...(a.task ? [a.task.identifier] : [])]));
   const replies = open
-    .filter((i) => labelled(i, "needs-response") && !labelled(i, "idea") && !asked.has(i.id) && !snoozed.has(i.id))
+    .filter((i) => labelled(i, "needs-response") && !labelled(i, "idea") && !asked.has(i.id) && !asked.has(i.identifier) && !snoozed.has(i.id))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .slice(0, REPLIES)
     .map((i): NeedRow => {
