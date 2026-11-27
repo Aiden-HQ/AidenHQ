@@ -2713,7 +2713,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     sources: () => { const s = readSources(settingsFiles()); return { compiled: s.compiled, catalog: s.catalog as HireCatalogRow[], grants: s.grants as HireGrants }; },
     flowStates: async () => (await setupFlows?.states()) ?? [],
   });
-  const accountRoutes: { method: string; path: RegExp; handle: (m: RegExpMatchArray, body: unknown, who: AccountSession, host: string) => Promise<unknown> }[] = [
+  const accountRoutes: { method: string; path: RegExp; maxBody?: number; handle: (m: RegExpMatchArray, body: unknown, who: AccountSession, host: string) => Promise<unknown> }[] = [
     { method: "GET", path: /^\/api\/accounts$/, handle: async (_m, _b, who) => opts.accounts!.call("list", who) },
     // Your own signed-in browsers.
     { method: "GET", path: /^\/api\/accounts\/sessions$/, handle: async (_m, _b, who) => opts.accounts!.call("sessions", who) },
@@ -2779,17 +2779,24 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     {
       method: "POST",
       path: /^\/api\/pages\/([a-z][a-z0-9-]{0,30})\/secrets\/([a-z][a-z0-9_]{1,63})\/([a-z0-9][a-z0-9_-]{0,62})$/,
+      // 64 KB: a declared `key` field may hold an SSH private key (its own maxLength), and JSON escaping adds to that.
+      maxBody: 64 * 1024,
       handle: async (m, body, who) => {
         if (!who.ready || who.account.role !== "admin") throw new HttpError(403, "totp");
         const page = await viewCall(async () => opts.views!.page(m[1]!));
         const sm = (page.secret_maps ?? []).find((x) => x.secret === m[2]);
         if (!sm) throw new HttpError(404, "this page keeps no such sign-ins");
-        const { values } = parse(z.object({ values: z.record(z.string(), z.string().max(300)).nullable() }).strict(), body);
+        // Each value is capped by the field's own maxLength (300 when it declares none), checked here before the kernel is called.
+        const capOf = (name: string) => sm.fields.find((f) => f.name === name)?.maxLength ?? 300;
+        const valuesSchema = z.object({ values: z.record(z.string(), z.string()).nullable() }).strict().superRefine((v, ctx) => {
+          for (const [k, text] of Object.entries(v.values ?? {})) if (text.length > capOf(k)) ctx.addIssue({ code: "custom", message: `${k} is longer than ${capOf(k)} characters` });
+        });
+        const { values } = parse(valuesSchema, body);
         let value = "";
         if (values) {
           // Only the declared fields, blank ones dropped: Set and Replace write the whole entry.
-          // A password keeps its spaces exactly as typed; any other field is trimmed.
-          const entry = Object.fromEntries(sm.fields.flatMap((f) => { const v = f.kind === "password" ? values[f.name] : values[f.name]?.trim(); return v ? [[f.name, v]] : []; }));
+          // A password and a key keep their whitespace exactly as typed (a key's trailing newline is part of the file); any other field is trimmed.
+          const entry = Object.fromEntries(sm.fields.flatMap((f) => { const v = f.kind === "password" || f.kind === "key" ? values[f.name] : values[f.name]?.trim(); return v ? [[f.name, v]] : []; }));
           if (Object.keys(values).some((k) => !sm.fields.some((f) => f.name === k))) throw new HttpError(400, "not one of this page's fields");
           if (sm.fields.some((f) => f.kind !== "totp" && !entry[f.name])) throw new HttpError(400, "fill in every field (a TOTP seed is optional)");
           // A new entry only for a key the setting names; Clear works for any stored one.
@@ -2833,7 +2840,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     if (!who) throw new HttpError(401, "sign in");
     const a = accountRoutes.find((r) => r.method === req.method && r.path.test(path));
     if (a) {
-      const body = req.method === "GET" ? undefined : await readJson(req);
+      const body = req.method === "GET" ? undefined : await readJson(req, a.maxBody);
       // Under the request's context, as routeApi's routes run: a setup flow's settings change carries this board session.
       const out = await perRequest.run({ session: accountSession(who), req }, () => a.handle(path.match(a.path)!, body, who, String(req.headers.host ?? "").toLowerCase()));
       send(res, 200, JSON.stringify(out), "application/json");

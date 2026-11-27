@@ -27,6 +27,15 @@ test("setup flows compile with their module and refuse undeclared secrets", () =
   assert.throws(() => compile(mods, inst(["flowbad"])), /names a secret without setup/);
 });
 
+test("a map secret's declared fields reach the kernel's setup entry (a key field's own cap)", () => {
+  const out = compile(mods, inst(["mapok"]));
+  const entry = out.kernelModules.setup.find((f: { secret: string }) => f.secret === "mapok_keys");
+  assert.deepEqual(entry.fields, [{ name: "label", kind: "text" }, { name: "private_key", kind: "key", maxLength: 4096 }, { name: "passphrase", kind: "password" }]);
+  // A secret no page declares carries none: its kernel cap stays 300.
+  const plain = compile(mods, inst(["flowok"])).kernelModules.setup.find((f: { secret: string }) => f.secret === "flowok_bot_token");
+  assert.equal(plain.fields, undefined);
+});
+
 test("organisations: listed clients reach the board for enabled modules, and only public client values are accepted", () => {
   assert.deepEqual(compile(mods, inst(["flowok"])).points.board.organisations, [{ id: "acme", name: "Acme", domains: ["acme.example.com"], clients: [{ module: "flowok", secret: "flowok_client_id", value: "1234.5678" }] }]);
   assert.equal(compile(mods, inst(["flowadv"])).points.board.organisations, undefined);

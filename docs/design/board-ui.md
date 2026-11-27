@@ -236,7 +236,7 @@ contributes:
       secret_maps:                           # optional, at most 2: the board's own "Sign-ins" panel under the frame
         - secret: ui_logins                  # one of this module's `setup:` secrets, a JSON map key -> { field: text }
           keys_from: ui_testing.apps[].name  # the keys: one of its own settings (applied value), e.g. each app's name
-          fields: [{ name: username, label: Username, kind: text }, { name: password, label: Password, kind: password }]   # kind: text | password | totp
+          fields: [{ name: username, label: Username, kind: text }, { name: password, label: Password, kind: password }]   # kind: text | password | key | totp; optional maxLength (1 to 65536, else 300)
 ```
 
 - **Secret maps.** Per key the board shows Set / Replace / Clear and which keys hold a value, never the value: the owner types it
@@ -244,6 +244,11 @@ contributes:
   `save_secret` with `key`, which merges that one key into the JSON map and writes the vault file in place (nothing restarts: the module
   reads the map on each use; the module's `validate` hook sees that entry alone). A stored value comes back to no browser, tool or log; a
   key the setting no longer names can only be cleared. Only a ready admin's session saves, and the kernel lets only the owner write.
+  A `key` field is a multi-line textarea shown as typed (an SSH private key a hidden input would make impossible to check by eye):
+  its whitespace, a key's trailing newline included, is kept exactly, and its value is capped by its own `maxLength` (any field that
+  declares none is capped at 300). A **clear** goes to the module's `validate` hook too, as `{ secret: { name }, key }` with no
+  `value`, so a module can refuse removing an entry something still uses; a module with no hook, or one that doesn't answer, clears
+  as before.
 
 - **Compile** checks it (the connection is the module's, the view is `ui://<module>/…`, no destructive tool and none a write kind routes, tool names
   `<module>_…`) and puts each view with its tools on its connection in the kernel's `connections.json` (`views`).

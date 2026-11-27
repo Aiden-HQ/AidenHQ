@@ -9,8 +9,15 @@ import path from "node:path";
 import type { SetupField } from "./admin.ts";
 import { fail } from "./proxy.ts";
 
-/** A value the owner gave for a declared field: trimmed, 300 characters at most, matching its anchored pattern. */
-export const secretFits = (f: SetupField, value: string) => value.length > 0 && value.length <= 300 && new RegExp(f.pattern).test(value);
+/** A whole map pasted through save_secret is at most this much (a key plus JSON escaping fits). */
+export const MAP_MAX = 64 * 1024;
+/** A field's cap on its value: its declared `maxLength` (a page's secret_maps fields), else 300. */
+export const fieldCap = (name: string | undefined, fields: SetupField["fields"]) => fields?.find((x) => x.name === name)?.maxLength ?? 300;
+/** A whole pasted secret's cap: 64 KB when the secret is a map whose fields declare their own caps (a key), 300 otherwise. */
+export const valueCap = (f: SetupField) => (f.fields?.length ? MAP_MAX : 300);
+
+/** A value the owner gave for a declared field: trimmed, within its cap (300 at most), matching its anchored pattern. */
+export const secretFits = (f: SetupField, value: string) => value.length > 0 && value.length <= valueCap(f) && new RegExp(f.pattern).test(value);
 
 /**
  * Writes a secret into the vault view `dir` in place (/setup and save_secret): the same file truncated and written, 0600 when
@@ -72,22 +79,27 @@ export function createModuleSecrets(deps: {
   };
   return {
     /** The keys a JSON-map secret holds: names only, never a value, and only valid keys (any other text in the file is never echoed). */
+    /** The fields a map secret's page declares (undefined when none does): the kernel's per-field caps. */
+    fields(module: string, secret: string): SetupField["fields"] {
+      return mapField(module, secret).fields;
+    },
     keys(module: string, secret: string): string[] {
       mapField(module, secret);
       return Object.keys(map(secret)).filter((k) => MAP_KEY.test(k));
     },
     /**
-     * Sets, replaces (`entry`: one flat object of text values) or clears (`entry` null) one key of the map. `check` sees the entry
-     * (as { key: entry }) before anything is written and throws to refuse.
+     * Sets, replaces (`entry`: one flat object of text values) or clears (`entry` null) one key of the map. `check` sees the key
+     * and the entry (null on a clear) before anything is written and throws to refuse.
      */
-    saveKey(module: string, secret: string, key: string, entry: Record<string, string> | null, check: (only: string) => Promise<void> = async () => {}): Promise<void> {
+    saveKey(module: string, secret: string, key: string, entry: Record<string, string> | null, check: (key: string, entry: Record<string, string> | null) => Promise<void> = async () => {}): Promise<void> {
       const run = async () => {
         const field = mapField(module, secret);
         if (!MAP_KEY.test(key)) throw fail(400, "bad_request", "that isn't a valid key");
-        if (entry && (Object.keys(entry).length === 0 || Object.keys(entry).length > 8 || Object.entries(entry).some(([k, v]) => !/^[a-z][a-z0-9_]{0,31}$/.test(k) || typeof v !== "string" || !v || v.length > 300))) throw fail(400, "bad_request", "an entry is up to 8 named, non-empty texts of 300 characters at most");
+        if (entry && (Object.keys(entry).length === 0 || Object.keys(entry).length > 8 || Object.entries(entry).some(([k, v]) => !/^[a-z][a-z0-9_]{0,31}$/.test(k) || typeof v !== "string" || !v || v.length > fieldCap(k, field.fields)))) throw fail(400, "bad_request", "an entry is up to 8 named, non-empty texts, each within its field's cap (300 when it declares none)");
         // The module's check may take a while: the map is read only after it, right before the synchronous merge and write, so a
-        // whole-secret save that landed meanwhile is merged into, never overwritten.
-        if (entry) await check(JSON.stringify({ [key]: entry }));
+        // whole-secret save that landed meanwhile is merged into, never overwritten. A clear is checked too (the module may
+        // still use the entry), with the key and no entry.
+        await check(key, entry);
         const current = map(secret);
         if (!entry && !Object.hasOwn(current, key)) return;
         const next = { ...current };
@@ -107,6 +119,16 @@ export function createModuleSecrets(deps: {
       if (!field) throw fail(400, "bad_request", "this module asks for no such secret");
       const value = raw.trim();
       if (!secretFits(field, value)) throw fail(400, "bad_request", `that doesn't look like a ${field.label}`);
+      // A whole map whose fields declare their caps is one JSON map: each entry is held to its declared field's cap, 300 otherwise.
+      if (field.fields?.length) {
+        let parsed: unknown;
+        try { parsed = JSON.parse(value); } catch { parsed = null; }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw fail(400, "bad_request", `that doesn't look like a ${field.label}`);
+        for (const e of Object.values(parsed as Record<string, unknown>)) {
+          if (!e || typeof e !== "object" || Array.isArray(e)) throw fail(400, "bad_request", `that doesn't look like a ${field.label}`);
+          for (const [name, v] of Object.entries(e as Record<string, unknown>)) if (typeof v !== "string" || !v || v.length > fieldCap(name, field.fields)) throw fail(400, "bad_request", `that doesn't look like a ${field.label}`);
+        }
+      }
       const services = [...new Set([...own, ...deps.mounts(field.secret)])].sort();
       // Written first, so the last value saved is the one every later recreate reads.
       deps.save(field.secret, value);

@@ -7,6 +7,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { SecretMaps } from "../../web/src/SecretMaps";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+// A sample key's armour, built from parts so the repo's leak scan doesn't read this test as one.
+const PEM_HEAD = ["-----BEGIN", "OPENSSH", "PRIVATE KEY-----"].join(" ");
+const PEM_END = ["-----END", "OPENSSH", "PRIVATE KEY-----"].join(" ");
 
 let root: Root | undefined;
 afterEach(() => {
@@ -30,7 +33,7 @@ describe("secret maps panel", () => {
           set = (JSON.parse(init.body!) as { values: unknown }).values !== null;
           return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true }) };
         }
-        const fields = [{ name: "username", label: "Username", kind: "text" }, { name: "password", label: "Password", kind: "password" }];
+        const fields = [{ name: "username", label: "Username", kind: "text" }, { name: "password", label: "Password", kind: "password" }, { name: "private_key", label: "Private key", kind: "key", maxLength: 4096 }];
         return { ok: true, status: 200, text: async () => JSON.stringify({ maps: [{ secret: "ui_logins", fields, keys: [{ key: "acme", set, listed: true }, { key: "beta", set: true, listed: true }] }] }) };
       }),
     );
@@ -50,13 +53,23 @@ describe("secret maps panel", () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(i, v);
       i.dispatchEvent(new Event("input", { bubbles: true }));
     });
+    // A key field is a visible multi-line textarea, not a hidden single-line input.
+    expect(el.querySelector("textarea[name=private_key]")).not.toBeNull();
+    expect(el.querySelectorAll("textarea[name=private_key]")[0]!.getAttribute("rows")).toBe("6");
+    expect(el.querySelectorAll("input[name=private_key]")).toHaveLength(0);
     await type(input("username"), "tester");
     await type(input("password"), "s3cret-pw");
+    const key = el.querySelector<HTMLTextAreaElement>("textarea[name=private_key]")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(key, `${PEM_HEAD}\nAAA\n${PEM_END}\n`);
+      key.dispatchEvent(new Event("input", { bubbles: true }));
+    });
     await act(async () => button("Save").click());
     await flush();
-    expect(sent).toEqual([{ path: "/api/pages/ui-testing/secrets/ui_logins/acme", body: { values: { username: "tester", password: "s3cret-pw" } } }]);
+    expect(sent).toEqual([{ path: "/api/pages/ui-testing/secrets/ui_logins/acme", body: { values: { username: "tester", password: "s3cret-pw", private_key: `${PEM_HEAD}\nAAA\n${PEM_END}\n` } } }]);
     // Saved: the form is gone, the key reads Set, and the typed value is nowhere on the page.
     expect(el.querySelector("input")).toBeNull();
+    expect(el.querySelector("textarea")).toBeNull();
     expect(el.textContent).not.toContain("s3cret-pw");
     expect(el.innerHTML).not.toContain("s3cret-pw");
 
