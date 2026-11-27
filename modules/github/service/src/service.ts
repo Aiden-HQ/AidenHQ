@@ -136,6 +136,8 @@ export function shipAdoptions(o: { url: string; key: () => string; fetchFn?: typ
 type Base = { repo: string; base: string; read: (path: string) => Promise<string>; dir?: string; tip?: string };
 // What an apply read collects for the kernel: per file, in all (texts and diff), and how many files.
 const MAX_TEXT = 1 << 20, MAX_TOTAL = 8 << 20, MAX_FILES = 200;
+/** Entries per git/trees request of a merge commit's tree (each request builds on the last). */
+const TREE_BATCH = 1000;
 /** How long a repair waits for ship's check job: its recipe's 30-minute limit and a few minutes for a free computer. */
 const REPAIR_WAIT_MS = 40 * 60_000;
 /** The lockfiles a repair may rewrite besides the plan's generated globs (ship's recipe regenerates them). */
@@ -1008,8 +1010,8 @@ export function createService(o: Options) {
    * A push onto an adopted PR's branch (ship), written as commits GitHub makes and signs itself, as the branch repo's push actor (the
    * App where installed and permitted, else the owner), so a repository rule requiring verified signatures takes them: the PR is read again
    * here (a Tier 0 push runs right after its plan, with no revalidation), and the box's commits from `expected` to the branch's
-   * commit land as one commit bound to `expected` (createCommitOnBranch), or, where they merge the base, as GitHub's own merge
-   * (mergeSigned). A contributor's push in between refuses it (ship-head-moved), never overwritten. The commit is not noted as
+   * commit land as one commit bound to `expected` (createCommitOnBranch), or, where they merge the base, as one merge commit
+   * GitHub signs (mergeSigned). A contributor's push in between refuses it (ship-head-moved), never overwritten. The commit is not noted as
    * the runner's own head: the branch holds the contributor's commits, so its merge stays the AI reviewer's (foreign-head tiering).
    * A fork's branch is pushed with git as before: the base repository's rules don't govern it.
    */
@@ -1043,7 +1045,7 @@ export function createService(o: Options) {
     }
     // The commits from the head to the box's commit, on the head's own first-parent chain: a merge made the other way round (the
     // PR branch merged into a base checkout) has the base tip as its first parent, and writing it would drop the head's content.
-    // The base's tip as its branch has it now: a push may merge only that commit (GitHub's merge takes the tip).
+    // The base's tip as its branch has it now: a push may merge only that commit (the merge commit records it as its second parent).
     const baseTip = String((await api("GET", refPath(s.slug, String(pr.base?.ref)))).object?.sha ?? "");
     const plan = await signedPlan(dir, String(a.expected), String(b.sha), String(pr.base?.ref), baseTip);
     if ("refused" in plan) return { ok: false, text: `${plan.refused} (${url}): nothing was pushed.` };
@@ -1057,10 +1059,10 @@ export function createService(o: Options) {
       if (again.base?.ref !== pr.base?.ref) return `ship-scope: ${url} was retargeted during the push (it now targets \`${String(again.base?.ref)}\`, not \`${String(pr.base?.ref)}\`): nothing was pushed.`;
       return undefined;
     };
-    const at = { s, n: Number(a.pr.number), url, into, ref: String(pr.head.ref), dir, actor: who };
+    const at = { s, url, into, ref: String(pr.head.ref), dir, actor: who };
     const made = plan.merge
       ? await mergeSigned(at, { head: String(a.expected), baseSha: plan.merge.base, base: String(pr.base.ref), want: String(b.sha), message: plan.message, still })
-      : await commitSigned(at, String(a.expected), await git(dir, ["rev-parse", `${a.expected}^{tree}`]), String(b.sha), plan.message, false, still);
+      : await commitSigned(at, String(a.expected), await git(dir, ["rev-parse", `${a.expected}^{tree}`]), String(b.sha), plan.message, still);
     if ("baseMoved" in made) return { ok: false, text: `ship-scope: \`${pr.base.ref}\` moved to \`${made.baseMoved.slice(0, 12)}\` since the push merged \`${plan.merge!.base.slice(0, 12)}\` (${url}): nothing was pushed; fetch \`${pr.base.ref}\`, merge it again and push.` };
     if ("text" in made) return { ok: false, text: made.text };
     flow.pushed(s.slug, Number(a.pr.number), made.sha, String(a.expected), false, whoLogin, undefined, a.workspace);
@@ -1074,7 +1076,7 @@ export function createService(o: Options) {
    * code: what it keeps is untrusted. So the merge is made here, in the cache (`git merge-tree`), and the box's files are taken
    * only on generated paths (the plan's globs) and known lockfiles, as regular files or symlinks, never under `.github/` unless
    * they are the base's own; every conflict must be on such a path. On the base repo the result is written as commits GitHub makes
-   * and signs, as the branch repo's push actor (mergeSigned: GitHub's own merge of the base, then the kept files on top), so a rule
+   * and signs, as the branch repo's push actor (mergeSigned: one merge commit of the head and the base's tip with the kept files), so a rule
    * requiring verified signatures takes it; to a fork whose author allows maintainer edits it is one merge commit (parents: the
    * head and the base's tip), a leased git push as that same actor (the base repo's rules don't govern a fork's branch). Leftover conflicts and a
    * failed generator come back as the outcome, `leftover: <path>` lines and `ship-generator:`, for ship's next round.
@@ -1181,7 +1183,7 @@ export function createService(o: Options) {
       const refused = await forkPush(dir, into, String(pr.head.ref), String(a.head), made!, who, url);
       if (refused) return refused;
     } else {
-      const signed = await mergeSigned({ s, n, url, into, ref: String(pr.head.ref), dir, actor: who }, { head: String(a.head), baseSha, base: String(a.base), want: final, message: `Regenerate the generated files after merging ${a.base}`, still: () => adoptionEnded(s.slug, n, a.generation, String(a.head)) });
+      const signed = await mergeSigned({ s, url, into, ref: String(pr.head.ref), dir, actor: who }, { head: String(a.head), baseSha, base: String(a.base), want: final, message: `Regenerate the generated files after merging ${a.base}`, still: () => adoptionEnded(s.slug, n, a.generation, String(a.head)) });
       // The base moved while the box ran: a run that didn't finish, which ship asks for once more (ship-repair).
       if ("baseMoved" in signed) return { ok: false, text: `ship-repair: \`${a.base}\` moved to \`${signed.baseMoved.slice(0, 12)}\` during the repair of ${url}: nothing was changed.` };
       if ("text" in signed) return { ok: false, text: signed.text };
@@ -1235,9 +1237,8 @@ export function createService(o: Options) {
       expected = c;
       if (!others.length) continue;
       if (merge || others.length > 1 || others[0] !== baseTip) return { refused: `ship-scope: \`${c.slice(0, 12)}\` merges ${others.map((o) => `\`${String(o).slice(0, 12)}\``).join(", ")}: a push may merge only \`${base}\`'s tip \`${baseTip.slice(0, 12)}\`, once (fetch \`${base}\`, merge it again and push)` };
-      // The merge comes first, straight on the head: every tree published before the final one then holds only the head's and
-      // the base's own content (the base's side of a conflict, GitHub's merge), never a change of the push's own that the
-      // write's review reads only in its final diff.
+      // The merge comes first, straight on the head: the whole push is then one merge commit of the head and the base's tip
+      // (mergeSigned), the push's own changes in its tree.
       if (first !== from) return { refused: `ship-scope: \`${c.slice(0, 12)}\` merges \`${base}\` after other commits: merge \`${base}\` first, straight on the PR's head, then commit the fix` };
       merge = { pre: first!, base: others[0]! };
     }
@@ -1246,9 +1247,18 @@ export function createService(o: Options) {
     return { message: await log(`${from}..${to}`), ...(merge ? { merge } : {}) };
   }
   /**
+   * Why GitHub's signed writes can't write `path` going from mode `om` to `nm` (000000: absent), or undefined: createCommitOnBranch
+   * keeps a replaced file's mode but sets none, and a merge commit's tree takes only regular files beyond the base's own entries,
+   * so a new executable, a symlink, a submodule or a mode change is refused before anything is written, naming the path.
+   */
+  const unwritable = (path: string, om: string, nm: string) =>
+    (nm === "100644" && (om === "000000" || om === "100644")) || (nm === "100755" && om === "100755") ? undefined
+      : `ship-scope: \`${path}\` ${om === "000000" ? `is new as mode ${nm}` : `goes from mode ${om} to ${nm}`}, and GitHub's signed commits write regular files only (an executable bit, a symlink or a submodule is set with a person's own push)`;
+  /** One blob of the clone, as bytes (at most MAX_TOTAL). */
+  const blobOf = async (dir: string, sha: string) => (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "cat-file", "blob", sha], { env: ENV, encoding: "buffer", maxBuffer: MAX_TOTAL })).stdout as Buffer;
+  /**
    * The file changes that turn tree `from` into tree `to`, as createCommitOnBranch takes them: each changed file in full (base64)
-   * and each removed path. That API writes regular files: it keeps a replaced file's mode but sets none, so a new executable, a
-   * symlink, a submodule or a mode change is refused here, before anything is written, naming the path.
+   * and each removed path, every one a regular file GitHub can write (`unwritable`).
    */
   async function fileChanges(dir: string, from: string, to: string): Promise<{ refused: string } | { additions: { path: string; contents: string }[]; deletions: { path: string }[] }> {
     const recs = NUL(await rawGit(dir)(["diff-tree", "-r", "-z", "--no-renames", from, to]));
@@ -1258,26 +1268,30 @@ export function createService(o: Options) {
       const [om, nm, , sha] = recs[i]!.replace(/^:/, "").split(" ");
       const path = recs[i + 1]!;
       if (nm === "000000") { deletions.push({ path }); continue; }
-      if (!(nm === "100644" && (om === "000000" || om === "100644")) && !(nm === "100755" && om === "100755")) return { refused: `ship-scope: \`${path}\` ${om === "000000" ? `is new as mode ${nm}` : `goes from mode ${om} to ${nm}`}, and GitHub's signed commits write regular files only (an executable bit, a symlink or a submodule is set with a person's own push)` };
+      const refused = unwritable(path, om!, nm!);
+      if (refused) return { refused };
       if (additions.length >= MAX_FILES) return { refused: `ship-scope: more than ${MAX_FILES} changed files in one push` };
-      const content = (await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "cat-file", "blob", sha!], { env: ENV, encoding: "buffer", maxBuffer: MAX_TOTAL })).stdout as Buffer;
+      const content = await blobOf(dir, sha!);
       if ((total += content.length) > MAX_TOTAL) return { refused: `ship-scope: more than ${MAX_TOTAL >> 20} MB of changed files in one push` };
       additions.push({ path, contents: content.toString("base64") });
     }
     return { additions, deletions };
   }
-  /** Where a signed write lands: `url` names it in outcomes (the PR, or the repo and branch), `n` is the PR GitHub's merge goes through, `publish` a task publish (its refusal is the task's, not ship's). */
-  type At = { s: ReturnType<typeof slugOf>; n?: number; url: string; into: string; ref: string; dir: string; publish?: boolean; /** The write attempt's push actor: every commit and ref write of it. */ actor: Actor };
+  /** Where a signed write lands: `url` names it in outcomes (the PR, or the repo and branch), `publish` a task publish (its refusal is the task's, not ship's). */
+  type At = { s: ReturnType<typeof slugOf>; url: string; into: string; ref: string; dir: string; publish?: boolean; /** The write attempt's push actor: every commit and ref write of it. */ actor: Actor };
+  /** The branch's ref read now: its full sha, or "" where GitHub didn't answer it. */
+  const tipOf = async (at: At) => { const now = await gh("GET", refPath(at.into, at.ref)).catch(() => undefined); return now && now.status < 300 ? String(now.body?.object?.sha ?? "") : ""; };
+  /** A GitHub answer that is no answer (a 5xx, a rate limit): the write fails as an error and is asked again, never a refusal held for a person. */
+  const unanswered = (status: number, why: string) => status >= 500 || status === 429 || (status === 403 && /rate limit/i.test(why));
   /**
    * One commit on the PR's branch that turns tree `fromTree` (the tree at `expected`) into `to`'s, made by GitHub itself
    * (createCommitOnBranch, as the attempt's actor, with no custom author): GitHub signs it, so a rule requiring verified signatures takes it. It is
    * bound to `expected` (expectedHeadOid): a push in between refuses it, and the branch read back tells that (ship-head-moved)
-   * from GitHub's own refusal of the write (a rule). The tree GitHub built must be git's own. `partial`: an earlier commit of the
-   * same push already landed, so any failure leaves the branch mid-way and is a refusal ship holds on.
+   * from GitHub's own refusal of the write (a rule). The tree GitHub built must be git's own.
    */
-  async function commitSigned(at: At, expected: string, fromTree: string, to: string, message: string, partial = false, check?: () => Promise<string | undefined>): Promise<{ sha: string } | { text: string }> {
+  async function commitSigned(at: At, expected: string, fromTree: string, to: string, message: string, check?: () => Promise<string | undefined>): Promise<{ sha: string } | { text: string }> {
     const changes = await fileChanges(at.dir, fromTree, to);
-    if ("refused" in changes) return { text: partial ? refusedPush(at, changes.refused, expected) : `${changes.refused} (${at.url}): nothing was pushed.` };
+    if ("refused" in changes) return { text: `${changes.refused} (${at.url}): nothing was pushed.` };
     const want = await git(at.dir, ["rev-parse", `${to}^{tree}`]);
     // The write's authority, read once the payload is ready, right before it goes out.
     const stopped = await check?.();
@@ -1292,136 +1306,104 @@ export function createService(o: Options) {
     }
     const why = String((r.body?.errors ?? []).map((e: { message?: unknown }) => String(e?.message ?? "")).filter(Boolean).join("; ") || r.body?.message || `HTTP ${r.status}`);
     if (workflowRefusal(why)) await needWorkflow();
-    // GitHub not answering (a 5xx, a rate limit, an answer with neither a commit nor an error) is no refusal: the write fails as
-    // an error and is asked again, rather than holding the PR for a person. Part-way, the refusal is kept: it names the head left.
-    const limited = r.status === 429 || (r.status === 403 && /rate limit/i.test(why)) || (r.body?.errors ?? []).some((e: { type?: unknown }) => e?.type === "RATE_LIMITED");
-    if (!partial && (r.status >= 500 || limited || !r.body?.errors?.length && r.status < 300)) throw fail(502, `GitHub didn't answer the commit on ${at.url}: ${why.slice(0, 200)}`);
-    const now = await gh("GET", refPath(at.into, at.ref));
-    const tip = now.status < 300 ? String(now.body?.object?.sha ?? "") : "";
-    if (tip && tip !== expected) return { text: partial ? refusedPush(at, `the branch moved to \`${tip.slice(0, 12)}\` while the push was being written`, tip) : `ship-head-moved: ${at.url} moved while writing (it is at \`${tip.slice(0, 12)}\`, not \`${expected.slice(0, 12)}\`): nothing was pushed; read it again.` };
-    return { text: refusedPush(at, `GitHub refused it: ${why}`, partial ? expected : undefined) };
+    // An answer with neither a commit nor an error is no answer either.
+    if (unanswered(r.status, why) || (r.body?.errors ?? []).some((e: { type?: unknown }) => e?.type === "RATE_LIMITED") || (!r.body?.errors?.length && r.status < 300)) throw fail(502, `GitHub didn't answer the commit on ${at.url}: ${why.slice(0, 200)}`);
+    const tip = await tipOf(at);
+    if (tip && tip !== expected) return { text: `ship-head-moved: ${at.url} moved while writing (it is at \`${tip.slice(0, 12)}\`, not \`${expected.slice(0, 12)}\`): nothing was pushed; read it again.` };
+    return { text: refusedPush(at, `GitHub refused it: ${why}`) };
   }
   /**
-   * The base merged into the PR's branch with every commit GitHub's own, so all are signed: GitHub makes the merge commit itself
-   * (update-branch, bound to the head), but only a merge with no conflict. So the base's side of each path git can't merge is
-   * committed first (on top of `pre`'s tree: the head-chain commits a push carries before its merge), then GitHub merges the base,
-   * then the branch is brought to exactly `want`'s tree (the resolution, the regenerated files) in one more commit. Everything is
-   * checked against git's own result before the first write (the merge with the base's side taken must be clean, the base must
-   * still be at `baseSha`), and each step after it: the merge must be of `baseSha` onto the commit just written, with git's tree.
-   * A failure once the first commit landed leaves the branch mid-way: a refusal ship holds on, never a moved head to read again.
-   * A base that moved before anything was written is `baseMoved` (its new tip), for the caller to say what to do again.
+   * The base merged into the PR's branch as one merge commit GitHub makes and signs: REST git data as the attempt's actor, with no
+   * author, committer or signature, so GitHub signs it as the App's own. Its parents are exactly the head and `baseSha`, its tree
+   * exactly `want`'s (the resolution, the regenerated files). The tree is built on GitHub from the head's: a changed path whose
+   * entry in `want` is the base's own names that object (GitHub holds it, any mode), and any other is uploaded and must be a
+   * regular file (`unwritable`). Everything before the one branch write only makes objects nothing points at, each checked: the
+   * base still at `baseSha` (else `baseMoved`, its new tip, for the caller to say what to do again), the tree git's own, the
+   * commit verified with those parents. The branch then moves as a fast-forward from the head, so a push in between is GitHub's
+   * refusal (ship-head-moved), never overwritten; a lost answer is read back from the branch.
    */
-  async function mergeSigned(at: At, m: { head: string; baseSha: string; base: string; want: string; message: string; /** Why the write may not go on (the adoption, the PR read again), asked right before each write. */ still: () => Promise<string | undefined> }): Promise<{ sha: string } | { text: string } | { baseMoved: string }> {
-    const tmp = mkdtempSync(join(o.cacheDir, "merge-"));
+  async function mergeSigned(at: At, m: { head: string; baseSha: string; base: string; want: string; message: string; /** Why the write may not go on (the adoption, the PR read again), asked right before the branch moves. */ still: () => Promise<string | undefined> }): Promise<{ sha: string } | { text: string } | { baseMoved: string }> {
+    const raw = rawGit(at.dir);
+    const wantTree = await git(at.dir, ["rev-parse", `${m.want}^{tree}`]);
+    const headTree = await git(at.dir, ["rev-parse", `${m.head}^{tree}`]);
+    // The paths where `want` isn't the base's: only these carry the push's own content.
+    const own = new Set(NUL(await raw(["diff-tree", "-r", "-z", "--no-renames", "--name-only", m.baseSha, wantTree])));
+    const recs = NUL(await raw(["diff-tree", "-r", "-z", "--no-renames", headTree, wantTree]));
+    type Entry = { path: string; mode: string; type: string; sha?: string | null; content?: string };
+    const typeOf = (mode: string) => (mode === "160000" ? "commit" : "blob");
+    const entries: Entry[] = [], uploads: { entry: Entry; sha: string }[] = [];
+    let total = 0, files = 0;
+    for (let i = 0; i + 1 < recs.length; i += 2) {
+      const [om, nm, , sha] = recs[i]!.replace(/^:/, "").split(" ");
+      const path = recs[i + 1]!;
+      if (nm === "000000") { entries.push({ path, mode: om!, type: typeOf(om!), sha: null }); continue; }
+      const entry: Entry = { path, mode: nm!, type: typeOf(nm!) };
+      entries.push(entry);
+      if (!own.has(path)) { entry.sha = sha!; continue; }
+      const refused = unwritable(path, om!, nm!);
+      if (refused) return { text: `${refused} (${at.url}): nothing was pushed.` };
+      if (++files > MAX_FILES) return { text: `ship-scope: more than ${MAX_FILES} changed files in one push (${at.url}): nothing was pushed.` };
+      const bytes = await blobOf(at.dir, sha!);
+      if ((total += bytes.length) > MAX_TOTAL) return { text: `ship-scope: more than ${MAX_TOTAL >> 20} MB of changed files in one push (${at.url}): nothing was pushed.` };
+      // Text goes inline in the tree; bytes that aren't UTF-8 go up as a blob first.
+      const text = bytes.toString("utf8");
+      if (Buffer.from(text, "utf8").equals(bytes)) entry.content = text;
+      else uploads.push({ entry, sha: sha! });
+    }
+    // The base this merge records is still the base's tip.
+    const baseNow = await gh("GET", refPath(at.s.slug, m.base));
+    if (baseNow.status >= 300) throw fail(502, `GitHub GET ${m.base}'s tip: ${baseNow.status}`);
+    if (baseNow.body?.object?.sha !== m.baseSha) return { baseMoved: String(baseNow.body?.object?.sha ?? "") };
+    // A refused object write: GitHub not answering is an error asked again, its own refusal the reason; the branch is untouched.
+    const refusal = async (r: { status: number; body: any }, what: string): Promise<{ text: string }> => {
+      const why = String(r.body?.message || `HTTP ${r.status}`);
+      if (workflowRefusal(why)) await needWorkflow();
+      if (unanswered(r.status, why)) throw fail(502, `GitHub didn't answer ${what} on ${at.url}: ${why.slice(0, 200)}`);
+      return { text: refusedPush(at, `GitHub refused ${what}: ${why}`) };
+    };
+    for (const u of uploads) {
+      const b = await at.actor.rest("POST", `/repos/${at.into}/git/blobs`, { content: (await blobOf(at.dir, u.sha)).toString("base64"), encoding: "base64" });
+      if (b.status >= 300) return refusal(b, `the blob of \`${u.entry.path}\``);
+      if (b.body?.sha !== u.sha) return { text: refusedPush(at, `GitHub's blob of \`${u.entry.path}\` is \`${String(b.body?.sha).slice(0, 12)}\`, not git's \`${u.sha.slice(0, 12)}\``) };
+      u.entry.sha = u.sha;
+    }
+    let tree = headTree;
+    for (let i = 0; i < entries.length; i += TREE_BATCH) {
+      const t = await at.actor.rest("POST", `/repos/${at.into}/git/trees`, { base_tree: tree, tree: entries.slice(i, i + TREE_BATCH) });
+      if (t.status >= 300) return refusal(t, "the merge's tree");
+      tree = String(t.body?.sha ?? "");
+    }
+    if (tree !== wantTree) return { text: refusedPush(at, `GitHub's tree is \`${tree.slice(0, 12)}\`, not git's \`${wantTree.slice(0, 12)}\``) };
+    const c = await at.actor.rest("POST", `/repos/${at.into}/git/commits`, { message: m.message || `Merge branch '${m.base}'`, tree, parents: [m.head, m.baseSha] });
+    if (c.status >= 300) return refusal(c, "the merge commit");
+    const sha = String(c.body?.sha ?? "");
+    const parents = ((c.body?.parents ?? []) as { sha?: unknown }[]).map((p) => String(p?.sha));
+    if (!/^[0-9a-f]{40}$/.test(sha) || c.body?.tree?.sha !== wantTree || parents.length !== 2 || parents[0] !== m.head || parents[1] !== m.baseSha) return { text: refusedPush(at, `GitHub's commit \`${sha.slice(0, 12)}\` isn't the planned merge of \`${m.baseSha.slice(0, 12)}\` into \`${m.head.slice(0, 12)}\` with tree \`${wantTree.slice(0, 12)}\``) };
+    if (c.body?.verification?.verified !== true) return { text: refusedPush(at, `GitHub didn't sign the merge commit (${String(c.body?.verification?.reason ?? "no verification")}), so it isn't written`) };
+    // The write's authority, read once the commit is ready, right before the one write that moves the branch.
+    const stopped = await m.still();
+    if (stopped) return { text: stopped };
+    const moved = (tip: string) => ({ text: `ship-head-moved: ${at.url} moved while writing (it is at \`${tip.slice(0, 12)}\`, not \`${m.head.slice(0, 12)}\`): nothing was pushed; read it again.` });
+    // A lost answer is read back from the branch: at the merge, it landed; still at the head, the error stands; else someone moved it.
+    const settle = async (e: unknown): Promise<{ sha: string } | { text: string }> => {
+      const tip = await tipOf(at);
+      if (tip === sha) return { sha };
+      if (!tip || tip === m.head) throw e;
+      return { text: refusedPush(at, `GitHub didn't answer moving the branch (${String((e as Error)?.message ?? e).slice(0, 150)}), and it is now at \`${tip.slice(0, 12)}\``, tip) };
+    };
+    let r: { status: number; body: any };
     try {
-      const env = { ...ENV, GIT_INDEX_FILE: join(tmp, "index"), ...identityEnv(await access.identity()) };
-      const g = async (args: string[]) => (await run("git", [...SAFE_GIT_ARGS, "--literal-pathspecs", "--git-dir", at.dir, ...args], { env, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
-      const mergeTree = async (x: string, y: string) => {
-        const out = await run("git", [...SAFE_GIT_ARGS, "--git-dir", at.dir, "merge-tree", "--write-tree", "--no-messages", "--name-only", "-z", x, y], { env, maxBuffer: 64 * 1024 * 1024 }).then((r) => r.stdout, (e: { code?: number; stdout?: string }) => { if (e.code === 1 && e.stdout) return e.stdout; throw e; });
-        const [tree, ...conflicted] = out.split("\0").filter(Boolean);
-        return { tree: tree!, conflicted: [...new Set(conflicted)] };
-      };
-      const headTree = await g(["rev-parse", `${m.head}^{tree}`]);
-      const wantTree = await g(["rev-parse", `${m.want}^{tree}`]);
-      const { conflicted } = await mergeTree(m.head, m.baseSha);
-      // The pre-merge tree: the head's, with the base's side of every conflicted path (its entry there, or none where it deleted it).
-      let first = headTree;
-      if (conflicted.length) {
-        await g(["read-tree", first]);
-        for (const p of conflicted) {
-          const [mode, , sha] = (await g(["ls-tree", "-z", m.baseSha, "--", p])).split("\0")[0]?.split(/[ \t]/) ?? [];
-          // A deletion through --index-info: --force-remove needs a work tree, and this clone is bare.
-          if (sha) await g(["update-index", "--add", "--cacheinfo", `${mode},${sha},${p}`]);
-          else execFileSync("git", [...SAFE_GIT_ARGS, "--git-dir", at.dir, "update-index", "-z", "--index-info"], { env, input: `0 ${"0".repeat(40)}\t${p}\0` });
-        }
-        first = await g(["write-tree"]);
-      }
-      // Git's own merge of the base onto that tree must be clean (it is what update-branch makes): its tree is the later check.
-      const local = await g(["commit-tree", first, "-p", m.head, "-m", "pre-merge"]);
-      const merged = await mergeTree(local, m.baseSha);
-      if (merged.conflicted.length) return { text: `ship-scope: merging \`${m.base}\` into ${at.url} still conflicts on ${merged.conflicted.slice(0, 5).map((p) => `\`${p}\``).join(", ")} with the base's side taken: nothing was pushed.` };
-      // Every write must be possible before the first one lands: GitHub's signed commits write regular files only.
-      for (const [x, y] of [[headTree, first], [merged.tree, wantTree]] as const) {
-        const c = x === y ? undefined : await fileChanges(at.dir, x, y);
-        if (c && "refused" in c) return { text: `${c.refused} (${at.url}): nothing was pushed.` };
-      }
-      // The base GitHub will merge is the one this was planned on.
-      const baseNow = await gh("GET", refPath(at.s.slug, m.base));
-      if (baseNow.status >= 300) throw fail(502, `GitHub GET ${m.base}'s tip: ${baseNow.status}`);
-      if (baseNow.body?.object?.sha !== m.baseSha) return { baseMoved: String(baseNow.body?.object?.sha ?? "") };
-      let head = m.head;
-      // A write whose answer was lost (a transport error) is read back once a write was sent: a branch still at the head (after
-      // GitHub's asynchronous merge has had its wait) is untouched and the error stands; any other tip is the branch left part-way
-      // (or moved by someone else), a refusal ship holds on for a person, never a success read from a tree alone.
-      let sent: "commit" | "merge" | undefined;
-      const tipNow = async () => { const now = await gh("GET", refPath(at.into, at.ref)).catch(() => undefined); return now && now.status < 300 ? String(now.body?.object?.sha ?? "") : ""; };
-      const reconcile = async (e: unknown): Promise<{ sha: string } | { text: string }> => {
-        if (!sent) throw e;
-        let tip = await tipNow();
-        for (let i = 1; sent === "merge" && tip === head && i < (o.asyncPolls ?? ASYNC_POLLS); i++) {
-          await new Promise((done) => setTimeout(done, o.asyncPollMs ?? ASYNC_POLL_MS));
-          tip = await tipNow();
-        }
-        if (tip === m.head) throw e;
-        return { text: refusedPush(at, `GitHub didn't answer a write (${String((e as Error)?.message ?? e).slice(0, 150)})`, tip || head) };
-      };
-      try {
-        if (first !== headTree) {
-          sent = "commit";
-          const c = await commitSigned(at, head, headTree, first, `Take ${m.base}'s side of ${conflicted.length} conflicting file(s) before merging it`, false, m.still);
-          if ("text" in c) return c;
-          head = c.sha;
-        } else {
-          const ended = await m.still();
-          if (ended) return { text: ended };
-        }
-        const partial = head !== m.head;
-        // Before each later write: the adoption (a pause or a hand-back since the first write ends it) and, for GitHub's merge, which
-        // binds the head alone, the base it will merge. Either stops the write with the branch where it is, said.
-        const stop = async (base: boolean) => {
-          const ended = await m.still();
-          if (ended) return { text: refusedPush(at, `ship stopped it part-way: ${ended.replace(/: nothing was (done|pushed)\.$/, "")}`, head) };
-          // GitHub's merge binds the head alone: a base that can't be read as the planned tip stops it.
-          const now = base ? await gh("GET", refPath(at.s.slug, m.base)) : undefined;
-          if (now && (now.status >= 300 || now.body?.object?.sha !== m.baseSha)) return { text: refusedPush(at, now.status >= 300 ? `\`${m.base}\` couldn't be read before GitHub merged it (${now.status})` : `\`${m.base}\` moved before GitHub merged it`, head) };
-          return undefined;
-        };
-        if (partial) { const stopped = await stop(true); if (stopped) return stopped; }
-        else {
-          // Nothing written yet: the base read again after the authority check, right before GitHub's merge (it binds the head alone).
-          const now = await gh("GET", refPath(at.s.slug, m.base));
-          if (now.status >= 300) throw fail(502, `GitHub GET ${m.base}'s tip: ${now.status}`);
-          if (now.body?.object?.sha !== m.baseSha) return { baseMoved: String(now.body?.object?.sha ?? "") };
-        }
-        sent = "merge";
-        // GitHub's merge of the base: its own op (pull requests on the base, contents on the branch, which is the base repo's here).
-        const u = await (await actorOn(at.s.slug, "update_branch")).rest("PUT", `/repos/${at.s.slug}/pulls/${at.n}/update-branch`, { expected_head_sha: head });
-        if (u.status >= 300) {
-          const now = await gh("GET", refPath(at.into, at.ref));
-          const moved = now.status < 300 && now.body?.object?.sha !== head;
-          if (moved && !partial) return { text: `ship-head-moved: ${at.url} moved before GitHub merged \`${m.base}\`: nothing was pushed; read it again.` };
-          return { text: refusedPush(at, `GitHub refused merging \`${m.base}\`: ${u.status} ${String(u.body?.message ?? "")}`, partial ? String(now.body?.object?.sha ?? head) : undefined) };
-        }
-        // GitHub answers 202 and moves the branch shortly after: its head is read until it moves.
-        let tip: string | undefined;
-        for (let i = 0; i < (o.asyncPolls ?? ASYNC_POLLS) && !tip; i++) {
-          if (i) await new Promise((done) => setTimeout(done, o.asyncPollMs ?? ASYNC_POLL_MS));
-          const now = await gh("GET", refPath(at.into, at.ref));
-          if (now.status < 300 && now.body?.object?.sha && now.body.object.sha !== head) tip = String(now.body.object.sha);
-        }
-        if (!tip) return { text: refusedPush(at, `GitHub accepted merging \`${m.base}\` but the branch hadn't moved from \`${head.slice(0, 12)}\` after the wait`, partial ? head : undefined) };
-        const c = await gh("GET", `/repos/${at.into}/git/commits/${tip}`);
-        const parents = ((c.body?.parents ?? []) as { sha?: string }[]).map((p) => String(p.sha));
-        if (c.status >= 300 || parents.length !== 2 || parents[0] !== head || parents[1] !== m.baseSha) return { text: refusedPush(at, `the branch moved to \`${tip.slice(0, 12)}\`, which isn't GitHub's merge of \`${m.base}\` at \`${m.baseSha.slice(0, 12)}\` (the base moved, or someone pushed)`, tip) };
-        if (c.body?.tree?.sha !== merged.tree) return { text: refusedPush(at, `GitHub's merge holds tree \`${String(c.body?.tree?.sha).slice(0, 12)}\`, not git's \`${merged.tree.slice(0, 12)}\``, tip) };
-        if (merged.tree === wantTree) return { sha: tip };
-        head = tip;
-        const stopped = await stop(false);
-        if (stopped) return stopped;
-        sent = "commit";
-        return await commitSigned(at, tip, merged.tree, m.want, m.message, true);
-      } catch (e) { return await reconcile(e); }
-    } finally { rmSync(tmp, { recursive: true, force: true }); }
+      r = await at.actor.rest("PATCH", `/repos/${at.into}/git/refs/heads/${at.ref.split("/").map(encodeURIComponent).join("/")}`, { sha, force: false });
+    } catch (e) { return settle(e); }
+    if (r.status < 300 && r.body?.object?.sha === sha) return { sha };
+    const why = String(r.body?.message || `HTTP ${r.status}`);
+    if (workflowRefusal(why)) await needWorkflow();
+    if (r.status < 300 || unanswered(r.status, why)) return settle(fail(502, `GitHub didn't answer moving ${at.url}'s branch: ${why.slice(0, 200)}`));
+    // A fast-forward GitHub refused: a push in between (the branch moved), else its own reason (a rule).
+    const tip = await tipOf(at);
+    if (tip === sha) return { sha };
+    if (tip && tip !== m.head) return moved(tip);
+    return { text: refusedPush(at, `GitHub refused moving the branch to the merge: ${why}`) };
   }
 
   /**
@@ -1461,8 +1443,9 @@ export function createService(o: Options) {
    * (expectedHeadOid: the lease). The branch stays on the base it was reviewed against:
    * - new: created at the commit the box's branch forked from (`mb`), so the PR's diff is the reviewed one;
    * - published on that same base point: one commit on its head;
-   * - the box's branch on the base's newer tip (a rebase, or a merge of the base): GitHub merges that tip in through the branch's
-   *   open PR first (mergeSigned), so the PR's diff never carries the base's own changes;
+   * - the box's branch on the base's newer tip (a rebase, or a merge of the base): one merge commit of the published head and that
+   *   tip with the box commit's tree (mergeSigned), while the branch's PR into the base is open, so the PR's diff never carries the
+   *   base's own changes;
    * - the published branch on a newer base than the box's: refused, since one commit to the box's tree would revert those changes;
    * - the default branch: forward only, from its head.
    * The sha is GitHub's: the caller binds that one, never the box's (`wrote`: false where the branch already held the tree).
@@ -1518,15 +1501,15 @@ export function createService(o: Options) {
     if (p.mb !== p.tip) throw fail(409, again(String(p.tip)));
     const prs = await api("GET", `/repos/${p.s.slug}/pulls?state=open&head=${encodeURIComponent(`${p.s.org}:${p.branch}`)}&base=${encodeURIComponent(p.base)}`);
     const n = Number((Array.isArray(prs) ? prs[0] : undefined)?.number);
-    if (!n) throw fail(409, `${label} builds on a newer \`${p.base}\` than its published head, and no open PR into \`${p.base}\` is there for GitHub to merge it through: nothing was pushed; publish it on a new branch.`);
-    // The PR read again before each write: GitHub's merge goes into whatever base the PR has then.
+    if (!n) throw fail(409, `${label} builds on a newer \`${p.base}\` than its published head, and no open PR into \`${p.base}\` is there to merge it through: nothing was pushed; publish it on a new branch.`);
+    // The PR read again before the branch moves: the merge is only for the base the PR still targets.
     const still = async () => {
       const again = await api("GET", `/repos/${p.s.slug}/pulls/${n}`);
       if (again.state !== "open") return `ship-scope: ${label}'s PR #${n} is ${again.state}: nothing was pushed.`;
       if (again.base?.ref !== p.base) return `ship-scope: ${label}'s PR #${n} now targets \`${String(again.base?.ref)}\`, not \`${p.base}\`: nothing was pushed; publish again.`;
       return undefined;
     };
-    return landed(await mergeSigned({ ...at, n }, { head: p.head, baseSha: p.mb, base: p.base, want: p.sha, message, still }));
+    return landed(await mergeSigned(at, { head: p.head, baseSha: p.mb, base: p.base, want: p.sha, message, still }));
   }
 
   /** The approvals ship's approve write made as the App (approvals.ts): the only App approvals that count. */
