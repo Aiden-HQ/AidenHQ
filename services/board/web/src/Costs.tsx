@@ -262,8 +262,8 @@ function Overview({ d }: { d: CostLedger }) {
         {o.limits ? (
           <>
             <Meter label="Install, today" used={o.limits.day.spent} cap={o.limits.day.cap} />
-            <Meter label="Install, this month (UTC)" used={o.limits.month.spent} cap={o.limits.month.cap} />
-            <span className="cost-tile-note">The install's spend limits (settings spend_day_usd spend_month_usd and task_usd): model calls stop at a limit.</span>
+            <Meter label="Install, this month" used={o.limits.month.spent} cap={o.limits.month.cap} />
+            <span className="cost-tile-note">The install's spend limits (settings spend_day_usd spend_month_usd and task_usd): model calls stop at a limit. The day and month reset at midnight in the owner's timezone.</span>
           </>
         ) : (
           <span className="cost-tile-note">The install's spend limits are not available.</span>

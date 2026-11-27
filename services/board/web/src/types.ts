@@ -245,7 +245,7 @@ export interface RecurringView {
   upcoming: string[];
 }
 
-/** The install's spend against its two limits (a UTC day and a UTC month). */
+/** The install's spend against its two limits (the owner's day and month: midnight in the owner's timezone). */
 export type SpendNow = { day: { spent: number; cap: number }; month: { spent: number; cap: number } };
 export interface Board {
   buckets: Record<Bucket, Card[]>;
@@ -273,7 +273,7 @@ export interface Board {
   rollsTomorrow: boolean;
   /** Agent sessions running now. */
   agentsActive: number;
-  /** The install's model spend against its two limits (settings.spend_day_usd, spend_month_usd: a UTC day and month); null without the kernel. */
+  /** The install's model spend against its two limits (settings.spend_day_usd, spend_month_usd: the owner's day and month); null without the kernel. */
   spend?: SpendNow | null;
   /** Google sign-in per account; null when the board can't ask. */
   google: { accounts: GoogleAccount[]; error?: string; client?: boolean } | null;

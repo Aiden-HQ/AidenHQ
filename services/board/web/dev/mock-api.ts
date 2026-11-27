@@ -388,9 +388,9 @@ const settingsData = () => ({
   settings: [
     { key: "owner_name", module: "core", value: "Alex", set: true, known: true, switch: false, doc: "What agents call you." },
     { key: "autonomy", module: "core", value: "full", set: false, known: true, default: "full", values: ["full", "reviewed", "manual"], switch: false, doc: "Who decides writes: the AI reviewer, or you." },
-    { key: "spend_day_usd", module: "core", value: 50, set: true, known: true, switch: false, doc: "The most the whole install may spend on models in a UTC day." },
+    { key: "spend_day_usd", module: "core", value: 50, set: true, known: true, switch: false, doc: "The most the whole install may spend on models in a day (midnight in the owner's timezone)." },
     { key: "task_usd", module: "core", value: 20, set: true, known: true, switch: false, doc: "The most one task may spend on models, whichever agents work on it." },
-    { key: "spend_month_usd", module: "core", value: 1000, set: true, known: true, switch: false, doc: "The most the whole install may spend on models in a UTC calendar month." },
+    { key: "spend_month_usd", module: "core", value: 1000, set: true, known: true, switch: false, doc: "The most the whole install may spend on models in a calendar month (midnight in the owner's timezone)." },
     { key: "review_repos", module: "code-review", value: ["AidenHQ", "aidenhq-distro", "invoices-app"], set: true, known: true, switch: false, doc: "Repos. The repositories reviewed when a pull request opens." },
     { key: "review_when", module: "code-review", value: "When a PR opens, then once after the next push", set: false, known: true, switch: false, doc: "When. When a review runs." },
     { key: "review_skip", module: "code-review", value: ["Docs-only PRs"], set: true, known: true, switch: false, doc: "Skips. Pull requests that get no review." },

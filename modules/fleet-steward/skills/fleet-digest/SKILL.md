@@ -20,8 +20,9 @@ description: "Works the day's deep-look log lines, gives every owner interruptio
    chaser task for the responsible agent.
 4. **Spend, from the gateway's counters** (never `fleet_status.summary.spend` or `fleet_costs`: both read the board's usage
    rollup, which understates by about a quarter). On the `prometheus` datasource run `query_prometheus`,
-   `queryType: instant`, once per day for the last 7 days, at the minute before the owner's midnight that ends it (the owner's `timezone`, as a UTC instant: a day is not always 24 hours), for
-   `sum by (kind) (aidenhq_gateway_spend_usd_today)`; each value is that owner day's final one. Per day, `check`
+   `queryType: instant`, once per day for the last 7 days, at the last second before the owner's midnight that ends it (the owner's `timezone`, as a UTC instant: a day is not always 24 hours; scrapes are
+   30 s apart, so that second carries the day's last scrape, where the minute before it can miss it), for
+   `sum by (kind) (aidenhq_gateway_spend_usd_today)`; each value is that owner day's last sampled total, not its final bill (a call settling after the last scrape is in none of them). Per day, `check`
    plus `ci-code-review` is CI/check spend, `agent` is agent work, the rest is fleet overhead. Cross-check yesterday with
    `aidenhq_gateway_install_spend_usd{period="day"}` at the same boundary (the counter the caps enforce; where it is higher,
    the excess is in-flight reservations, not billed spend). One line: "Spend: $X yesterday (check $A / agent $B / other

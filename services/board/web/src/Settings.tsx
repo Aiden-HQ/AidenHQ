@@ -365,7 +365,7 @@ function ApprovalsPage({ data, rows }: { data: SettingsData; rows: (keys: string
 
 function SpendPage({ rows }: { rows: SettingRow[] }) {
   return (
-    <Page title="Spend limits" sub="The model gateway refuses a call that would take the whole install past either install limit (a UTC day or a UTC calendar month), and a task that would pass its own limit; all in USD.">
+    <Page title="Spend limits" sub="The model gateway refuses a call that would take the whole install past either install limit (a day or a calendar month: midnight in the owner's timezone), and a task that would pass its own limit; all in USD.">
       <Group>{rows.map((s) => <SettingItem key={s.key} s={s} />)}</Group>
     </Page>
   );
