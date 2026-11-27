@@ -21,7 +21,7 @@ import { createServer } from "node:http";
 import { mergeable } from "./git-auth.ts";
 // github-mcp's built entry (the image builds it beside this tree): it starts both connections and hands back the owner's access.
 import { startGithubMcp } from "../../connections/github-mcp/dist/src/main.js";
-import { createService, reviewerOf, shipAdoptions } from "./service.ts";
+import { createService, shipAdoptions } from "./service.ts";
 import { createReviewGate } from "./review-gate.ts";
 import { serveOps } from "./ops.ts";
 import { shipRoutes } from "./ship-routes.ts";
@@ -52,8 +52,8 @@ const handle = createService({
   reviewGate,
   // The ship module's adoptions, only while it is on (compiled): absent, every write naming an adoption is refused.
   ...(env.GITHUB_SHIP === "1" ? { ship: shipAdoptions({ url: "http://ship:8101", key: () => key }) } : {}),
-  // The reviewer identity is the owner's one GitHub App (the one code review posts as), where it is installed.
-  reviewer: reviewerOf(githubApp), app: githubApp,
+  // The instance's GitHub App: its identity, and a session box's narrowed token (every write's actor comes from access.actorFor).
+  app: githubApp,
   log,
 });
 log("starting", { connected: access.connected(), tasks: Boolean(env.TASKS_DIR), fleetOrg });
@@ -97,6 +97,7 @@ const ship = shipRoutes({
   // A head's check runs from the feed's snapshot while it is fresh, instead of a second read of the same list.
   checkRuns: (repo, sha) => feed.checkRuns(repo, sha),
   allowed: (repo) => mergeable(repo, fleetOrg, env.PRODUCT_REPO || undefined, listed),
+  actorFor: (repo, op) => access.actorFor({ repo }, op),
   isShip: (auth) => isModule(kernelUrl, auth, "ship"),
 });
 /** Who a request's GitHub calls are for, in the hourly count: ship, an op (`ops:<op>`), an apply step, or the code host's writes. */

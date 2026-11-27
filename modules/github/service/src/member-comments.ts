@@ -59,9 +59,11 @@ export async function readMemberComments(page: (beforeThreads: string | null, be
 
 /** The open items in `pr` (readMemberComments' answer); `author` is the PR author whose own conversation comments ask nothing, if any,
  * and `ignore` the accounts that are never members here. */
-export async function openMemberComments(pr: Json, o: CommentsAsk & { isMember: (login: string, association: string) => Promise<boolean> }): Promise<OpenItem[]> {
+export async function openMemberComments(pr: Json, o: CommentsAsk & { isMember: (login: string, association: string) => Promise<boolean>; /** Our App's bot login as GraphQL names it (no `[bot]`): its signed replies answer, as a member's do. */ bot?: string }): Promise<OpenItem[]> {
   const ignored = new Set((o.ignore ?? []).map((l) => l.toLowerCase()));
   const member = (a: Json, assoc: unknown) => a?.__typename === "User" && !!a.login && !ignored.has(String(a.login).toLowerCase()) && o.isMember(String(a.login), String(assoc ?? ""));
+  /** Who may answer: a member, or our App's bot (GitHub's own Bot type, so no person can pass for it). */
+  const answerer = async (a: Json, assoc: unknown) => (!!o.bot && a?.__typename === "Bot" && String(a.login ?? "").toLowerCase() === o.bot.toLowerCase()) || member(a, assoc);
   const items: OpenItem[] = [];
   for (const t of pr?.reviewThreads?.nodes ?? []) {
     const first = t.comments?.nodes?.[0];
@@ -70,7 +72,7 @@ export async function openMemberComments(pr: Json, o: CommentsAsk & { isMember: 
     // the opening comment itself (which code review signs too), and it is ours.
     const replies = [...(t.last?.nodes ?? [])].reverse();
     let latest = first;
-    for (const r of replies) if (await member(r.author, r.authorAssociation)) { latest = r; break; }
+    for (const r of replies) if (await answerer(r.author, r.authorAssociation)) { latest = r; break; }
     if (latest.fullDatabaseId !== first.fullDatabaseId && hasFooter(String(latest.body ?? ""))) continue;
     if (!(await member(first.author, first.authorAssociation))) continue;
     items.push({ id: `thread:${t.id}:${latest.fullDatabaseId}`, kind: "thread", author: String(first.author.login), ...(t.path ? { path: String(t.path) } : {}), ...(t.line ? { line: Number(t.line) } : {}) });
@@ -78,7 +80,7 @@ export async function openMemberComments(pr: Json, o: CommentsAsk & { isMember: 
   const comments = (pr?.comments?.nodes ?? []) as Json[];
   // A member's signed comment answers the comments whose ids it cites (one reply may answer a batch), never the ones it doesn't.
   const answers: { at: string; body: string }[] = [];
-  for (const c of comments) if (hasFooter(String(c.body ?? "")) && !String(c.body ?? "").includes(REPORT_MARK) && (await member(c.author, c.authorAssociation))) answers.push({ at: String(c.createdAt), body: String(c.body) });
+  for (const c of comments) if (hasFooter(String(c.body ?? "")) && !String(c.body ?? "").includes(REPORT_MARK) && (await answerer(c.author, c.authorAssociation))) answers.push({ at: String(c.createdAt), body: String(c.body) });
   for (const c of comments) {
     const body = String(c.body ?? "");
     if (String(c.createdAt) <= o.since || c.author?.login === o.author) continue;

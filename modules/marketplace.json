@@ -150,6 +150,10 @@
       "source": "./security"
     },
     {
+      "name": "server-manager",
+      "source": "./server-manager"
+    },
+    {
       "name": "sessions",
       "source": "./sessions"
     },

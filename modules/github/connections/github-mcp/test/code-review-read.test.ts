@@ -62,7 +62,7 @@ it("only the code-review module may call; PRs, PR comments and permission come b
 });
 
 it("a snapshot reads the PR, its files and the PR again: a consistent change for its risk tier; the own App's PR says so", async () => {
-  const own = new CodeReviewReader(reader["github"], async () => null, () => "dev");
+  const own = new CodeReviewReader(reader["github"], async () => null, async () => "dev");
   const s = (await codeReviewRoute(own, "snapshot", new URLSearchParams({ repo: "Acme/App", number: "1" }))).body as { pr: { association: string; own: boolean }; changed_files: number; files: unknown[] };
   expect([s.pr.association, s.pr.own, s.changed_files]).toEqual(["MEMBER", true, 2]);
   expect(s.files).toEqual([{ path: "a.ts", additions: 3, deletions: 1 }, { path: "b.ts", previous: "old.ts", additions: 0, deletions: 0 }]);

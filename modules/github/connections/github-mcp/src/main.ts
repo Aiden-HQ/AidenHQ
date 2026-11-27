@@ -1,7 +1,8 @@
-// AidenHQ's GitHub tools, as the owner (spec 2026-11-20-github-owner-identity): read issues and pull requests with their
+// AidenHQ's GitHub tools (docs/design/github-identity.md): read issues and pull requests with their
 // conversations, search them, and, when an agent's write record is approved, comment on one or open one (optionally on a
 // project with a status), close, label or assign an issue, comment-review a pull request, and re-run failed CI. Every call
-// goes through the owner's one sign-in (client.ts); src/github.ts's guard limits it to those requests, and every posted text
+// goes through one client (client.ts): each write as the actor actorFor picks (the App where installed and permitted, else the
+// owner); src/github.ts's guard limits it to those requests, and every posted text
 // is signed with the AidenHQ footer naming the agent.
 import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -27,7 +28,7 @@ import { officialProxy, signIn } from "./official.js";
 import { signedIn } from "./vendor/needs.js";
 import { ReviewPoster } from "./review-post.js";
 import { gitHubApp, type GitHubApp } from "./github-app.js";
-import { reviewAs } from "./review-as.js";
+import { appCard } from "./app-card.js";
 import { reviewErrorAnswer, type ReviewErrorAnswer } from "./review-need.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "github-mcp" }, redact: ["authorization", "*.authorization", "token", "*.token"] });
@@ -62,11 +63,11 @@ const clientId = (process.env.GITHUB_OAUTH_CLIENT_ID ?? "").trim();
 const auth = signIn({ clientId, mcpUrl, stateDir, ci: process.env.GITHUB_CI === "1" });
 const kernelUrl = process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
 const codehostKey = () => { const f = process.env.CODEHOST_KEY_FILE; return f && existsSync(f) ? readFileSync(f, "utf8").trim() : ""; };
-// The owner's optional GitHub App (github-app.ts; its id and key in this process's vault dir, written by the kernel's
-// /setup/github-app): code review's writes go as it where it is installed (review-post.ts), and every repo read goes as it where its
-// installation holds the read's permission (client.ts readerFor), so the fleet's reads don't spend the owner's rate limit.
-const reviewApp = gitHubApp({ dir: join(stateDir, "github-app") });
-const access = createAccess({ auth, clientId, app: reviewApp, log: (msg, f) => log.info(f, msg), onOrgOk: (org) => { needs.forget(org); reportOrgOk(kernelUrl, codehostKey(), "github", org, log); } });
+// The instance's optional GitHub App (github-app.ts; its id and key in this process's vault dir, written by the kernel's
+// /setup/github-app): every write goes as it where it is installed on the target with the op's permissions (client.ts actorFor),
+// and every repo read where its installation holds the read's permission (readerFor); elsewhere the owner's sign-in.
+const githubApp = gitHubApp({ dir: join(stateDir, "github-app") });
+const access = createAccess({ auth, clientId, app: githubApp, log: (msg, f) => log.info(f, msg), onOrgOk: (org) => { needs.forget(org); reportOrgOk(kernelUrl, codehostKey(), "github", org, log); } });
 /** Whether a GitHub object (`github:<repo>#<n>[/comment/<id>]`) is in AidenHQ's records; a failed read is "no". */
 const ours = async (ref: string): Promise<boolean> => {
   const r = await fetch(`${kernelUrl}/v1/objects?ref=${encodeURIComponent(ref)}`, { headers: { authorization: `Bearer ${codehostKey()}` }, signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
@@ -84,12 +85,12 @@ const maintainedRepos = (() => {
     return err as Error;
   }
 })();
-const maintainer = new Maintainer(access, maintainedRepos, OWNER_TERMS, ours);
+const maintainer = new Maintainer(access, maintainedRepos, OWNER_TERMS, ours, async () => (await githubApp.identity())?.id);
 const REPOS = describeRepos(maintainer.list());
 const github = new GitHub(access);
 // Code review's posting (review-post.ts): the code-review module's executor reaches it through /internal/review below.
-// Its writes go as the App where it is installed, else as the owner; review-as.ts keeps which, per repo, for the GitHub card.
-const reviewIdentity = reviewAs({ file: join(stateDir, "review-as.json"), app: reviewApp });
+// The board card's App rows (app-card.ts): the App and each installation with permissions it hasn't accepted.
+const card = appCard(githubApp);
 // A failure only the owner can fix (GitHubNeed) goes to the kernel: the reply waits up to a second for it, so a restart in that
 // window can't drop it, and one the kernel didn't take is kept and retried at the start of the next request. Never throws.
 // A kept sign-in need is bound to the credential that met it: the owner's reconnect writes a new token, and an old report replayed
@@ -114,16 +115,19 @@ const needRetry = setInterval(() => void needs.flush(), 30_000);
 needRetry.unref?.();
 const tellOwner = (err: unknown) => void needs.tell(err);
 
-const poster = new ReviewPoster(github, access, tellOwner, reviewApp, reviewIdentity.record);
-// Code review's watcher reads (code-review-read.ts), through /internal/code-review below. Reviews post as the owner wherever
-// the owner's account reaches, once GitHub is connected.
-const crReader = new CodeReviewReader(github, async () => (access.connected() ? "owner" : null), () => { const slug = reviewApp.slug(); return slug ? `${slug}[bot]` : undefined; });
+const poster = new ReviewPoster(github, access, tellOwner, githubApp);
+// Code review's watcher reads (code-review-read.ts), through /internal/code-review below. A review posts as the App where it is
+// installed on the repo with the permission, else as the owner once GitHub is connected.
+const crReader = new CodeReviewReader(github, async (owner, repo) => {
+  const actor = await access.actorFor({ repo: `${owner}/${repo}` }, "pr").catch(() => undefined);
+  return actor?.kind === "app" ? "app" : access.connected() ? "owner" : null;
+}, async () => (await githubApp.identity().catch(() => undefined))?.login);
 // GitHub's own MCP server (connection github_official) and the board's sign-in endpoints, on their own port.
 const authKeyFile = process.env.GITHUB_AUTH_TOKEN_FILE;
 const official = officialProxy({
   auth, access, mcpUrl, log, stateDir, serviceKey: inboundToken,
-  // The card's rows after the sign-in's own: who code review posts as, per org (review-as.ts).
-  lines: () => reviewIdentity.lines(),
+  // The card's rows after the sign-in's own: the App and its installations (app-card.ts).
+  lines: () => card.lines(),
   // The reads the module tags (github_official.tools.read): every other official tool is refused (official.ts).
   reads: (process.env.GITHUB_OFFICIAL_READ ?? "").split(",").map((t) => t.trim()).filter(Boolean),
   authKey: authKeyFile && existsSync(authKeyFile) ? readFileSync(authKeyFile, "utf8").trim() || undefined : undefined,
@@ -248,7 +252,7 @@ function buildServer(caller?: Caller): McpServer {
   server.registerTool(
     "github_issue_comment",
     {
-      description: `Post a comment, as the owner and signed by you (the AidenHQ footer), on a GitHub issue or pull request. Markdown body; it can't be edited or deleted from here. On the product repo and the maintained repos (${REPOS}) owner data (names, emails, hosts, IPs, account and chat ids, uuids, credentials) is replaced with \`[redacted]\` before it is sent, and a form the rewrite can't reach refuses the whole comment; on a maintained repo it is also refused while the issue's current label is untrusted.`,
+      description: `Post a comment, as AidenHQ's GitHub App where it is installed (else as the owner) and signed by you (the AidenHQ footer), on a GitHub issue or pull request. Markdown body; it can't be edited or deleted from here. On the product repo and the maintained repos (${REPOS}) owner data (names, emails, hosts, IPs, account and chat ids, uuids, credentials) is replaced with \`[redacted]\` before it is sent, and a form the rewrite can't reach refuses the whole comment; on a maintained repo it is also refused while the issue's current label is untrusted.`,
       inputSchema: { ...ref, body: z.string().min(1).max(60_000) },
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     },
@@ -268,7 +272,7 @@ function buildServer(caller?: Caller): McpServer {
   server.registerTool(
     "github_issue_create",
     {
-      description: `Open a new GitHub issue, as the owner and signed by you (the AidenHQ footer), optionally adding it to an organization project with a status (e.g. Triage). Labels must already exist in the repository. Without \`repo\`, it goes to the repository the project's issues live in. Call it once: an issue can't be closed or edited from here, and if \`project.error\` is set the issue still exists.`,
+      description: `Open a new GitHub issue, as AidenHQ's GitHub App where it is installed (else as the owner) and signed by you (the AidenHQ footer), optionally adding it to an organization project with a status (e.g. Triage). Labels must already exist in the repository. Without \`repo\`, it goes to the repository the project's issues live in. Call it once: an issue can't be closed or edited from here, and if \`project.error\` is set the issue still exists.`,
       inputSchema: {
         repo: z.string().max(200).optional().describe("owner/repo; optional when `project` is given"),
         title: z.string().min(1).max(256),
@@ -291,7 +295,7 @@ function buildServer(caller?: Caller): McpServer {
       }
     }),
   );
-  // Product bugs go upstream to the instance's product repo only, as the owner signed by the agent (projects.ts productTarget).
+  // Product bugs go upstream to the instance's product repo only, as its chosen actor, signed by the agent (projects.ts productTarget).
   const productRepo = () => {
     try {
       return productTarget(caller?.roles, PRODUCT_REPO);
@@ -314,7 +318,7 @@ function buildServer(caller?: Caller): McpServer {
   server.registerTool(
     "github_product_issue",
     {
-      description: `Report a product bug on the product repo (${PRODUCT_REPO || "none configured"}) as the owner, signed by you (the AidenHQ footer). Deduped by \`fingerprint\`: the issue carrying it (an open one first, else the latest closed one) gets the report as a comment (deduplicated: true, with its state); only a new fingerprint opens an issue with \`title\` (no label: the Maintainer triages it like any issue). Dedupe is the only limiter: every new defect is filed. The report is \`body\` plus \`evidence\` (module, product version, reproduction, log lines), then the instance and agent it came from and the fingerprint. Public to the product repo's readers and can't be edited or deleted from here, so owner data is refused before anything is sent: names, emails, hosts, IPs, account and chat ids, uuids and credentials; redact and file again.`,
+      description: `Report a product bug on the product repo (${PRODUCT_REPO || "none configured"}) as AidenHQ's GitHub App where it is installed (else as the owner), signed by you (the AidenHQ footer). Deduped by \`fingerprint\`: the issue carrying it (an open one first, else the latest closed one) gets the report as a comment (deduplicated: true, with its state); only a new fingerprint opens an issue with \`title\` (no label: the Maintainer triages it like any issue). Dedupe is the only limiter: every new defect is filed. The report is \`body\` plus \`evidence\` (module, product version, reproduction, log lines), then the instance and agent it came from and the fingerprint. Public to the product repo's readers and can't be edited or deleted from here, so owner data is refused before anything is sent: names, emails, hosts, IPs, account and chat ids, uuids and credentials; redact and file again.`,
       inputSchema: UPSTREAM_REPORT,
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
@@ -327,7 +331,7 @@ function buildServer(caller?: Caller): McpServer {
         throw new GitHubRefused((err as Error).message);
       }
       const out = await projects.reportIssue(owner, name, report, agent);
-      log.info({ number: out.number, deduplicated: out.deduplicated }, "product issue written as the owner");
+      log.info({ number: out.number, deduplicated: out.deduplicated }, "product issue written");
       const issue = `github:${owner.toLowerCase()}/${name.toLowerCase()}#${out.number}`;
       // Only what this filing made is ours: the new issue, or the comment on an existing one (maybe a person's).
       return { ...out, objects: ["comment" in out ? `${issue}/comment/${out.comment}` : issue] };
@@ -457,14 +461,16 @@ function buildServer(caller?: Caller): McpServer {
       "github_release_graduate",
       logged("github_release_graduate", (a: { repo: string; tag: string }) => ({ repo: a.repo, tag: a.tag }), async (a: { repo: string; tag: string }) => {
         const r = maintainer.target(a.repo);
-        return graduate((m, p, b) => access.rest(m, p, b), `${r.owner}/${r.name}`, a.tag.trim());
+        // One attempt, one actor: the release write's (contents), which also reads what decides it.
+        const actor = await access.actorFor({ repo: `${r.owner}/${r.name}` }, "release");
+        return graduate((m, p, b) => actor.rest(m, p, b), `${r.owner}/${r.name}`, a.tag.trim());
       }),
     ),
   );
   server.registerTool(
     "github_issue_update",
     {
-      description: "Change a GitHub issue as the owner: replace its body (signed by you, the AidenHQ footer, as a new issue's), close it (as completed or not planned) or reopen it, add or remove labels, assign or unassign people. Labels and assignees also work on pull requests; closing one or replacing its text doesn't. Labels must already exist.",
+      description: "Change a GitHub issue as AidenHQ's GitHub App where it is installed (else as the owner): replace its body (signed by you, the AidenHQ footer, as a new issue's), close it (as completed or not planned) or reopen it, add or remove labels, assign or unassign people. Labels and assignees also work on pull requests; closing one or replacing its text doesn't. Labels must already exist.",
       inputSchema: {
         ...ref,
         body: z.string().max(60_000).optional().describe("The issue's whole new body: it replaces the old one"),
@@ -487,7 +493,7 @@ function buildServer(caller?: Caller): McpServer {
   server.registerTool(
     "github_pr_review",
     {
-      description: "Post a comment review on a pull request as the owner, signed by you (the AidenHQ footer), optionally with line comments (`comments`, on lines the pull request changes). Never an approval or a change request: your review must not count as the owner's. The review is pinned to the commit it was read at.",
+      description: "Post a comment review on a pull request as AidenHQ's GitHub App where it is installed (else as the owner), signed by you (the AidenHQ footer), optionally with line comments (`comments`, on lines the pull request changes). Never an approval or a change request: your review must never count as a person's. The review is pinned to the commit it was read at.",
       inputSchema: {
         ...ref,
         event: z.enum(["comment"]),
@@ -515,7 +521,7 @@ function buildServer(caller?: Caller): McpServer {
   server.registerTool(
     "github_pr_thread_reply",
     {
-      description: "Reply on a pull request's review thread (`comment`: the thread's first comment id, from github_pr_threads), as the owner, signed by you. Answer a reviewer's comment: \"fixed in <commit>: <what changed>\" or \"declined: <reason, file:line>\". It does not resolve the thread (github_pr_thread_resolve does).",
+      description: "Reply on a pull request's review thread (`comment`: the thread's first comment id, from github_pr_threads), as AidenHQ's GitHub App where it is installed (else as the owner), signed by you. Answer a reviewer's comment: \"fixed in <commit>: <what changed>\" or \"declined: <reason, file:line>\". It does not resolve the thread (github_pr_thread_resolve does).",
       inputSchema: { ...ref, comment: z.number().int().min(1), body: z.string().min(1).max(2000) },
       annotations: write,
     },
@@ -527,7 +533,7 @@ function buildServer(caller?: Caller): McpServer {
   server.registerTool(
     "github_pr_thread_resolve",
     {
-      description: "Resolve a pull request's review thread (`comment`: the thread's first comment id, from github_pr_threads), as the owner: a repo may require resolved threads to merge. Only for a thread whose change was made and pushed; a declined one stays open for its reviewer. Reviewed like any write.",
+      description: "Resolve a pull request's review thread (`comment`: the thread's first comment id, from github_pr_threads), as AidenHQ's GitHub App where it is installed (else as the owner): a repo may require resolved threads to merge. Only for a thread whose change was made and pushed; a declined one stays open for its reviewer. Reviewed like any write.",
       inputSchema: { ...ref, comment: z.number().int().min(1) },
       annotations: write,
     },
@@ -707,5 +713,5 @@ export async function startGithubMcp(): Promise<{ access: GitHubAccess; app: Git
   http.listen(port, "0.0.0.0", () => log.info({ port }, "github-mcp listening"));
   official.listen(8087, "0.0.0.0", () => log.info({ port: 8087 }, "GitHub's MCP server and the sign-in listening"));
   for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => { official.close(); http.close(); });
-  return { access, app: reviewApp, useFeed: (f) => crReader.useFeed(f), reportNeed: (need, detail) => needs.tell(new GitHubNeed(need, detail)), ...(sync ? { sync } : {}), ...(sources ? { sources } : {}) };
+  return { access, app: githubApp, useFeed: (f) => crReader.useFeed(f), reportNeed: (need, detail) => needs.tell(new GitHubNeed(need, detail)), ...(sync ? { sync } : {}), ...(sources ? { sources } : {}) };
 }

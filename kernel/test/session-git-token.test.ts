@@ -25,7 +25,7 @@ const setup = (autonomy = "full") => {
 test("a session gets a narrowed token", async () => {
   const { tools, session } = setup();
   const minted: unknown[] = [];
-  const ctx = { app: { installation: async () => 7, mint: async (i: number, n: unknown) => (minted.push([i, n]), { token: "ghs_x", expires_at: "2026-11-25T01:00:00Z" }) } } as unknown as OpsContext;
+  const ctx = { app: { installed: async () => ({ id: 7, permissions: { contents: "write", pull_requests: "write", issues: "read", workflows: "write", metadata: "read" } }), mint: async (i: number, n: unknown) => (minted.push([i, n]), { token: "ghs_x", expires_at: "2026-11-25T01:00:00Z" }) } } as unknown as OpsContext;
   // The code host's executor, here: serveOps over a real http server, asked by the kernel's own appToken.
   const server = http.createServer((req, res) => void serveOps(req, res, ctx));
   await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
@@ -38,7 +38,7 @@ test("a session gets a narrowed token", async () => {
     });
     const { repo } = tools.gitToken(session, { repo: "acme-agents/widgets" });
     assert.deepEqual(await ch.appToken(repo), { token: "ghs_x", expires_at: "2026-11-25T01:00:00Z" });
-    assert.deepEqual(minted, [[7, { repositories: ["widgets"], permissions: { contents: "write", pull_requests: "write" } }]]);
+    assert.deepEqual(minted, [[7, { repositories: ["widgets"], permissions: { contents: "write", pull_requests: "write" } }]], "contents and pull requests only, never the App's wider grants (workflows)");
   } finally { server.close(); }
 });
 

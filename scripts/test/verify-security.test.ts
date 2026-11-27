@@ -24,7 +24,7 @@ test("verify-security's code checks pass on this checkout", () => {
     // The vendor connections' tag rule and the GitHub guard's allowlists read the modules' manifests and sources, so they
     // run here too: a connection that grows a tool or a route fails CI, not a host.
     slice(/^# Vendor connections pass/, /^# A job never sees/),
-    slice(/^# GitHub: the user's gh token/, /^# C3-final/),
+    slice(/^# GitHub: the owner's token and the App's/, /^# C3-final/),
   ].join("\n");
   const r = spawnSync("bash", ["-c", script], { encoding: "utf8", maxBuffer: 16 << 20 });
   const out = r.stdout.split("\n");

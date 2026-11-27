@@ -5,7 +5,7 @@
 // error or malformed JSON is still the request's own 400.
 import { z } from "zod";
 import { GitHubRefused } from "./github.js";
-import { GitHubNeed } from "./client.js";
+import { GitHubNeed, needError } from "./client.js";
 
 export type ReviewErrorAnswer = { status: number; body: Record<string, unknown> };
 
@@ -17,7 +17,7 @@ export function reviewErrorAnswer(err: unknown): ReviewErrorAnswer {
       const need = { cause: n.cause, detail, ...(n.cause === "scope" ? { scope: n.scope } : {}), ...(n.cause === "sso" || n.cause === "restricted" ? { org: n.org, url: n.url } : {}) };
       return { status: 502, body: { error: "needs_owner", need } };
     }
-    return { status: 502, body: { error: n.cause === "rate_limited" ? "github_rate_limited" : "github_unreachable", detail } };
+    return { status: 502, body: { error: needError(n), detail } };
   }
   const refused = err instanceof GitHubRefused || err instanceof z.ZodError || err instanceof SyntaxError;
   const detail = err instanceof z.ZodError ? err.issues.slice(0, 3).map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") : String((err as Error)?.message ?? err).slice(0, 300);

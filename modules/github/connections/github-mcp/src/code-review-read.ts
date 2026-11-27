@@ -81,11 +81,11 @@ export class CodeReviewReader {
   /** The change feed, once it runs (the code host's process starts it after this connection): the open list comes from it. */
   useFeed(f: OpenPrs): void { this.feed = f; }
 
-  /** `identity`: who a review on owner/repo would post as (review-post.ts identity, auto), or null when nobody may. */
-  /** `self`: this instance's own App's bot login (`<slug>[bot]`), whose PRs are a member's. */
-  constructor(private readonly github: GitHub, private readonly identity: (owner: string, repo: string) => Promise<"app" | "owner" | null> = async () => null, private readonly self: () => string | undefined = () => undefined) {}
+  /** `identity`: who a review on owner/repo would post as (the App where installed with the permission, else the owner), or null when nobody may. */
+  /** `self`: this instance's own App's bot login (`<slug>[bot]`, read from GitHub), whose PRs are a member's. */
+  constructor(private readonly github: GitHub, private readonly identity: (owner: string, repo: string) => Promise<"app" | "owner" | null> = async () => null, private readonly self: () => Promise<string | undefined> = async () => undefined) {}
 
-  /** Whether a review may post on the repo, and as whom: the owner, once GitHub is connected (null until then). */
+  /** Whether a review may post on the repo, and as whom: the App where it may, else the owner once GitHub is connected (null until then). */
   async postable(repo: string): Promise<{ identity: "app" | "owner" | null; org: string }> {
     const [owner, name] = repo.toLowerCase().split("/");
     return { identity: await this.identity(owner!, name!), org: owner! };
@@ -99,23 +99,24 @@ export class CodeReviewReader {
   async open(repo: string): Promise<PullRequest[]> {
     const snap = this.feed?.(repo.toLowerCase());
     if (snap) {
-      const self = this.self()?.toLowerCase();
+      const self = (await (await this.self()))?.toLowerCase();
       return this.elevate(snap.map((p) => ({
         repo: repo.toLowerCase(), number: p.n, head: p.head, base: p.base, base_ref: p.base_ref, draft: p.draft, fork: p.fork, author: p.author, open: true, merged: false, url: p.url,
         title: p.title.slice(0, 200), body: p.body.slice(0, 2000), association: p.association || "NONE", own: !!self && p.author.toLowerCase() === self,
       })));
     }
     const out: PullRequest[] = [];
+    const self = await this.self();
     for (let page = 1; page <= MAX_PAGES; page++) {
       const rows = await this.github.request<GhPr[]>("GET", `/repos/${repo}/pulls`, { query: { state: "open", per_page: 100, page } });
-      out.push(...rows.map((p) => shape(repo, p, this.self())));
+      out.push(...rows.map((p) => shape(repo, p, self)));
       if (rows.length < 100) return this.elevate(out);
     }
     throw new Error(`more than ${MAX_PAGES * 100} open pull requests in ${repo}`);
   }
 
   async get(repo: string, number: number): Promise<PullRequest> {
-    return (await this.elevate([shape(repo, await this.github.request<GhPr>("GET", `/repos/${repo}/pulls/${number}`), this.self())]))[0]!;
+    return (await this.elevate([shape(repo, await this.github.request<GhPr>("GET", `/repos/${repo}/pulls/${number}`), (await this.self()))]))[0]!;
   }
 
   /**
@@ -155,7 +156,7 @@ export class CodeReviewReader {
     }
     const b = await this.github.request<GhPr>("GET", `/repos/${repo}/pulls/${number}`);
     if (b.head?.sha !== a.head?.sha || b.base?.sha !== a.base?.sha || b.base?.ref !== a.base?.ref || (n <= FILES_MAX && files.length !== n)) return { moved: true };
-    return { pr: (await this.elevate([shape(repo, b, this.self())]))[0]!, changed_files: n, files: n > FILES_MAX ? [] : files };
+    return { pr: (await this.elevate([shape(repo, b, (await this.self()))]))[0]!, changed_files: n, files: n > FILES_MAX ? [] : files };
   }
 
   /** PR conversation comments created at or after `since`, oldest first; the cursor is the newest created_at seen (else `since`); at most MAX_PAGES pages a call. */

@@ -447,13 +447,13 @@ const NO_OUTPUT = { reason: "ended before any output", transient: true };
  * The gateway: handle(req, res). `secret(name)` reads a secret file (fresh each time, so a rotation needs no restart);
  * `upstream` is OpenRouter's API base; Paperclip and the board's internal API as URLs.
  */
-export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", modelsUrl = `${upstream}/models`, embeddingModelsUrl = `${upstream}/embeddings/models`, priceRetryMs, paperclipUrl, notifyOwner, tellDelegator, githubJwksUrl, appLogin = () => undefined, jobLive = () => false, jobProfile = () => undefined, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS, cooldownMs = retryDelaysMs, streamIdleMs = 120_000, taskRetryMs = [500, 2_000] }: {
+export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, asCaller, secret, upstream = "https://openrouter.ai/api/v1", modelsUrl = `${upstream}/models`, embeddingModelsUrl = `${upstream}/embeddings/models`, priceRetryMs, paperclipUrl, notifyOwner, tellDelegator, githubJwksUrl, appLogin = async () => undefined, jobLive = () => false, jobProfile = () => undefined, log = () => {}, now = Date.now, retryDelaysMs = RETRY_DELAYS_MS, cooldownMs = retryDelaysMs, streamIdleMs = 120_000, taskRetryMs = [500, 2_000] }: {
   /** Whether a kernel job (a job token's id) is still admitted or running: an ended job's token buys nothing. */
   jobLive?: (id: string) => boolean;
   /** A job's profile as frozen at its admission (its row's), never its agent's current grants. */
   jobProfile?: (id: string) => string | null | undefined;
   /** This instance's own GitHub App's bot login (`<slug>[bot]`), whose PRs the CI tier rules count as a member's. */
-  appLogin?: () => string | undefined;
+  appLogin?: () => Promise<string | undefined>;
   dbFile: string; legacyDbFile?: string; grantsFile: string; settingsFile: string;
   /** A module's model call for the agent whose tool call it serves (module token + caller assertion): that caller's own credential. */
   asCaller?: (req: IncomingMessage) => Promise<string | undefined>; secret: (name: string) => string; upstream?: string; paperclipUrl?: string;
@@ -835,7 +835,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     log("ci token issued", { repo: claims.repo, pr: claims.pr, run: claims.runId });
     // The repo's risk tier rules and class (its code review entry; none: the template's default rules) and the instance App's login.
     const entry = (c.tiers ?? {})[claims.repo.toLowerCase()] as { rules?: unknown; repo_class?: unknown } | undefined;
-    send(res, 200, { token, expires_at: exp, review: c.review ?? null, tiers: { rules: entry?.rules ?? null, repo_class: entry?.repo_class, self: appLogin() } });
+    send(res, 200, { token, expires_at: exp, review: c.review ?? null, tiers: { rules: entry?.rules ?? null, repo_class: entry?.repo_class, self: await appLogin().catch(() => undefined) } });
   }
 
   /**

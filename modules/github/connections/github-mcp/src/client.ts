@@ -1,8 +1,12 @@
-// GitHub as the owner (spec 2026-11-20-github-owner-identity §1, §9): the one client every GitHub call in this process goes
-// through, with the owner's sign-in. One rate limiter: a call issued interactively (from a tool) fails at once as a typed
+// The one client every GitHub call in this process goes through (docs/design/github-identity.md). Every write names its actor,
+// chosen by `actorFor(target, op)`: the instance's GitHub App where it is installed on the target and its installation has
+// accepted every permission the op needs (OPS), else the owner's sign-in; nothing else switches it (no fallback on an error or a
+// rate limit, and a broken App throws). A write with no actor, or a GraphQL mutation outside MUTATIONS, is refused. Reads go as the
+// App where its installation holds the read's permission (readerFor), else as the owner. One rate limiter: a call issued
+// interactively (from a tool) fails at once as a typed
 // `rate_limited` need when a limit blocks it, because a tool call can't sleep past its timeout; a background call (a job) waits
-// while REST or GraphQL is below a 20% reserve. Content-creating writes go one at a time per identity (the owner, or code
-// review's App installation, which `as` names: each has its own limits and queue), at least a second apart, and wait out
+// while REST or GraphQL is below a 20% reserve. Content-creating writes go one at a time per identity (the owner, or one App
+// installation: each has its own limits and queue), at least a second apart, and wait out
 // GitHub's secondary limit, as its guidance asks, but only inside the write's budget: the writes of one tool invocation share
 // one 240 s budget, fixed when the invocation starts so its own reads spend it too (below the kernel's 300 s allowance), and a
 // write that cannot start in what is left fails at once, `rate_limited` (with its `until`) or `write_busy` for a queue that is
@@ -13,8 +17,55 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { needsOwner } from "./vendor/needs.js";
 import type { Auth } from "./vendor/oauth.js";
+import { AppError, AppGone, covers as levelCovers, type GitHubApp, type Installation } from "./github-app.js";
 
 const API = "https://api.github.com";
+
+/**
+ * What a write does, and the installation permissions it needs to go as the App (GitHub's "Permissions required for GitHub Apps").
+ * `null`: never the App (no permission is asked for it), so always the owner. `push` always needs `workflows`, so who pushes
+ * depends on the repo, never on the diff.
+ */
+export const OPS = {
+  push: { contents: "write", workflows: "write" },
+  merge: { contents: "write" },
+  update_branch: { pull_requests: "write", contents: "write" },
+  pr: { pull_requests: "write" },
+  dequeue: { pull_requests: "write" },
+  issue: { issues: "write" },
+  status: { statuses: "write" },
+  actions: { actions: "write" },
+  actions_read: { actions: "read" },
+  contents: { contents: "write" },
+  /** A release's graduation: the release write, and the run and issue it is checked against (one actor for all of it). */
+  release: { contents: "write", actions: "read", issues: "read" },
+  project: { organization_projects: "write" },
+  create_repo: null,
+  runner_token: null,
+} as const satisfies Record<string, Record<string, "read" | "write"> | null>;
+export type Op = keyof typeof OPS;
+/** Where a write lands: a repository (`owner/name`), or an account (an org's project, repo creation, runner registration). */
+export type Target = { repo: string } | { org: string };
+
+/** The GraphQL mutations this process may send, each with the variable that names its target (the write's actor is chosen for it). */
+export const MUTATIONS = {
+  /** target: input.branch.repositoryNameWithOwner */
+  CREATE_COMMIT: `mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid tree { oid } } } }`,
+  /** target: input.repositoryId (a ref update bound to its current sha; an all-zero afterOid deletes it) */
+  UPDATE_REFS: `mutation($input: UpdateRefsInput!) { updateRefs(input: $input) { clientMutationId } }`,
+  /** target: the PR `id` */
+  DEQUEUE: `mutation($id: ID!) { dequeuePullRequest(input: { id: $id }) { mergeQueueEntry { state } } }`,
+  /** target: the org project `project` */
+  ADD_PROJECT_ITEM: `mutation($project: ID!, $content: ID!) { addProjectV2ItemById(input: { projectId: $project, contentId: $content }) { item { id } } }`,
+  /** target: the org project `project` */
+  SET_PROJECT_FIELD: `mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) { updateProjectV2ItemFieldValue(input: { projectId: $project, itemId: $item, fieldId: $field, value: { singleSelectOptionId: $option } }) { projectV2Item { id } } }`,
+} as const;
+export type Mutation = keyof typeof MUTATIONS;
+/** The most review threads one RESOLVE_THREAD request resolves. */
+export const RESOLVE_MAX = 100;
+/** RESOLVE_THREAD for `n` threads (target: the threads' PR): aliased mutations `t0..t<n-1>`, each with its own `$t<i>`. */
+export const resolveThreadsDoc = (n: number) => `mutation(${Array.from({ length: n }, (_, i) => `$t${i}: ID!`).join(", ")}) { ${Array.from({ length: n }, (_, i) => `t${i}: resolveReviewThread(input: { threadId: $t${i} }) { thread { id isResolved } }`).join(" ")} }`;
+const REGISTERED = new Set<string>([...Object.values(MUTATIONS), ...Array.from({ length: RESOLVE_MAX }, (_, i) => resolveThreadsDoc(i + 1))]);
 
 export type Need =
   | { cause: "not_connected" }
@@ -24,7 +75,11 @@ export type Need =
   | { cause: "restricted"; org: string; url: string; message?: string }
   | { cause: "unreachable"; repo: string }
   | { cause: "rate_limited"; until: string; /** GitHub itself refused the request (not this process's reserve). */ by?: "github" }
-  | { cause: "write_busy" };
+  | { cause: "write_busy" }
+  /** The App is set up but doesn't work (its saved files, its key, a suspension, GitHub's refusal or outage). Never the owner instead. */
+  | { cause: "app_broken"; detail: string }
+  /** GitHub refused the App a call its installation's accepted permissions should allow: the installation is read again next time. */
+  | { cause: "app_refused"; target: string; message: string };
 
 const OWNER_FIXABLE = new Set<Need["cause"]>(["not_connected", "expired", "scope", "sso", "restricted"]);
 
@@ -39,8 +94,13 @@ export function needText(n: Need): string {
     case "unreachable": return `${n.repo} isn't reachable with your GitHub account`;
     case "rate_limited": return `GitHub's rate limit is used up until ${n.until}`;
     case "write_busy": return "This GitHub write can't finish in time right now: run the call again in a minute";
+    case "app_broken": return `AidenHQ's GitHub App isn't working (${n.detail}): replace it on its setup page (/setup/github-app)`;
+    case "app_refused": return `GitHub refused AidenHQ's GitHub App on ${n.target} (${n.message}): its installation is read again, and the next attempt chooses again`;
   }
 }
+
+/** The plain error word a tool or route answers for a need nobody can fix by signing in. */
+export const needError = (n: Need) => (n.cause === "rate_limited" ? "github_rate_limited" : n.cause === "write_busy" ? "github_write_busy" : n.cause === "app_broken" ? "github_app_broken" : n.cause === "app_refused" ? "github_app_refused" : "github_unreachable");
 
 export class GitHubNeed extends Error {
   readonly need: Need;
@@ -56,9 +116,8 @@ export class GitHubNeed extends Error {
 /** A tool's answer for a need: an owner-fixable one is needs_owner (the kernel tells whoever should hear it); the rest plain. */
 export function needResult(e: GitHubNeed): { isError: true; content: { type: "text"; text: string }[] } {
   const n = e.need;
-  if (n.cause === "unreachable" || n.cause === "rate_limited" || n.cause === "write_busy") {
-    const error = n.cause === "rate_limited" ? "github_rate_limited" : n.cause === "write_busy" ? "github_write_busy" : "github_unreachable";
-    return { isError: true, content: [{ type: "text", text: JSON.stringify({ error, need: n, detail: e.message }) }] };
+  if (n.cause === "unreachable" || n.cause === "rate_limited" || n.cause === "write_busy" || n.cause === "app_broken" || n.cause === "app_refused") {
+    return { isError: true, content: [{ type: "text", text: JSON.stringify({ error: needError(n), need: n, detail: e.message }) }] };
   }
   return needsOwner({ cause: n.cause, detail: e.message, ...(n.cause === "scope" ? { scope: n.scope } : {}), ...(n.cause === "sso" || n.cause === "restricted" ? { org: n.org, url: n.url } : {}) });
 }
@@ -80,15 +139,40 @@ export type GitHubStatus = {
   lines: StatusLine[];
 };
 
-/** Another identity's calls (the code review App's installation): its own token, pacing and rate limits; never the sign-in's state. */
-export type Identity = {
+/** An App installation's calls (inside this module): its own token, pacing and rate limits; never the sign-in's state. */
+type Identity = {
   key: string;
   token(fresh?: boolean): Promise<string>;
-  /** Each write as it was answered: a refusal (its words) or a success (undefined), so its owner sees when it stops working. */
+  /** The repo or account its installation was looked up for: evicted when GitHub refuses it a permission. */
+  target: string;
+  /** Each call as it was answered: a refusal (its words) or a success (undefined), so the card sees when it stops working. */
   wrote?(refusal?: string): void;
 };
+type Rest = (method: string, path: string, body?: unknown, o?: Omit<CallOpts, "actor">) => Promise<{ status: number; body: any; headers: Headers }>;
+/**
+ * Who one write attempt goes as (actorFor): every call of the attempt (the reads that decide it, the git token, the mutation and
+ * the reads after it) goes through it, so the attempt never changes identity part-way.
+ */
+export type Actor = {
+  kind: "app" | "owner";
+  /** The pacing key: `owner`, or `app:<installation id>`. */
+  key: string;
+  /** The App's bot user id (GitHub's `user.id` on what it writes); the owner has none here. */
+  botId?: number;
+  /** Its login and git identity: the owner's account, or the App's bot (`<slug>[bot]`). */
+  identity(): Promise<{ login: string; name: string; email: string }>;
+  rest: Rest;
+  /** The whole GraphQL answer ({data, errors}); a mutation must be one of MUTATIONS. */
+  graphql(query: string, variables: Record<string, unknown>, o?: { background?: boolean }): Promise<any>;
+  /** A registered mutation (MUTATIONS) by name, answered as REST answers (status and the whole GraphQL body). */
+  mutate(name: Mutation, variables: Record<string, unknown>): Promise<{ status: number; body: any; headers: Headers }>;
+  /** A token for one git child's env here (never returned by any route). */
+  gitToken(): Promise<string>;
+};
 type CallOpts = {
-  background?: boolean; accept?: string; as?: Identity;
+  background?: boolean; accept?: string;
+  /** Who the call goes as; required for a write (a write with none is refused). */
+  actor?: Actor;
   /** A conditional read with the caller's own ETag (the change feed keeps its own): a 304 is answered as the 304. Every other GET
    * goes through the shared ETag cache instead (`cached`), which answers an unchanged read from the body it kept. */
   etag?: string;
@@ -105,22 +189,22 @@ type CallOpts = {
   owner?: true;
 };
 
-/** The owner's optional GitHub App (github-app.ts), for reads: where it is installed on a repo and holds the permission a read
- * needs, the read goes as its installation (its own rate limit), never the owner's. Writes never go through this. */
-export type AppReader = {
-  installed(repo: string): Promise<{ id: number; permissions: Record<string, string> } | null>;
-  token(installation: number, fresh?: boolean): Promise<string>;
-};
+/** The instance's optional GitHub App as this client uses it (github-app.ts). */
+export type AppSource = Pick<GitHubApp, "installed" | "installedOn" | "evict" | "token" | "identity" | "wrote">;
 
 export interface GitHubAccess {
   connected(): boolean;
   identity(): Promise<{ login: string; name: string; email: string }>;
-  /** For git children inside this process only (credential env); never returned by any route. */
+  /** The owner's token, for git children inside this process only (a fetch; a push takes its actor's gitToken). */
   token(): Promise<string>;
-  /** `as`: another identity than the owner's (the code review App's installation); everything else is the owner's sign-in. */
+  /** The one chooser: the App where installed on `target` with every permission `op` needs, else the owner. A broken App throws. */
+  actorFor(target: Target, op: Op): Promise<Actor>;
+  /** The actor a pacing key names (an async merge request read back as the identity that made it). */
+  actorByKey(key: string): Promise<Actor>;
+  /** A read (as the App where it can, else the owner), or a write as `actor`, which a write must name. */
   rest(method: string, path: string, body?: unknown, o?: CallOpts): Promise<{ status: number; body: any; headers: Headers }>;
-  /** The whole GraphQL answer ({data, errors}). */
-  graphql(query: string, variables: Record<string, unknown>, o?: { background?: boolean; as?: Identity }): Promise<any>;
+  /** The whole GraphQL answer ({data, errors}): a query; a mutation goes through an actor. */
+  graphql(query: string, variables: Record<string, unknown>, o?: { background?: boolean; actor?: Actor }): Promise<any>;
   scopes(): string[];
   status(): GitHubStatus;
   /** Calls `fn` after each content-creating write this process sends (any identity): the change feed reads that repo again soon. */
@@ -153,14 +237,16 @@ const PERMISSIONS: [RegExp, string][] = [
   [/^\/collaborators\//, "metadata"],
   [/^\/actions\//, "actions"],
   [/^(?:\/commits\/[^/]+)?\/check-(?:runs|suites)\b/, "checks"],
+  // Classic branch protection is an Administration read, which the App never asks for: the owner reads it.
+  [/^\/branches\/.+\/protection\b/, "administration"],
   [/^\/commits\/[^/]+\/(?:status|statuses)$/, "statuses"],
   [/^\/pulls\b/, "pull_requests"],
   [/^\/(?:issues|labels|milestones)\b/, "issues"],
   [/^\/(?:contents|git|commits|compare|branches|readme|tags|releases)\b/, "contents"],
 ];
 const permissionOf = (rest: string) => PERMISSIONS.find(([re]) => re.test(rest))?.[1];
-/** An App read refused for a permission its installation hasn't accepted: the owner reads that repo and permission this long. */
-const DENIED_MS = 60 * 60_000;
+/** GitHub's words for a call its installation's permissions don't allow. */
+const NOT_ACCESSIBLE = /not accessible by integration/i;
 /** The shared ETag cache's bounds: its whole size, and the largest answer it keeps. */
 const CACHE_BYTES = 32 * 1024 * 1024, CACHE_ENTRY_BYTES = 1024 * 1024;
 const ownerOf = (path: string) => /^\/(?:repos|orgs)\/([^/?#]+)/.exec(path)?.[1];
@@ -245,12 +331,12 @@ export function createAccess(o: {
   reserve?: number;
   /** GITHUB_FLEET_ORG and GITHUB_CI, for the status card. */
   env?: Record<string, string | undefined>;
-  /** Each content-creating write, by identity (how much of the owner's limit code review's App takes off it). */
+  /** Each content-creating write, by identity (how much of the owner's limit the App takes off it). */
   log?: (msg: string, f: Record<string, unknown>) => void;
   /** The owner's GraphQL org query answered with no errors: the org's sso/restricted need is the owner's fix made. */
   onOrgOk?: (org: string) => void;
-  /** The owner's optional GitHub App: repo reads go as its installation where it can make them (`readerFor`). */
-  app?: AppReader;
+  /** The instance's optional GitHub App: writes go as it where actorFor picks it, repo reads where `readerFor` can. */
+  app?: AppSource;
 }): GitHubAccess {
   const fetchImpl = o.fetchImpl ?? fetch;
   const now = o.now ?? Date.now;
@@ -389,42 +475,80 @@ export function createAccess(o: {
     return queued(p, deadline, () => paced(p, deadline, () => attempt(p, method, path, body, resource, background, accept, deadline, as, false, undefined, caller)));
   }
 
-  /** Repo reads the App can't make (its installation refused the permission), until when: `<repo> <permission>`. */
-  const denied = new Map<string, number>();
+  /** An App answer as a typed need: a broken App is `app_broken`, never a reason to call as the owner instead. */
+  const appCall = async <T>(go: () => Promise<T>): Promise<T> => {
+    try { return await go(); } catch (e) {
+      // A gone installation is a definite refusal (app_refused); any other App failure may pass (app_broken).
+      if (e instanceof AppGone) throw Object.assign(new GitHubNeed({ cause: "app_refused", target: "installation", message: e.message }), { status: 404 });
+      if (e instanceof AppError) fail({ cause: "app_broken", detail: e.message });
+      throw e;
+    }
+  };
+  /** An installation's identity for this client's calls (its own pacing key and token). */
+  const installationOf = (app: AppSource, inst: Installation, target: string): Identity => ({ key: `app:${inst.id}`, target, token: (fresh) => app.token(inst.id, fresh), wrote: (refusal) => app.wrote(refusal) });
+
   /**
    * Who reads a repo when the caller named nobody: the App's installation where the App is installed on the repo and its
-   * installation holds the permission the read needs (PERMISSIONS), else the owner (undefined). REST only: GraphQL stays the
-   * owner's (its own budget sat near idle, and ship's merge decisions read viewer-relative fields such as mergeStateStatus). A broken App (its key, a suspension) throws here, as it does for code review's writes: the GitHub
-   * card already shows it, and a read never quietly moves between identities because the App broke.
+   * installation holds the permission the read needs (PERMISSIONS), else the owner (undefined). REST only: GraphQL reads stay the
+   * owner's unless an actor makes them. A broken App throws (app_broken), and a read GitHub refuses the App is `app_refused`.
    */
-  async function readerFor(method: string, path: string): Promise<{ key: string; repo: string; permission: string; as: Identity } | undefined> {
+  async function readerFor(method: string, path: string): Promise<Identity | undefined> {
     if (!o.app || method !== "GET") return undefined;
     const m = inRepo(path);
     const permission = m && permissionOf(m[3] ?? "");
     if (!m || !permission || [m[1], m[2]].some((x) => /^\.+$/.test(x!))) return undefined;
     const r = `${m[1]}/${m[2]}`.toLowerCase();
-    const key = `${r} ${permission}`;
-    if ((denied.get(key) ?? 0) > now()) return undefined;
-    const inst = await o.app.installed(r);
-    if (!inst || !["read", "write"].includes(inst.permissions[permission] ?? "")) return undefined;
     const app = o.app;
-    return { key, repo: r, permission, as: { key: `app:${inst.id}`, token: (fresh) => app.token(inst.id, fresh) } };
+    const inst = await appCall(() => app.installed(r));
+    if (!inst || !levelCovers(inst.permissions[permission], "read")) return undefined;
+    return installationOf(app, inst, r);
   }
 
-  /**
-   * A read, as the App where it can (readerFor), else as the caller's identity (the owner, or `as`). An App read GitHub refuses for
-   * a permission the installation hasn't accepted yet (403 "Resource not accessible by integration") is read again as the owner, and that repo and permission stay the owner's for DENIED_MS, logged
-   * once: the one fallback, because the App is optional and its new permissions wait for each install's approval.
-   */
+  /** A read, as the caller's identity (an actor's), else as the App where it can (readerFor), else as the owner. */
   async function read(method: string, path: string, body: unknown, resource: string, background: boolean, accept?: string, as?: Identity, etag?: string, deadline?: number, caller?: string, ownerOnly = false) {
-    const go = (who?: Identity) => cached(method, path, body, resource, background, accept, who, etag, deadline, caller);
-    const app = as || ownerOnly ? undefined : await readerFor(method, path);
-    if (!app) return go(as);
-    const r = await go(app.as);
-    if (!(r.status === 403 && /not accessible by integration/i.test(String(r.body?.message ?? "")))) return r;
-    denied.set(app.key, now() + DENIED_MS);
-    o.log?.("github reads as the owner: the App's installation refused the permission", { repo: app.repo, permission: app.permission, until: new Date(now() + DENIED_MS).toISOString(), said: String(r.body?.message ?? "").slice(0, 200) });
-    return go(undefined);
+    const who = as ?? (ownerOnly ? undefined : await readerFor(method, path));
+    return cached(method, path, body, resource, background, accept, who, etag, deadline, caller);
+  }
+
+  /** The owner's sign-in as an actor. */
+  const ownerActor: Actor = {
+    kind: "owner", key: "owner",
+    identity: () => identity(),
+    // The owner's actor reads as the owner too (one identity per attempt), never as the App through readerFor.
+    rest: (method, path, body, opts = {}) => restAs(undefined, method, path, body, { ...opts, owner: true }),
+    graphql: (query, variables, opts = {}) => graphqlAs(undefined, query, variables, opts),
+    mutate: (name, variables) => restAs(undefined, "POST", "/graphql", { query: MUTATIONS[name], variables }, {}),
+    gitToken: () => token(),
+  };
+  const appActor = async (app: AppSource, inst: Installation, target: string): Promise<Actor> => {
+    const id = installationOf(app, inst, target);
+    const bot = await appCall(() => app.identity());
+    if (!bot) fail({ cause: "app_broken", detail: "the GitHub App's identity couldn't be read" });
+    return {
+      kind: "app", key: id.key, botId: bot.botId,
+      identity: async () => ({ login: bot.login, name: bot.login, email: `${bot.botId}+${bot.login}@users.noreply.github.com` }),
+      rest: (method, path, body, opts = {}) => restAs(id, method, path, body, opts),
+      graphql: (query, variables, opts = {}) => graphqlAs(id, query, variables, opts),
+      mutate: (name, variables) => restAs(id, "POST", "/graphql", { query: MUTATIONS[name], variables }, {}),
+      gitToken: () => appCall(() => app.token(inst.id)),
+    };
+  };
+  /** The one chooser (docs/design/github-identity.md): the App iff set up, installed on `target`, and every permission `op` needs accepted. */
+  async function actorFor(target: Target, op: Op): Promise<Actor> {
+    const needs = OPS[op];
+    const app = o.app;
+    if (!app || !needs) return ownerActor;
+    const at = "repo" in target ? target.repo.toLowerCase() : target.org.toLowerCase();
+    const inst = await appCall(() => ("repo" in target ? app.installed(target.repo) : app.installedOn(target.org)));
+    if (!inst || !Object.entries(needs).every(([p, level]) => levelCovers(inst.permissions[p], level))) return ownerActor;
+    return appActor(app, inst, at);
+  }
+  async function actorByKey(key: string): Promise<Actor> {
+    const m = /^app:([0-9]{1,12})$/.exec(key);
+    if (!m) return ownerActor;
+    // The App is gone: a definite answer, so a caller drops what that identity holds (never a transient app_broken).
+    if (!o.app) throw Object.assign(new GitHubNeed({ cause: "app_refused", target: key, message: "the GitHub App that made this isn't set up any more" }), { status: 404 });
+    return appActor(o.app, { id: Number(m[1]), permissions: {}, html_url: "", account: "" }, "");
   }
 
   /** The shared ETag cache, least recently used first: per identity (the owner's per sign-in), accept header and path. */
@@ -533,7 +657,7 @@ export function createAccess(o: {
     // The sign-in this request belongs to: a 401 is retried only within it (see `replaced` below). A retry keeps the count its
     // first attempt captured, so a sign-in that lands between the two is not mistaken for the same one.
     const signedInAt = as ? undefined : (since ?? o.auth.signInCount?.());
-    const t = as ? await as.token(retried) : await token();
+    const t = as ? await appCall(() => as.token(retried)) : await token();
     // The sign-in the request goes out under, kept for the header it may answer with (see `observe`).
     const sentFor = signInScopes();
     // Never a fetch once the write's budget has run out: nothing lands after the caller was told it failed.
@@ -612,6 +736,11 @@ export function createAccess(o: {
     if (as) {
       // Its writes' answers are its health (a permission the installation hasn't granted is a 403 here, not at the token).
       if (createsContent(method, path, body) && (res.ok || res.status === 401 || res.status === 403)) as.wrote?.(res.ok ? undefined : `GitHub refused ${method} ${path.split("?")[0]!.replace(/[0-9a-f]{40}/g, ":sha")}: ${res.status} ${String(parsed?.message ?? "").slice(0, 120)}`);
+      // A permission its installation's answer said it holds, refused: the installation is read again next time, and this attempt
+      // fails as itself (never sent again as the owner).
+      if (res.status === 403 && NOT_ACCESSIBLE.test(String(parsed?.message ?? ""))) refusedApp(as, String(parsed?.message ?? ""));
+      const forbidden = path === "/graphql" && Array.isArray(parsed?.errors) ? parsed.errors.find((e: { type?: unknown; message?: unknown }) => e?.type === "FORBIDDEN" && NOT_ACCESSIBLE.test(String(e.message ?? ""))) : undefined;
+      if (forbidden) refusedApp(as, String(forbidden.message));
       return { status: res.status, body: parsed, headers: res.headers };
     }
     if (res.ok) o.auth.mark("ok"); // the sign-in's state starts "unknown" after every restart; a call that worked settles it
@@ -619,6 +748,54 @@ export function createAccess(o: {
     const inv = invocation.getStore();
     if (inv && (res.ok || res.status === 304)) inv.owner = true;
     return { status: res.status, body: parsed, headers: res.headers };
+  }
+
+  function refusedApp(as: Identity, message: string): never {
+    if (as.target) o.app?.evict(as.target);
+    o.log?.("github refused the App", { key: as.key, target: as.target, said: message.slice(0, 200) });
+    // GitHub's own refusal, so a caller that reads a status (the merge queue) takes it as definitive, never as unanswered.
+    throw Object.assign(new GitHubNeed({ cause: "app_refused", target: as.target || as.key, message: message.slice(0, 200) }), { status: 403 });
+  }
+
+  /** A REST call as `as` (an App installation) or the owner (undefined). */
+  function restAs(as: Identity | undefined, method: string, path: string, body: unknown, opts: Omit<CallOpts, "actor">) {
+    const m = method.toUpperCase();
+    if (path === "/graphql") registered(body);
+    return send(m, path, body, path === "/graphql" ? "graphql" : path.startsWith("/search/") ? "search" : "core", Boolean(opts.background), opts.accept, as, opts.etag, opts.deadline, opts.caller, opts.owner === true);
+  }
+  /** A mutation must be one of MUTATIONS: anything else is refused before it leaves the process. */
+  function registered(body: unknown) {
+    const q = String((body as { query?: unknown } | undefined)?.query ?? "");
+    if (/^\s*mutation\b/.test(q) && !REGISTERED.has(q)) throw new Error("refused a GraphQL mutation that isn't one of the registered ones (client.ts MUTATIONS)");
+  }
+  async function graphqlAs(as: Identity | undefined, query: string, variables: Record<string, unknown>, opts: { background?: boolean }) {
+    registered({ query });
+    const res = await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, as);
+    const body = res.body;
+    // A failed answer (a 502 with no `errors`) is not an empty result: a caller would read it as "no items" and drop what it holds.
+    if (res.status >= 300) throw new Error(`GitHub GraphQL answered ${res.status}`);
+    // The App's refusals (attempt: a FORBIDDEN "not accessible by integration" is the REST 403's) are thrown already.
+    if (as) return body;
+    const org = typeof variables.org === "string" ? variables.org : "";
+    // GraphQL answers 200 with the refusal inside `errors`: the same need REST's 403 is. A refusal inside one item's content (an
+    // issue of another org) is recorded but leaves the rest of the board readable. The warning stays while refusals keep coming.
+    for (const { need, fatal } of graphqlNeeds(body?.errors, org, o.clientId)) {
+      if (fatal) fail(need, now());
+      problems.set(need.org.toLowerCase(), { org: need.org, cause: need.cause, url: need.url, ...(need.message ? { message: need.message } : {}), at: now() });
+    }
+    // The org query is what an org's restriction blocks (a search or a public read answers anyway), so its answer with no
+    // errors is the one that says the org is reachable again. `partial-results` still means the org's SSO filtered it.
+    if (org && !(Array.isArray(body?.errors) && body.errors.length) && !/^partial-results/i.test(res.headers.get("x-github-sso") ?? "")) orgOk(org);
+    return body;
+  }
+  async function identity(): Promise<{ login: string; name: string; email: string }> {
+    const t = await token();
+    if (me?.for === t) return { login: me.login, name: me.name, email: me.email };
+    const r = await send("GET", "/user", undefined, "core", false);
+    if (r.status !== 200) throw new Error(`couldn't read the signed-in GitHub account (GitHub said ${r.status})`);
+    const login = String(r.body.login);
+    me = { login, name: String(r.body.name || login), email: `${r.body.id}+${login}@users.noreply.github.com`, for: t };
+    return { login: me.login, name: me.name, email: me.email };
   }
 
   /** The sign-in's own scopes as one comparable string: empty when the sign-in doesn't record any (a pasted service token). */
@@ -640,34 +817,21 @@ export function createAccess(o: {
     withCaller: (caller, fn) => callers.run(caller, fn),
     token: () => token(),
     scopes,
-    rest: (method, path, body, opts = {}) => send(method.toUpperCase(), path, body, path === "/graphql" ? "graphql" : path.startsWith("/search/") ? "search" : "core", Boolean(opts.background), opts.accept, opts.as, opts.etag, opts.deadline, opts.caller, opts.owner === true),
+    actorFor,
+    actorByKey,
+    rest: async (method, path, body, opts = {}) => {
+      const { actor, ...rest } = opts;
+      if (actor) return actor.rest(method, path, body, rest);
+      // A write names its actor (actorFor): never a silent owner write.
+      if (createsContent(method.toUpperCase(), path, body)) throw new Error(`a GitHub write names no actor: ${method.toUpperCase()} ${path.split("?")[0]}`);
+      return restAs(undefined, method, path, body, rest);
+    },
     graphql: async (query, variables, opts = {}) => {
-      const res = await send("POST", "/graphql", { query, variables }, "graphql", Boolean(opts.background), undefined, opts.as);
-      const body = res.body;
-      if (opts.as) return body;
-      // A failed answer (a 502 with no `errors`) is not an empty result: a caller would read it as "no items" and drop what it holds.
-      if (res.status >= 300) throw new Error(`GitHub GraphQL answered ${res.status}`);
-      const org = typeof variables.org === "string" ? variables.org : "";
-      // GraphQL answers 200 with the refusal inside `errors`: the same need REST's 403 is. A refusal inside one item's content (an
-      // issue of another org) is recorded but leaves the rest of the board readable. The warning stays while refusals keep coming.
-      for (const { need, fatal } of graphqlNeeds(body?.errors, org, o.clientId)) {
-        if (fatal) fail(need, now());
-        problems.set(need.org.toLowerCase(), { org: need.org, cause: need.cause, url: need.url, ...(need.message ? { message: need.message } : {}), at: now() });
-      }
-      // The org query is what an org's restriction blocks (a search or a public read answers anyway), so its answer with no
-      // errors is the one that says the org is reachable again. `partial-results` still means the org's SSO filtered it.
-      if (org && !(Array.isArray(body?.errors) && body.errors.length) && !/^partial-results/i.test(res.headers.get("x-github-sso") ?? "")) orgOk(org);
-      return body;
+      if (opts.actor) return opts.actor.graphql(query, variables, { background: opts.background });
+      if (/^\s*mutation\b/.test(query)) throw new Error("a GitHub mutation names no actor");
+      return graphqlAs(undefined, query, variables, opts);
     },
-    async identity() {
-      const t = await token();
-      if (me?.for === t) return { login: me.login, name: me.name, email: me.email };
-      const r = await send("GET", "/user", undefined, "core", false);
-      if (r.status !== 200) throw new Error(`couldn't read the signed-in GitHub account (GitHub said ${r.status})`);
-      const login = String(r.body.login);
-      me = { login, name: String(r.body.name || login), email: `${r.body.id}+${login}@users.noreply.github.com`, for: t };
-      return { login: me.login, name: me.name, email: me.email };
-    },
+    identity,
     status() {
       const core = owner.rates.get("core");
       const have = scopes();

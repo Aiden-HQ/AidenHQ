@@ -1,5 +1,5 @@
 {
-  "title": "github.approve: the reviewer App's approval of this adopted PR at exactly this head, for this adoption (or, with dismiss, the dismissal of its earlier approvals).",
+  "title": "github.approve: the GitHub App's approval of this adopted PR at exactly this head, for this adoption (or, with dismiss, the dismissal of its earlier approvals).",
   "type": "object",
   "additionalProperties": false,
   "required": [
