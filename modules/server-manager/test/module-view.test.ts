@@ -76,3 +76,21 @@ test("the page keeps the last draft the module accepted, and never proposes a va
   // A saved entry the module could not read is reported, not silently dropped by an unrelated edit.
   assert.match(html, /isn't listed/);
 });
+
+test("each machine's state line carries disk on / and /boot beside pending, security, reboot and last check", () => {
+  // §9 lists the disk readout as part of the row's state: a full /boot turns a kernel update into a machine that does not come back.
+  assert.match(html, /free on \//, "the row shows free space on /");
+  assert.match(html, /free on \/boot/, "the row shows free space on /boot");
+  for (const tag of ["reboot needed", "pending", "security", "checked "]) assert.ok(html.includes(tag), `the row shows ${tag}`);
+  // Low space is flagged, not just printed.
+  assert.match(html, /st\.disk\.root_free_gb < 1 \? "needs"/);
+  assert.match(html, /st\.disk\.boot_free_gb < 1 \? "needs"/);
+});
+
+test("check now is the read path's one action: it calls server_manager_check and files nothing", () => {
+  assert.ok(html.includes('tool("server_manager_check"'), "the page calls the check");
+  assert.match(html, /"Check now"/);
+  assert.match(html, /checking\.has\(name\)/, "a check in flight is not started twice");
+  // The page never asks for a record: no other write tool is called from this slice's buttons.
+  for (const t of ["server_manager_patch", "server_manager_reboot", "server_manager_host_key_reset"]) assert.ok(!html.includes(`tool("${t}"`), `the page does not call ${t} yet`);
+});

@@ -135,6 +135,7 @@ export function sharedCopies(root = repo) {
     "modules/meetings/connections/ops-mcp/src/source-store.ts",
     "modules/google/connections/google-workspace-mcp/src/source-store.ts",
     "modules/security/scanner/src/source-store.ts",
+    "modules/server-manager/service/src/source-store.ts",
     "modules/warehouse/search/src/source-store.ts",
   ],
   // Who said it: a comment posted for someone else is never the owner's words (dispatch, task_comments, the board).

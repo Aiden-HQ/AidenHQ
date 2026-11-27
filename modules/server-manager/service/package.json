@@ -1,0 +1,13 @@
+{
+  "name": "server-manager-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "description": "Server Manager's one service: the SSH transport, the apt adapter, the status writer and the Servers page tools.",
+  "dependencies": {
+    "pg": "8.23.1"
+  }
+}

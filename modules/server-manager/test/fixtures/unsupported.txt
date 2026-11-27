@@ -1,0 +1,28 @@
+### os-release
+PRETTY_NAME="Fedora Linux 41 (Server Edition)"
+NAME="Fedora Linux"
+VERSION_ID=41
+ID=fedora
+VERSION_CODENAME=""
+
+### apt-get -s upgrade
+
+
+### reboot
+no
+
+### systemctl list-units --type=service --state=running --no-legend --plain
+
+### free
+root 40
+boot 0.9
+
+### boot id
+00000000-0000-0000-0000-000000000000
+
+### apt-config dump
+APT "";
+APT::Periodic::Unattended-Upgrade "0";
+
+### unattended-upgrades
+disabled

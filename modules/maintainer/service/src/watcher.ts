@@ -8,7 +8,8 @@
  * - `issues.labeled` with the repo's fix label (duty `fixes`), or `agent-build` (duty `features`): one trust read of that issue through
  *   github-mcp (a label counts only from a collaborator with one of the repo's trusted roles; the owner's login is an admin; the event's
  *   own actor never decides), then one task keyed by its source `maintainer-issue:<repo>#<n>`. An untrusted one is logged once and costs
- *   no run. A read that fails throws, so the batch is redelivered.
+ *   no run. A read that fails is retried on the next look, up to a bounded number of looks; then the event is skipped and its repo is
+ *   bootstrapped again, so one failing event cannot hold the feed.
  * - `issues.labeled` with `feature-request` (duty `features`): the same trust read, and a trusted one joins the repo's `featured` set,
  *   the valid reports the per-author triage cap leaves uncounted.
  * - `issues.opened` with none of the three labels (the fleet's own issues included), on a repo whose `triage` isn't off: one triage task
@@ -27,6 +28,8 @@
  *
  * The cursor (the last log seq committed) moves only after a batch's effects are written to this service's state file (state.json), so a
  * crash or a refused filing redelivers it; every handler is idempotent (the fired, noted and triaged sets, and the task sources).
+ * An event's handler is retried for at most three looks. After that the event is skipped, named in one warning and in state.json, and
+ * its repo is bootstrapped on the next look: the bootstrap and the task source key make a skipped event's recovery idempotent.
  * Pull requests (quiet contributor PRs, Dependabot) are the ship module's (its per-repo settings).
  */
 import { readFileSync } from "node:fs";
@@ -37,6 +40,10 @@ const MIN = 60_000;
 const STATE_KEY = "maintainer_issues";
 /** How many issue numbers each repo's state keeps. */
 const KEEP = 500;
+/** How many looks an event's handler may fail before the event is skipped. */
+const EVENT_ATTEMPTS = 3;
+/** How many failed-event attempts and skipped records the state keeps: one feed page, so a page-wide outage still reaches its bound. */
+const EVENT_KEEP = 200;
 const DAY = 24 * 60 * MIN;
 const POLL_MS = 5_000;
 /** A silence this long (the module off, a long outage) may have missed events the kernel never logged: every repo is read afresh. */
@@ -81,13 +88,21 @@ interface RepoState {
   triaged?: number[];
   /** The triage runs fired in the last day, with their issue and its author: what the daily limits count (an issue that proves valid stops counting for its author). */
   recent?: { at: number; author: string; issue?: number }[];
-  /** Issues over their author's cap, kept until a slot frees (oldest first), dropped once labelled valid, closed or a day old (the daily run has them). */
-  held?: { number: number; author: string; created_at: string }[];
+  /** Issues over their author's cap, kept until a slot frees (oldest first), dropped once labelled valid, closed or a day old (the daily run has them). `member` is GitHub's own word, so a member is never capped. */
+  held?: { number: number; author: string; created_at: string; member?: boolean }[];
 }
+/** A handler failure kept across looks, keyed by the event's seq. */
+interface EventAttempt { attempts: number; error: string; at: number }
+/** An event whose handler failed on every allowed look: its repo is bootstrapped on the next look. */
+interface SkippedEvent { seq: number; kind: string; resource: string; number: number; error: string; at: number; attempts: number }
 interface State {
   repos?: Record<string, RepoState>;
   /** The last log seq committed, and each repo's settings as of the last bootstrap. */
   feed?: { after: number; digest: Record<string, string>; /** When the last look finished (ms): a long silence means events may not have been logged. */ at?: number };
+  /** Per-event handler failures, keyed by seq: a transient failure is retried on the next look. */
+  attempts?: Record<string, EventAttempt>;
+  /** Events isolated after their bound: visible after a restart and cleared when their repo's bootstrap completes. */
+  skipped?: SkippedEvent[];
   /** The last error logged: a run of the same one is said once. */
   error?: string;
 }
@@ -102,6 +117,8 @@ function readState(store: Kv): State {
 
 const keep = (xs: Iterable<number>) => [...new Set(xs)].slice(-KEEP);
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+const errorText = (err: unknown) => String(err instanceof Error ? err.message : err).slice(0, 300);
+const keepAttempts = (attempts: Record<string, EventAttempt>) => Object.fromEntries(Object.entries(attempts).sort(([a], [b]) => Number(a) - Number(b)).slice(-EVENT_KEEP));
 
 export interface PumpDeps {
   /** The kernel's log of the feed events this module subscribes to, after a seq (no seq: the watermark). */
@@ -121,7 +138,8 @@ export interface PumpDeps {
 
 /**
  * One look at the feed: bootstrap what needs it, handle each new event, then let go of held issues whose slot freed. Returns how many
- * tasks were filed. The cursor moves only when everything succeeded; a failure is said once and the next look redelivers.
+ * tasks were filed. A handler that throws is retried on the next look; after its bound it is skipped and its repo is bootstrapped on
+ * the next look. The cursor moves only when no event still needs a retry.
  */
 export async function maintainerPump(d: PumpDeps): Promise<number> {
   const state = readState(d.store);
@@ -131,8 +149,22 @@ export async function maintainerPump(d: PumpDeps): Promise<number> {
   let digest: Record<string, string> = {};
   let after = state.feed?.after;
   let committed = state.feed?.digest ?? {};
+  let attempts: Record<string, EventAttempt> = { ...(state.attempts ?? {}) };
+  let skipped: SkippedEvent[] = [...(state.skipped ?? [])];
+  const skippedSeqs = new Set(skipped.map((s) => s.seq));
+  const clearSkipped = () => {
+    skipped = skipped.filter((s) => {
+      if (!committed[s.resource.toLowerCase()] || s.seq > (after ?? -1)) return true;
+      skippedSeqs.delete(s.seq);
+      return false;
+    });
+  };
   let count = 0;
-  const save = (error?: string) => d.store.setMeta(STATE_KEY, JSON.stringify({ repos, ...(after === undefined ? {} : { feed: { after, digest: committed, at: Date.now() } }), ...(error ? { error } : {}) }));
+  const save = (error?: string) => {
+    attempts = keepAttempts(attempts);
+    skipped = skipped.slice(-EVENT_KEEP);
+    d.store.setMeta(STATE_KEY, JSON.stringify({ repos, ...(after === undefined ? {} : { feed: { after, digest: committed, at: Date.now() } }), ...(Object.keys(attempts).length ? { attempts } : {}), ...(skipped.length ? { skipped } : {}), ...(error ? { error } : {}) }));
+  };
   const of = (repo: string): RepoState => (repos[repo.toLowerCase()] ??= {});
   const bootstrap = async (keys: string[]) => {
     const read = await d.bootstrap(keys);
@@ -155,19 +187,53 @@ export async function maintainerPump(d: PumpDeps): Promise<number> {
     for (const k of stale) delete committed[k];
     const failed: string[] = [];
     for (const k of stale) {
-      try { await bootstrap([k]); committed = { ...committed, [k]: digest[k]! }; } catch (e) { failed.push(String((e as Error).message ?? e)); }
+      try {
+        await bootstrap([k]);
+        committed = { ...committed, [k]: digest[k]! };
+      } catch (e) { failed.push(String((e as Error).message ?? e)); }
     }
     // An issue opened and then left closed within one read is not triaged: its last close or reopen in the page decides.
     const closed = new Map<string, number>();
     for (const ev of page.events) if (ev.kind === "issues.closed" || ev.kind === "issues.reopened") { const key = `${ev.resource.toLowerCase()}#${ev.data?.number}`; ev.kind === "issues.closed" ? closed.set(key, ev.seq) : closed.delete(key); }
+    let retry = false;
     for (const ev of page.events) {
       const r = cfg.get(ev.resource.toLowerCase());
-      if (r) count += await handle(d, r, ev, of(r.repo), () => { delete committed[r.repo.toLowerCase()]; return Promise.resolve(0); }, (closed.get(`${ev.resource.toLowerCase()}#${ev.data?.number}`) ?? 0) > ev.seq);
+      if (!r) continue;
+      const key = String(ev.seq);
+      if (skippedSeqs.has(ev.seq)) { delete attempts[key]; continue; }
+      try {
+        count += await handle(d, r, ev, of(r.repo), () => { delete committed[r.repo.toLowerCase()]; return Promise.resolve(0); }, (closed.get(`${ev.resource.toLowerCase()}#${ev.data?.number}`) ?? 0) > ev.seq);
+        delete attempts[key];
+      } catch (err) {
+        const message = errorText(err);
+        const attempt = (attempts[key]?.attempts ?? 0) + 1;
+        if (attempt >= EVENT_ATTEMPTS) {
+          delete attempts[key];
+          const number = Number(ev.data?.number);
+          skipped = [...skipped, { seq: ev.seq, kind: ev.kind, resource: ev.resource, number, error: message, at: Date.now(), attempts: attempt }].slice(-EVENT_KEEP);
+          skippedSeqs.add(ev.seq);
+          delete committed[r.repo.toLowerCase()];
+          // A bootstrap only reads labelled issues, so an unlabelled opening needs its own retry queue: hold it like a capped issue,
+          // and releaseHeld files its triage task once the kernel accepts it. The bootstrap still clears the skip record.
+          if (ev.kind === "issues.opened" && r.triage !== "off") {
+            const st = of(r.repo);
+            if (!(st.triaged ?? []).includes(number) && !(st.held ?? []).some((h) => h.number === number)) {
+              st.held = [...(st.held ?? []), { number, author: String(ev.author ?? "").toLowerCase(), created_at: String(ev.data?.created_at ?? new Date().toISOString()), member: ev.data?.member === true }].slice(-KEEP);
+            }
+          }
+          d.log.warn({ seq: ev.seq, kind: ev.kind, id: ev.id, resource: ev.resource, number, err: message }, `maintainer feed event skipped after ${EVENT_ATTEMPTS} looks; its repo is bootstrapped next look`);
+        } else {
+          if (!attempts[key] || attempts[key].error !== message) d.log.warn({ seq: ev.seq, kind: ev.kind, id: ev.id, resource: ev.resource, number: Number(ev.data?.number), err: message }, "maintainer feed event not handled; the next look retries it");
+          attempts[key] = { attempts: attempt, error: message, at: Date.now() };
+          retry = true;
+        }
+      }
     }
     for (const r of cfg.values()) count += await releaseHeld(d, r, of(r.repo));
     for (const k of Object.keys(repos)) if (!cfg.has(k)) delete repos[k];
     for (const k of Object.keys(committed)) if (!cfg.has(k)) delete committed[k];
-    after = page.next;
+    if (!retry) after = page.next;
+    clearSkipped();
     const message = failed.join("; ").slice(0, 300);
     if (message && message !== state.error) d.log.warn({ err: message }, "maintainer bootstrap not finished for a repo; the next look reads it again");
     save(message || undefined);
@@ -183,11 +249,18 @@ export async function maintainerPump(d: PumpDeps): Promise<number> {
 async function bootRepo(d: PumpDeps, r: MaintainedRepo, row: BootstrapRow, st: RepoState): Promise<number> {
   if (row.error) throw new Error(`${r.repo}: ${row.error}`);
   let count = 0;
-  for (const i of row.issues ?? []) count += await file(d, r, i, "fix", st);
-  for (const i of row.builds ?? []) count += await file(d, r, i, "build", st);
+  // One refused filing must not stop the row's later issues: file each on its own and retry the row after.
+  const failed: string[] = [];
+  for (const i of row.issues ?? []) {
+    try { count += await file(d, r, i, "fix", st); } catch (e) { failed.push(errorText(e)); }
+  }
+  for (const i of row.builds ?? []) {
+    try { count += await file(d, r, i, "build", st); } catch (e) { failed.push(errorText(e)); }
+  }
   if (!r.features) st.featured = [];
   else if (row.featured && !row.incomplete) st.featured = keep(row.featured);
   if (row.incomplete) throw new Error(`${r.repo}: ${row.incomplete}`);
+  if (failed.length) throw new Error(`${r.repo}: ${failed.join("; ")}`);
   return count;
 }
 
@@ -284,12 +357,12 @@ async function releaseHeld(d: PumpDeps, r: MaintainedRepo, st: RepoState): Promi
   let count = 0;
   // With the backlog on, a held issue is the daily run's after a day; with `new` alone nothing else takes it, so it waits for a slot (or its close).
   for (const h of st.held.filter((x) => !valid.has(x.number) && (r.triage === "new" || Date.now() - Date.parse(x.created_at) < DAY))) {
-    if (recent.filter((x) => x.author === h.author && !valid.has(x.issue!)).length >= TRIAGE_CAP_PER_AUTHOR_DAY) held.push(h);
+    if (h.member !== true && recent.filter((x) => x.author === h.author && !valid.has(x.issue!)).length >= TRIAGE_CAP_PER_AUTHOR_DAY) held.push(h);
     else if (!(await d.triage(r.repo, h.number).catch(() => false))) {
       d.log.warn({ repo: r.repo, issue: h.number }, "maintainer triage task not filed; the next look retries it");
       held.push(h);
     } else {
-      recent.push({ at: Date.now(), author: h.author, issue: h.number });
+      if (h.member !== true) recent.push({ at: Date.now(), author: h.author, issue: h.number });
       st.triaged = keep([...(st.triaged ?? []), h.number]);
       count++;
     }

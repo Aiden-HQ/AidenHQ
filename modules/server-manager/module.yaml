@@ -24,9 +24,14 @@ contributes:
           keys_from: servers_machines[].key
           fields:
             - { name: private_key, label: "Private key", kind: key, maxLength: 4096 }
-  # contributes.warehouse.sources (`src_servers`) arrives with the read path that fills it (slice 2: src/status.ts and the
-  # warehouse writer). This build declares no source it cannot serve: a view needs its writer, its schema and its login shipped
-  # together, or a fresh install would advertise a view the warehouse does not have.
+  # The status row (§8): one sanitized row per machine, written by src/status.ts after a check, one row at most per run. Never in
+  # the execution path: a failed publish is logged and skipped. No key, address, user name or package list is in it.
+  warehouse.sources:
+    - schema: src_servers
+      about: "src_servers.servers (one sanitized status row per machine) / fleet"
+      views:
+        - { name: servers, time: updated_at }
+        - { name: fleet, time: updated_at }
 roles:
   # kernel.tasks: the service files a task for the agent when a run needs a judgement (§13). kernel.wake: it wakes that task.
   requests: [ kernel.tasks, kernel.wake ]
@@ -43,6 +48,8 @@ secrets:
 generated_secrets:
   - server_manager_token
   - server_manager_service_key
+  # src_servers' warehouse login (ops/warehouse-sources.sh gives the role this password).
+  - warehouse_src_servers_password
 connections:
   server-manager:
     setup: "Built in: nothing to connect."
@@ -110,7 +117,6 @@ agents:
     department: platform
     model: ~deepseek/deepseek-flash-latest
     timeout_sec: 1200
-    paperclip_tasks: [ task_current, task_get, task_comments, task_comment, task_block, task_finish, task_list, task_approvals ]
     # kernel.tasks/kernel.wake: the service files a task here and wakes it (§13). The grant names server_manager_check, which
     # `server-manager: read` would not hand out.
     connections:
@@ -130,12 +136,15 @@ services:
       # Servers are usually private, so this service (alone) reaches them: agent computers can't.
       egress: true
       data: ["state:/data"]
-      secrets: [ servers_keys ]
+      # The warehouse's network (LEGACY_LINKS: `server-manager: { until: "3g", to: ["sources"] }`), for the status row only.
+      links: [sources]
+      secrets: [ servers_keys, warehouse_src_servers_password ]
       env:
         SERVERS_STATE_DIR: /data
         SERVERS_KEYS_FILE: /run/secrets/servers_keys
         SERVERS_TOKEN_FILE: ${secrets.server_manager_token}
         SERVERS_SERVICE_KEY_FILE: ${secrets.server_manager_service_key}
         SERVERS_MACHINES: "${settings.servers_machines}"
+        WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_servers_password}
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
 data_version: 0 # its data dir's format (known_hosts/, the durable due-slot records): bumped by each forward-only migration
