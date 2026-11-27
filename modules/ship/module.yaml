@@ -112,8 +112,10 @@ services:
         SHIP_PAUSED: "${settings.ship_paused}"
         SHIP_FLEET_ORG: "${settings.github_fleet_org}"
         SHIP_PRODUCT_REPO: "${settings.product_repo}"
-        # The Maintainer's list, read only for its Dependabot duty (run in this loop): never Ship's coverage.
+        # The Maintainer's list, read only for its Dependabot duty (run in this loop, only while the maintainer module is on): never
+        # Ship's coverage.
         SHIP_MAINTAINER_REPOS: "${settings.maintainer_repos}"
+        SHIP_MAINTAINER: "${settings.maintainer_enabled}"
         # github's routes for ship (service/src/ship-routes.ts) and github-mcp's contributor-PR read.
         SHIP_GITHUB_URL: http://github:8100
         SHIP_CONTRIBUTOR_PRS_URL: http://github:8086/internal/ship/contributor-prs

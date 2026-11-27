@@ -60,11 +60,11 @@ test("ship_configure for the owner returns the settings change and files nothing
   await assert.rejects(tool.run({ repo: "A/B", add: true }, owner), /already on ship/);
 });
 
-test("an agent never adds a repo to Ship, whatever the shape (the ship tool is the only gate on Ship's list)", async () => {
+test("an agent never adds a repo to Ship or drops one, whatever the shape (the ship tool is the only gate on Ship's list)", async () => {
   const filed: unknown[] = [];
   const tool = configTools({ raw: () => ({ repos: { "a/b": "full" } }), scope: () => ({ fleet: ["org/*"] }), state: state(), file: async (c) => (filed.push(c), {}) }).find((t) => t.name === "ship_configure")!;
   const agent = { agent: "x", roles: ["ship-admin"], assertion: "jwt" };
-  for (const a of [{ repo: "x/y", change: {} }, { repo: "x/y", change: "cautious" }, { repo: "X/Y", change: { enabled: false } }, { edits: { repos: { "x/y": {} } } }, { edits: { repos: { "a/b": "cautious", "x/y": "cautious" } } }, { repo: "x/y", add: true }])
+  for (const a of [{ repo: "x/y", change: {} }, { repo: "x/y", change: "cautious" }, { repo: "X/Y", change: { enabled: false } }, { edits: { repos: { "x/y": {} } } }, { edits: { repos: { "a/b": "cautious", "x/y": "cautious" } } }, { repo: "x/y", add: true }, { repo: "A/B", change: null }, { edits: { repos: { "a/b": null } } }])
     await assert.rejects(tool.run(a, agent), /owner's|isn't on Ship yet/, JSON.stringify(a));
   assert.deepEqual(filed, []);
   // A fleet repo needs no entry to be covered: tightening it is the agent's.

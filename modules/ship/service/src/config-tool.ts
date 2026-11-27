@@ -130,6 +130,8 @@ export function configTools(d: {
           summary = [];
           for (const [r, change] of Object.entries(edits.repos ?? {})) {
             if (r !== "defaults" && change !== null && !hasEntry(r) && !inFleet(r, scope)) throw new Error(notYours(r));
+            // Dropping a repo's entry takes it off Ship (and off the listed repos): the owner's, like Remove.
+            if (!owner && change === null && hasEntry(r) && !inFleet(r, scope)) throw new Error("removing a repo is the owner's: ask them to remove it from the Fleet page");
             const x = applyShipChange(value, { repo: r, change, scope }); value = x.value; summary.push(...x.summary);
           }
           changes = [];
