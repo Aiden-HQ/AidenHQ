@@ -37,4 +37,4 @@ then a handbook line (cutting beats adding). Every fix task has marker `coach:<a
 Open earlier fix: leave. Done: verify. Declined: stays declined without **new** named evidence. A fix that didn't hold gets one
 comment with the evidence; a second failed repair is a product bug. A run is finished only when every due agent has a
 `coach_record` from this run — reading the skill, collecting evidence or leaving the task open records nothing, and the run
-posts no comment (and closes nothing) before those records exist. Then `task_finish` with one line.
+posts no comment on its own task (and closes nothing) before those records exist. Then `task_finish` with one line.
