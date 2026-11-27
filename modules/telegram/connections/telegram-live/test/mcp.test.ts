@@ -22,7 +22,8 @@ test("tools never touch read state and fence text", async () => {
     .on("getMessage", msg(2))
     .on("getRepliedMessage", msg(1))
     .on("getSupergroupFullInfo", { description: "desc", member_count: 5 })
-    .on("setChatDraftMessage", {});
+    .on("setChatDraftMessage", {})
+    .on("getScopeNotificationSettings", { mute_for: 0 });
   const server = buildServer({ td: fake, store: openStore(join(mkdtempSync(join(tmpdir(), "tg-")), "s.sqlite")), me: () => ({ user_id: 1, usernames: ["me"], name: "Me" }) });
   const [a, b] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "t", version: "0" });
@@ -57,4 +58,24 @@ test("tools never touch read state and fence text", async () => {
   expect((await call("telegram_send", { chat_id: "-100123", text: "hi" })).err).toBe(true);
   expect(fake.calls.some((c) => c._ === "sendMessage")).toBe(false);
   expect(fake.calls.filter((c) => READ_STATE_METHODS.has(c._))).toEqual([]);
+});
+
+test("list_chats filters before the page is cut and reports the scope default's mute", async () => {
+  const quiet = { ...chat, id: -100200, unread_count: 0 };
+  const defaulted = { ...chat, id: -100300, notification_settings: { use_default_mute_for: true, mute_for: 0 } };
+  const byId: Record<number, unknown> = { [-100200]: quiet, [-100300]: defaulted };
+  const fake = new FakeTd()
+    .on("getChats", { chat_ids: [-100200, -100300] })
+    .on("getChat", (r: { chat_id: number }) => byId[r.chat_id])
+    .on("getScopeNotificationSettings", { mute_for: 3600 });
+  const server = buildServer({ td: fake, store: openStore(join(mkdtempSync(join(tmpdir(), "tg-")), "s.sqlite")), me: () => undefined });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "t", version: "0" });
+  await Promise.all([server.connect(a), client.connect(b)]);
+  const list = async (args: Record<string, unknown>) => JSON.parse(((await client.callTool({ name: "telegram_list_chats", arguments: args })) as { content: { text: string }[] }).content[0]!.text).chats as { id: number; muted: boolean }[];
+  // the first chat has nothing unread: limit 1 still finds the unread one behind it
+  expect((await list({ unread: true, limit: 1 })).map((c) => c.id)).toEqual([-100300]);
+  // it uses the group default, which is muted
+  expect((await list({ muted: true })).map((c) => c.id)).toEqual([-100300]);
+  expect((await list({})).find((c) => c.id === -100200)?.muted).toBe(false);
 });

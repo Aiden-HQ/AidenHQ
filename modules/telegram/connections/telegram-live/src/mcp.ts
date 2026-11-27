@@ -4,6 +4,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { fence } from "./aidenhq-sdk/fence.js";
+import { chatKind, isMuted, SCOPE_TD, scopeOf, type Scope } from "./filter.js";
 import type { Store } from "./store.js";
 import type { Me, TdClient } from "./td.js";
 
@@ -36,16 +37,22 @@ function fmtMsg(m: Msg) {
   };
 }
 
-const isMuted = (c: Chat) => (c.notification_settings?.mute_for ?? 0) > 0;
 const folders = (c: Chat) => (c.chat_lists ?? []).map((l: any) => (l._ === "chatListFolder" ? l.chat_folder_id : l._ === "chatListArchive" ? "archive" : "main"));
 
-function fmtChat(c: Chat) {
+/** Muted as Telegram shows it: the chat's own setting, or its scope's default when it uses that (scopes: a per-call cache). */
+async function chatMuted(td: TdClient, c: Chat, scopes: Map<Scope, number>): Promise<boolean> {
+  const s = scopeOf(chatKind(c.type));
+  if (!scopes.has(s)) scopes.set(s, (await td.invoke<{ mute_for: number }>({ _: "getScopeNotificationSettings", scope: { _: SCOPE_TD[s] } })).mute_for ?? 0);
+  return isMuted(c.notification_settings ?? { use_default_mute_for: false, mute_for: 0 }, scopes.get(s)!);
+}
+
+function fmtChat(c: Chat, muted: boolean) {
   return {
     id: c.id,
     title: fence(c.title ?? "", `telegram:${c.id}`),
     type: String(c.type?._ ?? "").replace(/^chatType/, "").toLowerCase(),
     unread_count: c.unread_count ?? 0,
-    muted: isMuted(c),
+    muted,
     folders: folders(c),
   };
 }
@@ -88,13 +95,19 @@ export function buildServer(d: { td: TdClient | undefined; store: Store; me: () 
     }),
     async (td, a) => {
       const chat_list = a.folder === "archive" ? { _: "chatListArchive" } : typeof a.folder === "number" ? { _: "chatListFolder", chat_folder_id: a.folder } : { _: "chatListMain" };
-      const { chat_ids } = await td.invoke<{ chat_ids: number[] }>({ _: "getChats", chat_list, limit: a.limit ?? 50 });
+      // Filters apply before the page is cut: read a wider window when filtering, then keep the first `limit` that match.
+      const limit = a.limit ?? 50;
+      const filtered = a.unread !== undefined || a.muted !== undefined;
+      const { chat_ids } = await td.invoke<{ chat_ids: number[] }>({ _: "getChats", chat_list, limit: filtered ? 1000 : limit });
+      const scopes = new Map<Scope, number>();
       const out = [];
       for (const id of chat_ids) {
+        if (out.length >= limit) break;
         const c = await td.invoke<Chat>({ _: "getChat", chat_id: id });
         if (a.unread !== undefined && (c.unread_count > 0 || c.is_marked_as_unread === true) !== a.unread) continue;
-        if (a.muted !== undefined && isMuted(c) !== a.muted) continue;
-        out.push(fmtChat(c));
+        const muted = await chatMuted(td, c, scopes);
+        if (a.muted !== undefined && muted !== a.muted) continue;
+        out.push(fmtChat(c, muted));
       }
       return { chats: out };
     },
@@ -152,7 +165,7 @@ export function buildServer(d: { td: TdClient | undefined; store: Store; me: () 
       const u = await td.invoke<any>({ _: "getUser", user_id: t.user_id });
       extra = { user_id: u.id, name: fence(`${u.first_name ?? ""} ${u.last_name ?? ""}`.trim(), src), usernames: u.usernames?.active_usernames ?? [], is_bot: u.type?._ === "userTypeBot" };
     }
-    return { ...fmtChat(c), ...extra };
+    return { ...fmtChat(c, await chatMuted(td, c, new Map())), ...extra };
   });
 
   server.registerTool(

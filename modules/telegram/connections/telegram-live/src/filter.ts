@@ -36,6 +36,8 @@ export function chatKind(type: Td.ChatType): ChatKind {
   }
 }
 
+/** TDLib's notification scope for each of ours. */
+export const SCOPE_TD: Record<Scope, string> = { private: "notificationSettingsScopePrivateChats", group: "notificationSettingsScopeGroupChats", channel: "notificationSettingsScopeChannelChats" };
 export const scopeOf = (kind: ChatKind): Scope => (kind === "dm" || kind === "secret" ? "private" : kind);
 
 /** Muted by its own setting, or by its scope's default when it uses that. Archive is not mute. */

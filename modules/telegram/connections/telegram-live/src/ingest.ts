@@ -4,7 +4,7 @@
 // keeps a durable checkpoint (Aria's lesson: GramJS's catchUp was a stub), reconciled from history on start, on reconnect and
 // on TDLib's gap signals. Nothing here marks anything read (td.ts refuses those calls).
 import type { Logger } from "pino";
-import { chatKind, classify, formatted, isMuted, scopeOf, storesChat, type ChatKind, type Scope, type ScopeSettings } from "./filter.js";
+import { chatKind, classify, formatted, isMuted, SCOPE_TD, scopeOf, storesChat, type ChatKind, type Scope, type ScopeSettings } from "./filter.js";
 import type { Kernel, SourceEvent } from "./kernel.js";
 import { contentRow, DDL, editedRow, messageRow, reactionRow, senderId, tombstone, userRow, writeRow, type WarehouseItem } from "./sources.js";
 import { SourceStore, type Row } from "./source-store.js";
@@ -47,7 +47,6 @@ export function markAgentSend(store: Store, chatId: number, tempId: number, writ
   store.db.prepare(`INSERT OR REPLACE INTO agent_pending (chat_id, temp_message_id, write_id) VALUES (?, ?, ?)`).run(chatId, tempId, writeId);
 }
 
-const SCOPE_TD: Record<Scope, string> = { private: "notificationSettingsScopePrivateChats", group: "notificationSettingsScopeGroupChats", channel: "notificationSettingsScopeChannelChats" };
 /** A Postgres data (22xxx) or integrity-constraint (23xxx) error: the same row fails the same way every time. */
 const permanent = (e: unknown) => /^2[23]/.test(String((e as { code?: unknown })?.code ?? ""));
 const transient = (e: unknown) => !(e instanceof TdError) || e.code === 429 || e.code >= 500 || e.retryAfterS !== undefined;
