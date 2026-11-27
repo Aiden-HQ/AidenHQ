@@ -225,7 +225,8 @@ export function loosens(before: unknown, after: unknown, scope: Scope = ALL): st
     if (y.rebase === "behind" && x.rebase !== "behind") add("rebase");
     // The owner's gates the Maintainer's entries carried for these duties: every Dependabot PR, and closing quiet human PRs.
     if (y.dependabot === "all" && x.dependabot !== "all") add("dependabot");
-    if (y.quiet_pr_days !== null && x.quiet_pr_days === null) add("quiet_pr_days");
+    // Any sooner close: switched on, or a shorter window than before.
+    if (y.quiet_pr_days !== null && (x.quiet_pr_days === null || y.quiet_pr_days < x.quiet_pr_days)) add("quiet_pr_days");
     for (const t of TIERS) {
       if (rank(APPROVE, y.by_tier[t].approve) > rank(APPROVE, x.by_tier[t].approve)) add(`by_tier.${t}.approve`);
       if (y.by_tier[t].merge === "ready" && x.by_tier[t].merge !== "ready") add(`by_tier.${t}.merge`);

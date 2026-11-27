@@ -71,4 +71,4 @@ Fleet page.
 
 ## New installs
 
-In the default bundle, quiet: a repo is worked only when it is enabled (`enabled`, on by default for the fleet's own repos; enabling a listed repo applies `cautious`). The Fleet page's controls are Enabled, Preset, Which PRs to adopt (`handoff`) and `by_tier` (approve and merge per risk tier). With `defaults: cautious` it works only the fleet's own repos, as github's PR watch did.
+In the default bundle, quiet: a repo is worked only when it is enabled (`enabled`, on by default for the fleet's own repos; enabling a listed repo applies `cautious`). The Fleet page's controls are Enabled, Preset, Which PRs to adopt (`handoff`) and `by_tier` (approve and merge per risk tier). With `defaults: cautious` it works only the fleet's own repos, as github's PR watch did. Dependabot tasks and quiet-PR closing are off everywhere until the owner turns them on per repo (or in Defaults); before pull requests moved to Ship, an unlisted product repo took every Dependabot bump, so an install that wants that sets `dependabot: all` on the product repo's entry.

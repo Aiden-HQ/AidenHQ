@@ -250,7 +250,7 @@
     if (/\.merge$/.test(path)) return b === "ready" && a !== "ready";
     if (path === "rebase") return b === "behind" && a !== "behind";
     if (path === "dependabot") return b === "all" && a !== "all";
-    if (path === "quiet_pr_days") return b !== null && b !== undefined && (a === null || a === undefined);
+    if (path === "quiet_pr_days") return b !== null && b !== undefined && (a === null || a === undefined || b < a);
     if (path === "fix" || path === "generated.globs") return (b ?? []).some((x) => !(a ?? []).includes(x));
     if (path === "protected") return (a ?? []).some((x) => !(b ?? []).includes(x));
     return false;
