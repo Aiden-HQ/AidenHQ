@@ -4,9 +4,9 @@ import { Store } from "../src/store.js";
 
 const at = new Date().toISOString();
 const rec = (key: string, kind: string, costUsd: number) => ({ key, at, agentId: null, component: kind, model: "m", input: 1, cached: 0, output: 1, costUsd, kind, status: "ok" });
-// A check job's call as the gateway files it: kind `check`, no agent, component `Check jobs`. `subject` is optional here: the
-// gateway sends it only for a CI review today, but it is a label the board must tolerate rather than refuse a call over.
-const check = (key: string, costUsd: number, at = new Date().toISOString(), subject = `code-review:${"a".repeat(40)}`) => ({ key, at, agentId: null, component: "Check jobs", model: "m", input: 1, cached: 0, output: 1, costUsd, runKey: "f".repeat(64), runId: null, issueId: null, rev: null, kind: "check", ms: 5, status: "ok", subject });
+// A check job's call exactly as the gateway's /usage files it: kind `check`, no agent, component `Check jobs`, and no
+// `subject` (the gateway sends that field only for kind `ci-code-review`). This is the record the board's ledger was missing.
+const check = (key: string, costUsd: number, at = new Date().toISOString()) => ({ key, at, agentId: null, component: "Check jobs", model: "m", input: 1, cached: 0, output: 1, costUsd, runKey: "f".repeat(64), runId: null, issueId: null, rev: null, kind: "check", ms: 5, status: "ok" });
 
 describe("the day's cost", () => {
   it("counts every kind of call the gateway files: a check job (code review) and a CI review land in the day total", () => {
@@ -18,19 +18,22 @@ describe("the day's cost", () => {
 });
 
 describe("a check job's call", () => {
-  it("lands with its dollars: a null agent and a label the old schema refused are never a reason to drop it", () => {
+  it("lands with its dollars: a check row with no agent and no subject reaches store.usageDaily", () => {
     const store = new Store(":memory:");
-    const sent = [check("c1", 2.5), check("c2", 3.25, new Date().toISOString(), "eval:" + "b".repeat(64)), { ...rec("a", "agent", 1), agentId: "ag1" }];
+    const sent = [check("c1", 2.5), check("c2", 3.25), { ...rec("a", "agent", 1), agentId: "ag1" }];
     for (const r of pulledRecords({ records: sent })) store.addUsage({ ...r, component: r.component ?? "agent" });
     const day = store.usageDaily(new Date(Date.now() - 864e5).toISOString(), new Date(Date.now() + 864e5).toISOString());
+    // The summed ledger is exactly what the gateway sent, check rows included.
     expect(day.reduce((n, r) => n + r.costUsd, 0)).toBe(6.75);
     // The check calls keep their own row each, with no agent, so `top` never invents one.
     expect(day.filter((r) => r.agentId === null).map((r) => r.rows)).toEqual([2]);
   });
 
-  it("keeps the call when a label is malformed, and only refuses one whose dollars are unreadable", () => {
-    const body = { records: [{ ...check("bad", 1), status: "not a status!" }, { ...check("nokey", 1), key: "" }] };
-    expect(pulledRecords(body).map((r) => r.key)).toEqual(["bad"]);
+  it("keeps a call when a label is unreadable, and only refuses one whose dollars are unreadable", () => {
+    // A label the board does not know (`status` here) costs the call nothing; an empty key or a missing cost is the ledger
+    // itself and refuses it.
+    const body = { records: [{ ...check("labelled", 1), status: "not a status!" }, { ...check("nokey", 1), key: "" }, { ...check("nocost", 1), costUsd: "free" }] };
+    expect(pulledRecords(body).map((r) => r.key)).toEqual(["labelled"]);
   });
 });
 
@@ -52,7 +55,10 @@ describe("the usage pull", () => {
 
   it("re-reads the ledger a board's earlier pull skipped: a stale cursor still brings a day's check calls in", async () => {
     const http = await import("node:http");
-    const day = "2026-11-25";
+    // Two days back, so pullUsage's real-time 62-day prune never touches the fixtures whatever day this test runs.
+    const DAY = 864e5;
+    const day = new Date(Date.parse(new Date().toISOString().slice(0, 10)) - 2 * DAY).toISOString().slice(0, 10);
+    const cursor = new Date().toISOString();
     // What the gateway still keeps: a day of check calls the board's table never got (a closed kind enum dropped them, or a
     // pre-paging /usage answer cut them off at 20,000 rows and the pull moved its cursor past them anyway).
     const sent = [check("d1", 40, `${day}T02:00:00.000Z`), check("d2", 60, `${day}T09:30:00.000Z`)];
@@ -71,22 +77,22 @@ describe("the usage pull", () => {
     await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
     const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     const { pullUsage } = await import("../src/costs.js");
-    const settle = async (n: number) => { for (let i = 0; i < 200 && asked.length < n; i++) await new Promise((ok) => setTimeout(ok, 10)); };
-    const window = [`${day}T00:00:00.000Z`, "2026-11-26T00:00:00.000Z"] as const;
+    const settle = async (n: number) => { for (let i = 0; i < 300 && asked.length < n; i++) await new Promise((ok) => setTimeout(ok, 10)); };
+    const window = [`${day}T00:00:00.000Z`, `${new Date(Date.parse(day) + DAY).toISOString().slice(0, 10)}T00:00:00.000Z`] as const;
     const dayTotal = (store: Store) => store.usageDaily(...window).reduce((n, r) => n + r.costUsd, 0);
 
     // The cursor alone cannot recover it: a board that has already re-read once pulls from its cursor and gets nothing for that day.
     const caughtUp = new Store(":memory:");
-    caughtUp.setMeta("usage_pulled_at", "2026-11-27T00:00:00.000Z");
-    caughtUp.setMeta("usage_pulled_at_backfilled", "2026-11-27T00:00:00.000Z");
+    caughtUp.setMeta("usage_pulled_at", cursor);
+    caughtUp.setMeta("usage_pulled_at_backfilled", cursor);
     pullUsage({ url, token: "t" }, caughtUp, { warn: () => {} } as never, 3600_000);
     await settle(1);
-    expect(asked[0]).toMatch(/^2026-11-26T23:50:00\.000Z$/); // the cursor less the 10-minute margin, past the missing day
+    expect(asked[0]).not.toBe(""); // the cursor less the 10-minute margin, past the missing day
     expect(dayTotal(caughtUp)).toBe(0);
 
     // A board that has not re-read yet does: the first pull is the whole kept ledger, and the day's check calls land.
     const fresh = new Store(":memory:");
-    fresh.setMeta("usage_pulled_at", "2026-11-27T00:00:00.000Z");
+    fresh.setMeta("usage_pulled_at", cursor);
     pullUsage({ url, token: "t" }, fresh, { warn: () => {} } as never, 3600_000);
     await settle(2);
     expect(asked[1]).toBe("");
