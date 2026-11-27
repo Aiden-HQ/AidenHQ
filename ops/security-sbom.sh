@@ -462,7 +462,7 @@ save_call() { # <cap bytes, empty for none> <secs> <docker args...>
     exec timeout "$secs" docker "$@" ) &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
-    sleep 1
+    sleep "${AIDENHQ_SBOM_POLL_S:-1}" # the space check's interval (the tests shorten it)
     if [ "$(free_bytes)" -lt "$floor_bytes" ] || { [ -n "$docker_root" ] && [ "$(free_bytes_at "$docker_root")" -lt "$floor_bytes" ]; }; then
       kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null
       wait "$pid" 2>/dev/null
@@ -563,7 +563,7 @@ run_watched() { # <secs> <cmd...>
   ( exec timeout "$secs" "$@" ) &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
-    sleep 1
+    sleep "${AIDENHQ_SBOM_POLL_S:-1}" # the space check's interval (the tests shorten it)
     if [ "$(free_bytes)" -lt "$floor_bytes" ] || { [ -n "$docker_root" ] && [ "$(free_bytes_at "$docker_root")" -lt "$floor_bytes" ]; }; then
       kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null
       wait "$pid" 2>/dev/null

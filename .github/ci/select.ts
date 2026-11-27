@@ -33,8 +33,9 @@ export function suitesFor(map: AreaMap, files: string[]): Selection {
  * A test job's shards: the fewest (at most MAX_SHARDS) whose heaviest runs in about TARGET seconds, or in the time of its
  * longest suite when that is longer: a shard's time is its suites' measured `secs` summed over how many of them a 4-CPU
  * runner runs side by side (`parallel`). Filled heaviest first into the lightest shard so they finish together. `secs` are
- * the suites' times as a shared shard ran them on CI (the run's log groups, `##[group]<suite> (exit 0, Ns)`): the packages
- * job's heavy suites overlap about 2 at a time, the modules' small ones about 3 (measured 2026-11-27: shard time vs the sum).
+ * the suites' times as a shared shard ran them on CI (the run's log groups, `##[group]<suite> (exit 0, Ns)`). The packages
+ * job's suites are CPU-bound (kernel, the apply tests: together they timed out): one at a time; the modules' small ones
+ * overlap about 3 at a time (measured 2026-11-27: a shard took a third of its suites' sum).
  */
 // At most 3 (owner, 2026-11-22: fewer runner starts after the test trim; each start costs ~10 s of checkout and install).
 const MAX_SHARDS = 3, TARGET = 35;
@@ -76,7 +77,7 @@ function main() {
     .filter((s: Suite) => names.includes(s.name) && (!s.main || env.MAIN))
     .map((s: Suite) => ({ name: s.name, dir: s.dir ?? s.name, run: s.run, secs: s.secs ?? 5, ...(s.job ? { job: s.job } : {}) }));
   // The test jobs' shards; heavy: the jobs that may run on our own runners (ci.yml's `runner` step), the packages shards and board.
-  const pk = shard(tests.filter((t) => t.job == null), 2), md = shard(tests.filter((t) => t.job === "modules"), 3);
+  const pk = shard(tests.filter((t) => t.job == null), 1), md = shard(tests.filter((t) => t.job === "modules"), 3);
   const plan = { packages: pk, modules: md, heavy: pk.length + (tests.some((t) => t.job === "board") ? 1 : 0) };
   process.stdout.write(`${JSON.stringify({ tests, shards: plan })}\n`);
 }
