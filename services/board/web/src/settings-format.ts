@@ -1,6 +1,6 @@
 // Settings in the owner's words: a schedule's cron as "weekdays 8:45 AM", a model id as its short name, a change as the exact
 // instance.yaml lines it asks for. Pure, so it is tested without a browser (test/settings-format.test.ts).
-import { clockText } from "./util.js";
+import { clockText } from "./time-format.js";
 import type { AgentSettings, SettingChange, SettingRow } from "./types.js";
 
 const DAY = ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"];

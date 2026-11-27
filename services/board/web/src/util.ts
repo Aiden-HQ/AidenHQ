@@ -1,4 +1,5 @@
-import { clockWords, timeFormatOf } from "../../src/clock.js";
+export { clockOpts, clockText, setTimeFormat, stampOpts } from "./time-format.js";
+import { clockOpts } from "./time-format.js";
 import type { Assignee, Bucket, Card } from "./types.js";
 
 export function ago(iso: string, now = Date.now()): string {
@@ -28,16 +29,6 @@ export function elapsed(iso: string, now = Date.now()): string {
 export function agentShort(agent: string): string {
   return agent.replace(/^Engineer · /, "").replace(/ \(.*\)$/, "");
 }
-
-/** The owner's `time_format` setting (the board read carries it): 12h is the default. */
-let hour12 = true;
-export const setTimeFormat = (f: string | undefined) => void (hour12 = timeFormatOf(f) === "12h");
-/** A time of day as words ("8:00 AM" or "08:00"): for an hour and minute with no date, such as a schedule. */
-export const clockText = (hour: number, minute = 0) => clockWords(hour, minute, hour12 ? "12h" : "24h");
-/** Intl options for a clock time in the owner's format: "8:00 PM" (12h) or "20:00" (24h). Spread them into any date format. */
-export const clockOpts = (): Intl.DateTimeFormatOptions => (hour12 ? { hour: "numeric", minute: "2-digit", hour12: true } : { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-/** Options for a full date and time (tooltips): "11/27/2026, 8:00:05 PM". */
-export const stampOpts = (): Intl.DateTimeFormatOptions => ({ year: "numeric", month: "numeric", day: "numeric", ...clockOpts(), second: "2-digit" });
 
 export function when(iso: string): string {
   return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", ...clockOpts() });

@@ -1,6 +1,6 @@
 // Settings > Connections: what the board's /api/settings/connections rows mean for the owner (status, why, what to do).
 // Pure, so it is tested without a browser (test/connections-status.test.ts).
-import { clockOpts } from "./util";
+import { clockOpts } from "./time-format.js";
 
 export interface Probe {
   ok: boolean;
