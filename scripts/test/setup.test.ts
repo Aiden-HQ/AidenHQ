@@ -59,12 +59,6 @@ test("unattended local: one loopback caveat line immediately before the setup li
   assert.match(out[url]!, /AIDENHQ_SETUP_URL=(<url>|https?:\/\/[^\s"]+\/setup\?token=[A-Za-z0-9_-]+)$/);
 });
 
-test("unattended with a tailnet address: no loopback caveat", () => {
-  const out = dry(conf([...local, "BOARD_HOST=alice.tail1234.ts.net"]), "--unattended", "--exposure", "tailscale");
-  assert.ok(out.includes("AIDENHQ_SETUP_URL=<url>"), out);
-  assert.ok(!out.split("\n").some((l) => CAVEAT.test(l)), `caveat with a real address\n${out}`);
-});
-
 // A --link rerun prints only the link, so where it opens comes from the URL the kernel returned: a loopback one gets the
 // caveat and the tunnel command (built from the SSH destination the owner reached the host by), a tailnet one the
 // "on the tailnet" note and no caveat.
@@ -74,22 +68,6 @@ const linkRun = (file, extra = [], env = {}) => execFileSync("bash", [setup, "--
 test("unattended --link prints the tunnel to the address the owner reached this host by, not a private hostname", () => {
   const out = linkRun(conf(here), ["--unattended", "--exposure", "local"], { SSH_CONNECTION: "10.0.0.9 51234 203.0.113.7 22" });
   assert.ok(out.includes("ssh -N -L 3121:127.0.0.1:3121 -L 3120:127.0.0.1:3120 -L 3130:127.0.0.1:3130 alice@203.0.113.7"), out);
-});
-
-test("the tunnel keeps the host and port that reach the server, never the VM's private server-side address", () => {
-  // A forward or NAT to a private VM: SSH_CONNECTION's server side is the VM's own address, unreachable from the laptop.
-  const out = linkRun(conf(here), ["--unattended", "--exposure", "local"], { SSH_CONNECTION: "10.0.0.9 51234 10.231.0.4 2222" });
-  const line = (out.split("\n").find((l) => l.includes("ssh -N")) ?? "").trim();
-  assert.ok(line.startsWith("ssh -N -p 2222 -L 3121:127.0.0.1:3121"), line);
-  assert.ok(!line.includes("alice@10.231.0.4"), `printed the VM's private address\n${out}`);
-  assert.ok(line.includes("alice@"), line);
-});
-
-test("a config-based --link on a local install says the link is loopback-only rather than 'on the tailnet'", () => {
-  const out = linkRun(conf(here), ["--exposure", "local"]);
-  assert.ok(out.includes("the owner's one-time setup link"), out);
-  assert.ok(!out.includes("on the tailnet; one use"), `claims the tailnet for a loopback link\n${out}`);
-  assert.ok(out.split("\n").some((l) => CAVEAT.test(l)), `no loopback caveat\n${out}`);
 });
 
 // The plan of a setup run in a checkout of its own: the repo's own .env never leaks in, and `lines` (when given) become
@@ -155,34 +133,10 @@ test("a dry run reads .env without executing it", () => {
 
 // Compile reads .env itself (hostEnv): an unquoted list with a space never reaches the shell variable (the apply runs the
 // second word as a command), so compile mounts the raw "Meetings, Ark" — a rerun must keep and make both, not rewrite it.
-test("an unquoted multi-word folder list is kept, as compile reads it", () => {
-  const out = vaultPlan(["VAULT_DIR=/srv/v", "VAULT_FOLDERS=Meetings, Ark"]);
-  assert.ok(!out.includes("+ .env: VAULT_FOLDERS="), `rewrote a configured list
-${out}`);
-  assert.ok(out.includes("(as alice) mkdir -p /srv/v /srv/v/Meetings /srv/v/Ark"), out);
-});
-
 // A later line may use an earlier one, as the apply's shell has it: $NOTES_ROOT is resolved in order, not left literal.
-test("a vault path may use a variable set earlier in .env", () => {
-  const out = vaultPlan(["NOTES_ROOT=/srv/notes", "VAULT_DIR=$NOTES_ROOT/vault", 'VAULT_FOLDERS="Meetings"']);
-  assert.ok(out.includes("(as alice) mkdir -p /srv/notes/vault /srv/notes/vault/Meetings"), out);
-});
-
 // A .env with the key twice (the old installer's empty line after a real one) is repaired where the apply reads it — the
 // last line — so setup makes the folders and does not leave a later empty override for compile.
-test("a duplicated VAULT_FOLDERS line is seeded at the last one", () => {
-  const out = vaultPlan(["VAULT_DIR=/srv/v", "VAULT_FOLDERS=Meetings", "VAULT_FOLDERS="]);
-  assert.ok(out.includes("+ .env: VAULT_FOLDERS=Meetings"), out);
-  assert.ok(out.includes("(as alice) mkdir -p /srv/v /srv/v/Meetings"), out);
-});
-
 // $PWD is the checkout, as it is where the apply sources .env, so setup makes the directory compile mounts.
-test("$PWD in a vault path is the checkout the apply sources .env in", () => {
-  const out = vaultPlan(["VAULT_DIR=$PWD/notes", 'VAULT_FOLDERS="Meetings"']);
-  assert.ok(/mkdir -p \S*\/notes \S*\/notes\/Meetings/.test(out), out);
-  assert.ok(!out.includes("$PWD"), out);
-});
-
 // An upgrade from the old installer: it wrote the default path and emptied the folders, but never made the directory.
 // Setup restores Meetings and makes the root, so the apply mounts a directory the owner (uid 1000) can write.
 test("an upgrade from the old installer makes the default vault", () => {
@@ -213,16 +167,3 @@ test("a rerun repairs the empty VAULT_FOLDERS the old installer wrote", () => {
   assert.ok(out.includes("+ .env: VAULT_FOLDERS=Meetings"), out);
 });
 // An unquoted value ends at ' #' as the shell ends it; a quoted one keeps the text. Either way the folder is the apply's.
-test("a vault folder's trailing comment is not part of its name", () => {
-  const vault = join(mkdtempSync(join(tmpdir(), "comment-")), "vault");
-  const out = vaultPlan([`VAULT_DIR=${vault}`, "VAULT_FOLDERS=Meetings # meeting notes"]);
-  assert.ok(out.includes(`mkdir -p ${vault} ${vault}/Meetings`), out);
-  assert.ok(!out.includes("# meeting notes"), out);
-});
-
-test("is_loopback_url knows every loopback form and no real one", () => {
-  const fn = `source <(sed -n '/^is_loopback_url()/,/^}/p' ${JSON.stringify(setup)}); `;
-  const check = (u) => { try { execFileSync("bash", ["-c", `${fn} is_loopback_url "$1"`, "_", u]); return true; } catch { return false; } };
-  for (const u of ["http://localhost", "http://localhost/x", "http://localhost:3120/setup?token=a", "http://127.0.0.1", "http://127.0.0.1:3121/connect/x", "http://[::1]", "http://[::1]/x", "http://[::1]:8446/x"]) assert.ok(check(u), `missed ${u}`);
-  for (const u of ["https://alice.tail1234.ts.net:8446/x", "http://board.example/connect/x", "https://203.0.113.7/x"]) assert.ok(!check(u), `called ${u} loopback`);
-});

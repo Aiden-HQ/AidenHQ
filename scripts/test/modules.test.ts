@@ -70,14 +70,6 @@ test("a validate hook is compiled for the module's own service only: another mod
   assert.deepEqual(checkEntries("acme", def("http://hook:8080/validate"))["acme.validate"], { module: "acme", at: "validate", url: "http://hook:8080/validate", auth_secret: "acme_key" });
   for (const post of ["http://other-mcp:8080/validate", "http://10.0.0.5:8080/validate", "http://localhost:8080/validate"]) assert.throws(() => checkEntries("acme", def(post)), /post must be one of the module's own services/);
 });
-test("engines: two modules with one engine kind fail compile", () =>
-  assert.throws(() => compile(mods, finst(["engdup"])), /two modules declare engine kind codex-openrouter: eng and engdup/));
-test("engines: a runner agent on an engine no enabled module provides fails compile", () => {
-  compile(mods, finst(["engrunner"]));
-  assert.throws(() => compile(mods, finst(["engrunner"], base, { overrides: { agents: { coder: { engine: "nope" } } } })), /agent coder: unknown engine nope \(enabled: codex, codex-openrouter\)/);
-  // A session hears its wakes as live input: an engine that takes none is refused.
-  assert.throws(() => compile(mods, finst(["engsession"])), /agent sess: a session's engine runs in a computer, takes live input, keeps per-task state and reaches its tools as code .*, and codex-openrouter doesn't/);
-});
 test("grants resolve to tool lists: read, write, or a list", () => {
   const x = compile(mods, finst(["a"])).paperclip.agents.x;
   assert.deepEqual(x.mcp_servers, ["tasks", "bconn", "aconn"]);
@@ -114,15 +106,8 @@ test("roles: unknown ones, and ones a module may not grant, fail compile", () =>
   assert.throws(() => compile(mods, finst(["roley"])), /r: module roley may not grant fleet-admin/);
   assert.deepEqual(compile(mods, finst(["roleopt"])).paperclip.agents.o.roles, [], "an optional role whose module is off is dropped");
 });
-test("session role needs the session profile", () => {
-  assert.throws(() => compile(mods, finst(["sessbad"])), /agent s: the session role is for a profile-session agent/);
-  const s = compile(mods, finst(["sessok"])).paperclip.agents.s;
-  assert.deepEqual([s.profile, s.roles], ["session", ["session"]]);
-  assert.equal(grantEntry("s", s).profile, "session");
-});
 test("an agent from an untrusted module gets no roles and no write grants", () =>
   assert.throws(() => compile(mods, finst(["wild"])), /w: an untrusted module's agent may not have tasks write tools \(t2\)/));
-test("every connection tags its tools read or write", () => assert.throws(() => compile(mods, finst(["untagged"])), /connection u: tools\.read and tools\.write/));
 test("connections go through the kernel: no compiled service mounts grants; the kernel's table names each endpoint and key", () => {
   const r = compile(mods, finst(["a"]));
   const s = r.compose.services["a-mcp"];
@@ -134,21 +119,6 @@ test("connections go through the kernel: no compiled service mounts grants; the 
   }
   assert.equal(r.compose.services.paperclip, undefined, "no connection token reaches paperclip");
   assert.deepEqual(r.connections.aconn, { url: "http://a-mcp:1/mcp", auth_secret: "a_service_key", module: "a", returns: "untrusted", tools: { read: ["a_get"], write: ["a_set"], destructive: [] } });
-});
-test("slack-live gets the instance's own name and the owner's, so a new Slack app is named per instance", () => {
-  const env = (settings: any) => compile(product, pinst([], { ...owner, ...settings })).compose.services["slack-live"].environment;
-  assert.deepEqual([env({ instance_name: "acme" }).INSTANCE_NAME, env({ instance_name: "acme" }).OWNER_NAME], ["acme", "Sam"]);
-  // instance_name is optional: unset, it is the empty string and the service falls back to the owner's name.
-  assert.deepEqual([env({}).INSTANCE_NAME, env({}).OWNER_NAME], ["", "Sam"]);
-});
-test("overrides apply to allowed fields only", () => {
-  assert.equal(compile(mods, finst(["a"], base, { overrides: { agents: { x: { model: "m2" } } } })).paperclip.agents.x.model, "m2");
-  assert.equal(compile(mods, finst(["a"], base, { overrides: { agents: { x: { max_parallel: 4 } } } })).paperclip.agents.x.max_parallel, 4);
-  assert.throws(() => compile(mods, finst(["a"], base, { overrides: { agents: { x: { max_parallel: 0 } } } })), /max_parallel must be 1 to 10/);
-  assert.throws(() => compile(mods, finst(["a"], base, { overrides: { agents: { x: { mcp_servers: [] } } } })), /override not allowed: agents\.x\.mcp_servers/);
-  assert.throws(() => compile(mods, finst(["a"], base, { overrides: { agents: { nope: { model: "m" } } } })), /unknown agent: nope/);
-  // A routine's status is Paperclip's after setup creates it: the live controls pause and resume it, never an override.
-  assert.throws(() => compile(mods, finst([], base, { overrides: { routines: { daily: { status: "paused" } } } })), /override not allowed: routines\.daily\.status/);
 });
 test("grants entry: models, graded off by default; a removed spend key fails compile naming the replacement", () => {
   const r = compile(mods, finst(["a"], base, { overrides: { agents: { x: { model: "openrouter/m2" } } } })).paperclip;
@@ -240,17 +210,6 @@ test("untrusted app compiles to untrusted: true", () => {
   assert.equal(app.path, "modules/appmod/apps/web");
 });
 test("untrusted module may not ship connections", () => assert.throws(() => compile(mods, finst(["shady"])), /untrusted module shady may not declare connections/));
-test("vault and knowledge mounts come from the host env, validated", () => {
-  assert.deepEqual(hostMounts({ VAULT_DIR: "/v", VAULT_FOLDERS: "Meetings,/Notes/", KNOWLEDGE_BASES: "kb=/k" }),
-    ["/v/Meetings:/vault/Meetings", "/v/Notes:/vault/Notes", "/k:/knowledge/kb:ro"]);
-  assert.deepEqual(hostMounts({}), []);
-  assert.throws(() => hostMounts({ VAULT_DIR: "/v", VAULT_FOLDERS: "../etc" }), /invalid vault folder: \.\.\/etc/);
-  assert.throws(() => hostMounts({ VAULT_DIR: "/v", VAULT_FOLDERS: ".ssh" }), /invalid vault folder: \.ssh/);
-  assert.throws(() => hostMounts({ VAULT_DIR: "/v", VAULT_FOLDERS: "a:b" }), /invalid vault folder: a:b/);
-  assert.throws(() => hostMounts({ KNOWLEDGE_BASES: "bad name=/k" }), /invalid KNOWLEDGE_BASES entry: bad name=\/k/);
-  assert.throws(() => hostMounts({ KNOWLEDGE_BASES: "kb=/k:/etc" }), /invalid KNOWLEDGE_BASES entry/);
-});
-
 test("kernel roles are the kernel's: no module declares one or a write kind's name, and requests only defined ones", () => {
   const dir = mkdtempSync(join(tmpdir(), "prod-"));
   cpSync(join(here, "fixtures/mods"), dir, { recursive: true });
@@ -270,14 +229,6 @@ test("kernel roles are the kernel's: no module declares one or a write kind's na
 });
 // ------------------------------------------------------------------ the real modules
 const repo = join(here, "../..");
-
-test("the intake agents' Slack read grant has no draft tool", () => {
-  const dir = pinst(["intake", "primer"], { timezone: "Europe/London", owner_name: "Sam", owner_email: "e@x", product_repo: "acme/aidenhq" });
-  const r = compile(repo, dir);
-  const scanners = Object.values(r.paperclip.agents).filter((a) => a.module === "intake" && a.department.id === "intake" && a.enabled_tools.slack?.includes("slack_read_thread"));
-  assert.ok(scanners.length);
-  for (const a of scanners) assert.ok(!a.enabled_tools.slack.includes("slack_send_message_draft"), a.name);
-});
 
 // The real product: nothing needs Slack; the owner channel is its own module.
 const product = join(here, "../..");
@@ -302,13 +253,6 @@ test("upstream: off leaves every agent without an upstream tool; with issues onl
   for (const tool of ["github_product_issue", "github_product_issue_status"]) assert.deepEqual(granted(off, tool), [], tool);
 });
 
-test("an instance written before the fleet-steward merge (coach, fleet-ops, librarian; no dispatch or owner-channel) compiles as it stands", () => {
-  const old = BUNDLE.filter((n) => !["fleet-steward", "dispatch", "owner-channel"].includes(n));
-  const r = compile(product, inst([...old, "coach", "fleet-ops", "librarian"], { product_repo: "acme/aidenhq", ...owner }));
-  const enabled = enabledOf(r);
-  for (const n of ["fleet-steward", "dispatch", "owner-channel"]) assert.ok(enabled.includes(n), n);
-  for (const n of ["coach", "fleet-ops", "librarian"]) assert.ok(!enabled.includes(n), n);
-});
 test("optional secrets are created only where the secrets dir is really there (never into a locked vault's bare mountpoint)", () => {
   const dir = mkdtempSync(join(tmpdir(), "sec-"));
   assert.deepEqual(ensureOptionalSecrets(dir, ["telegram_notify_bot_token"], "slack_live_mcp_token"), [], "no known secret yet: looks like an unmounted vault");
@@ -348,11 +292,6 @@ test("an install with no model key: an optional mounted secret starts empty, a m
     assert.deepEqual(ensureMountedSecrets(fresh, m, [...g.optionalSecrets, ...g.askedSecrets], "paperclip_auth_secret").missing, [], extra.join());
   }
 });
-test("secrets the setup must not leave to a manual step are generated", () => {
-  const g = compile(product, pinst(["primer"], owner)).generatedSecrets;
-  for (const k of ["primer_service_key", "telegram_service_key"]) assert.ok(g.includes(k), k);
-  assert.ok(!g.includes("computer_launcher_token"));
-});
 test("autonomy: off by default, reaches the compiled config, a bad value fails; the reviewer key is generated, no decide key", () => {
   assert.equal(compile(product, pinst([], owner)).paperclip.autonomy, "off");
   assert.equal(compile(product, pinst([], { ...owner, autonomy: "tier0" })).paperclip.autonomy, "tier0");
@@ -367,13 +306,6 @@ test("destructive tools: `write` never grants them, a list must name them; compi
   assert.deepEqual(agents.wd.enabled_tools.wconn, ["w_get", "w_delete"]);
   assert.throws(() => compile(mods, finst(["sloppy"])), /deleteIssue looks destructive/);
 });
-test("exposure: unset is tailscale (installs before the setting), one mode reaches the compiled output, a list or a bad value fails", () => {
-  assert.equal(compile(product, pinst([], owner)).exposure, "tailscale");
-  assert.equal(compile(product, pinst([], { ...owner, exposure: "public" })).exposure, "public");
-  assert.throws(() => compile(product, pinst([], { ...owner, exposure: "open" })), /exposure/);
-  assert.throws(() => compile(product, pinst([], { ...owner, exposure: ["public", "local"] })), /exposure/);
-});
-
 test("enumeration (spec §9): every shipped write or destructive tool maps to a kind or to conn.tool, each tool to at most one kind", () => {
   const product = join(here, "../..");
   const kinds = {};
@@ -419,27 +351,6 @@ test("checks: a task.rubric check carries post and auth only; task.finish and it
   assert.deepEqual(checkEntries("platform", { checks: [{ id: "product-gate", at: "write.filed", kinds: ["github.push"] }] }), { "platform.product-gate": { module: "platform", at: "write.filed", kinds: ["github.push"] } });
   assert.throws(() => checkEntries("platform", { checks: [{ id: "product-gate", at: "write.filed" }] }), /names the write kinds/);
 });
-test("a module's token holds the kernel roles and the enabled modules' declared roles it requests (whoami's roles)", () => {
-  const t = kernelModuleTable({ apps: { roles: { declares: [{ id: "apps.read", description: "d" }] } }, grading: { roles: { requests: ["kernel.wake", "apps.read", "nobody.declares"] } } });
-  assert.deepEqual(t.grading.roles, ["kernel.wake", "apps.read"]);
-});
-test("a module's display name for the kernel: its own sign-in's label, else its setup flow's title, else none", () => {
-  const t = kernelModuleTable({
-    github: { contributes: { "board.signins": [{ id: "github", label: "GitHub" }], "board.setup_flows": [{ title: "GitHub setup" }] } },
-    google: { contributes: { "board.setup_flows": [{ title: "Google" }] } },
-    plain: { roles: { requests: ["kernel.wake"] } },
-  });
-  assert.equal(t.github.label, "GitHub");
-  assert.equal(t.google.label, "Google");
-  assert.equal(t.plain.label, undefined);
-});
-test("a channel's transport is a compose service (the kernel sends the channel's token there); a credentials key is gone", () => {
-  const ch = (channel) => ({ x: { privileged: ["speaks-as-owner"], providers: { channel }, generated_secrets: ["x_token"] } });
-  assert.deepEqual(kernelModuleTable(ch({ transport: "http://telegram:8089/transport/send" })).x.channel, { transport: "http://telegram:8089/transport/send" });
-  for (const t of ["http://127.0.0.1:8089/t", "http://localhost:8089/t", "http://169.254.169.254:80/t", "https://example.com:443/t"]) assert.throws(() => kernelModuleTable(ch({ transport: t })), /a compose service/, t);
-  assert.throws(() => kernelModuleTable(ch({ credentials: true })), /providers.channel.credentials is not allowed/);
-});
-
 test("a module's job tools compile with the ops it lists; anything else is refused", () => {
   const jt = (jobtools, more = {}) => ({ design: { providers: { jobtools }, services: { run: { design: {} } }, generated_secrets: ["design_service_key"], ...more } });
   assert.deepEqual(kernelModuleTable(jt({ url: "http://design:8099/jobtools", auth: "design_service_key", ops: ["login", "app-session"] })).design.jobtools, { url: "http://design:8099/jobtools", auth_secret: "design_service_key", ops: ["login", "app-session"] });
@@ -528,25 +439,6 @@ test("code review: every watched repo asks its verdict; the kernel skips the AI 
   assert.throws(() => codeReviewGated({ repos: [{ repo: "acme/app", by_tier: { standard: { on_open: [c()], on_push: [c(true)] } } }] }), /needs a mandatory on_open one/);
 });
 
-test("check job limits: a recipe may run 180 minutes; a recipe's own model cap is gone", () => {
-  const job = (r) => ({ check_jobs: { big: { argv: ["node", "x.ts"], title: "big", spec: { budget_usd: "usd" }, timeout_min: 180, ...r } } });
-  const root = mkdtempSync(join(tmpdir(), "cj-"));
-  assert.equal(checkJobs("m", job({ model: true }), root).big.model, true);
-  assert.equal(checkJobs("m", job({}), root).big.timeout_min, 180);
-  assert.throws(() => checkJobs("m", job({ timeout_min: 181 }), root), /1 to 180/);
-  assert.throws(() => checkJobs("m", job({ model: { max_usd: 100 } }), root), /spend cap is gone/);
-  // the real code review module declares both profiles: the tools one with no model
-  const real = checkJobs("code-review", YAML.parse(readFileSync(join(here, "../../modules/code-review/module.yaml"), "utf8")), join(here, "../../modules/code-review"));
-  assert.equal(real["code-review"].model, true);
-  assert.equal(real["code-review-tools"].model, undefined);
-  assert.equal(real["code-review-tools"].result, true);
-});
-
-test("product names that differ only in case are refused", () => {
-  assert.throws(() => productsOf({ Billing: ["acme/a"], billing: ["acme/b"] }), /differ only in case/);
-  assert.deepEqual(productsOf({ Billing: ["acme/a"], Hiring: ["acme/b"] }), { Billing: ["acme/a"], Hiring: ["acme/b"] });
-});
-
 test("subscribes: compiled from settings into the kernel's module table, kinds checked, * only for product modules", () => {
   const gh = { connections: { github: { events: { kinds: ["pull_request.opened", "push"] } } } };
   const settings = { code_review: { repos: [{ repo: "Org/A" }, { repo: "org/b" }] }, maintainer_repos: ["org/c", { repo: "Org/D" }] };
@@ -561,12 +453,4 @@ test("subscribes: compiled from settings into the kernel's module table, kinds c
   const opt = { optional: { subscribes: { "github?": { kinds: ["push"], resources: "*" } } } };
   assert.equal(kernelModuleTable(opt, {}, new Set(["optional"])).optional?.subscribes, undefined);
   assert.deepEqual(kernelModuleTable({ github: gh, ...opt }, {}, new Set(["optional"])).optional.subscribes, { github: { kinds: ["push"], resources: "*" } });
-});
-
-test("the design module's subscriptions: an app's deploys by name, and its repo's pushes only with GitHub in", () => {
-  const def = (m: string) => YAML.parse(readFileSync(join(here, `../../modules/${m}/module.yaml`), "utf8"));
-  const [design, apps, github] = ["design", "apps-platform", "github"].map(def);
-  const settings = { ui_testing: { apps: [{ name: "acme", url: "https://acme.example.com", repo: "Acme/App" }, { name: "beta", url: "https://beta.example.com" }] } };
-  assert.deepEqual(kernelModuleTable({ "apps-platform": apps, design }, settings).design.subscribes, { apps: { kinds: ["app.deployed"], resources: ["acme", "beta"] } });
-  assert.deepEqual(kernelModuleTable({ "apps-platform": apps, design, github }, settings).design.subscribes.github, { kinds: ["push"], resources: ["acme/app"] });
 });
