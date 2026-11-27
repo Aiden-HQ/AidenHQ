@@ -154,7 +154,9 @@ export function ConnectDialog({ c, error, started, onClose }: { c: Connectable; 
   const connect = async () => {
     setTouched(true);
     if (!view || bad.length || (on && !on.size)) return;
-    const w = newTab();
+    // A device or QR sign-in continues in this dialog once its fields are saved: no tab.
+    const inDialog = view.mode === "device" || view.mode === "qr";
+    const w = inDialog ? null : newTab();
     setProblem("");
     try {
       if (fields.length) {
@@ -172,6 +174,7 @@ export function ConnectDialog({ c, error, started, onClose }: { c: Connectable; 
         // A pasted token that Primer accepts is the whole sign-in; one it refused says why, and stays to be pasted again.
         if (fresh.asks) throw new Error(fresh.detail ?? "That value didn't work.");
         if (fresh.state === "ok") return (w?.close(), onClose());
+        if (inDialog) return (setView(fresh), setBusy(""));
         // Its scopes are on offer only once it knows its address: the picker comes now, and Connect again.
         if (fresh.scopes && !on) {
           w?.close();
