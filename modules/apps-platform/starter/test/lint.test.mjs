@@ -47,3 +47,12 @@ test("lint: the craft slips fail with the fix, and the accessible forms pass", (
   assert.deepEqual(hits.slice(1).map((h) => h.split(":")[0]), ["6", "6", "6"]);
   assert.equal(lint("src/pages/ok.tsx", 'export const M = () => <meta content="width=device-width, user-scalable=no" />\n').status, 1);
 });
+
+test("lint: a routing library or a hand-built DOM in a component test fails with the fix, subpaths included", () => {
+  const router = lint("src/pages/nav.tsx", 'import { Link } from "react-router/dom"\nexport const L = Link\n');
+  assert.equal(router.status, 1, router.out);
+  assert.ok(router.out.includes("Use <Link href> from lib/navigation"), router.out);
+  const dom = lint("src/test/dom.test.tsx", 'import { createRoot } from "react-dom/client"\nexport const r = createRoot\n');
+  assert.equal(dom.status, 1, dom.out);
+  assert.ok(dom.out.includes("Render with @testing-library/react"), dom.out);
+});
