@@ -31,8 +31,36 @@ never in this file.
 - `scripts/`: compiler (`compile.ts`, `modules.ts`), Paperclip setup (`paperclip-setup.ts`), account auth,
   health, backup and restore.
 - `ops/`: apply, install (`setup.sh`), systemd units, vault, VM provisioning, the GitHub credential helper.
-- `config/`: generated files (gitignored) plus `*.example.yaml` templates. `docs/`: documentation. `docs/design/`: notes for features being built; when one ships, its lasting rules move into
-  Conventions or a module's prompts and the note is cut to how it works now, or deleted.
+- `config/`: generated files (gitignored) plus the ops-mcp `routing` and `system` `*.example.yaml` templates. `docs/`: see
+  "Docs" below.
+
+## Docs
+
+Each topic has one canonical doc; others link to it. **Keep docs current:** a change that alters behaviour, a path, a
+setting, a command or a module's tools updates the doc that describes it in the same PR, and a new or moved doc gets its
+line here. Docs say how the product works now: no history notes; history goes to the instance repo's `docs/product-history/`.
+
+- Start: `README.md` (what AidenHQ is, models, cost), `SETUP.md` (one-prompt install), `CONTRIBUTING.md` (PR flow,
+  test table, supply chain), `SECURITY.md` (reporting a vulnerability).
+- Concepts and shape: `docs/concepts.md` (the words), `docs/architecture.md` (components, trust boundaries, the owner
+  MCP), `docs/core-components.md` (ours versus Paperclip's).
+- Configuring and running: `docs/configuration.md` (`module.yaml` fields, the instance repo, settings, teams, grants,
+  app access, host `.env`), `docs/setup.md` (manual install), `docs/USAGE.md` (day to day), `docs/operations.md` and
+  `docs/operations/` (apply, backups, retention, moving hosts, hand-pinned releases), `ops/vault/README.md` (the vault).
+- Building modules: `modules/AGENTS.md` (how modules, connections, agents, teammates, settings pages are built),
+  `modules/README.md` (every module, the default bundle), `modules/<name>/README.md` (what it does, connect, what agents
+  get; in step with its `module.yaml`), `docs/modules.md` (kernel routes a module service calls), `kernel/sdk/README.md`. Module internals live in the
+  module's README (e.g. the change feed in `modules/github`, how a PR moves in `modules/ship`, CI runners in `modules/ci`).
+- How features work: `docs/design/` (one doc per feature, describing it as built): access and exposure (`access.md`,
+  `app-doors.md`, `app-identity.md`), approvals and settings (`approvals.md`, `settings-changes.md`), code
+  (`code-review.md`, `codehost-local.md`, `sandboxing.md`, `codex-openrouter-engine.md`, `sessions.md`), setup
+  (`guided-setup.md`, `connections-simple.md`, `release-updates.md`, `quiet-start.md`), data (`flow.md`,
+  `flow-insights.md`, `monitoring.md`, `sources.md`, `task-search.md`), UI (`board-ui.md`, `agent-work-board.md`,
+  `agent-and-module-pages.md`, `design-system.md`).
+- Designs in flight: `docs/superpowers/specs/`. Once built, the design goes into the live doc above and the spec moves to
+  the instance repo's `docs/product-history/superpowers/`.
+- Runtime content (agents read it, tests assert it): handbooks (`modules/*/agents/`), skills, `*/prompts/`, grading
+  rubrics, reviewer policy. Change it as product behaviour, not as docs.
 
 ## Build and test
 
@@ -49,12 +77,12 @@ npm test && npm run typecheck
 ```
 
 The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. After
-editing `kernel/sdk/src/caller.ts` or `fence.ts`, `kernel/sdk/src/source-store.ts` or `vendor/`, `modules/apps-platform/design-system/` or the app starter (`modules/apps-platform/starter/`), run `node scripts/sync-shared.ts` (a
-test fails on drift, the copies under `modules/` included). The official modules are this repo's `modules/` (MIT by folder:
+editing any file `scripts/sync-shared.ts` lists (SDK helpers, vendored code, the app starter and design system, the page kit,
+the CI template's supply-chain scripts), run `node scripts/sync-shared.ts` (a test fails on drift, the copies under
+`modules/` included). The official modules are this repo's `modules/` (MIT by folder:
 `modules/LICENSE`, `NOTICE`, `LICENSES/`), so a change across the kernel and a module is one PR. CI (`.github/workflows/ci.yml`)
 runs the suites a PR touches (map: `.github/ci/areas.json`, read from the base: each module package is a suite of its own
-whose paths list what it imports; `scripts/test/ci-areas.test.ts` fails when a module with tests has no suite or a suite's
-imports leave its paths; a path under no suite runs everything) and all of them on main.
+whose paths list what it imports; a path under no suite runs everything) and all of them on main.
 
 The app starter (`modules/apps-platform/starter/`) is Vite + shadcn: `npm ci && npm run build` before serving it (apps-mcp's
 render test skips without `dist/`). Copying files from macOS with `tar`, set `COPYFILE_DISABLE=1` (else `._*` files break
@@ -139,7 +167,7 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
   (`docker compose exec jira-mcp node dist/src/probe.js [tool '<json>']`).
 - **Inbound:** the kernel's admin listener (3120: sign-in and the kernel's own pages) and the board (3121) are loopback-only, reached
   through the exposure mode's front door (`settings.exposure`: Caddy on the public IP, the default off a tailnet; Tailscale
-  serve; or an SSH tunnel; only `ops/setup.sh --exposure` changes it), but every host process shares that loopback, so every route on 3120 and 3121 needs a signed-in
+  serve; a Cloudflare tunnel; or an SSH tunnel for `local`; see `docs/design/access.md`), but every host process shares that loopback, so every route on 3120 and 3121 needs a signed-in
   admin (beyond sign-in, only OpenRouter's PKCE callback, by a single-use state an admin's page made, and the MCP's OAuth routes on 3120: `/oauth2/*`, `/oauth/consent`, `/.well-known/oauth-authorization-server`, which sign an admin in themselves and answer only to a registered client) (accounts: Better Auth in the kernel, password + TOTP, `data/kernel/auth/auth.db`, which the board's 3129 listener
   also opens until 3g; no SSO, sign-in beyond that is Cloudflare Access). Cards are decided by
   channel token, or by a signed-in admin through the board, the one approvals UI (his board session on a card's Approve or Reject,
@@ -166,7 +194,7 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
   global installs at a version, no `curl | sh`); pick versions with `scripts/supply-chain/best-version.ts`, and state the
   release date of any pin you bump. Dependabot (cooldown 7), `scripts/supply-chain/npm-age.ts` and `pins.ts` (CI,
   exceptions in `.github/supply-chain-exceptions.yaml`, read from the head; a pin that can't be dated is a warning) and gitleaks (`.gitleaks.toml`) enforce it.
-  The app CI template carries copies in `.github/supply-chain/` (kept identical by `scripts/sync-shared.ts`).
+  The app CI template carries copies in `modules/ci/template/.github/supply-chain/` (kept identical by `scripts/sync-shared.ts`).
 - **Modules with modes.** A setting that changes how a module connects (connect or self-host, cloud or local) changes every
   surface it gives the owner: its board sign-in and Connect, status, setup help and secrets. Each mode gets one end-to-end test
   of the owner's setup from a fresh install to connected.
@@ -194,7 +222,7 @@ One line per pair: when the left changes, update the right in the same PR (the r
 
 - The teammate block or agent fields (`scripts/modules.ts` `teammateOf`, `LOCAL_AGENT_FIELDS`) → `modules/AGENTS.md`
   "Teammates", `docs/configuration.md` "teammate", `modules/agent-builder/` (the Architect's `AGENTS.md`, its skills,
-  `templates/README.md` and every template).
+  `modules/agent-builder/templates/README.md` and every template).
 - Routine fields (`trial`, `event`, schedules) or catalog/browse rows (`config/modules.json`) → `docs/configuration.md`,
   `modules/AGENTS.md`, `fleet_catalog` (`modules/tasks/connections/tasks-mcp/src/tools.ts`).
 - The board's IA, onboarding (`Welcome.tsx`, `TeammateSetup.tsx`, `Hire.tsx`) or Home → `docs/design/board-ui.md`,
