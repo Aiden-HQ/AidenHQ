@@ -4,11 +4,19 @@ import { renderInZone, type NormalizedEvent } from "./workspace.js";
 
 export type TodayEvent = { id: string; start: string; end: string; title: string; all_day: boolean; /** The meeting's video-call URL, else the event's calendar page; http(s) only, absent when the event has neither. */ url?: string };
 
-const httpUrl = (u?: string) => (u && /^https?:\/\/\S+$/i.test(u) ? u : undefined);
-const CALL_HOST = /^https?:\/\/(?:[\w-]+\.)*(?:zoom\.us|zoomgov\.com|meet\.google\.com|teams\.microsoft\.com|teams\.live\.com)(?:[/?#]\S*)?$/i;
+const httpUrl = (u?: string) => {
+  try {
+    const { protocol, hostname } = new URL(u ?? "");
+    return /^https?:$/.test(protocol) && hostname ? u : undefined;
+  } catch {
+    return undefined;
+  }
+};
+const CALL_HOST = /(?:^|\.)(?:zoom\.us|zoomgov\.com|meet\.google\.com|teams\.microsoft\.com|teams\.live\.com|teams\.cloud\.microsoft)$/i;
+const inText = (text?: string) => (text?.match(/https?:\/\/[^\s<>"')\]]+/gi) ?? []).map((u) => u.replace(/[.,;:!?]+$/, "")).find((u) => httpUrl(u) && CALL_HOST.test(new URL(u).hostname));
 /** Where a click on the event goes: its video call (Meet link or conference entry, else a Zoom/Meet/Teams URL in the location), else its calendar page. */
 export const eventUrl = (e: Pick<NormalizedEvent, "meet_link" | "location" | "html_link">) =>
-  httpUrl(e.meet_link) ?? e.location?.split(/[\s,;]+/).find((w) => CALL_HOST.test(w)) ?? httpUrl(e.html_link);
+  httpUrl(e.meet_link) ?? inText(e.location) ?? httpUrl(e.html_link);
 
 const offsetMs = (at: number, zone: string) => {
   const m = renderInZone(new Date(at).toISOString(), zone).match(/([+-])(\d\d):(\d\d)$/);
