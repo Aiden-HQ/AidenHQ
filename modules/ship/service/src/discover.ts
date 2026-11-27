@@ -92,15 +92,16 @@ export function discover(files: Record<string, string>): Discovered {
 
 const REGEN = /\b(rebase|regenerat|generat|codegen)/i;
 /** The repo's own regenerate paths, from its workflows: a workflow_dispatch workflow that rebases or regenerates, proposed with the
- * PR's number as its first declared input (a hook runs on the base branch, so an input is how it knows the PR; one with none isn't
- * proposed). Proposed in the report as `actions` steps; enabling one is the owner's or an agent's ship_configure. */
+ * PR's number as its input that names the PR (`pr`, `pr_number`, `pull_request`, …; a hook runs on the base branch, so an input
+ * is how it knows the PR; a workflow without one is left to the owner). Proposed in the report as `actions` steps; enabling one is the owner's or an agent's ship_configure. */
 function suggestions(files: Record<string, string>): Suggestion[] {
   const out: Suggestion[] = [];
   for (const [path, text] of Object.entries(files)) {
     if (!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(path)) continue;
     const name = base(path);
     const regen = REGEN.test(name) || jobsOf(text).some((j) => j.runs.some((r) => GEN_RUN.test(r) || /\bgit\s+rebase\b/.test(r)));
-    const input = /^\s*workflow_dispatch:\s*\n\s+inputs:\s*\n\s+([\w-]{1,50}):/m.exec(text)?.[1];
+    const after = text.slice(Math.max(0, text.search(/\bworkflow_dispatch:/)));
+    const input = /^\s+((?:pr|pull)(?:[_-]?(?:number|request))?):\s*$/im.exec(after)?.[1];
     if (input && regen) out.push({ stage: "conflict", step: { workflow: name, inputs: { [input]: "{pr}" } }, from: path });
   }
   return out;
