@@ -33,6 +33,7 @@ export function DigestRow({ d }: { d: DigestItem }) {
   return (
     <div
       className={`ui-digest-row${open ? " openable" : ""}${d.active ? " on" : ""}`}
+      data-row={d.id}
       style={d.i === undefined ? undefined : ({ "--i": d.i } as CSSProperties)}
       onClick={open && !d.receipt ? (e) => !(e.target as Element).closest(skip) && open() : undefined}
     >

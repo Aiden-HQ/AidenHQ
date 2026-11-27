@@ -363,8 +363,10 @@ button.ui-dr-top:hover .ui-dr-q { color: var(--accent); }
 .ui-digest-row > a:not(.ui-digest-open):hover, .ui-digest-more:hover { text-decoration: underline; }
 .ui-digest-actions { position: absolute; top: 1px; bottom: 1px; right: 1px; display: flex; align-items: center; justify-content: flex-end; gap: 6px; max-width: calc(100% - 2px); padding: 0 15px 0 56px; background: linear-gradient(to right, transparent, var(--row-bg) 44px); }
 .ui-digest-actions .btn { white-space: nowrap; max-width: 14rem; overflow: hidden; text-overflow: ellipsis; }
-/* A form in the buttons (Reject's reason) takes the whole row. */
-.ui-digest-actions:has(form) { left: 1px; padding-left: 15px; background: var(--row-bg); }
+/* A form in the buttons (Reject's reason) or a failed decision takes the whole row and stays shown; the error is cut to the row
+   (the drawer shows it whole). */
+.ui-digest-actions:has(form, .decide-error) { left: 1px; padding-left: 15px; background: var(--row-bg); opacity: 1; pointer-events: auto; }
+.ui-digest-actions .decide-error { flex: 1 1 0; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; order: -1; }
 @media (hover: hover) {
   .ui-digest-actions { opacity: 0; pointer-events: none; transition: opacity var(--fast) var(--ease-out); }
   .ui-digest-row:hover .ui-digest-actions, .ui-digest-row:focus-within .ui-digest-actions { opacity: 1; pointer-events: auto; }

@@ -60,6 +60,10 @@
 .home-detail-facts .ui-facts dt { color: var(--faint); }
 .home-detail-facts a { text-decoration: none; }
 .home-detail-facts a:hover { text-decoration: underline; }
+.home-muted { color: var(--muted); }
+.home-explain { justify-self: start; }
+/* Every item of Since, expanded, is read in full. */
+.home-since-all .ui-digest-row, .home-since-all .ui-digest-text { white-space: normal; }
 .home-ident { font-family: var(--mono); font-size: var(--text-sm); color: var(--muted); }
 .home-draft { margin: 0; padding: 10px 12px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius-md); background: var(--surface-2); color: var(--text); font-size: var(--text-body); line-height: 1.55; white-space: pre-line; }
 .home-done { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 600; color: var(--ok-text); }

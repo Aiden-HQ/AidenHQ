@@ -3,6 +3,7 @@
 // block with no source or no data is left out, never shown empty. #/approvals/<id> opens that card in the detail drawer.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { AnswerForm } from "./AnswerForm";
+import { Explain } from "./Explain";
 import { HttpStatusError, SignInRequired, api, type Session } from "./api";
 import { ApprovalCard, BatchBar, Decide, TIER_WORDS } from "./ApprovalCard";
 import { useLive } from "./events";
@@ -452,7 +453,7 @@ function HomeDrawer({ rowId, onClose, head, foot, children }: { rowId: string; o
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("keydown", onKey);
-      const row = document.querySelector<HTMLElement>(`[id="need-${rowId}"] .ui-digest-open`);
+      const row = document.querySelector<HTMLElement>(`[data-row="${CSS.escape(rowId)}"] .ui-digest-open`);
       (row ?? (opener?.isConnected ? opener : null))?.focus({ preventScroll: true });
     };
   }, [rowId]);
@@ -480,6 +481,8 @@ const waited = (iso: string) => {
 };
 /** An http(s) address as a link that opens in a new tab; any other value as text. */
 const value = (v: string) => (/^https?:\/\/\S+$/i.test(v) ? <a href={safeHref(v)} target="_blank" rel="noopener noreferrer">{v}</a> : v);
+/** A task's board prefix ("WOR" of "WOR-841"): Markdown links that board's references. */
+const boardOf = (identifier: string) => identifier.replace(/-\d+$/, "");
 const taskLink = (t: { identifier: string; title: string }) => <a href={`#/t/${t.identifier}`}><span className="home-ident">{t.identifier}</span> {t.title}</a>;
 
 /** The details every row's task gives: where it came from (with a link to the original message when the source has one), when it
@@ -572,12 +575,19 @@ function RowDetail({ row, projects, onClose, receipt, ...acts }: { row: NeedRow;
     task: row.task,
     since: row.since,
     waitLabel: row.kind === "answer" ? "Asked" : "Waiting",
-    holder: `${row.teammate.name}${row.teammate.job ? ` · ${row.teammate.job}` : ""}`,
+    holder: row.about?.holder ?? null,
     projects,
   });
   if (row.kind === "approval") {
     const c = row.card;
-    facts.push(["Reads", c.reads], ["Cost", c.cost], ["Who decides", TIER_WORDS[c.tier] ?? `Tier ${c.tier}`], ["Card", <a href={`#/approvals/${c.id}`}>{c.id}</a>]);
+    facts.push(
+      // A card on a task Home doesn't list (closed, or not the owner's) still opens its chat.
+      !row.task ? ["Chat", <a href={`#/t/${c.identifier}`}><span className="home-ident">{c.identifier}</span> Open the chat</a>] : null,
+      ["Reads", c.reads],
+      ["Cost", c.cost],
+      ["Who decides", <>{TIER_WORDS[c.tier] ?? `Tier ${c.tier}`}{c.reason && <span className="home-muted"> ({c.reason})</span>}</>],
+      ["Card", c.id],
+    );
   }
   return (
     <HomeDrawer rowId={row.id} onClose={onClose} head={head} foot={row.task && <a className="home-drawer-open" href={`#/t/${row.task.identifier}`}>Open task <span aria-hidden>→</span></a>}>
@@ -593,11 +603,24 @@ function RowDetail({ row, projects, onClose, receipt, ...acts }: { row: NeedRow;
             <div className="home-detail-part"><h4 className="home-detail-h">What changes</h4><pre className="home-pre">{row.card.changes}</pre></div>
             {row.card.review && <div className="home-detail-part"><h4 className="home-detail-h">Reviewer's note</h4><p className="home-pre-line">{row.card.review}</p></div>}
             {row.card.details && <div className="home-detail-part"><h4 className="home-detail-h">The exact request</h4><pre className="home-pre">{row.card.details}</pre></div>}
+            {row.card.replaced && <p className="home-muted">This replaces an earlier request in this chat.</p>}
+            <ExplainCard id={row.card.id} />
           </>
         )}
-        {row.kind !== "approval" && <AboutText a={row.about} prefix={row.task.identifier} />}
+        {row.kind !== "approval" && <AboutText a={row.about} prefix={boardOf(row.task.identifier)} />}
       </DetailBody>
     </HomeDrawer>
+  );
+}
+
+/** "Explain: who decides this, and why", as the approval card has it. */
+function ExplainCard({ id }: { id: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="home-detail-part">
+      <button type="button" className="link-btn small home-explain" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "Hide the explanation" : "Explain: who decides this, and why"}</button>
+      {open && <Explain id={id} />}
+    </div>
   );
 }
 
@@ -624,7 +647,7 @@ function WaitingDetail({ w, projects, onClose, close, later }: { w: Waiting; pro
         }
         facts={taskFacts(w.about, { from: null, task: { identifier: w.identifier, title: w.title }, since: w.about?.created ?? new Date(Date.now() - w.age_days * 86_400_000).toISOString(), waitLabel: "Waiting", holder: w.about?.holder ?? null, projects })}
       >
-        <AboutText a={w.about} prefix={w.identifier} />
+        <AboutText a={w.about} prefix={boardOf(w.identifier)} />
       </DetailBody>
     </HomeDrawer>
   );
@@ -656,7 +679,7 @@ function SinceCard({ since, timezone, from }: { since: NonNullable<Home["since"]
       flush
       action={since.total > Math.min(3, since.groups.length) ? <button type="button" className="link-btn home-all" aria-expanded={all} onClick={() => setAll(!all)}>{all ? "Fewer" : `All ${since.total} →`}</button> : undefined}
     >
-      {all ? <SinceAll items={since.items} total={since.total} /> : <DigestList items={since.groups.map((g) => ({ id: g.teammate.key, face: face(g.teammate, 26, "idle"), text: g.count > 1 ? <>{g.latest.text} <span className="home-more">+{g.count - 1} more</span></> : g.latest.text, open: g.latest.task ? `#/t/${g.latest.task}` : undefined }))} limit={3} />}
+      {all ? <SinceAll items={since.items} total={since.total} /> : <DigestList items={since.groups.map((g) => ({ id: g.teammate.key, face: face(g.teammate, 26, "idle"), text: g.count > 1 ? <>{g.latest.text} <span className="home-more">+{g.count - 1} more</span></> : g.latest.text, title: g.latest.text, open: g.latest.task ? `#/t/${g.latest.task}` : undefined }))} limit={3} />}
     </SectionCard>
   );
 }
@@ -674,7 +697,7 @@ function SinceAll({ items, total }: { items: SinceItem[]; total: number }) {
       {groups.map((g) => (
         <section key={g[0]!.teammate.key}>
           {chip(g[0]!.teammate, 24, `#/team/${g[0]!.teammate.key}`)}
-          <DigestList items={g.map((i, n) => ({ id: `${i.at}-${n}`, text: i.text, meta: ago(i.at), open: i.task ? `#/t/${i.task}` : undefined }))} limit={g.length} />
+          <DigestList items={g.map((i, n) => ({ id: `${i.at}-${n}`, text: i.text, title: i.text, meta: ago(i.at), open: i.task ? `#/t/${i.task}` : undefined }))} limit={g.length} />
         </section>
       ))}
     </div>
