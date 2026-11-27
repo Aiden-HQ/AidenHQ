@@ -18,8 +18,8 @@
 //                closed). Answers {pending, write} while the record waits.
 //   runner_token {org} → {token, expires_at}: an org's runner registration token, and nothing else
 //   app_token    {repo} → {token, expires_at}: the kernel's own op (appToken below, never a module's: no grant names it), the
-//                GitHub App's installation token narrowed to that repo (contents, pull requests, issues and workflows, each where
-//                the installation accepted it), for a session box's git
+//                GitHub App's installation token narrowed to that repo (contents and pull requests, each where the installation
+//                accepted it; never the App's wider grants), for a session box's git
 // A `local/…` repo (the org codehost-local owns) is served by codehost-local (in process: its snapshot) under the same grants
 // and the same answer (its bundle: every branch), and none of the GitHub-only ops (fetch, head, read, comment, commit, runner_token); every op without
 // the github code host for other orgs is 404.

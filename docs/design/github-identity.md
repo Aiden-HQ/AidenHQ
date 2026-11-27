@@ -88,9 +88,9 @@ the commit as whoever the actor is: the App's, signed by GitHub.
 
 ## Session boxes and the host
 
-- **Session boxes** get App-only tokens, never the owner's: one installation token narrowed to the repo and to contents,
-  pull_requests, issues and workflows, each only if the installation accepted it (contents is required). No App, no git
-  credential in the box.
+- **Session boxes** get App-only tokens, never the owner's: one installation token narrowed to the repo and to contents and
+  pull_requests write, each only if the installation accepted it (contents is required). Never the App's wider grants: a box
+  can't touch workflows, issues or their labels. No App, no git credential in the box.
 - **The host's instance checkout** (`ops/git-credential-github.mjs`) answers with an App installation token where the App is
   installed on the instance repo with contents and workflows write (git's `get` can't tell a fetch from a push, so it always
   asks for the push permissions), else the owner token. A broken App answers nothing.

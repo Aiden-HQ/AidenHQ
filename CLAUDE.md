@@ -185,7 +185,7 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
   Every agent job and every check (fast checks, the reviewer eval) runs in an agent computer (gVisor box,
   `services/computer/`); no process on the host runs repo code. A job box's only credential is its kernel job token (`ahqj_`),
   with one exception: a `session` job's box asks the kernel for a one-hour GitHub App installation token narrowed to one repo and to
-  contents, pull requests, issues and workflows, each only where the installation accepted it (`git-credential-aidenhq`, `POST /v1/jobtools/git-token`; the owner's token never enters a box), so plain `git push` and `gh` work;
+  contents and pull requests (never the App's wider grants), each only where the installation accepted it (`git-credential-aidenhq`, `POST /v1/jobtools/git-token`; the owner's token never enters a box), so plain `git push` and `gh` work;
   it sees only what the launcher mounts: its workspace, engine home and out folder, never the secrets dir, the data
   dir or the Docker socket; a check box gets only its snapshot and out folder. Run `scripts/verify-security.sh` on the host after exposure changes. See
   [docs/design/access.md](docs/design/access.md).

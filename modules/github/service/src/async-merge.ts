@@ -20,7 +20,8 @@ export const asyncPath = (repo: string, number: number) => `/repos/${repo}/pulls
 
 /** A request's result at its own GET: its `status` word and details, or the HTTP answer that wasn't one (`got` is its status). */
 export async function readAsync(gh: Gh, repo: string, number: number, uuid: string): Promise<{ got: number; status: string; details: any; message: string }> {
-  const r = await gh("GET", `${asyncPath(repo, number)}/${uuid}`).catch((e: Error) => ({ status: 0, body: { message: String(e.message).slice(0, 200) } }));
+  // An identity that can't read it any more (its App or installation gone: app_refused) is GitHub no longer holding it for us (404).
+  const r = await gh("GET", `${asyncPath(repo, number)}/${uuid}`).catch((e: Error & { need?: { cause?: string } }) => ({ status: e.need?.cause === "app_refused" ? 404 : 0, body: { message: String(e.message).slice(0, 200) } }));
   return { got: r.status, status: String(r.body?.status ?? ""), details: r.body?.details ?? {}, message: String(r.body?.message ?? "") };
 }
 
@@ -72,7 +73,16 @@ export async function mergeDirect(actor: Asker, byKey: ByKey, repo: string, numb
     throw unanswered(status || "no status");
   };
   const known = store.get(key);
-  if (known) return settle(known.actor === actor.key ? actor.rest : (await byKey(known.actor)).rest, known.uuid);
+  if (known) {
+    // Read back only as the identity that made it. One that can't be used any more (the App removed) drops the request: this
+    // attempt reads the PR back (unanswered), never asks as another identity, and the next pass decides afresh.
+    const by = known.actor === actor.key ? actor : await byKey(known.actor).catch((e: Error & { need?: { cause?: string } }) => {
+      // Only a definite answer (the App gone) drops it; a transient failure keeps it for the next pass.
+      if (e.need?.cause === "app_refused") { store.set(key); throw unanswered(`the identity that made request ${known.uuid} can't be used any more (${String(e.message).slice(0, 150)}); dropped`); }
+      throw unanswered(`the identity that made request ${known.uuid} couldn't be resolved now (${String(e.message).slice(0, 150)})`);
+    });
+    return settle(by.rest, known.uuid);
+  }
   const r = await actor.rest("PUT", asyncPath(repo, number), { ...body, merge_action: "direct_merge" });
   // A 409 that names a request (a uuid) is one already pending or queued: read as unanswered. Any other 409 is GitHub's refusal, in its words.
   if (r.status === 409 && !r.body?.details?.uuid) throw Object.assign(new Error(`HTTP 409: ${String(r.body?.message ?? r.body?.details?.message ?? "").slice(0, 300)}`), { status: 409 });

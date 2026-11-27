@@ -211,11 +211,19 @@ export class Maintainer {
    * login is an admin, so a label it adds counts, whether the owner or an agent added it: it gives the owner visibility and
    * is not a security boundary. A label with no actor is untrusted.
    */
-  private async trustedEvent(e: GhTimelineEvent, r: MaintainedRepo): Promise<boolean> {
-    // The fleet's own label, made as the App, is trusted as one made as the owner's login is, except the build label: that is the
-    // owner's own word on GitHub, and no tool of the fleet's adds it.
+  /** Whether #number is a pull request (GitHub's issue read names one by `pull_request`); a read that fails throws, failing closed. */
+  private async isPr(r: MaintainedRepo, number: number): Promise<boolean> {
+    const res = await this.gh.rest("GET", `/repos/${r.owner}/${r.name}/issues/${number}`);
+    if (res.status !== 200) throw new Error(`couldn't read ${r.repo}#${number} (GitHub said ${res.status})`);
+    return res.body?.pull_request != null;
+  }
+
+  private async trustedEvent(e: GhTimelineEvent, r: MaintainedRepo, isPr: () => Promise<boolean>): Promise<boolean> {
+    // The fleet's own label on an issue, made as the App, is trusted as one made as the owner's login is: only the code host holds
+    // the App's issues write (a session box's token has none). Not on a pull request (a box's pull requests write can label one),
+    // and never the build label: that is the owner's own word on GitHub, and no tool of the fleet's adds it.
     const via = e.performed_via_github_app?.id;
-    if (via != null && Number(via) === (await this.appId())) return !named(String(e.label?.name ?? ""), BUILD_LABEL);
+    if (via != null && Number(via) === (await this.appId())) return !named(String(e.label?.name ?? ""), BUILD_LABEL) && !(await isPr());
     const login = e.actor?.login;
     if (!login) return false;
     const role = await this.role(r.owner, r.name, login);
@@ -230,6 +238,9 @@ export class Maintainer {
     const r = this.target(repo);
     const { owner, name } = r;
     const events: LabelEvent[] = [];
+    // Read at most once per timeline, and only when an App label event asks it.
+    let pr: Promise<boolean> | undefined;
+    const isPr = () => (pr ??= this.isPr(r, number));
     let page = 1;
     for (; page <= PAGE_CAP; page++) {
       const res = await this.gh.rest("GET", `/repos/${owner}/${name}/issues/${number}/timeline?per_page=100&page=${page}`);
@@ -246,7 +257,7 @@ export class Maintainer {
           app_id: e.performed_via_github_app?.id ?? null,
           app_slug: e.performed_via_github_app?.slug ?? null,
           created_at: String(e.created_at ?? ""),
-          trusted: await this.trustedEvent(e, r),
+          trusted: await this.trustedEvent(e, r, isPr),
         });
       }
       if (pageEvents.length < 100) break;

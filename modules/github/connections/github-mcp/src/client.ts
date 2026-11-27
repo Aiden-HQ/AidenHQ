@@ -17,7 +17,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { needsOwner } from "./vendor/needs.js";
 import type { Auth } from "./vendor/oauth.js";
-import { AppError, covers as levelCovers, type GitHubApp, type Installation } from "./github-app.js";
+import { AppError, AppGone, covers as levelCovers, type GitHubApp, type Installation } from "./github-app.js";
 
 const API = "https://api.github.com";
 
@@ -477,7 +477,12 @@ export function createAccess(o: {
 
   /** An App answer as a typed need: a broken App is `app_broken`, never a reason to call as the owner instead. */
   const appCall = async <T>(go: () => Promise<T>): Promise<T> => {
-    try { return await go(); } catch (e) { if (e instanceof AppError) fail({ cause: "app_broken", detail: e.message }); throw e; }
+    try { return await go(); } catch (e) {
+      // A gone installation is a definite refusal (app_refused); any other App failure may pass (app_broken).
+      if (e instanceof AppGone) throw Object.assign(new GitHubNeed({ cause: "app_refused", target: "installation", message: e.message }), { status: 404 });
+      if (e instanceof AppError) fail({ cause: "app_broken", detail: e.message });
+      throw e;
+    }
   };
   /** An installation's identity for this client's calls (its own pacing key and token). */
   const installationOf = (app: AppSource, inst: Installation, target: string): Identity => ({ key: `app:${inst.id}`, target, token: (fresh) => app.token(inst.id, fresh), wrote: (refusal) => app.wrote(refusal) });
@@ -541,7 +546,8 @@ export function createAccess(o: {
   async function actorByKey(key: string): Promise<Actor> {
     const m = /^app:([0-9]{1,12})$/.exec(key);
     if (!m) return ownerActor;
-    if (!o.app) fail({ cause: "app_broken", detail: "the GitHub App that made this request isn't set up any more" });
+    // The App is gone: a definite answer, so a caller drops what that identity holds (never a transient app_broken).
+    if (!o.app) throw Object.assign(new GitHubNeed({ cause: "app_refused", target: key, message: "the GitHub App that made this isn't set up any more" }), { status: 404 });
     return appActor(o.app, { id: Number(m[1]), permissions: {}, html_url: "", account: "" }, "");
   }
 
@@ -651,7 +657,7 @@ export function createAccess(o: {
     // The sign-in this request belongs to: a 401 is retried only within it (see `replaced` below). A retry keeps the count its
     // first attempt captured, so a sign-in that lands between the two is not mistaken for the same one.
     const signedInAt = as ? undefined : (since ?? o.auth.signInCount?.());
-    const t = as ? await as.token(retried) : await token();
+    const t = as ? await appCall(() => as.token(retried)) : await token();
     // The sign-in the request goes out under, kept for the header it may answer with (see `observe`).
     const sentFor = signInScopes();
     // Never a fetch once the write's budget has run out: nothing lands after the caller was told it failed.

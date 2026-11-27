@@ -1627,8 +1627,19 @@ export function createService(o: Options) {
     const kept = store.get(key);
     // Read back as the identity that made it (its own GET answers only to that identity).
     const known = kept?.uuid;
-    const by = kept && kept.actor !== actor.key ? await access.actorByKey(kept.actor) : actor;
-    if (known) {
+    // One that can't be used any more (the App removed) is dropped, loudly, and the PR is read back: never asked as another identity.
+    // Only a definite answer (the App gone: app_refused) drops it; a transient failure fails this attempt and keeps it for the next.
+    const by = kept && kept.actor !== actor.key ? await access.actorByKey(kept.actor).catch((e: Error & { need?: { cause?: string } }) => {
+      if (e.need?.cause !== "app_refused") throw e;
+      log("kept async merge request dropped: its identity can't be used", { pr: url, actor: kept.actor, err: String(e.message).slice(0, 200) });
+      keep();
+      return undefined;
+    }) : actor;
+    if (known && !by) {
+      const back = await settle();
+      return back ?? pending(`the identity that made async merge request ${known} for ${head} can't be used any more, so it was dropped; the next round asks afresh:`);
+    }
+    if (known && by) {
       const first = await poll(known, by);
       if (first.out) { keep(); return first.out; }
       if (first.gone) keep();

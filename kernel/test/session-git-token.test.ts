@@ -38,7 +38,7 @@ test("a session gets a narrowed token", async () => {
     });
     const { repo } = tools.gitToken(session, { repo: "acme-agents/widgets" });
     assert.deepEqual(await ch.appToken(repo), { token: "ghs_x", expires_at: "2026-11-25T01:00:00Z" });
-    assert.deepEqual(minted, [[7, { repositories: ["widgets"], permissions: { contents: "write", pull_requests: "write", workflows: "write" } }]], "each box permission only where the installation accepted write");
+    assert.deepEqual(minted, [[7, { repositories: ["widgets"], permissions: { contents: "write", pull_requests: "write" } }]], "contents and pull requests only, never the App's wider grants (workflows)");
   } finally { server.close(); }
 });
 

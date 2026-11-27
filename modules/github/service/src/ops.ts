@@ -180,9 +180,10 @@ export async function answerOp(op: string, b: Body, ctx: OpsContext): Promise<An
     return { status: 200, json: { token: r.body?.token, expires_at: r.body?.expires_at } };
   }
   const s = slugOf(b.repo);
-  // A session box's git credential: an installation token for this one repo, narrowed to contents, pull requests, issues and
-  // workflows, each only where the installation accepted it. The App's token, never the owner's (none where the App isn't
-  // installed): the kernel asks only for a repo a session may reach (jobtools.ts gitToken).
+  // A session box's git credential: an installation token for this one repo, narrowed to contents and pull requests (each only
+  // where the installation accepted it), exactly what a box held before every write went as the App: never the App's wider grants
+  // (no workflows, no issues). The App's token, never the owner's (none where the App isn't installed): the kernel asks only for a
+  // repo a session may reach (jobtools.ts gitToken).
   if (op === "app_token") {
     const inst = await ctx.app?.installed(s.slug);
     if (!inst) throw fail(409, `the GitHub App isn't set up or isn't installed on ${s.slug}: set up the GitHub App (/setup/github-app) and install it there`);
@@ -223,8 +224,8 @@ export async function answerOp(op: string, b: Body, ctx: OpsContext): Promise<An
 
 const commentTails = new Map<string, Promise<void>>();
 
-/** The box token's permissions, each asked only where the installation accepted it (contents is required). */
-const BOX_PERMISSIONS = ["contents", "pull_requests", "issues", "workflows"];
+/** The box token's permissions, each asked only where the installation accepted it (contents is required); never more. */
+const BOX_PERMISSIONS = ["contents", "pull_requests"];
 
 /** Whether comment `id` on `slug` was written by `actor` (its login), so it may edit it. */
 async function authorIs(ctx: OpsContext, actor: Actor, slug: string, id: unknown): Promise<boolean> {

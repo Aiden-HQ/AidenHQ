@@ -19,6 +19,8 @@ export function appJwt(appId: string, key: string, now = Date.now()): string {
 
 /** The App is set up but doesn't work (its saved files, its key, a suspension, GitHub's refusal or outage): never a quiet owner. */
 export class AppError extends Error {}
+/** GitHub says the installation is gone (its token endpoint answers 404): a definite answer, never a transient one. */
+export class AppGone extends AppError {}
 
 /** How long an installation answer (installed or not, its accepted permissions) and the App's identity are reused. */
 const LOOKUP_MS = 10 * 60_000;
@@ -125,6 +127,7 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
       const hit = tokens.get(installation);
       if (!fresh && hit && hit.expires - now() > 5 * 60_000) return hit.token;
       const r = await api("POST", `/app/installations/${installation}/access_tokens`, jwt(c));
+      if (r.status === 404) throw new AppGone(`the GitHub App's installation ${installation} is gone (GitHub said 404)`);
       if (r.status !== 201 || typeof r.body?.token !== "string") throw refused("couldn't get an installation token", r);
       tokens.set(installation, { token: r.body.token, expires: Date.parse(r.body.expires_at) || now() + 3_600_000 });
       return r.body.token;
