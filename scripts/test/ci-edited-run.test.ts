@@ -1,8 +1,9 @@
-// An edited PR run (`pull_request` `edited`: a title or body edit, e.g. a republish with no new commit) must not join the
-// `ci-<ref>` concurrency group of a running suite, must not plan or re-run the suites, and must not post a `ci-required`
-// check. The data is the product's own `.github/workflows/ci.yml`; each `if` expression is evaluated with GitHub's
-// truthiness (only false, 0, -0, NaN, null, undefined and "" are falsy: the string "false" is truthy) against the
-// payloads named here, so an equivalent rewrite of a condition still passes.
+// A cancelled run must post no red `ci-required`: an edited PR run cancels the run before it, and that superseded run's jobs
+// are `cancelled`, not failed, so an `always()` aggregate turned that into a red check on a head no test condemned (issue
+// #1935). The fix is `if: ${{ !cancelled() }}`: a run cancelled by a newer one posts nothing, while a run with a genuinely
+// failed job still posts `failure`. The data is the product's own `.github/workflows/ci.yml`; each `if` expression is
+// evaluated with GitHub's truthiness (only false, 0, -0, NaN, null, undefined and "" are falsy: the string "false" is
+// truthy) against the payloads named here, so an equivalent rewrite of a condition still passes.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -60,7 +61,12 @@ function evaluate(expression: unknown, context: Context): unknown {
     const word = /^[A-Za-z_][A-Za-z0-9_.-]*/.exec(text.slice(i))?.[0];
     if (word) {
       i += word.length;
-      if (take("(")) { if (!take(")")) throw new Error(`unsupported call in ${text}`); return word === "cancelled" ? context.cancelled : word === "always" || word === "success" ? !context.cancelled : false; }
+      if (take("(")) {
+        if (!take(")")) throw new Error(`unsupported call in ${text}`);
+        // GitHub's status functions: always() runs a job whatever happened, cancelled() only on a cancelled run, success() on a
+        // run that was not cancelled (a failed job's needs are judged by `needs`, not by success()).
+        return word === "always" ? true : word === "cancelled" ? context.cancelled : word === "success" ? !context.cancelled : false;
+      }
       if (word === "true") return true;
       if (word === "false") return false;
       if (word === "null") return null;
@@ -98,43 +104,48 @@ const group = (context: Context, wf = workflow()) =>
   wf.concurrency.group.replace(/\$\{\{([\s\S]*?)\}\}/g, (_m, expr: string) => String(evaluate(expr, context)));
 const cancelInProgress = (context: Context, wf = workflow()) => truthy(evaluate(wf.concurrency["cancel-in-progress"], context));
 
-test("an edited run has its own concurrency group and cancels nothing; synchronize keeps ci-<ref> and cancels", () => {
+test("ci-required stops on a cancelled run and still runs after a synchronize or an edited run", () => {
+  const job = workflow().jobs["ci-required"]!;
+  assert.equal(runs(job, ctx({ action: "synchronize" })), true, "an ordinary PR run posts its verdict");
+  assert.equal(runs(job, ctx({ action: "edited" })), true, "an edited run still posts the verdict for the head it re-ran");
+  assert.equal(runs(job, ctx({ action: "synchronize", cancelled: true })), false, "a cancelled run judged nothing: no red aggregate");
+  assert.equal(runs(job, ctx({ action: "edited", cancelled: true })), false);
+  assert.equal(runs(job, ctx({ event: "push", ref: "refs/heads/main" })), true, "a push to main still posts");
+  assert.equal(runs(job, ctx({ event: "push", ref: "refs/heads/main", cancelled: true })), false, "a cancelled merge train posts nothing");
+});
+
+test("no job is guarded off an edited event, so the head ends on a full real verdict", () => {
+  const { jobs } = workflow();
+  // No job carries an action guard: an edit re-runs the whole suite, so a retarget re-plans against its new base and a title
+  // edit still runs `policy`'s check (an invalid new title posts red through `ci-required`). Asserting on the expressions, not
+  // on every job's other conditions (a suite's `needs.checks` output is evaluated by GitHub, not here).
+  for (const [name, job] of Object.entries(jobs)) {
+    const condition = typeof job.if === "string" ? job.if : "";
+    assert.doesNotMatch(condition, /event\.action|['"]edited['"]/i, `${name} must not be guarded off an edited event`);
+  }
+  // The plan and the title check run on an edit like any other: neither is conditional at all.
+  assert.equal(jobs.checks!.if, undefined, "checks plans on an edit");
+  assert.equal(jobs.policy!.if, undefined, "policy checks the edited title");
+});
+
+test("an edited run keeps the ci-<ref> group and cancels the run before it; main and merge trains keep their own group", () => {
   const ref = "refs/pull/42/merge";
   const edited = ctx({ action: "edited", ref, run: 101 });
   const synchronize = ctx({ action: "synchronize", ref, run: 102 });
-  assert.notEqual(group(edited), group(synchronize), "an edited run must not join the in-flight synchronize run's group");
-  assert.equal(cancelInProgress(edited), false, "an edited run must not cancel the in-flight run");
-  assert.equal(group(synchronize), `ci-${ref}`, "a synchronize run still shares the PR's group");
-  assert.equal(cancelInProgress(synchronize), true, "a newer push still cancels the older run");
-  // A push to main and a merge train keep their own per-run group, so a newer one never cancels the run the merge queue reads.
+  assert.equal(group(edited), group(synchronize), "an edit joins the PR's group, so one verdict is the head's newest");
+  assert.equal(group(synchronize), `ci-${ref}`);
+  assert.equal(cancelInProgress(edited), true, "an edit cancels the run before it, as any newer PR run does");
+  assert.equal(cancelInProgress(synchronize), true);
+  // A push to main and a merge train run to the end: a newer one joins a different group.
   for (const branch of ["refs/heads/main", "refs/heads/merge-train/7"]) {
     assert.notEqual(group(ctx({ event: "push", ref: branch, run: 200 })), group(ctx({ event: "push", ref: branch, run: 201 })));
     assert.equal(cancelInProgress(ctx({ event: "push", ref: branch, run: 200 })), false);
   }
 });
 
-test("an edited run skips checks and its suites, and still runs policy's title check", () => {
-  const { jobs } = workflow();
-  // `checks` plans the suites; without it packages, modules, board, image-scan and reviewer-eval skip on `needs.checks`,
-  // and post-checks on `needs.checks.result`.
-  assert.equal(runs(jobs.checks!, ctx({ action: "edited" })), false, "checks must not plan on an edited event");
-  assert.equal(runs(jobs.checks!, ctx({ action: "synchronize" })), true, "checks must still plan on a push to the PR");
-  // policy is the title check `:18` says the edit exists for: no `needs`, so it runs on an edit too.
-  assert.equal(jobs.policy!.needs, undefined);
-  assert.equal(runs(jobs.policy!, ctx({ action: "edited" })), true, "policy must still check the edited title");
-});
-
-test("ci-required is skipped for a cancelled or edited run, and runs after a synchronize run", () => {
-  const job = workflow().jobs["ci-required"]!;
-  assert.equal(runs(job, ctx({ action: "synchronize" })), true);
-  assert.equal(runs(job, ctx({ action: "synchronize", cancelled: true })), false, "a cancelled run posts no check for its cancelled jobs");
-  assert.equal(runs(job, ctx({ action: "edited" })), false, "an edited run posts no check: its suites never ran");
-  assert.equal(runs(job, ctx({ action: "edited", cancelled: true })), false);
-});
-
 test("ci-required's gate still fails a genuinely failed suite and still passes skipped ones", () => {
-  // The gate script, run as CI runs it: a skipped job is fine (the change doesn't touch it), a failed one is not. That is
-  // why the cancelled/edited case above has to be the `if`, not a relaxed gate.
+  // The gate script, run as CI runs it: a skipped job is fine (the change doesn't touch it), a failed one is not. That is why
+  // a cancelled run is kept off it by the `if` above, never by relaxing the gate.
   const run = workflow().jobs["ci-required"]!.steps![0]!.run!;
   const results = (over: Record<string, { result: string }>) => ({
     checks: { result: "success" }, policy: { result: "success" }, packages: { result: "skipped" },
@@ -147,4 +158,5 @@ test("ci-required's gate still fails a genuinely failed suite and still passes s
   assert.equal(gate(results({})), 0, "all passed or skipped");
   assert.equal(gate(results({ checks: { result: "failure" } })), 1, "a failed suite fails the gate");
   assert.equal(gate(results({ "reviewer-eval": { result: "failure" } })), 1);
+  assert.equal(gate(results({ policy: { result: "failure" } })), 1, "an invalid edited title still posts red");
 });

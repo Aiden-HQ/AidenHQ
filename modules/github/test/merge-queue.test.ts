@@ -1528,6 +1528,33 @@ test("ship's judged path applies the same newest-run rule to the required checks
   assert.equal(decide(data(rollup("SUCCESS")), H, ctx([run("CANCELLED", 1)])).do, "fix_ci", "a required name whose only run was cancelled does not pass");
 });
 
+test("a skipped or cancelled aggregate is no verdict: ship reads the run that judged the head, never a skip as a pass", () => {
+  const H = "a".repeat(40);
+  const data = () => ({ repository: { defaultBranchRef: { name: "main" }, pullRequest: {
+    state: "OPEN", headRefOid: H, baseRefName: "main", mergeStateStatus: "CLEAN", reviewDecision: null, isDraft: false, isInMergeQueue: false,
+    commits: { nodes: [{ commit: { statusCheckRollup: {} } }] }, baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40) } }, latestOpinionatedReviews: { nodes: [] },
+  } } });
+  // The shape service.ts checksAt / merges.ts allChecks produce for a required check: `status` is GitHub's conclusion exactly.
+  const gate = (state, rank, name = "ci-required") => {
+    const s = String(state).toUpperCase();
+    return { name, kind: "run", rank, status: s, skipped: s === "SKIPPED", ok: ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(s), success: s === "SUCCESS", pending: false };
+  };
+  const ctx = (checks) => ({ queue: false, approve: false, required: ["ci-required"], checks });
+  // The masking case: a genuine failure, then a body edit whose skipped aggregate sits newest at the same head.
+  assert.deepEqual(decide(data(), H, ctx([gate("FAILURE", 1), gate("SKIPPED", 2)])), { do: "fix_ci", why: "1 required check(s) failed on its head" },
+    "skipped over failure is still the failure, never a pass");
+  // Only a skipped aggregate at the head judged nothing: wait for the run that replaces it, never merge on it.
+  assert.deepEqual(decide(data(), H, ctx([gate("SKIPPED", 5)])), { do: "wait", why: "the aggregate that judged its head was superseded; waiting for the run that replaces it (`ci-required`)" });
+  // A cancelled aggregate is no verdict either: GitHub reports `cancelled` for a job an in-flight run cancelled before it started.
+  assert.deepEqual(decide(data(), H, ctx([gate("CANCELLED", 6)])), { do: "wait", why: "the aggregate that judged its head was superseded; waiting for the run that replaces it (`ci-required`)" },
+    "a cancelled gate waits, so a superseded run posts no false red and no false green");
+  // Unchanged from #1812: a newest green over an older cancelled run merges.
+  assert.equal(decide(data(), H, ctx([gate("CANCELLED", 1), gate("SUCCESS", 2)])).do, "merge");
+  // A suite's own skipped result is legitimate (the change didn't touch it): only the gate's skip is no verdict.
+  assert.equal(decide(data(), H, { queue: false, approve: false, required: ["packages (2)"], checks: [gate("SKIPPED", 3, "packages (2)"), gate("SUCCESS", 4)] }).do, "merge",
+    "a skipped suite is a pass, as before");
+});
+
 test("a maintained repo merges as the owner; once it leaves maintainer_repos its approved merge is refused at queue time", async () => {
   const prs = { "globex/payments": { head: HEAD, checks: "SUCCESS" } };
   const github = fakeGitHub(prs);
