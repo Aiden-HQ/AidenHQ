@@ -446,7 +446,7 @@ save_hit_cap() { # <rc> <dest> <err> <cap>
 }
 # The space watchdogs' check interval below: a second, or a shorter one (the tests); never longer, whatever the environment says.
 poll_s="${AIDENHQ_SBOM_POLL_S:-1}"
-[ "$(awk -v p="$poll_s" 'BEGIN { print (p > 0 && p <= 1) }' 2>/dev/null)" = 1 ] || poll_s=1
+[[ "$poll_s" =~ ^(0?\.0*[1-9][0-9]*|1(\.0*)?)$ ]] || poll_s=1
 save_call() { # <cap bytes, empty for none> <secs> <docker args...>
   local cap="$1" secs="$2" rc floor_bytes pid docker_root; shift 2
   if [ -z "$cap" ]; then docker_call "$secs" "$@"; return; fi
