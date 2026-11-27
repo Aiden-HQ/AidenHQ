@@ -1,7 +1,7 @@
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "bun:test";
 import { createApp } from "../src/app.js";
 import { McpAuth } from "../src/mcpauth.js";
 import type { Paperclip } from "../src/paperclip.js";

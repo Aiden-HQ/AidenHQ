@@ -1,6 +1,6 @@
 // Settings > Connections: a `slack` tile is the owner's own Slack sign-in, never Slack as a whole. A working bot channel
 // (`slack_live`) must not read as broken because this separate sign-in is absent, so its name and reason say both.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { connectionsView } from "../src/settings.js";
 import { connectionStatus, displayName, type ConnectionRow, type SignIn } from "../web/src/connections.js";
 

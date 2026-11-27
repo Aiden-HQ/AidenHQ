@@ -1,7 +1,6 @@
-// @vitest-environment happy-dom
 // Home (web/src/Home.tsx): the greeting counts what needs the owner, rows are answered and snoozed in place from the keyboard,
 // a block without data is left out, the cursor moves once per snapshot, and #/approvals/<id> opens a card that isn't listed.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "bun:test";
 import { act } from "react";
 import { answer, card, home, key, mountApp, settle, unmountApp } from "./app-fixture";
 

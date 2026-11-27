@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { fleetSummary, type Facts } from "../src/fleet-stats.js";
 import type { Approval } from "../src/records.js";
 import type { Issue } from "../src/paperclip.js";

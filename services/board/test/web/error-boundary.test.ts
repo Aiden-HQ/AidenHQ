@@ -1,7 +1,6 @@
-// @vitest-environment happy-dom
 // A page that throws while rendering (web/src/ErrorBoundary.tsx) is replaced by its message in place: the rest of the
 // board, the nav included, stays mounted, and a new route renders again.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { act, createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ErrorBoundary } from "../../web/src/ErrorBoundary";

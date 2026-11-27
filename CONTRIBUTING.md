@@ -54,7 +54,7 @@ are files something loads by a fixed `.js`/`.mjs` name.
 Before you push, run `node scripts/ci-local.ts`: it runs the suites CI would run for your diff, with CI's own selection
 and commands (`--list` shows the selection only, `--base <ref>` changes the base, default `origin/main`).
 
-No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once in each package.
+No live instance and no paid keys are needed. Use Node 24 (plus Bun 1.4.5 for the board's tests) and run `npm ci` once in each package.
 
 | Package | Commands |
 |---|---|
@@ -62,10 +62,10 @@ No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once 
 | `kernel` | `npm test && npm run typecheck` |
 | `services/computer` | `node --test test/*.test.ts` |
 | `modules/apps-platform/gate` | `npm test && npm run typecheck` |
-| `services/board` | `npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run lint && npm run build` |
+| `services/board` | `npm test && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run lint && npm run build` |
 | `modules/apps-platform/apps-mcp`, `modules/*/connections/*`, `modules/security/scanner` | `npm test && npm run typecheck` |
 
-- **The board's build check.** `npx tsc -p tsconfig.build.json --noEmit` is stricter than vitest and matches the
+- **The board's build check.** `npx tsc -p tsconfig.build.json --noEmit` is stricter than the tests and matches the
   Docker build. Run it for every board change.
 - **Shared code.** After editing a file `scripts/sync-shared.ts` lists (the SDK files under `kernel/sdk/src/`, `services/shared/`, the design system, the app starter), run
   `node scripts/sync-shared.ts`; the `scripts` tests fail if the copies drift (`ci-local.ts` syncs for you).

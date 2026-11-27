@@ -3,7 +3,7 @@
 // can't be measured in happy-dom, so this reads the stylesheet and holds the rule that makes it true.
 /// <reference types="node" />
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 
 const css = readFileSync(new URL("../../web/src/shell.css", import.meta.url), "utf8");
 

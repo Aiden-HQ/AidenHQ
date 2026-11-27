@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
 import { stringify } from "yaml";
 import { createApp } from "../src/app.js";
 import type { Paperclip } from "../src/paperclip.js";
@@ -67,7 +67,7 @@ beforeAll(async () => {
   await new Promise<void>((r) => app.listen(0, "127.0.0.1", r));
   port = (app.address() as AddressInfo).port;
 });
-afterAll(() => (app.close(), vi.unstubAllGlobals()));
+afterAll(() => app.close());
 const get = (path: string, cookie = "signed-in") =>
   new Promise<{ status: number; text: string }>((resolve, reject) => {
     const req = request({ host: "127.0.0.1", port, path, headers: { host: "localhost:3120", cookie } }, (res) => {

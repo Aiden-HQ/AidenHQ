@@ -1,12 +1,12 @@
-// @vitest-environment happy-dom
 // The Pair step (web/src/SetupFlow.tsx Pairing): when saving a secret made the kernel restart the service, the module's own
 // 409 is a wait, not an error, for as long as the board says the restart has left. With no restart reported, or after the
 // window, it shows at once, and every other failure (502, a timeout that may have minted, no answer) shows at once too.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import { StrictMode, act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Pairing } from "../../web/src/SetupFlow";
 import type { SetupFlowView } from "../../web/src/api";
+import { stubGlobal, unstubAllGlobals } from "../stubs";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -15,12 +15,18 @@ const flow: SetupFlowView = {
   secrets: ["phone_bot_token"], fields: [], present: { phone_bot_token: true }, signedIn: true, paired: false, done: false, dismissed: false,
 };
 
+/** Moves the fake clock and lets the promises its timers resolved settle (bun's vi has no advanceTimersByTimeAsync). */
+const advance = async (ms: number) => {
+  vi.advanceTimersByTime(ms);
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+};
+
 let root: Root | undefined;
 afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   vi.useRealTimers();
-  vi.unstubAllGlobals();
+  unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -41,7 +47,7 @@ describe("the Pair step while the bot restarts", () => {
   it("shows a restarting state through the module's 409s, then mints", async () => {
     const answers: ("409" | "ok")[] = ["409", "409", "ok"];
     const calls: string[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (_path: string, init?: RequestInit) => {
+    stubGlobal("fetch", vi.fn(async (_path: string, init?: RequestInit) => {
       calls.push(String(init?.method));
       const a = answers.shift()!;
       if (a === "ok") return answer(200, { code: "ABCD-1234", minted_at: Date.now() });
@@ -51,13 +57,13 @@ describe("the Pair step while the bot restarts", () => {
     const fail = vi.fn();
     const el = await render(WINDOW, fail);
     await act(async () => button(el).click());
-    await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+    await act(async () => void (await advance(0)));
     expect(el.textContent).toContain("Restarting the bot…");
     expect(el.textContent).toContain("The bot is restarting with the token you saved. This can take a minute.");
     expect(el.textContent).not.toContain("Save the bot token first.");
     expect(fail).not.toHaveBeenCalled();
-    await act(async () => void (await vi.advanceTimersByTimeAsync(2500)));
-    await act(async () => void (await vi.advanceTimersByTimeAsync(2500)));
+    await act(async () => void (await advance(2500)));
+    await act(async () => void (await advance(2500)));
     expect(el.textContent).toContain("ABCD-1234");
     expect(calls).toEqual(["POST", "POST", "POST"]);
   });
@@ -65,7 +71,7 @@ describe("the Pair step while the bot restarts", () => {
   it("ends the restart wait once a mint succeeds, so a later 409 is a real conflict", async () => {
     vi.useFakeTimers();
     const answers: ("409" | "ok")[] = ["409", "ok", "409"];
-    vi.stubGlobal("fetch", vi.fn(async () => {
+    stubGlobal("fetch", vi.fn(async () => {
       const a = answers.shift()!;
       if (a === "ok") return answer(200, { code: "ABCD-1234", minted_at: Date.now(), expires_in: 1 });
       return answer(409, { error: "Save the bot token first." });
@@ -73,22 +79,22 @@ describe("the Pair step while the bot restarts", () => {
     const fail = vi.fn();
     const el = await render(WINDOW, fail);
     await act(async () => button(el).click());
-    await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+    await act(async () => void (await advance(0)));
     expect(el.textContent).toContain("Restarting the bot…");
-    await act(async () => void (await vi.advanceTimersByTimeAsync(2500)));
+    await act(async () => void (await advance(2500)));
     expect(el.textContent).toContain("ABCD-1234");
     // Let the short-lived code expire, then mint again: the module answered with a code, so its token is loaded and this 409 is
     // a genuine conflict, not another wait on the window the save opened.
-    await act(async () => void (await vi.advanceTimersByTimeAsync(2000)));
+    await act(async () => void (await advance(2000)));
     const again = [...el.querySelectorAll("button")].find((b) => b.textContent?.includes("Get a new pairing code"))!;
     await act(async () => again.click());
-    await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+    await act(async () => void (await advance(0)));
     expect(fail).toHaveBeenCalledWith(expect.objectContaining({ status: 409 }));
     expect(el.textContent).not.toContain("Restarting the bot…");
   });
 
   it("reports a 409 at once when no restart was reported", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => answer(409, { error: "Save the bot token first." })));
+    stubGlobal("fetch", vi.fn(async () => answer(409, { error: "Save the bot token first." })));
     const fail = vi.fn();
     const el = await render(undefined, fail);
     await act(async () => button(el).click());
@@ -98,18 +104,18 @@ describe("the Pair step while the bot restarts", () => {
 
   it("shows the error once the board's restart window has passed", async () => {
     vi.useFakeTimers({ now: 1_000_000 });
-    vi.stubGlobal("fetch", vi.fn(async () => answer(409, { error: "Save the bot token first." })));
+    stubGlobal("fetch", vi.fn(async () => answer(409, { error: "Save the bot token first." })));
     const fail = vi.fn();
     const el = await render(2500, fail);
     await act(async () => button(el).click());
-    await act(async () => void (await vi.advanceTimersByTimeAsync(3000)));
+    await act(async () => void (await advance(3000)));
     expect(fail).toHaveBeenCalledWith(expect.objectContaining({ status: 409 }));
     expect(el.textContent).not.toContain("Restarting the bot…");
   });
 
   it("does not mint twice when the button is double-clicked", async () => {
     let posts = 0;
-    vi.stubGlobal("fetch", vi.fn(async (_path: string, init?: RequestInit) => {
+    stubGlobal("fetch", vi.fn(async (_path: string, init?: RequestInit) => {
       if (init?.method !== "POST") return answer(200, { paired: false });
       posts++;
       await new Promise((r) => setTimeout(r, 20));
@@ -125,7 +131,7 @@ describe("the Pair step while the bot restarts", () => {
   });
 
   it("still reports a failure that isn't the module restarting", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => answer(502, { error: "the bot is broken" })));
+    stubGlobal("fetch", vi.fn(async () => answer(502, { error: "the bot is broken" })));
     const fail = vi.fn();
     const el = await render(WINDOW, fail);
     await act(async () => button(el).click());
@@ -137,7 +143,7 @@ describe("the Pair step while the bot restarts", () => {
     const statuses = [503, 504];
     for (const status of statuses) {
       const calls: string[] = [];
-      vi.stubGlobal("fetch", vi.fn(async (_path: string, init?: RequestInit) => {
+      stubGlobal("fetch", vi.fn(async (_path: string, init?: RequestInit) => {
         calls.push(String(init?.method));
         return answer(status, { error: status === 503 ? "phone isn't reachable yet" : "phone didn't answer in time" });
       }));
@@ -154,11 +160,11 @@ describe("the Pair step while the bot restarts", () => {
 
   it("shows the code when mounted under StrictMode", async () => {
     vi.useFakeTimers();
-    vi.stubGlobal("fetch", vi.fn(async () => answer(200, { code: "ABCD-1234", minted_at: Date.now() })));
+    stubGlobal("fetch", vi.fn(async () => answer(200, { code: "ABCD-1234", minted_at: Date.now() })));
     const fail = vi.fn();
     const el = await render(undefined, fail, true);
     await act(async () => button(el).click());
-    await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+    await act(async () => void (await advance(0)));
     expect(el.textContent).toContain("ABCD-1234");
     expect(fail).not.toHaveBeenCalled();
   });
@@ -166,17 +172,17 @@ describe("the Pair step while the bot restarts", () => {
   it("stops retrying when the step unmounts", async () => {
     vi.useFakeTimers();
     const posts: string[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (_path: string, init?: RequestInit) => {
+    stubGlobal("fetch", vi.fn(async (_path: string, init?: RequestInit) => {
       posts.push(String(init?.method));
       return answer(409, { error: "Save the bot token first." });
     }));
     const el = await render(WINDOW, () => {});
     await act(async () => button(el).click());
-    await act(async () => void (await vi.advanceTimersByTimeAsync(0)));
+    await act(async () => void (await advance(0)));
     expect(posts).toEqual(["POST"]);
     act(() => root!.unmount());
     root = undefined;
-    await act(async () => void (await vi.advanceTimersByTimeAsync(60_000)));
+    await act(async () => void (await advance(60_000)));
     expect(posts).toEqual(["POST"]);
   });
 });

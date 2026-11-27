@@ -1,10 +1,10 @@
-// @vitest-environment happy-dom
 // A module page's Sign-ins panel (web/src/SecretMaps.tsx): it lists which keys are set, sets and clears one through the board's own
 // route, and what it sent is never drawn again.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { SecretMaps } from "../../web/src/SecretMaps";
+import { stubGlobal, unstubAllGlobals } from "../stubs";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 // A sample key's armour, built from parts so the repo's leak scan doesn't read this test as one.
@@ -15,7 +15,7 @@ let root: Root | undefined;
 afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
-  vi.unstubAllGlobals();
+  unstubAllGlobals();
 });
 const flush = async () => {
   for (let i = 0; i < 5; i++) await act(async () => void (await Promise.resolve()));
@@ -25,7 +25,7 @@ describe("secret maps panel", () => {
   it("sets one key's entry, never shows a stored value, and clears it", async () => {
     let set = false;
     const sent: { path: string; body: unknown }[] = [];
-    vi.stubGlobal(
+    stubGlobal(
       "fetch",
       vi.fn(async (path: string, init?: { method?: string; body?: string }) => {
         if (init?.method === "POST") {

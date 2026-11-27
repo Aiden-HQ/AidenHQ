@@ -1,6 +1,6 @@
 // A flow's `app` (setup-flows.ts): the module makes or updates the vendor app from the owner's pasted token. The board sends it
 // on with the pair token, keeps nothing, and saves only the public values the flow declares, never one the organisation supplies.
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import type { AccountSession, KernelAuth } from "../src/kernel-auth.js";
 import { setupFlowRoutes, type SetupFlowPoint } from "../src/setup-flows.js";
 import { Store } from "../src/store.js";
