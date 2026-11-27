@@ -159,6 +159,20 @@ export class SlotStore {
   }
   /** A slot left started but never finished (a restart mid-run): resolved from the host's state, never replayed blind. */
   unfinished(): SlotRow[] { return this.all().filter((r) => !r.done_at); }
+  /**
+   * At startup, release every slot a previous process started and never finished: a crash between `start` and `finish` (or between
+   * `start` and the record reaching the kernel) leaves a slot "started" for good, and `dueFor` would then skip it — a missed weekly
+   * full pass would not come round again for a week. Releasing it makes the slot due at the next tick, which files a fresh record
+   * whose plan re-derives the set from the host, so nothing is replayed blind (§12). Only call this before the first tick: within one
+   * process an unfinished row is a run in flight, not a leftover.
+   */
+  reconcile(): SlotRow[] {
+    const left = this.unfinished();
+    if (!left.length) return left;
+    for (const r of left) delete this.rows[r.key];
+    this.save();
+    return left;
+  }
   /** Forget slots older than the window (the file stays small): a done slot from days ago cannot be polled again anyway. */
   prune(before: Date): void {
     let changed = false;

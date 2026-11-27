@@ -126,6 +126,10 @@ createServer(async (req, res) => {
 function startSchedule() {
   const slots = new SlotStore(stateDir);
   const consent = new ConsentStore(stateDir);
+  // §12: a slot a dead process started and never finished is released before the first tick, so it is due again and its record's
+  // plan re-derives the set from the host — never replayed blind. Left alone, `dueFor` would treat it as done and a weekly full pass
+  // would not come round again for a week.
+  for (const r of slots.reconcile()) log("a slot was interrupted; it is due again and its plan re-derives the set", { machine: r.machine, slot: r.slot });
   let busy = false;
   const tick = async () => {
     if (busy || !moduleToken()) return;
@@ -152,9 +156,6 @@ function startSchedule() {
           await wake({ machine: m.name, title: `Server Manager: a scheduled run did not file on ${m.name}`, body: `${m.name}: the ${due.kind} run due ${due.slot} could not be filed (${String((e as Error).message ?? e).slice(0, 300)}).`, source: `server-manager:schedule-failed:${m.name}:${due.slot}` });
         }
       }
-      // A slot left started and never finished (a restart mid-run) is reported once, and resolved from the host's own state — never
-      // replayed blind: the next check reads dpkg --audit and the boot ID, and a patch's plan re-derives its set.
-      for (const r of slots.unfinished()) log("a slot was interrupted; the next run reconciles from the host", { machine: r.machine, slot: r.slot });
       // §6: a reboot deferred to the quiet window's start gets its own record. Only a reboot the kernel already *decided* is filed
       // again — never one a plan merely proposed, and never one past its 12 hours: the sweep below drops those, and `rebootDue`
       // refuses to revive one it finds expired after the service was offline. Filed once per window (`markFiled`), not every minute.

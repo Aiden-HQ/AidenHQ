@@ -44,6 +44,26 @@ test("a service restart mid-slot cannot start the same slot again: the record is
   assert.deepEqual(new SlotStore(d).unfinished(), []);
 });
 
+// §12 — a crash between `start` and `finish` must not lose the slot for good: the next process releases it, so it is due again and
+// its record re-derives the set from the host. Without the release a missed weekly full pass waits a whole week.
+test("a slot a dead process started and never finished is released at startup, so it is due again", () => {
+  const d = dir();
+  const monday = new Date("2026-11-30T03:05:00Z");
+  const first = new SlotStore(d);
+  first.markSeen("vm-one", new Date("2026-11-23T03:30:00Z"));
+  const full = dueFor(m(), monday, "UTC", first)!;
+  assert.deepEqual(full, { machine: "vm-one", kind: "full", slot: "2026-11-30@03:00" });
+  first.start(full, monday); // persisted, then the process dies before filing or finishing
+  // The restart reads the same file: the slot is still started, so `dueFor` alone would skip it forever.
+  const restarted = new SlotStore(d);
+  assert.equal(dueFor(m(), monday, "UTC", restarted), undefined, "a started slot is not due on its own");
+  assert.deepEqual(restarted.reconcile().map((r) => `${r.kind}:${r.slot}`), ["full:2026-11-30@03:00"], "the interrupted slot is what was released");
+  assert.deepEqual(restarted.unfinished(), [], "and it is no longer left behind");
+  assert.deepEqual(dueFor(m(), monday, "UTC", restarted), { machine: "vm-one", kind: "full", slot: "2026-11-30@03:00" }, "so the missed weekly pass is filed, not skipped");
+  // A second process starting with nothing in flight releases nothing.
+  assert.deepEqual(new SlotStore(d).reconcile(), []);
+});
+
 test("missed runs coalesce: hours the service was down are one run, not one per hour", () => {
   const store = new SlotStore(dir());
   store.markSeen("vm-one", new Date("2026-11-23T03:30:00Z"));
