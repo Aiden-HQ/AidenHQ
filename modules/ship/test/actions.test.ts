@@ -158,6 +158,9 @@ test("generated.ci: a head ship's repair made with the base side of generated fi
   assert.equal(await round(w.deps, w.pr({ head: H3 }), { do: "merge" }), "nothing");
   assert.equal(w.of("POST /v1/writes").filter((c) => c.body.kind === "github.merge").length, 0, "waits for the repo's regenerate check");
   checks[0] = { name: "regenerate", status: "completed", conclusion: "success" };
+  checks.push({ name: "regenerate", status: "queued", conclusion: null });
+  assert.equal(await round(w.deps, w.pr({ head: H3 }), { do: "merge" }), "nothing", "another workflow's run of the same name still counts");
+  checks[1] = { name: "regenerate", status: "completed", conclusion: "skipped" };
   await round(w.deps, w.pr({ head: H3 }), { do: "merge" });
   assert.equal(w.of("POST /v1/writes").filter((c) => c.body.kind === "github.merge").length, 1, "merged once it passed");
 

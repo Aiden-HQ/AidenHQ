@@ -291,10 +291,12 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     if (a.ciRegen?.head === pr.head) {
       const runs = await d.gh!("GET", `/repos/${pr.repo}/commits/${pr.head}/check-runs?check_name=${encodeURIComponent(check).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}&per_page=100`);
       if (runs.status >= 300) throw new Error(`GitHub GET check-runs: ${runs.status}`);
-      const named = ((runs.body?.check_runs ?? []) as { name?: string; status?: string; conclusion?: string | null; started_at?: string }[]).filter((c) => c.name === check);
-      const latest = named.sort((x, y) => String(y.started_at ?? "").localeCompare(String(x.started_at ?? "")))[0];
-      if (!(latest?.status === "completed" && latest.conclusion === "success")) {
-        if (Date.now() - Date.parse(a.ciRegen.at) > 30 * 60_000) return hold(`the repo's \`${check}\` check didn't pass on ship's repair head \`${pr.head.slice(0, 12)}\` within 30 minutes (${latest ? `it is ${latest.status}${latest.conclusion ? `, ${latest.conclusion}` : ""}` : "it never appeared"}), so its generated files may be stale`, HOLD.ciRegen(check));
+      // Several workflows can share a job name (GitHub's default `filter=latest` keeps each one's newest attempt): one must pass,
+      // and none may still run or fail (a skipped or neutral one is another workflow's job that didn't apply).
+      const named = ((runs.body?.check_runs ?? []) as { name?: string; status?: string; conclusion?: string | null }[]).filter((c) => c.name === check);
+      const pending = named.find((c) => !(c.status === "completed" && ["success", "skipped", "neutral"].includes(String(c.conclusion))));
+      if (!named.some((c) => c.conclusion === "success") || pending) {
+        if (Date.now() - Date.parse(a.ciRegen.at) > 30 * 60_000) return hold(`the repo's \`${check}\` check didn't pass on ship's repair head \`${pr.head.slice(0, 12)}\` within 30 minutes (${pending ? `a run is ${pending.status}${pending.conclusion ? `, ${pending.conclusion}` : ""}` : "it never appeared"}), so its generated files may be stale`, HOLD.ciRegen(check));
         if (mergeish) return "nothing";
       }
     }
