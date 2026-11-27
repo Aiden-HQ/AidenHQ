@@ -27,9 +27,9 @@ const rkey = (r: NeedRow) => (r.kind === "answer" ? `${r.id}:${r.waitSince}` : r
 type Pane = { kind: "row"; id: string } | { kind: "since" } | { kind: "card"; id: string } | null;
 
 const WORDS = ["Nothing", "One thing", "Two things", "Three things", "Four things", "Five things", "Six things", "Seven things", "Eight things", "Nine things", "Ten things"];
-/** "Three things need you; the rest is handled." */
+/** "Three things need you; the rest is handled." Empty when nothing does: Needs you only counts what teammates ask, so "nothing" would overclaim. */
 export function needsLine(n: number): string {
-  if (!n) return "Nothing needs you.";
+  if (!n) return "";
   return `${WORDS[n] ?? `${n} things`} need${n === 1 ? "s" : ""} you; the rest is handled.`;
 }
 const NOTIFY_KEY = "aidenhq.notify-ask";
@@ -168,7 +168,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
 
   const first = session?.account?.name?.split(/\s+/)[0];
   const h = hourIn(timezone);
-  const hello = first ? `Good ${h < 12 ? "morning" : h < 18 ? "afternoon" : "evening"}, ${first}. ` : "";
+  const hello = `Good ${h < 12 ? "morning" : h < 18 ? "afternoon" : "evening"}${first ? `, ${first}` : ""}. `;
   const now = new Date();
   const date = `${now.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", timeZone: timezone })} · ${timeIn(timezone, now)}`;
 
@@ -181,6 +181,8 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   const idea = data.idea && <IdeaCard idea={data.idea} fail={fail} reload={reload} />;
   // Needs takes the full width when nothing sits beside it, so its edges line up with the sections below.
   const sideEmpty = !(paneOpen && !mobile) && !data.start?.nextUp && !since && !idea;
+  // Needs you shows only while something is in it (or a receipt from this visit); empty, the box is left out.
+  const needsShown = rows.length > 0;
   // The rows still open here: an answered row leaves the count at once, before the kernel catches up.
   const n = live.length;
   // On a phone the pane is a full-screen sheet: outside the animated column, whose transform would hold a fixed child.
@@ -197,7 +199,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
       {data.start && <WelcomeStepper />}
       <header className="home-head enter">
         <p className="home-date">{date}</p>
-        <h1>{hello}{needsLine(n)}</h1>
+        <h1>{`${hello}${needsLine(n)}`.trim()}</h1>
       </header>
       {notify && (
         <Banner action={<span className="home-banner-actions"><Button size="sm" variant="primary" onClick={() => void askForNotifications().then(() => setNotify(false))}>Notify me</Button><Button size="sm" variant="quiet" onClick={dismissNotify}>Not now</Button></span>}>
@@ -209,8 +211,8 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
           Not decided: {unbatched.join("; ")}
         </Banner>
       )}
-      <div className={sideEmpty ? "home-top home-top-solo" : "home-top"}>
-        <div className="home-needs enter" style={{ "--i": 1 } as CSSProperties}>
+      {(needsShown || !sideEmpty) && <div className={sideEmpty || !needsShown ? "home-top home-top-solo" : "home-top"}>
+        {needsShown && <div className="home-needs enter" style={{ "--i": 1 } as CSSProperties}>
           <SectionCard
             title="Needs you"
             count={live.length || undefined}
@@ -230,34 +232,30 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
               </>
             }
           >
-            {rows.length ? (
-              <div role="listbox" aria-label="Needs you" aria-activedescendant={keys.at ? `need-${keys.at}` : undefined} tabIndex={-1}>
-                {rows.map((r, i) => (
-                  <div key={rkey(r)} id={`need-${r.id}`} role="option" aria-selected={keys.at === r.id} onClick={() => keys.setAt(r.id)}>
-                    <DecisionRow
-                      face={face(r.teammate, 40, "needs")}
-                      who={r.teammate.name}
-                      role={r.teammate.job}
-                      question={r.question}
-                      detail={r.kind === "answer" ? r.detail : undefined}
-                      meta={ago(r.since)}
-                      active={keys.at === r.id || (pane?.kind === "row" && pane.id === r.id)}
-                      onOpen={() => (keys.setAt(r.id), setPane({ kind: "row", id: r.id }))}
-                      i={i}
-                      receipt={receipts.get(rkey(r)) ?? null}
-                      actions={<RowActions row={r} answer={answer} decided={decided} snooze={snooze} done={done} open={() => setPane({ kind: "row", id: r.id })} pick={selecting && r.kind === "approval" ? { on: picked.includes(r.id), toggle: () => setPicked((p) => (p.includes(r.id) ? p.filter((x) => x !== r.id) : [...p, r.id])) } : undefined} />}
-                    />
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="home-clear">All clear. When a teammate needs your say, it lands here first.</p>
-            )}
+            <div role="listbox" aria-label="Needs you" aria-activedescendant={keys.at ? `need-${keys.at}` : undefined} tabIndex={-1}>
+              {rows.map((r, i) => (
+                <div key={rkey(r)} id={`need-${r.id}`} role="option" aria-selected={keys.at === r.id} onClick={() => keys.setAt(r.id)}>
+                  <DecisionRow
+                    face={face(r.teammate, 40, "needs")}
+                    who={r.teammate.name}
+                    role={r.teammate.job}
+                    question={r.question}
+                    detail={r.kind === "answer" ? r.detail : undefined}
+                    meta={ago(r.since)}
+                    active={keys.at === r.id || (pane?.kind === "row" && pane.id === r.id)}
+                    onOpen={() => (keys.setAt(r.id), setPane({ kind: "row", id: r.id }))}
+                    i={i}
+                    receipt={receipts.get(rkey(r)) ?? null}
+                    actions={<RowActions row={r} answer={answer} decided={decided} snooze={snooze} done={done} open={() => setPane({ kind: "row", id: r.id })} pick={selecting && r.kind === "approval" ? { on: picked.includes(r.id), toggle: () => setPicked((p) => (p.includes(r.id) ? p.filter((x) => x !== r.id) : [...p, r.id])) } : undefined} />}
+                  />
+                </div>
+              ))}
+            </div>
             {selecting && chosen.length > 0 && (
               <BatchBar cards={chosen} busy={batching} setBusy={setBatching} hold={false} done={(failed) => (setUnbatched(failed.map((f) => f.why)), approvals.filter((r) => picked.includes(r.id) && !failed.some((f) => f.id === r.card.id)).forEach((r) => receipt(r, { text: "Decided" })), setPicked([]), void reload())} />
             )}
           </SectionCard>
-        </div>
+        </div>}
         {!sideEmpty && <div className="home-side enter" style={{ "--i": 2 } as CSSProperties}>
           {paneOpen && !mobile ? (
             detail
@@ -269,7 +267,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
             </>
           )}
         </div>}
-      </div>
+      </div>}
       {mobile && detail}
       {paneOpen && !mobile && (since || idea) && (
         <div className="home-pair">
