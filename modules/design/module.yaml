@@ -121,7 +121,6 @@ providers:
 validate:
   post: http://design:8099/validate
   auth: design_service_key
-  mode: observe
 settings:
   # The apps the UI Reviewer tests: { apps: [{ name (lowercase, 2-31: a-z 0-9 -), url (where a pass opens it), repo? (owner/name:
   # a local build uses its default branch, never a PR head), aidenhq_app? (true: an app on this AidenHQ, named as it is there; it signs

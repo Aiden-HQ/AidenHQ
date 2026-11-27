@@ -205,18 +205,21 @@ show the fixes and work the clicking pass as above, at that depth; the steps bel
 2. **Keep the resume point.** Right after every `capture` returns, before review or clicking, put the queue on this run:
    `ui-review put --run <run> review/queue.json review/run.json`. A pass that dies later still leaves where the next one
    starts.
-3. **Spend mode.** `scan`: capture and review only, no fixes, no clicking. `standard`: the top 3 improvements get a rendered
-   fix and one clicking pass runs. `thorough`: the top 5 and two clicking passes. A model the task names for `design` goes
+3. **Spend.** The task's `Spend:` line is the budget: its fixes count and its clicking passes (an explicit depth overrides the
+   spend mode's, so `signed-in` has none and `tester` has at least one: follow the line, not the mode's name). The modes:
+   `scan` captures and reviews only; `standard` fixes the top 3 improvements and clicks once; `thorough` fixes the top 5 and
+   clicks twice. A model the task names for `design` goes
    to `ui-review review --model`, for `fixes` to the fixer, for `clicking` to the clicking pass's `codex exec -m`.
 4. **Recording on:** start each clicking pass's browser with `--record review/recordings` (both passes of a thorough run use
    the same folder: each adds its own clips). The clicking agent marks each flow's start (flows.md says how). Stop the
-   browser with `kill <its pid>` when the clicking pass ends (it writes `recordings.json` as it stops).
+   browser with `kill <its pid>` when the clicking pass ends, then wait for it to exit
+   (`while kill -0 <its pid> 2>/dev/null; do sleep 1; done`): it writes `recordings.json` as it stops.
 5. **Evidence:** `ui-review put --run <run>` the report's cited captures, each fix's before|after pair under its own names
    and its diff, and with recording on `review/recordings/*.webm review/recordings/recordings.json`.
 6. **Issues**, before you finish the run (a finished run takes no more writes). `ui-review issue-body review --app <app>
    --run <run>` (add `--run-url <the board's UI testing page>` when you know the board's address) prints the design issue
    and one issue per verified bug, each with its `marker`, `title` and `body`. For each, in the app's repo:
-   - The task lists a number for the marker: `github_issue_update` it with the `body` and `state: open`.
+   - The task lists a number for the marker: `github_issue_update` it with the `body` and `state: open` (the tool refuses an issue that doesn't hold the marker line: then treat it as no number).
    - No number: search once, `github_search_issues` with `repo:<repo> is:issue "<marker>"` (open or closed), and
      `github_issue_read` each hit; adopt the issue whose body holds the exact line `<!-- <marker> -->` and update it as
      above. None: `github_issue_create` with the title and body, with `labels: ["ui-design"]` (a bug: `ui-bug`) only when

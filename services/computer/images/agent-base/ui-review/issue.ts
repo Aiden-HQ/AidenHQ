@@ -1,6 +1,6 @@
 // GitHub issue bodies for a UI testing pass, from its report.json: the app's one "design improvements" issue (refreshed in place
 // on every pass) and one issue per verified bug. Each body opens with its marker, which is the issue's identity: the app's name for
-// the design issue, and for a bug a hash of its page, kind and its repro's last step's selector, never the model's title, so a
+// the design issue, and for a bug a hash of its page, kind and its repro's steps, never the model's title, so a
 // reworded title is the same issue. Images stay on the board (GitHub takes none from the fleet): each body names the run and
 // where to find it, the board's UI testing page (linked when the board's address is given). Text from the model and the app is quoted as data: no marker, mention or fence can be smuggled in.
 import { createHash } from "node:crypto";
@@ -17,12 +17,16 @@ export const BODY_MAX = 55_000;
 const DIFF_MAX = 6_000;
 
 export const designMarker = (app: string) => `aidenhq-ui:design:${app}`;
-export const bugMarker = (app: string, b: Pick<Bug, "page" | "kind" | "selector">) =>
-  `aidenhq-ui:bug:${app}:${createHash("sha256").update(`${b.page}\n${b.kind ?? "bug"}\n${b.selector ?? ""}`).digest("hex").slice(0, 12)}`;
+export const bugMarker = (app: string, b: Pick<Bug, "page" | "kind" | "repro">) =>
+  `aidenhq-ui:bug:${app}:${createHash("sha256").update(`${b.page}\n${b.kind ?? "bug"}\n${(b.repro ?? []).join("\n")}`).digest("hex").slice(0, 12)}`;
 
-/** Model or app text on one line, inert: no HTML (a second marker, an image), no Markdown image, no @mention, no line breaks. */
-const quote = (s: unknown, max = 600) => String(s ?? "").slice(0, max).replace(/[<>]/g, (c) => (c === "<" ? "&lt;" : "&gt;")).replace(/!\[/g, "!\\[")
-  .replace(/@(?=[\w-])/g, "@\u200b").replace(/\s+/g, " ").trim();
+/** Model or app text on one line, inert: no HTML (a second marker, an image), no Markdown (links, images, emphasis), no bare URL, no @mention, no line breaks. */
+const quote = (s: unknown, max = 600) => String(s ?? "").slice(0, max).replace(/[<>]/g, (c) => (c === "<" ? "&lt;" : "&gt;")).replace(/[\\`*_~#|[\]()!]/g, "\\$&")
+  .replace(/:\/\//g, ":\u200b//").replace(/\bwww\./gi, "www\u200b.").replace(/@(?=[\w-])/g, "@\u200b").replace(/\s+/g, " ").trim();
+/** Text inside a code span: no backtick to close it. */
+const code = (s: unknown, max: number) => String(s ?? "").slice(0, max).replace(/`/g, "'").replace(/\s+/g, " ").trim();
+/** The target as a label that carries no credential: its origin, never its path, query or userinfo. */
+const origin = (target: string) => { try { return new URL(target).origin; } catch { return "the app"; } };
 /** A title is plain text on GitHub: one line, no mention. */
 const plain = (s: unknown, max: number) => String(s ?? "").replace(/@(?=[\w-])/g, "@\u200b").replace(/\s+/g, " ").trim().slice(0, max);
 /** A fenced block that no backtick run inside can close. */
@@ -36,14 +40,14 @@ const runLine = (o: IssueOptions) => `Images, before|after pairs and recordings:
 function improvement(i: Improvement, n: number): string {
   const w = i.where, f = i.fix;
   const lines = [
-    `${n}. **${quote(w.region, 120)}** (${i.category}): \`${quote(w.page, 200)}\` at ${w.width}px, ${w.theme}`,
+    `${n}. **${quote(w.region, 120)}** (${i.category}): \`${code(w.page, 200)}\` at ${w.width}px, ${w.theme}`,
     `   Change: ${quote(i.change)}`,
     `   - Weak: ${quote(i.weak)}`,
     `   - Why: ${quote(i.why)}`,
     `   - Best in the category: ${quote(i.best)}`,
   ];
   if (f?.status === "shown") {
-    lines.push(`   - Rendered fix, preferred by the pairwise check ${f.wins?.[0] ?? "?"}/3 and ${f.wins?.[1] ?? "?"}/3${f.collateral?.length ? `; also changes ${f.collateral.map((p) => `\`${quote(p, 200)}\``).join(", ")}` : ""}.`);
+    lines.push(`   - Rendered fix, preferred by the pairwise check ${f.wins?.[0] ?? "?"}/3 and ${f.wins?.[1] ?? "?"}/3${f.collateral?.length ? `; also changes ${f.collateral.map((p) => `\`${code(p, 200)}\``).join(", ")}` : ""}.`);
     if (f.diff) {
       const diff = f.diff.length > DIFF_MAX ? `${f.diff.slice(0, DIFF_MAX)}\n… (${f.diff.length - DIFF_MAX} more characters on the board)` : f.diff;
       lines.push("", "   <details><summary>The fix's diff</summary>", "", fenced(diff.trim(), "diff"), "", "   </details>");
@@ -59,7 +63,7 @@ function designBody(r: Report, o: IssueOptions): string {
     `<!-- ${designMarker(o.app)} -->`,
     `## Design improvements: ${o.app}`,
     "",
-    `UI review pass of ${quote(r.target, 300)} on ${date}. Coverage: ${cv.done} of ${cv.total} captures${cv.deferred ? `, ${cv.deferred} deferred (the next passes take them)` : ""}${cv.failed ? `, ${cv.failed} failed` : ""}.`,
+    `UI review pass of ${origin(r.target)} on ${date}. Coverage: ${cv.done} of ${cv.total} captures${cv.deferred ? `, ${cv.deferred} deferred (the next passes take them)` : ""}${cv.failed ? `, ${cv.failed} failed` : ""}.`,
     runLine(o),
     "",
     "This issue is refreshed in place by each pass: it always shows the latest ranked list.",
@@ -79,7 +83,7 @@ function bugBody(b: Bug, o: IssueOptions): string {
   const saw = b.saw ?? b.evidence, expected = b.expected ?? "";
   return [
     `<!-- ${bugMarker(o.app, b)} -->`,
-    `**${quote(b.title, 200)}** on \`${quote(b.page, 200)}\` at ${b.width}px, ${b.theme}. Reproduced twice in fresh browsers by the UI review.`,
+    `**${quote(b.title, 200)}** on \`${code(b.page, 200)}\` at ${b.width}px, ${b.theme}. Reproduced twice in fresh browsers by the UI review.`,
     "",
     "Steps:",
     ...(b.repro ?? []).map((s, i) => `${i + 1}. \`${plain(s, 300).replace(/`/g, "'")}\``),

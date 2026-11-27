@@ -625,6 +625,19 @@ describe("issues and recordings", () => {
     assert.notEqual(a.bugs[0]!.marker, issueBodies(report([bug("Archive does nothing", ["open /items", "click text=Delete"])]), o).bugs[0]!.marker);
   });
 
+  test("bugs that end on the same control keep their own issues; target credentials and Markdown links stay out", async () => {
+    const { issueBodies } = await import("../images/agent-base/ui-review/issue.ts");
+    const dir = report([bug("A", ["open /form", "fill #a=1", "click text=Save"]), bug("B", ["open /form", "fill #b=2", "click text=Save"])]);
+    const r = JSON.parse(readFileSync(join(dir, "report.json"), "utf8"));
+    r.target = "https://acme.example.com/p?token=SECRET";
+    r.bugs[0].saw = "see [View recording](https://evil.example/x) and https://evil.example/y www.evil.example";
+    writeFileSync(join(dir, "report.json"), JSON.stringify(r));
+    const { design, bugs } = issueBodies(dir, o);
+    assert.equal(bugs.length, 2);
+    assert.ok(!design.body.includes("SECRET"), "no credential from the target URL");
+    assert.ok(!/(^|[^\\])\[View recording\]\(/.test(bugs[0]!.body) && !bugs[0]!.body.includes("://evil") && !/www\.evil/.test(bugs[0]!.body), "a link in the app's text renders as text");
+  });
+
   test("a recorded flow is a short VP8 webm that fits one design_evidence_put", NEEDS_CHROME, async () => {
     const { recordFlow } = await import("../images/agent-base/ui-review/record.ts");
     const { batches, PUT_MAX } = await import("../images/agent-base/ui-review/evidence.ts");

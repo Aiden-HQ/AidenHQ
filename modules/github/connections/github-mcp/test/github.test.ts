@@ -104,7 +104,7 @@ describe("owner-token label writes", () => {
 
 describe("issue body refresh", () => {
   it("replaces an issue's body, signed, with no second issue; a pull request's text is refused", async () => {
-    const { impl, calls } = fake({ "GET /repos/a/b/issues/41": { number: 41, labels: [], state: "closed", html_url: "https://github.com/a/b/issues/41" }, "PATCH /repos/a/b/issues/41": {}, "GET /repos/a/b/issues/9": { number: 9, labels: [], state: "open", pull_request: {} } });
+    const { impl, calls } = fake({ "GET /repos/a/b/issues/41": { number: 41, labels: [], state: "closed", body: "<!-- aidenhq-ui:design:acme -->\nold report", html_url: "https://github.com/a/b/issues/41" }, "PATCH /repos/a/b/issues/41": {}, "GET /repos/a/b/issues/9": { number: 9, labels: [], state: "open", pull_request: {} } });
     const gh = owner(impl);
     const out = await gh.updateIssue({ owner: "a", repo: "b", number: 41 }, { body: "<!-- aidenhq-ui:design:acme -->\nnew report", state: "open" }, "UI Reviewer") as { done: string[] };
     const writes = calls.filter((c) => c.method !== "GET");
@@ -112,6 +112,7 @@ describe("issue body refresh", () => {
     expect((writes[0]!.body as { body: string }).body).toMatch(/^<!-- aidenhq-ui:design:acme -->\nnew report[\s\S]*UI Reviewer/);
     expect(out.done).toEqual(["replaced the body", "reopened"]);
     await expect(gh.updateIssue({ owner: "a", repo: "b", number: 9 }, { body: "x" }, "UI Reviewer")).rejects.toThrow("pull request's text");
+    await expect(gh.updateIssue({ owner: "a", repo: "b", number: 41 }, { body: "<!-- aidenhq-ui:design:other -->\nx" }, "UI Reviewer")).rejects.toThrow("doesn't hold the marker");
   });
 });
 

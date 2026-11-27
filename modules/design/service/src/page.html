@@ -197,10 +197,11 @@
   }
   // Passes under way are followed every 8 s, and a pass started elsewhere (a deploy, Aiden) or a new UTC day shows within 40 s.
   // A playing recording or an edit in progress is never redrawn under the owner.
-  let polls = 0;
+  let polls = 0, opening = false, startCtx = null;
   setInterval(() => {
     polls++;
-    if (!ov || busy()) return;
+    if (!ov) { if (startCtx) openPage().catch(() => {}); return; } // the first load failed: try again
+    if (busy()) return;
     if (route.page === "run") { if (runData?.run?.run?.status === "running") loadRun(route.id); return; }
     if (ov.apps.some((a) => a.active) || polls % 5 === 0) loadOverview(true).then(() => { if (route.page === "app") return loadLast(true); }).catch(() => {});
   }, 8000);
@@ -220,7 +221,7 @@
   // change(list) builds the next list inside the queue, from the latest accepted draft, so quick edits never overwrite each other.
   const propose = (change, what) => inOrder(async () => {
     const apps = change(draft ?? ov.apps);
-    try { const r = await tool("design_configure", { apps: apps.map(entry) }); draft = apps; proposed({ changes: [what ?? (r.changes ?? []).join("; ")] }); render(); }
+    try { const r = await tool("design_configure", { apps: apps.map(entry) }); draft = apps; proposed({ changes: [what ?? (r.changes ?? []).join("; ")] }); if (!document.activeElement?.matches?.("input, textarea") || document.activeElement.closest(".addf")) render(); }
     catch (e) { fail(e); }
   });
   const edit = (name, patch, what) => propose((list) => list.map((a) => (a.name === name ? { ...a, ...(typeof patch === "function" ? patch(a) : patch) } : a)), what);
@@ -395,15 +396,18 @@
     if (!ov) return;
     keepFocus(() => $("app").replaceChildren(...(route.page === "app" ? appPage() : route.page === "run" ? runPage() : listPage())));
   }
-  start("design", async (ctx) => {
+  async function openPage() {
+    if (opening) return;
+    opening = true;
     try {
       await loadOverview();
       // Opened at an address (#/team/m/ui-testing/r/<run> from an issue, or …/a/<app>): the host says which, once.
-      const at = String(ctx?.route ?? "").split("/");
+      const at = String(startCtx?.route ?? "").split("/");
       if (at[0] === "r" && RUN_ID.test(at[1] ?? "")) go({ page: "run", id: at[1] });
       else if (at[0] === "a" && live(at[1])) go({ page: "app", app: at[1] });
-    } catch (e) { fail(e); }
-  });
+    } finally { opening = false; }
+  }
+  start("design", async (ctx) => { startCtx = ctx ?? {}; try { await openPage(); } catch (e) { fail(e); } });
 </script>
 </body>
 </html>

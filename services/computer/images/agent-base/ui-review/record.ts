@@ -82,11 +82,18 @@ export async function recordPages(cdp: string, dir: string, o: { marks?: string 
   const ack = (at: number) => { if (o.marks) try { writeFileSync(`${o.marks}.ack`, String(at)); } catch { /* the mark still applies */ } };
   ack(markAt);
   const stamp = Date.now().toString(36);
+  // The flow's motion samples read into its clip. The request goes out at once, ahead of anything a later poll sends, so a sample
+  // taken before the cut lands in the closing clip and none leaks into the next one.
+  // Bounded: a Chrome that went away never answers, and the clips are still saved.
+  const drain = (session: string, c: Clip) => Promise.race([send("Runtime.evaluate", { expression: DRAIN, returnByValue: true }, session), new Promise<Msg>((ok) => setTimeout(() => ok({}), 2000).unref())]).then((r) => {
+    const v = r.result?.result?.value as { shifts?: number[]; longFrames?: number[] } | undefined;
+    if (v) { c.motion.shifts.push(...(v.shifts ?? [])); c.motion.longFrames.push(...(v.longFrames ?? [])); }
+  });
   const finish = (t: Tab) => {
     const c = t.clip;
     if (!c) return;
     t.clip = undefined;
-    closing.push(c.close().then(() => {
+    closing.push(Promise.all([drain(t.session, c), c.close()]).then(() => {
       const bytes = existsSync(c.file) ? statSync(c.file).size : 0, seconds = c.frames / FPS;
       const fits = bytes > 0 && bytes <= CLIP_BYTES && putBytes("r-xxxxxxxxxxxx-xxxxxxxx", [{ name: "flow-00.webm", data: "A".repeat(Math.ceil(bytes / 3) * 4) }]) <= PUT_MAX;
       if (seconds < MIN_SECONDS || !fits) { rmSync(c.file, { force: true }); return; }
@@ -146,10 +153,7 @@ export async function recordPages(cdp: string, dir: string, o: { marks?: string 
       if (!t.clip.write(t.frame) || (existsSync(t.clip.file) && statSync(t.clip.file).size >= FS_LIMIT)) { t.full = true; finish(t); continue; }
       if (ticks % FPS === 0) {
         const c = t.clip;
-        void send("Runtime.evaluate", { expression: DRAIN, returnByValue: true }, t.session).then((r) => {
-          const v = r.result?.result?.value as { shifts?: number[]; longFrames?: number[] } | undefined;
-          if (v) { c.motion.shifts.push(...(v.shifts ?? [])); c.motion.longFrames.push(...(v.longFrames ?? [])); }
-        });
+        void drain(t.session, c);
       }
     }
   }, 1000 / FPS);

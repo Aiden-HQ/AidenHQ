@@ -35,7 +35,7 @@ export type Improvement = {
 export type MotionRow = { where: string; before: string; after: string; why: string; css: string };
 export type Bug = {
   page: string; width: number; theme: Theme; title: string; evidence: string; captures: string[]; verified: boolean; repro?: string[];
-  kind?: "friction" | "bug"; selector?: string; // a bug `repro` verified: what the agent filed it as, and its last step's target (the issue marker's inputs)
+  kind?: "friction" | "bug"; selector?: string; // a bug `repro` verified: what the agent filed it as, and its last step's target
   saw?: string; expected?: string; // the clicking pass's words for it (the bug issue's body)
 };
 /** One step of a clicking-pass finding; selectors are Playwright locators (`role=button[name="Save"]`, `text=...`, CSS). */

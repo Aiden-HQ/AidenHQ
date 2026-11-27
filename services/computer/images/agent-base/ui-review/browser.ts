@@ -31,6 +31,8 @@ const freePort = () => new Promise<number>((ok, no) => {
 });
 const sleep = (ms: number) => new Promise((ok) => setTimeout(ok, ms));
 
+/** Set once `browser start` is asked to stop: Chrome going down is then the stop, not a lost guard. */
+let stopping = false;
 export type Launched = { cdp: string; port: number; browser: Browser; guard: Guard; blocked(): Blocked[]; close(): Promise<void> };
 
 /**
@@ -49,7 +51,7 @@ export async function launch(o: { mode: Mode; port?: number; out?: string; polit
   for (let i = 0; i < 50 && !cdp; i++) {
     try { cdp = ((await (await fetch(`http://127.0.0.1:${port}/json/version`)).json()) as { webSocketDebuggerUrl: string }).webSocketDebuggerUrl; } catch { await sleep(100); }
   }
-  const guard = await installGuard(cdp, o.mode, { log: o.out ? join(o.out, "blocked.jsonl") : undefined, state: o.session, lost: () => { console.error("ui-review: the live-app guard lost Chrome; stopping it"); void browser.close().catch(() => {}); } });
+  const guard = await installGuard(cdp, o.mode, { log: o.out ? join(o.out, "blocked.jsonl") : undefined, state: o.session, lost: () => { if (stopping) return; console.error("ui-review: the live-app guard lost Chrome; stopping it"); void browser.close().catch(() => {}); } });
   if (o.out) writeFileSync(join(o.out, "browser.json"), JSON.stringify({ cdp, port, mode: o.mode }, null, 2));
   if (o.politeness) {
     const gap = (1000 / o.politeness.rps) * 1.05, { origin } = o.politeness;
@@ -162,9 +164,10 @@ export async function browserCommand(argv: string[]): Promise<number> {
   if (v.url) { const ctx = await b.browser.newContext({ viewport: { width: 1512, height: 900 } }); await (await ctx.newPage()).goto(v.url, { waitUntil: "domcontentloaded" }).catch(() => {}); }
   console.log(`cdp port ${b.port}`);
   await new Promise<void>((ok) => { process.once("SIGTERM", ok); process.once("SIGINT", ok); });
-  // The clips end (ffmpeg writes each one's index) before the browser goes. The guard lets go first: Playwright's own SIGTERM
-  // handler may take Chrome down meanwhile, which is the stop asked for, not a lost guard.
-  if (rec) { b.guard.close(); console.log(`${(await rec.stop()).length} recordings in ${v.record}`); }
+  // The clips end (ffmpeg writes each one's index) before the browser goes, the guard staying on until b.close(). Playwright's own
+  // SIGTERM handler may take Chrome down meanwhile: that is the stop asked for, not a lost guard.
+  stopping = true;
+  if (rec) { console.log(`${(await rec.stop()).length} recordings in ${v.record}`); }
   await b.close();
   return 0;
 }

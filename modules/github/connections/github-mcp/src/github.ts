@@ -440,7 +440,7 @@ export class GitHub {
 
   /**
    * Changes an issue: replace its body (signed by `agent`, as a new issue's is), close or reopen it, add or remove labels and
-   * assignees. Pull requests take labels and assignees, but closing one or replacing its text isn't done here. Labels must
+   * assignees. Pull requests take labels and assignees, but closing one or replacing its text isn't done here. A body replaces only the body of an issue that already holds the new body's opening marker comment. Labels must
    * already exist. Checks everything before the first write, and reports each change it made.
    */
   async updateIssue(ref: Ref, input: { body?: string; state?: "open" | "closed"; reason?: "completed" | "not_planned"; addLabels?: string[]; removeLabels?: string[]; addAssignees?: string[]; removeAssignees?: string[] }, agent = "AidenHQ"): Promise<unknown> {
@@ -448,6 +448,9 @@ export class GitHub {
     const issue = await this.request<GhIssue>("GET", base);
     if (input.state && issue.pull_request) throw new GitHubRefused("pull requests aren't closed or reopened from here");
     if (input.body !== undefined && issue.pull_request) throw new GitHubRefused("a pull request's text isn't replaced from here");
+    // A body is replaced only where the issue already holds the new body's marker (its first line, an HTML comment): a refresh never overwrites an unrelated issue.
+    const marker = input.body === undefined ? undefined : /^<!-- [^\n]+ -->$/.exec(input.body.split("\n")[0]!.trim())?.[0];
+    if (input.body !== undefined && !(marker && (issue.body ?? "").split("\n").some((l) => l.trim() === marker))) throw new GitHubRefused(`#${ref.number} doesn't hold the marker line that opens the new body (an HTML comment); its text isn't replaced`);
     const current = labelNames(issue);
     const add = input.addLabels?.length ? await this.matchLabels(ref.owner, ref.repo, input.addLabels) : [];
     const remove = (input.removeLabels ?? []).map((l) => current.find((c) => c.toLowerCase() === l.trim().toLowerCase())).filter((l): l is string => Boolean(l));
