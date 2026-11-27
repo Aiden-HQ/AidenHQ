@@ -36,6 +36,11 @@ const pages: PagePoint[] = [
       { name: "private_key", label: "Private key", kind: "key", maxLength: 4096 },
     ] }],
   },
+  // A page whose key field declares the schema's own ceiling (65536).
+  {
+    id: "bigkeys", title: "Big keys", icon: "list", order: 20, module: "servers", connection: "servers-mcp", view: "ui://servers/big", tools: [], settings: ["servers_machines"],
+    secret_maps: [{ secret: "servers_keys", keys_from: "servers_machines[].name", fields: [{ name: "private_key", label: "Private key", kind: "key", maxLength: 65536 }] }],
+  },
 ];
 
 describe("page secret values", () => {
@@ -59,10 +64,10 @@ describe("page secret values", () => {
     kernel.close();
   });
   const admin: FakeAccount = { id: "u-1", email: "a@example.com", name: "A", role: "admin", owner: true };
-  const send = (key: string, values: unknown) =>
+  const send = (key: string, values: unknown, page = "servers") =>
     new Promise<{ status: number; json: any }>((resolve, reject) => {
       const body = JSON.stringify({ values });
-      const r = request({ host: "127.0.0.1", port, method: "POST", path: `/api/pages/servers/secrets/servers_keys/${key}`, headers: {
+      const r = request({ host: "127.0.0.1", port, method: "POST", path: `/api/pages/${page}/secrets/servers_keys/${key}`, headers: {
         host: "localhost:3121", "content-type": "application/json", "x-aidenhq-board": "1", origin: "http://localhost:3121",
         cookie: `aidenhq-board=${kernel.session(admin)}`,
       } }, (res) => {
@@ -108,6 +113,17 @@ describe("page secret values", () => {
     const r = await send("alpha", { label: "a", login: "u", private_key: "k", other: "x" });
     expect(r.status).toBe(400);
     expect(r.json.error).toBe("not one of this page's fields");
+  });
+
+
+  it("a key at the schema's ceiling of 65536 characters fits the route's body, even all newlines", async () => {
+    // Every character a newline: its JSON escaping is the worst case, twice the field's length.
+    const at = "\n".repeat(65536);
+    const r = await send("beta", { private_key: at }, "bigkeys");
+    expect(r.status).toBe(200);
+    expect(JSON.parse(lastSent().value).private_key).toBe(at);
+    // One over the ceiling is refused.
+    expect((await send("beta", { private_key: "k".repeat(65537) }, "bigkeys")).status).toBe(400);
   });
 
   it("a 4 KB key plus JSON escaping fits the route's 64 KB body", async () => {

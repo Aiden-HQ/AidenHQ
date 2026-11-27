@@ -9,11 +9,16 @@ import path from "node:path";
 import type { SetupField } from "./admin.ts";
 import { fail } from "./proxy.ts";
 
-/** A whole map pasted through save_secret is at most this much (a key plus JSON escaping fits). */
+/** A whole map pasted through save_secret is at most this much (the brief's 64 KB). */
 export const MAP_MAX = 64 * 1024;
 /** A field's cap on its value: its declared `maxLength` (a page's secret_maps fields), else 300. */
 export const fieldCap = (name: string | undefined, fields: SetupField["fields"]) => fields?.find((x) => x.name === name)?.maxLength ?? 300;
-/** A whole pasted secret's cap: 64 KB when the secret is a map whose fields declare their own caps (a key), 300 otherwise. */
+/**
+ * The longest JSON text that holds one entry of a map secret, so every field at its declared ceiling still gets through: each
+ * character of every field JSON-escaped (two characters, a newline's `\n`), plus the entry's own keys and punctuation.
+ */
+export const entryMax = (fields: SetupField["fields"]) => 2 * (fields ?? []).reduce((n, f) => n + (f.maxLength ?? 300), 0) + 1024;
+/** A pasted secret's cap: 300, or 64 KB for a map whose fields declare their own caps (a key). An entry is bounded by its fields. */
 export const valueCap = (f: SetupField) => (f.fields?.length ? MAP_MAX : 300);
 
 /** A value the owner gave for a declared field: trimmed, within its cap (300 at most), matching its anchored pattern. */
@@ -82,6 +87,14 @@ export function createModuleSecrets(deps: {
     /** The fields a map secret's page declares (undefined when none does): the kernel's per-field caps. */
     fields(module: string, secret: string): SetupField["fields"] {
       return mapField(module, secret).fields;
+    },
+    /** A whole value's cap for this secret (save_secret's `value`): 300, or its fields' bound when it declares them. */
+    cap(module: string, secret: string): number {
+      return valueCap(mapField(module, secret));
+    },
+    /** An entry's JSON cap for this secret: what one key's entry may be, at its largest field's declared ceiling. */
+    entryCap(module: string, secret: string): number {
+      return entryMax(mapField(module, secret).fields);
     },
     keys(module: string, secret: string): string[] {
       mapField(module, secret);

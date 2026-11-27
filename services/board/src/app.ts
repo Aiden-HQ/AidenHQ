@@ -2779,8 +2779,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     {
       method: "POST",
       path: /^\/api\/pages\/([a-z][a-z0-9-]{0,30})\/secrets\/([a-z][a-z0-9_]{1,63})\/([a-z0-9][a-z0-9_-]{0,62})$/,
-      // 64 KB: a declared `key` field may hold an SSH private key (its own maxLength), and JSON escaping adds to that.
-      maxBody: 64 * 1024,
+      // An entry may hold up to 8 fields (pages.json), each at its declared ceiling of 65536; the body has to fit every one of them
+      // JSON-escaped (two characters each, so twice the fields' total), plus the entry's own keys.
+      maxBody: 2 * 1024 * 1024,
       handle: async (m, body, who) => {
         if (!who.ready || who.account.role !== "admin") throw new HttpError(403, "totp");
         const page = await viewCall(async () => opts.views!.page(m[1]!));

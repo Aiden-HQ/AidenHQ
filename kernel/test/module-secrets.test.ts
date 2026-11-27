@@ -167,6 +167,43 @@ test("a map secret's key field is capped at its declared maxLength, stored whole
   assert.equal(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")).gamma.private_key, fourk);
 });
 
+test("a key at the schema's ceiling of 65536 characters goes through, even all newlines", async (t) => {
+  // A page that declares the ceiling itself (pages.json's maxLength maximum).
+  const fields = [...FIELDS.filter((f) => f.secret !== "design_keys"), { module: "design", secret: "design_keys", label: "SSH keys", pattern: "^\\{[\\s\\S]*\\}$", fields: [
+    { name: "label", kind: "text" }, { name: "private_key", kind: "key", maxLength: 65536 },
+  ] }];
+  const v = vault(undefined, fields as SetupField[]);
+  const post = await api(t, v);
+  // A field at pages.json's maxLength ceiling (65536), every character a newline: its JSON escaping is the worst case.
+  const at = "\n".repeat(65536);
+  const one = await post("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: ENTRY({ private_key: at }) });
+  assert.equal(one.status, 200, one.body);
+  assert.equal(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")).alpha.private_key, at);
+  // A whole-map paste is bounded by the brief's 64 KB, so a key at the ceiling, its escapes doubling it, is too much for one.
+  const whole = JSON.stringify({ beta: { label: "b", private_key: at } });
+  assert.equal((await post("save_secret", { module: "design", secret: "design_keys", value: whole })).status, 400);
+  // A 30 KB key, escaped, still fits a whole-map paste (the brief's 64 KB).
+  const half = "\n".repeat(30 * 1024);
+  const paste = await post("save_secret", { module: "design", secret: "design_keys", value: JSON.stringify({ beta: { label: "b", private_key: half } }) });
+  assert.equal(paste.status, 200, paste.body);
+  assert.equal(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")).beta.private_key, half);
+  // A field over the ceiling is still refused.
+  assert.equal((await post("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: ENTRY({ private_key: "k".repeat(65537) }) })).status, 400);
+});
+
+test("an entry with every field at its declared ceiling gets through a per-key save", async (t) => {
+  // Two key fields, each declared at the ceiling: an entry fills both, so a budget for only the largest would refuse it.
+  const fields = [...FIELDS.filter((f) => f.secret !== "design_keys"), { module: "design", secret: "design_keys", label: "SSH keys", pattern: "^\\{[\\s\\S]*\\}$", fields: [
+    { name: "private_key", kind: "key", maxLength: 65536 }, { name: "public_key", kind: "key", maxLength: 65536 },
+  ] }];
+  const v = vault(undefined, fields as SetupField[]);
+  const post = await api(t, v);
+  const at = (n) => "\n".repeat(n);
+  const r = await post("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: JSON.stringify({ private_key: at(65536), public_key: at(65536) }) });
+  assert.equal(r.status, 200, r.body);
+  assert.deepEqual(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")).alpha, { private_key: at(65536), public_key: at(65536) });
+});
+
 test("a whole-map paste is held to its declared field caps and refused over 64 KB", async (t) => {
   const v = vault();
   const post = await api(t, v);

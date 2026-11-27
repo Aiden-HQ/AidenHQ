@@ -23,14 +23,14 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { AccountError, type Accounts, type Role } from "./accounts.ts";
 import { AccessError, assertNamesApp } from "../../modules/apps-platform/src/app-access.ts";
 import type { Whoami } from "./identity.ts";
-import { MAP_MAX, type ModuleSecrets } from "./module-secrets.ts";
+import { entryMax, type ModuleSecrets } from "./module-secrets.ts";
 import type { ModuleValidate } from "./module-validate.ts";
 import { fail } from "./proxy.ts";
 
 /** The vault secret the operator routes check: the host's only (never in compose.yaml). */
 export const OPERATOR_KEY = "kernel_operator_key";
-/** The request body's cap: a saved secret's map (a 64 KB key) with its JSON escaping fits; every other call is far smaller. */
-const MAX_BODY = 256 * 1024;
+/** The request body's cap: one map entry with every field at pages.json's 65536 ceiling, each JSON-escaped, fits (2 MB holds 8 of them). */
+const MAX_BODY = 2 * 1024 * 1024;
 
 const EMAIL = (v: unknown) => typeof v === "string" && v.length <= 200;
 const APP = (v: unknown) => typeof v === "string" && /^[a-z][a-z0-9-]{1,30}$/.test(v);
@@ -51,8 +51,8 @@ export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recover
   async function json(req: IncomingMessage): Promise<Record<string, unknown>> {
     const chunks: Buffer[] = [];
     let n = 0;
-    // A saved secret can be a whole JSON map holding an SSH key (64 KB, kernel/src/module-secrets.ts MAP_MAX) plus its
-    // JSON escaping: the body is larger than every other call's.
+    // A saved secret can be an entry with every field at its declared ceiling, JSON-escaped (kernel/src/module-secrets.ts
+    // entryMax): the body is larger than every other call's.
     for await (const c of req) { n += c.length; if (n > MAX_BODY) throw fail(413, "too_large", "too large"); chunks.push(c); }
     let b: unknown;
     try { b = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); } catch { throw fail(400, "bad_request", "the body must be JSON"); }
@@ -185,9 +185,11 @@ export function createAuthApi({ accounts, whoami, boardKey, operatorKey, recover
             if (op === "secret_keys") return send(res, 200, { keys: secrets.keys(module, need(b, "secret", SECRET)) });
             if (!by.owner) throw fail(403, "forbidden", "only the owner");
             const name = need(b, "secret", SECRET);
-            // A whole-map paste is capped at 1000 (4000 with a key); a secret whose page declares its fields gets 64 KB, because one
-            // SSH key, JSON-escaped inside the map, doesn't fit 1000 (kernel/src/module-secrets.ts MAP_MAX).
-            const cap = secrets.fields(module, name) ? MAP_MAX : b.key !== undefined ? 4000 : 1000;
+            // A whole-map paste is capped at 1000, 4000 with a key. A secret whose page declares its fields takes its own bound
+            // (kernel/src/module-secrets.ts): an entry at its fields' ceilings, JSON-escaped; a whole map, 64 KB, so a 4 KB SSH
+            // key fits where 1000 never could.
+            const declared = secrets.fields(module, name);
+            const cap = declared ? (b.key !== undefined ? entryMax(declared) : secrets.cap(module, name)) : b.key !== undefined ? 4000 : 1000;
             const value = need(b, "value", (v) => typeof v === "string" && v.length <= cap);
             // One key of a JSON-map secret (a module page's secret_maps): `value` is that key's entry as JSON, or "" to clear it.
             // The module's own check sees the entry alone, never the other keys.

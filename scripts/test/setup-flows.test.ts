@@ -31,6 +31,8 @@ test("a map secret's declared fields reach the kernel's setup entry (a key field
   const out = compile(mods, inst(["mapok"]));
   const entry = out.kernelModules.setup.find((f: { secret: string }) => f.secret === "mapok_keys");
   assert.deepEqual(entry.fields, [{ name: "label", kind: "text" }, { name: "private_key", kind: "key", maxLength: 4096 }, { name: "passphrase", kind: "password" }]);
+  // Two of a module's pages may declare the same secret only with one field table: the kernel takes one per secret.
+  assert.throws(() => compile(mods, inst(["mapdup"])), /secret_maps mapdup_keys is declared again with other fields/);
   // A secret no page declares carries none: its kernel cap stays 300.
   const plain = compile(mods, inst(["flowok"])).kernelModules.setup.find((f: { secret: string }) => f.secret === "flowok_bot_token");
   assert.equal(plain.fields, undefined);
