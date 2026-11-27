@@ -189,7 +189,7 @@ async function assigneeOf(i: Json) {
  * Who filed the task: the agent's key, `user` for the owner's own, null when neither. Trusted provenance for a re-triage
  * pass that may only close agent-filed tasks.
  */
-async function filerOf(i: Json) {
+async function filerOf(i: Json): Promise<{ filed_by?: string; filed_by_name?: string }> {
   if (i.createdByAgentId && !i.createdByUserId) {
     const g = dirAgents()[i.createdByAgentId];
     const name = await nameOf(i.createdByAgentId);
