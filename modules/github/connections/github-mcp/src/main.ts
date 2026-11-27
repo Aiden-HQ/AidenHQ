@@ -462,7 +462,7 @@ function buildServer(caller?: Caller): McpServer {
       logged("github_release_graduate", (a: { repo: string; tag: string }) => ({ repo: a.repo, tag: a.tag }), async (a: { repo: string; tag: string }) => {
         const r = maintainer.target(a.repo);
         // One attempt, one actor: the release write's (contents), which also reads what decides it.
-        const actor = await access.actorFor({ repo: `${r.owner}/${r.name}` }, "contents");
+        const actor = await access.actorFor({ repo: `${r.owner}/${r.name}` }, "release");
         return graduate((m, p, b) => actor.rest(m, p, b), `${r.owner}/${r.name}`, a.tag.trim());
       }),
     ),

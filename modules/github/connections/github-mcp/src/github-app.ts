@@ -34,6 +34,8 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
   const read = (name: string) => { try { return readFileSync(join(dir, name), "utf8").trim(); } catch { return ""; } };
   /** The App's id and key; undefined when neither file exists (no App). A set that is there but broken throws. */
   const creds = () => {
+    // A vault dir that is there but can't be read looks like no App to existsSync: that is a broken App, never an absent one.
+    try { readdirSync(dir); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw new AppError(`the GitHub App's saved files can't be read (${(e as NodeJS.ErrnoException).code})`); }
     if (!["app_id", "key.pem"].some((f) => existsSync(join(dir, f)))) return undefined;
     const id = read("app_id"), key = read("key.pem");
     if (!/^[0-9]{1,12}$/.test(id) || !key.includes("PRIVATE KEY")) throw new AppError("the GitHub App's saved id or key is missing or unreadable: create it again on its setup page");
@@ -87,7 +89,7 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
 
   return {
     /** Whether an App is set up at all (either of its files is there); a broken one is still set up. */
-    configured: (): boolean => ["app_id", "key.pem"].some((f) => existsSync(join(dir, f))),
+    configured: (): boolean => { try { return creds() !== undefined; } catch { return true; } },
     /** The App's installation on `repo` (owner/name), or null: no App, or GitHub says it isn't installed there. A broken App throws. */
     installed: (repo: string): Promise<Installation | null> => {
       const [o, n, ...rest] = repo.split("/");
@@ -165,7 +167,6 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
     /** Why the App is failing: its saved files, or its last failure since a call as it last worked. */
     failure: (): string | undefined => {
       let c;
-      try { readdirSync(dir); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") return `the GitHub App's saved files can't be read (${(e as NodeJS.ErrnoException).code})`; }
       try { c = creds(); } catch (e) { return (e as Error).message; }
       return c && failed?.for === c.id ? failed.why : undefined;
     },

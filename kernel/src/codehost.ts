@@ -390,12 +390,13 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
           if (need) recordNeed(module, need);
         }
       }
-      // A new comment is ours: remembered by its ref, so editing it (the comment op with `id`) is allowed and no other is.
-      if (op === "comment" && b.id == null && r.statusCode === 200) {
+      // A new comment is ours: remembered by its ref, so editing it (the comment op with `id`) is allowed and no other is. An edit
+      // answered with another id made a new comment (the old one is another identity's, after a switch): that one is ours too.
+      if (op === "comment" && r.statusCode === 200) {
         const chunks: Buffer[] = [];
         for await (const c of r) chunks.push(c as Buffer);
         const id = Number((JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { id?: unknown }).id);
-        if (Number.isInteger(id) && id > 0) noteObject(`github:${String(b.repo)}#${Number(b.number)}/comment/${id}`, `codehost:${module}`);
+        if (Number.isInteger(id) && id > 0 && id !== Number(b.id)) noteObject(`github:${String(b.repo)}#${Number(b.number)}/comment/${id}`, `codehost:${module}`);
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id }));
         return;
       }

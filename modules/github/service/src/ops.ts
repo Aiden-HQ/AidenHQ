@@ -269,8 +269,11 @@ export async function serveOps(req: IncomingMessage, res: ServerResponse, ctx: O
   } catch (e) {
     const err = e as { status?: number; message: string; need?: { cause: string } };
     const message = await scrub(err.message);
+    // The App's own failure (broken, or refused by GitHub) is no sign-in need: a plain error, so the kernel never asks the owner to
+    // reconnect for it.
+    if (err.need?.cause === "app_broken" || err.need?.cause === "app_refused") send(err.need.cause === "app_refused" ? 403 : 502, { error: message });
     // A typed GitHub need: what is wrong, and (owner-fixable) that the owner was told.
-    if (err.need) send({ not_connected: 503, expired: 503, scope: 403, sso: 403, restricted: 403, unreachable: 404, rate_limited: 429 }[err.need.cause] ?? 502, { error: message, need: err.need });
+    else if (err.need) send({ not_connected: 503, expired: 503, scope: 403, sso: 403, restricted: 403, unreachable: 404, rate_limited: 429 }[err.need.cause] ?? 502, { error: message, need: err.need });
     else send(err.status ?? 500, { error: message });
   }
 }

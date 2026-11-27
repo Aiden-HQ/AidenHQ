@@ -37,6 +37,8 @@ export const OPS = {
   actions: { actions: "write" },
   actions_read: { actions: "read" },
   contents: { contents: "write" },
+  /** A release's graduation: the release write, and the run and issue it is checked against (one actor for all of it). */
+  release: { contents: "write", actions: "read", issues: "read" },
   project: { organization_projects: "write" },
   create_repo: null,
   runner_token: null,
@@ -235,6 +237,8 @@ const PERMISSIONS: [RegExp, string][] = [
   [/^\/collaborators\//, "metadata"],
   [/^\/actions\//, "actions"],
   [/^(?:\/commits\/[^/]+)?\/check-(?:runs|suites)\b/, "checks"],
+  // Classic branch protection is an Administration read, which the App never asks for: the owner reads it.
+  [/^\/branches\/.+\/protection\b/, "administration"],
   [/^\/commits\/[^/]+\/(?:status|statuses)$/, "statuses"],
   [/^\/pulls\b/, "pull_requests"],
   [/^\/(?:issues|labels|milestones)\b/, "issues"],
@@ -505,7 +509,8 @@ export function createAccess(o: {
   const ownerActor: Actor = {
     kind: "owner", key: "owner",
     identity: () => identity(),
-    rest: (method, path, body, opts = {}) => restAs(undefined, method, path, body, opts),
+    // The owner's actor reads as the owner too (one identity per attempt), never as the App through readerFor.
+    rest: (method, path, body, opts = {}) => restAs(undefined, method, path, body, { ...opts, owner: true }),
     graphql: (query, variables, opts = {}) => graphqlAs(undefined, query, variables, opts),
     mutate: (name, variables) => restAs(undefined, "POST", "/graphql", { query: MUTATIONS[name], variables }, {}),
     gitToken: () => token(),
@@ -742,7 +747,8 @@ export function createAccess(o: {
   function refusedApp(as: Identity, message: string): never {
     if (as.target) o.app?.evict(as.target);
     o.log?.("github refused the App", { key: as.key, target: as.target, said: message.slice(0, 200) });
-    fail({ cause: "app_refused", target: as.target || as.key, message: message.slice(0, 200) });
+    // GitHub's own refusal, so a caller that reads a status (the merge queue) takes it as definitive, never as unanswered.
+    throw Object.assign(new GitHubNeed({ cause: "app_refused", target: as.target || as.key, message: message.slice(0, 200) }), { status: 403 });
   }
 
   /** A REST call as `as` (an App installation) or the owner (undefined). */
