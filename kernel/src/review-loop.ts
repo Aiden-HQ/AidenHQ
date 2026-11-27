@@ -43,6 +43,8 @@ const asPrior = (r: Rec): Prior => ({
   reviewCode: r.review_code ?? null, review: r.review, digest: r.digest,
 });
 
+/** A comment's time as the reviewer reads it: the UTC instant to the second, zone kept ("2026-11-25T15:13:05Z"). */
+const stamp = (iso: unknown) => { const t = Date.parse(String(iso ?? "")); return Number.isFinite(t) ? `${new Date(t).toISOString().slice(0, 19)}Z` : ""; };
 const stripHidden = (s: unknown) => String(s ?? "").replace(/<!--[\s\S]*?-->/g, "");
 const agentMade = (i: Issue) => Boolean(i.createdByAgentId && !i.createdByUserId);
 /** The owner's own words in a task they wrote themselves (no agent, no generated-task source marker); else nothing. */
@@ -150,7 +152,7 @@ export function taskComments(list: { c: Comment; a: Author }[]): string {
   let size = 0;
   for (const { c, a } of list.slice(-COMMENTS).reverse()) {
     const answer = read.get(c);
-    const one = `${LABEL[a.who]}${a.key ? ` (${a.key})` : ""}, ${String(c.createdAt ?? "").slice(0, 19)}:\n${lines(stripHidden(a.who === "owner" ? c.body : spellQuestions(String(c.body ?? ""))))}${answer ? `\n(code matched these letters to the options of the agent's form just before it, in the agent's words: ${lines(answer).slice(2)})` : ""}`;
+    const one = `${LABEL[a.who]}${a.key ? ` (${a.key})` : ""}, ${stamp(c.createdAt)}:\n${lines(stripHidden(a.who === "owner" ? c.body : spellQuestions(String(c.body ?? ""))))}${answer ? `\n(code matched these letters to the options of the agent's form just before it, in the agent's words: ${lines(answer).slice(2)})` : ""}`;
     if ((size += one.length + 2) > COMMENTS_MAX) break;
     out.unshift(one);
   }

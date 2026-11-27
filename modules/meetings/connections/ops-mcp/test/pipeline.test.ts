@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { renderCanonicalNote } from "../src/render/notes.js";
 import { EXTRACTION, event, makeEnv, OMS_PRIVY, people, writeAt } from "./helpers.js";
 
 const OMS_NOTE = "# Open Merchant Stack\n\nHuman notes here.\n\n## Meeting Log\n\n## Links\n\n- keep\n";
@@ -49,7 +50,7 @@ describe("functional scenario", () => {
     expect(note.indexOf("paperclip-meeting")).toBeLessThan(note.indexOf("## Links"));
 
     const canonical = readFileSync(join(env.vault, r.canonical_note.path), "utf8");
-    expect(canonical).toMatch(/^---\ntype: "meeting"\ntags:\n  - "type\/meeting"\ncalendar_event_id: "evt_oms_nimbus_20261004"\ndate: "2026-10-04"\nstart: "14:00"\nend: "14:30"\n/);
+    expect(canonical).toMatch(/^---\ntype: "meeting"\ntags:\n  - "type\/meeting"\ncalendar_event_id: "evt_oms_nimbus_20261004"\ndate: "2026-10-04"\nstart: "14:00"\nend: "14:30"\nstart_at: "2026-10-04T12:00:00.000Z"\nend_at: "2026-10-04T12:30:00.000Z"\n/);
     expect(canonical).toContain("- [ ] Alex — Review the delegated signing proposal");
     expect(canonical).toContain("- [ ] Alice — Send revised architecture diagram (due: Friday)");
 
@@ -195,5 +196,30 @@ describe("Drive documents on resumed work", () => {
     expect(m.status).toBe("matched");
     const scan = (await env.app.meetings.scan()) as { work: Record<string, unknown>[] };
     expect(scan.work).toEqual([expect.objectContaining({ source_id: reg.source_id, status: "matched", drive_file_id: "drive_file_1", next_step: expect.stringContaining("drive_read_file") })]);
+  });
+});
+
+describe("note frontmatter", () => {
+  it("keeps both instants for a meeting that crosses midnight", () => {
+    const note = renderCanonicalNote(
+      {
+        calendar_event_id: "evt_late",
+        title: "Late call",
+        start_at: "2026-11-28T22:45:00.000Z",
+        end_at: "2026-11-28T23:15:00.000Z",
+        timezone: "Europe/Madrid",
+        attendees: [],
+      },
+      EXTRACTION,
+      [],
+    );
+    const frontmatter = note.slice(4, note.indexOf("\n---", 3));
+    // The local wall clocks cross midnight, so date + start/end alone read end before start.
+    expect(frontmatter).toContain('date: "2026-11-28"');
+    expect(frontmatter).toContain('start: "23:45"');
+    expect(frontmatter).toContain('end: "00:15"');
+    // The instants keep the real order.
+    expect(frontmatter).toContain('start_at: "2026-11-28T22:45:00.000Z"');
+    expect(frontmatter).toContain('end_at: "2026-11-28T23:15:00.000Z"');
   });
 });

@@ -34,7 +34,8 @@ export interface Agent { id: string; name?: string; companyId?: string; metadata
 
 /** Remove HTML comments: hidden text never counts as anyone's words. */
 export const stripHidden = (s: unknown) => String(s ?? "").replace(/<!--[\s\S]*?-->/g, "");
-const when = (iso: unknown) => String(iso ?? "").slice(0, 16).replace("T", " ");
+/** A comment's time as the agent reads it: the UTC instant to the minute, zone kept ("2026-11-25T15:13Z"). */
+const when = (iso: unknown) => { const t = Date.parse(String(iso ?? "")); return Number.isFinite(t) ? `${new Date(t).toISOString().slice(0, 16)}Z` : ""; };
 
 /** A task a module filed (kernel POST /v1/tasks: its marker, by no agent): its description is the module's fixed request. */
 export const moduleMade = (t: Issue) => !t.createdByAgentId && /<!-- aidenhq-module:[\w-]+ -->/.test(String(t.description ?? ""));
