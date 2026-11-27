@@ -1,8 +1,8 @@
 // GitHub's write API over bare repos, as the code host's signed writes use it: createCommitOnBranch (GitHub's own commit, bound to
 // expectedHeadOid, each file replaced in full, an existing file keeping its mode, a new one 100644), git data (blobs, trees on a
-// base_tree, commits with their parents, read back too), git/refs create, read, fast-forward update and delete (updateRefs too),
-// and the rules that apply to a branch. `originOf(slug)` is the bare repo GitHub holds for a repo; `refuse(input)` is a repository
-// rule's words refusing a commit or a ref update; `signed(slug, branch)` says the branch's rules require signed commits;
+// base_tree, commits with their parents, read back too), git/refs create, read and delete (updateRefs too, bound to each
+// beforeOid), and the rules that apply to a branch. `originOf(slug)` is the bare repo GitHub holds for a repo; `refuse(input)` is a
+// repository rule's words refusing a commit or a ref update; `signed(slug, branch)` says the branch's rules require signed commits;
 // `verified(as)` whether GitHub signs a git-data commit made by `as` (the caller's actor mark: GitHub signs the App's own, never
 // the owner's). Any other route answers undefined, for the test's own fake.
 import { execFileSync } from "node:child_process";
@@ -44,6 +44,8 @@ export function githubWrites(originOf, { refuse = (_input) => undefined, signed 
       const { repositoryId, refUpdates } = body.variables.input;
       const origin = originOf(repositoryId);
       if (refUpdates.some((u) => tip(origin, u.name) !== u.beforeOid)) return { status: 200, body: { errors: [{ message: "Something went wrong while executing your query." }] } };
+      const said = refuse(body.variables.input);
+      if (said) return { status: 200, body: { data: { updateRefs: null }, errors: [{ type: "UNPROCESSABLE", message: said }] } };
       for (const u of refUpdates) git(origin, /^0+$/.test(u.afterOid) ? ["update-ref", "-d", u.name] : ["update-ref", u.name, u.afterOid]);
       return { status: 200, body: { data: { updateRefs: { clientMutationId: null } } } };
     }
@@ -71,18 +73,6 @@ export function githubWrites(originOf, { refuse = (_input) => undefined, signed 
       const sha = git(origin, ["commit-tree", body.tree, ...body.parents.flatMap((p) => ["-p", p]), "-m", body.message]);
       const ok = verified(as);
       return { status: 201, body: { sha, tree: { sha: body.tree }, parents: body.parents.map((p) => ({ sha: p })), verification: { verified: ok, reason: ok ? "valid" : "unsigned" } } };
-    }
-    // A ref update: a fast-forward unless `force`, and a repository rule's refusal (`refuse`).
-    if (method === "PATCH" && m[2] === "refs/heads") {
-      const cur = tip(origin, `refs/heads/${name}`);
-      if (!cur) return { status: 422, body: { message: "Reference does not exist" } };
-      const said = refuse({ ref: name, sha: body.sha });
-      if (said) return { status: 422, body: { message: said } };
-      let ff = true;
-      try { git(origin, ["merge-base", "--is-ancestor", cur, body.sha]); } catch { ff = false; }
-      if (!ff && !body.force) return { status: 422, body: { message: "Update is not a fast forward" } };
-      git(origin, ["update-ref", `refs/heads/${name}`, body.sha]);
-      return { status: 200, body: { ref: `refs/heads/${name}`, object: { sha: body.sha } } };
     }
     if (method === "POST" && m[2] === "refs") {
       if (tip(origin, body.ref)) return { status: 422, body: { message: "Reference already exists" } };

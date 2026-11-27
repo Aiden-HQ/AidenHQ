@@ -145,7 +145,7 @@ async function setup(t, { generation = 2, queue = {}, asyncMerge = { put: () => 
     const wrote = writes(method, path, body, as);
     if (wrote) {
       if (path === "/graphql" && wrote.body.data?.createCommitOnBranch && body.variables.input.branch.branchName === "contrib") pr.head = wrote.body.data.createCommitOnBranch.commit.oid;
-      if (method === "PATCH" && path === `/repos/${REPO}/git/refs/heads/contrib` && wrote.status < 300) pr.head = body.sha;
+      if (path === "/graphql" && wrote.body.data?.updateRefs) for (const u of body.variables.input.refUpdates) if (u.name === "refs/heads/contrib") pr.head = u.afterOid;
       return wrote;
     }
     // The asynchronous merge REST API: the one way into the queue.
@@ -325,7 +325,7 @@ test("a push that merges the base after a conflict lands as one merge commit Git
   // GitHub's own commit, verified, as the App: one commit write, one fast-forward of the branch, no createCommitOnBranch.
   const commits = calls.filter((c) => c.method === "POST" && c.path === `/repos/${REPO}/git/commits`);
   assert.deepEqual(commits.map((c) => [c.as, c.body.parents, c.body.author, c.body.committer]), [["app", [c1, tip], undefined, undefined]]);
-  assert.deepEqual(calls.filter((c) => c.method === "PATCH" && c.path.includes("/git/refs/")).map((c) => [c.as, c.body]), [["app", { sha: head, force: false }]]);
+  assert.deepEqual(calls.filter((c) => c.path === "/graphql" && String(c.body?.query).includes("updateRefs")).map((c) => [c.as, c.body.variables.input.refUpdates]), [["app", [{ name: "refs/heads/contrib", beforeOid: c1, afterOid: head }]]], "the branch moves bound to the head exactly");
   assert.equal(signed.length, 0);
   assert.equal(calls.filter((c) => /update-branch/.test(c.path)).length, 0);
   assert.equal(pr.head, head);
@@ -340,13 +340,13 @@ test("a base merge whose commit GitHub didn't sign (the owner's sign-in) is refu
   assert.equal(unsigned.ok, false);
   assert.match(unsigned.text, /^ship-refused: .*GitHub didn't sign the merge commit \(unsigned\).*Nothing was pushed/, unsigned.text);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "the branch is unchanged");
-  assert.equal(calls.filter((c) => c.method === "PATCH" && c.path.includes("/git/refs/")).length, 0, "no ref write");
+  assert.equal(calls.filter((c) => c.path === "/graphql" && String(c.body?.query).includes("updateRefs")).length, 0, "no ref write");
 });
 
-test("a base merge whose branch moved before the fast-forward is ship-head-moved, and the contributor's push stays", async (t) => {
+test("a base merge whose branch moved before the ref update is ship-head-moved, and the contributor's push stays", async (t) => {
   const { ws, origin, c1, run } = await setup(t, { appOps: ["pr", "push"] });
   const { done } = conflictedMerge(ws, origin);
-  // A contributor pushes after the read: GitHub's PR still says c1 (it lags), so only the fast-forward catches it.
+  // A contributor pushes after the read: GitHub's PR still says c1 (it lags), so only the ref update's lease on c1 catches it.
   const scratch = `${ws}-contrib`;
   sh(dirname(ws), "clone", "--quiet", "-b", "contrib", origin, scratch);
   writeFileSync(join(scratch, "d.txt"), "d\n");
