@@ -122,43 +122,56 @@ test("a generator whose tool the box lacks holds loudly and points at an actions
 });
 
 test("generated.ci: the repair plan says the repo's CI regenerates, and the leftover wake says take the base side without regenerating", async () => {
-  const w = world({ preset: "cautious", generated: { globs: ["gen/**"], ci: "regenerate" } });
+  const w = world({ preset: "cautious", generated: { globs: ["gen/**"], ci: "schema-generate.yml" } });
   await w.adopt();
   await round(w.deps, w.pr(), { do: "repair" }, { dirty: true });
   assert.deepEqual(w.of("POST /v1/writes")[0]!.body.args.plan, { globs: ["gen/**"], commands: [], ci_regenerates: true });
   w.records["rec-1"] = { state: "failed", outcome: { text: "ship-leftovers: merging `main` into … leaves conflicts no generator rewrites:\nleftover: src/a.ts" } };
   await round(w.deps, w.pr(), { do: "repair" }, { dirty: true });
   const wake = String(w.of("POST /v1/tasks").find((c) => /conflicts with/.test(String(c.body.description)))?.body.description);
-  assert.match(wake, /take the base side of the generated files \(`gen\/\*\*`\) and don't regenerate them: the repo's CI does, in its `regenerate` check/);
+  assert.match(wake, /take the base side of the generated files \(`gen\/\*\*`\) and don't regenerate them: the repo's CI does, in its `schema-generate\.yml` workflow/);
 });
 
-test("generated.ci: a head ship's repair made with the base side of generated files merges only once that check passed on it, and holds after 30 minutes", async () => {
+test("generated.ci: a head ship's repair made with the base side of generated files merges only once that workflow's newest run on it succeeded, and holds after 30 minutes", async () => {
   const H3 = "3".repeat(40);
   const setup = async () => {
-    const w = world({ preset: "cautious", generated: { globs: ["gen/**"], ci: "regenerate" } });
-    const checks: any[] = [];
+    const w = world({ preset: "cautious", generated: { globs: ["gen/**"], ci: "schema-generate.yml" } });
+    const runs: any[] = [];
     const kernel = w.deps.kernel, gh = w.deps.gh;
     (w.deps as any).kernel = { call: async (m: string, path: string, body?: any) => (path.startsWith("/v1/objects") ? { ours: true, record: "rec-1" } : kernel.call(m, path, body)) };
-    (w.deps as any).gh = async (m: string, path: string, body?: unknown) => (path.includes("/check-runs") ? { status: 200, body: { check_runs: checks } } : gh(m, path, body));
+    (w.deps as any).gh = async (m: string, path: string, body?: unknown) => (path === `/repos/a/b/actions/workflows/schema-generate.yml/runs?head_sha=${H3}&per_page=20` ? { status: 200, body: { workflow_runs: runs } } : gh(m, path, body));
     await w.adopt();
     await round(w.deps, w.pr(), { do: "repair" }, { dirty: true });
     w.records["rec-1"] = { state: "done", outcome: { text: "Repaired …: merged `main` and regenerated (1 file(s)) at `333333333333`, as owner1 (commits GitHub signs). It took the base side of 1 generated file(s) for the repo's CI to regenerate." } };
-    return { w, checks };
+    return { w, runs };
   };
-  const { w, checks } = await setup();
-  checks.push({ name: "regenerate", status: "in_progress", conclusion: null });
+  const merges = (w: any) => w.of("POST /v1/writes").filter((c: any) => c.body.kind === "github.merge").length;
+  const { w, runs } = await setup();
+  runs.push({ run_number: 5, run_attempt: 1, status: "in_progress", conclusion: null });
   assert.equal(await round(w.deps, w.pr({ head: H3 }), { do: "merge" }), "nothing");
-  assert.equal(w.of("POST /v1/writes").filter((c) => c.body.kind === "github.merge").length, 0, "waits for the repo's regenerate check");
-  checks[0] = { name: "regenerate", status: "completed", conclusion: "success" };
+  assert.equal(merges(w), 0, "waits for the repo's regenerate workflow");
+  // A skipped run is no pass: the workflow didn't regenerate anything.
+  runs[0] = { run_number: 5, run_attempt: 1, status: "completed", conclusion: "skipped" };
+  assert.equal(await round(w.deps, w.pr({ head: H3 }), { do: "merge" }), "nothing");
+  // Its newest run decides: a later success passes over an older failure.
+  runs.splice(0, 1, { run_number: 4, run_attempt: 1, status: "completed", conclusion: "failure" }, { run_number: 5, run_attempt: 2, status: "completed", conclusion: "success" });
   await round(w.deps, w.pr({ head: H3 }), { do: "merge" });
-  assert.equal(w.of("POST /v1/writes").filter((c) => c.body.kind === "github.merge").length, 1, "merged once it passed");
+  assert.equal(merges(w), 1, "merged once its newest run succeeded");
 
   const late = await setup();
   await round(late.w.deps, late.w.pr({ head: H3 }), { do: "merge" });
   late.w.state.put({ ...(late.w.state.get("a/b", 7) as any), ciRegen: { head: H3, at: "2026-01-01T00:00:00Z" } });
   await round(late.w.deps, late.w.pr({ head: H3 }), { do: "merge" });
-  assert.match(String((late.w.state.get("a/b", 7) as any).hold.reason), /`regenerate` check didn't pass on ship's repair head .* within 30 minutes \(it never appeared\)/);
+  assert.match(String((late.w.state.get("a/b", 7) as any).hold.reason), /`schema-generate\.yml` workflow didn't pass on ship's repair head .* within 30 minutes \(it never ran on this head\)/);
+
+  // A workflow GitHub doesn't know holds at once: no run will ever come.
+  const gone = await setup();
+  const ghGone = gone.w.deps.gh;
+  (gone.w.deps as any).gh = async (m: string, path: string, body?: unknown) => (path.includes("/actions/workflows/schema-generate.yml/runs") ? { status: 404, body: { message: "Not Found" } } : ghGone(m, path, body));
+  await round(gone.w.deps, gone.w.pr({ head: H3 }), { do: "merge" });
+  assert.match(String((gone.w.state.get("a/b", 7) as any).hold.reason), /`schema-generate\.yml` workflow can't be read \(404\)/);
 });
+
 
 test("a repair with no conflict to resolve wakes nobody and isn't filed again at the same head and base; a new base tip is repaired again", async () => {
   const w = world({ preset: "cautious", generated: { globs: ["gen/**"], command: "" } });
