@@ -64,13 +64,100 @@ test("a refused filing or a failed trust read leaves the cursor, says it once, a
   const refuse = () => w.look({ fire: async () => false });
   assert.equal(await refuse(), 0);
   assert.equal(await refuse(), 0);
+  assert.equal(w.state().attempts["1"].attempts, 2, "the failed event's attempt count is kept in state");
   assert.equal(w.logs.warnLines.length, 1);
   assert.equal(w.state().feed.after, 0);
   assert.equal(await w.look(), 1);
+  assert.equal(w.state().attempts, undefined, "a handled event's attempt entry is deleted");
   assert.equal(w.state().feed.after, 1);
   w.log.push(ev(2, "issues.labeled", { number: 8, label: "agent-fix" }));
   assert.equal(await w.look({ one: async () => { throw new Error("github: 502"); } }), 0);
   assert.equal(w.state().feed.after, 1);
+});
+
+test("a handler that keeps throwing is skipped after three looks and the later event still commits", async () => {
+  const w = world({ ones: { "8:agent-fix": issue(8) } });
+  await w.look();
+  w.log.push(ev(1, "issues.labeled", { number: 7, label: "agent-fix" }), ev(2, "issues.labeled", { number: 8, label: "agent-fix" }));
+  const flaky = async (_r, n, label) => {
+    if (n === 7) throw new Error("github: 502");
+    return w.ones[`${n}:${label}`] ?? null;
+  };
+  for (let i = 0; i < 3; i++) assert.equal(await w.look({ one: flaky }), i === 0 ? 1 : 0);
+  assert.deepEqual(w.fired, [[8, "fix"]], "the later event is filed while the first one is still failing");
+  assert.equal(w.state().feed.after, 2, "the skipped event no longer holds the cursor");
+  const warned = w.logs.warnLines.filter((l) => /skipped/.test(l.m));
+  assert.equal(warned.length, 1);
+  assert.equal(warned[0].o.seq, 1);
+  assert.equal(warned[0].o.kind, "issues.labeled");
+  assert.equal(warned[0].o.resource, R);
+  assert.equal(warned[0].o.number, 7);
+  assert.match(warned[0].o.err, /github: 502/);
+  assert.deepEqual(w.state().skipped.map((s) => [s.seq, s.kind, s.resource, s.number]), [[1, "issues.labeled", R, 7]]);
+  assert.equal(w.state().attempts, undefined);
+  assert.equal(await w.look(), 0);
+  assert.equal(w.boots, 2, "the skipped event's repo is bootstrapped on the next look");
+  assert.equal(w.state().skipped, undefined, "the bootstrap completed and cleared the skip");
+});
+
+test("a refused filing for one issue does not hold the next labelled event", async () => {
+  const w = world({ ones: { "7:agent-fix": issue(7), "8:agent-fix": issue(8) } });
+  await w.look();
+  w.log.push(ev(1, "issues.labeled", { number: 7, label: "agent-fix" }), ev(2, "issues.labeled", { number: 8, label: "agent-fix" }));
+  const fire = async (_r, i, kind) => {
+    if (i.number === 7) return false;
+    w.fired.push([i.number, kind ?? "fix"]);
+    return true;
+  };
+  for (let i = 0; i < 3; i++) assert.equal(await w.look({ fire }), i === 0 ? 1 : 0);
+  assert.deepEqual(w.fired, [[8, "fix"]], "the refused issue's event does not stop the next labelled event");
+  assert.equal(w.state().feed.after, 2);
+  assert.deepEqual(w.state().skipped.map((s) => s.seq), [1]);
+  assert.equal(w.logs.warnLines.filter((l) => /skipped/.test(l.m)).length, 1);
+});
+
+test("after a skip the repo is bootstrapped again and its issue is filed once", async () => {
+  const w = world();
+  await w.look();
+  w.log.push(ev(1, "issues.labeled", { number: 7, label: "agent-fix" }));
+  w.ones["7:agent-fix"] = issue(7);
+  const flaky = async () => { throw new Error("github: 502"); };
+  for (let i = 0; i < 3; i++) await w.look({ one: flaky });
+  assert.deepEqual(w.fired, []);
+  assert.equal(w.state().feed.after, 1);
+  assert.deepEqual(w.state().skipped.map((s) => s.seq), [1]);
+  w.bootstrap = { repos: [{ repo: R, issues: [issue(7)], builds: [], featured: [] }] };
+  assert.equal(await w.look(), 1, "the bootstrap files the skipped issue");
+  assert.deepEqual(w.fired, [[7, "fix"]], "the skipped issue is filed once");
+  assert.equal(w.boots, 2);
+  assert.equal(w.state().skipped, undefined);
+  assert.equal(await w.look(), 0);
+  assert.deepEqual(w.fired, [[7, "fix"]], "a later look does not file it twice");
+});
+
+test("a skipped unlabelled opening is retried after its repo's bootstrap", async () => {
+  const w = world();
+  await w.look();
+  w.log.push(ev(1, "issues.opened", { number: 6, author_kind: "outside", created_at: new Date().toISOString() }, { author: "ada", labels: [] }));
+  let calls = 0;
+  const triage = async (_r, n) => {
+    calls++;
+    if (calls <= 4) return false;
+    w.triaged.push(n);
+    return true;
+  };
+  for (let i = 0; i < 3; i++) assert.equal(await w.look({ triage }), 0);
+  assert.equal(w.state().feed.after, 1);
+  assert.deepEqual(w.state().skipped.map((s) => s.seq), [1]);
+  assert.deepEqual(w.state().repos[R.toLowerCase()].held.map((h) => h.number), [6], "the skipped opening is held for its triage retry");
+  assert.deepEqual(w.triaged, []);
+  assert.equal(await w.look({ triage }), 1, "the bootstrap completes and the held opening's triage task files");
+  assert.deepEqual(w.triaged, [6]);
+  assert.equal(w.boots, 2);
+  assert.equal(w.state().skipped, undefined);
+  assert.deepEqual(w.state().repos[R.toLowerCase()].held, []);
+  assert.equal(await w.look({ triage }), 0);
+  assert.deepEqual(w.triaged, [6], "the triage task is not filed twice");
 });
 
 test("a feed gap, a resync and a changed repo setting each bootstrap again, and the filed issues are not filed twice", async () => {
