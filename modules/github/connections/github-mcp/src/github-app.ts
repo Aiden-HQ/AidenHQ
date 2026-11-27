@@ -4,7 +4,7 @@
 // read when needed, so a new App works without a restart. Who it is (its slug and bot) is read from GitHub, never stored. The
 // JWT and installation tokens never leave this process, except a session box's narrowed token (ops.ts app_token).
 import { createSign } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const API = "https://api.github.com";
@@ -31,15 +31,20 @@ export type AppIdentity = { id: number; slug: string; login: string; botId: numb
 export type GitHubApp = ReturnType<typeof gitHubApp>;
 
 export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: string; fetchImpl?: typeof fetch; now?: () => number }) {
-  const read = (name: string) => { try { return readFileSync(join(dir, name), "utf8").trim(); } catch { return ""; } };
+  /** A saved file's text; undefined only when it isn't there (ENOENT). Any other failure to read it is a broken App. */
+  const read = (name: string): string | undefined => {
+    try { return readFileSync(join(dir, name), "utf8").trim(); } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return undefined;
+      throw new AppError(`the GitHub App's saved files can't be read (${code})`);
+    }
+  };
   /** The App's id and key; undefined when neither file exists (no App). A set that is there but broken throws. */
   const creds = () => {
-    // A vault dir that is there but can't be read looks like no App to existsSync: that is a broken App, never an absent one.
-    try { readdirSync(dir); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw new AppError(`the GitHub App's saved files can't be read (${(e as NodeJS.ErrnoException).code})`); }
-    if (!["app_id", "key.pem"].some((f) => existsSync(join(dir, f)))) return undefined;
     const id = read("app_id"), key = read("key.pem");
-    if (!/^[0-9]{1,12}$/.test(id) || !key.includes("PRIVATE KEY")) throw new AppError("the GitHub App's saved id or key is missing or unreadable: create it again on its setup page");
-    return { id, key };
+    if (id === undefined && key === undefined) return undefined;
+    if (!/^[0-9]{1,12}$/.test(id ?? "") || !key?.includes("PRIVATE KEY")) throw new AppError("the GitHub App's saved id or key is missing or unreadable: create it again on its setup page");
+    return { id: id!, key };
   };
   const lookups = new Map<string, { found: Installation | null; at: number }>();
   const tokens = new Map<number, { token: string; expires: number }>();

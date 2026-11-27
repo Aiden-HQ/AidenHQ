@@ -16,7 +16,7 @@
 // dedupe key as the github module's need). Exits 1 when it named a cause, 0 when GitHub lets the token read the repo.
 // Self-contained (node built-ins only): the apply fetches with it before the official modules are put at ./modules.
 import { createSign } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,9 +34,8 @@ const api = process.env.AIDENHQ_GITHUB_API ?? "https://api.github.com";
 /** The App's installation token for the instance repo where the rule picks the App; undefined: the owner's. Throws when the App is broken. */
 async function appToken(repo) {
   const dir = join(secrets, "modules/github/github-app");
-  // A dir that is there but can't be read is a broken App, never an absent one.
-  try { readdirSync(dir); } catch (e) { if (e?.code !== "ENOENT") throw new Error(`the GitHub App's saved files can't be read (${e?.code})`); }
-  const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8").trim() : undefined);
+  // A file that isn't there (ENOENT) is absent; any other failure to read it is a broken App, never an absent one.
+  const read = (f) => { try { return readFileSync(join(dir, f), "utf8").trim(); } catch (e) { if (e?.code === "ENOENT") return undefined; throw new Error(`the GitHub App's saved files can't be read (${e?.code})`); } };
   const id = read("app_id"), key = read("key.pem");
   if (id === undefined && key === undefined) return undefined;
   if (!/^[0-9]{1,12}$/.test(id ?? "") || !key?.includes("PRIVATE KEY")) throw new Error("the GitHub App's saved id or key is missing or unreadable");
@@ -75,7 +74,7 @@ if (mode === "get") {
 
 if (!instance) process.exit(0);
 // The credential `get` chose: where it is the App's, the App's own answer is the diagnosis (the owner's sign-in has nothing to fix).
-const viaApp = await appToken(instance).catch((e) => { console.error(`apply stopped: AidenHQ's GitHub App isn't working (${String(e?.message ?? e).slice(0, 200)}): replace it on its setup page (/setup/github-app).`); process.exit(1); });
+const viaApp = await appToken(instance).catch((e) => { console.error(`apply stopped: AidenHQ's GitHub App couldn't give a credential for ${instance} (${String(e?.message ?? e).slice(0, 200)}); a GitHub outage passes on its own, a broken App is replaced on its setup page (/setup/github-app).`); process.exit(1); });
 if (viaApp) {
   const r = await fetch(`${api}/repos/${instance}`, { headers: { authorization: `Bearer ${viaApp}`, accept: "application/vnd.github+json", "user-agent": "aidenhq" }, signal: AbortSignal.timeout(20_000) }).catch(() => undefined);
   if (r?.ok) process.exit(0);
