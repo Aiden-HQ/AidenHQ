@@ -810,7 +810,10 @@ app_paths="$(grep -oE 'api\("(GET|POST)", (`[^`]*`|"[^"]*")' modules/github/conn
 # its host refuses a moved head and checks that aren't green itself.
 rm_="modules/github/service/src/merge-gate.ts"; rq="modules/github/service/src/merges.ts"
 rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.ts"
-[ "$(grep -c 'd\.gh(' "$rq")" = 10 ] && grep -qF 'const labels = await d.gh("GET", `/repos/${repo}/issues/${number}/labels?per_page=100`);' "$rq" && grep -qF 'await d.gh("GET", `/repos/${repo}/actions/workflows?per_page=1`);' "$rq" && grep -qF 'const r = await d.gh("POST", "/graphql", { query: MEMBER_COMMENTS_QUERY,' "$rq" && grep -qF 'const r = await d.gh("POST", "/graphql", { query: PR_QUERY,' "$rq" \
+[ "$(grep -c 'd\.gh(' "$rq")" = 11 ] && grep -qF 'const labels = await d.gh("GET", `/repos/${repo}/issues/${number}/labels?per_page=100`);' "$rq" && grep -qF 'await d.gh("GET", `/repos/${repo}/actions/workflows?per_page=1`);' "$rq" && grep -qF 'const r = await d.gh("POST", "/graphql", { query: MEMBER_COMMENTS_QUERY,' "$rq" && grep -qF 'const r = await d.gh("POST", "/graphql", { query: PR_QUERY,' "$rq" \
+  && grep -qF 'const p = await d.gh("POST", "/graphql", { query: PR_FILES_QUERY, variables: { owner, repo: name, number, after } });' "$rq" \
+  && grep -qF 'if ((at.head && node?.headRefOid !== at.head) || (at.base && node?.baseRefOid !== at.base)) throw new Error("GitHub GraphQL: the pull request moved while its files were read");' "$rq" \
+  && grep -qF 'export async function allPrFiles' "$rm_" \
   && grep -qF 'const r = await d.gh("GET", `/repos/${repo}/actions/runs?event=merge_group&per_page=50`);' "$rq" \
   && grep -qF 'const r = await d.gh("GET", `/repos/${repo}/commits/${sha}/${path}?per_page=100&page=${page}`);' "$rq" \
   && grep -qF 'const rules = await d.gh("GET", `/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`);' "$rq" \
@@ -822,6 +825,7 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'return mergeDirect(d.gh, repo, number, { sha, merge_method: method, ...message },' "$rq" \
   && grep -qF 'const r = await gh("PUT", asyncPath(repo, number), { ...body, merge_action: "direct_merge" });' modules/github/service/src/async-merge.ts \
   && grep -qF 'mergedAt mergedBy { login } mergeCommit { oid message }' "$rm_" \
+  && grep -qF 'headRefOid headRefName baseRefOid isCrossRepository baseRefName' "$rm_" \
   && grep -qF 'return calls.some((call) => call.method !== "rebase" && Boolean(call.token) && message.includes(call.token)) ? sha : undefined;' "$rq" \
   && grep -qF 'const token = mergeToken();' "$rq" \
   && grep -qF 'const mergeToken = () => `queue-${randomUUID()}`;' "$rq" \

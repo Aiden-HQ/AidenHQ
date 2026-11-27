@@ -150,9 +150,13 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
       pr.files = await allPrFiles(pr.files, async (after) => {
         const r = await ok(ctx, "POST", "/graphql", { query: PR_FILES_QUERY, variables: { owner: s.org, repo: s.name, number: b.number, after } });
         const errors: any[] = Array.isArray(r.body?.errors) ? r.body.errors : [];
-        const page = r.body?.data?.repository?.pullRequest?.files;
+        const node = r.body?.data?.repository?.pullRequest;
+        const page = node?.files;
         // A 200 carrying GraphQL errors and partial data is no answer: a page with a file missing must not read as complete.
         if (errors.length || !page || typeof page !== "object" || !Array.isArray(page.nodes) || !page.pageInfo) throw fail(502, `GitHub has no readable ${s.slug}#${b.number} files after the first page: ${String(errors[0]?.message ?? `HTTP ${r.status}`)}`);
+        // A push between the first read and this page would mix two heads: the PR's metadata and checks describe one, this
+        // page the other. No answer about the PR as read; the caller asks again.
+        if (node.headRefOid !== pr.headRefOid || node.baseRefOid !== pr.baseRefOid) throw fail(502, `GitHub has no readable ${s.slug}#${b.number}: its head or base moved while its files were read`);
         return page;
       });
     }

@@ -159,12 +159,16 @@ export function createMerges(d: {
    * A PR over 100 files is truncated by the read's own `files(first: 100)`, and the image-scan question is answered on every file:
    * a read that fails throws, so the gate never answers from a partial list. Ordinary PRs cost no extra call.
    */
-  async function allFiles(owner: string, name: string, number: number, files: any) {
+  async function allFiles(owner: string, name: string, number: number, files: any, at: { head?: string; base?: string }) {
     return allPrFiles(files, async (after) => {
       const p = await d.gh("POST", "/graphql", { query: PR_FILES_QUERY, variables: { owner, repo: name, number, after } });
       const errors: any[] = Array.isArray(p.body?.errors) ? p.body.errors : [];
-      const page = p.body?.data?.repository?.pullRequest?.files;
+      const node = p.body?.data?.repository?.pullRequest;
+      const page = node?.files;
       if (p.status >= 300 || errors.length || !page) throw new Error(`GitHub GraphQL: the pull request's files after the first page couldn't be read (${errors.map((e) => e.message).join("; ") || `HTTP ${p.status}`})`);
+      // A head that moved between the first read and this page would put two heads' files in one list: the PR's metadata
+      // would describe one and its files the other. That is no answer about this head; the poll reads again.
+      if ((at.head && node?.headRefOid !== at.head) || (at.base && node?.baseRefOid !== at.base)) throw new Error("GitHub GraphQL: the pull request moved while its files were read");
       return page;
     });
   }
@@ -209,7 +213,7 @@ export function createMerges(d: {
     // own reason rather than waiting for an answer that is already here.
     if (["state", "headRefOid", "baseRefName"].some((k) => !(k in pr))) throw new Error("GitHub GraphQL: the answer omitted the pull request's fields");
     // No file list stays absent: skippedImageScan reads that as no evidence (the PR is read again), never as "no image".
-    if (pr.files && typeof pr.files === "object") pr.files = await allFiles(owner!, name!, number, pr.files);
+    if (pr.files && typeof pr.files === "object") pr.files = await allFiles(owner!, name!, number, pr.files, { head: pr.headRefOid, base: pr.baseRefOid });
     return withGate(data);
   }
   /**

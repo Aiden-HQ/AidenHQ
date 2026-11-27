@@ -168,9 +168,9 @@ test("a PR read pages its file list past the first 100, and a page it can't read
   const first = Array.from({ length: 100 }, (_, i) => ({ path: `src/f${i}.ts` }));
   const answers = (body: unknown) => answerOp("read", { module: "grading", repo: "acme/app", kind: "pr", number: 7 },
     withRest(ctx(), async (_m, path, sent) => (path === "/graphql"
-      ? ok((sent as any)?.variables?.after === "f1" ? body : { data: { repository: { pullRequest: { number: 7, files: { pageInfo: { hasNextPage: true, endCursor: "f1" }, nodes: first } } } } })
+      ? ok((sent as any)?.variables?.after === "f1" ? body : { data: { repository: { pullRequest: { number: 7, headRefOid: sha, baseRefOid: sha, files: { pageInfo: { hasNextPage: true, endCursor: "f1" }, nodes: first } } } } })
       : ok({}))));
-  const whole = await answers({ data: { repository: { pullRequest: { files: { pageInfo: { hasNextPage: false }, nodes: [{ path: "deploy/Dockerfile" }] } } } } });
+  const whole = await answers({ data: { repository: { pullRequest: { headRefOid: sha, baseRefOid: sha, files: { pageInfo: { hasNextPage: false }, nodes: [{ path: "deploy/Dockerfile" }] } } } } });
   const files = whole.json.repository.pullRequest.files;
   assert.deepEqual(files.pageInfo, { hasNextPage: false });
   assert.equal(files.nodes.length, 101, "every page is read");
@@ -178,11 +178,13 @@ test("a PR read pages its file list past the first 100, and a page it can't read
   // A second page GitHub refuses is no answer: a partial list would hide an image definition past the cut.
   const refuse = (page: unknown) => answerOp("read", { module: "grading", repo: "acme/app", kind: "pr", number: 7 },
     withRest(ctx(), async (_m, path, sent) => (path === "/graphql"
-      ? (sent as any)?.variables?.after === "f1" ? page : ok({ data: { repository: { pullRequest: { number: 7, files: { pageInfo: { hasNextPage: true, endCursor: "f1" }, nodes: first } } } } })
+      ? (sent as any)?.variables?.after === "f1" ? page : ok({ data: { repository: { pullRequest: { number: 7, headRefOid: sha, baseRefOid: sha, files: { pageInfo: { hasNextPage: true, endCursor: "f1" }, nodes: first } } } } })
       : ok({}))));
   await assert.rejects(() => refuse({ status: 502, body: {}, headers: new Headers() }), /GitHub POST \/graphql: 502/);
   // A 200 whose body carries GraphQL errors and partial data is no answer either: the page it shows may be missing a file.
   await assert.rejects(() => refuse(ok({ data: { repository: { pullRequest: { files: { pageInfo: { hasNextPage: false }, nodes: [] } } } }, errors: [{ message: "timeout" }] })), /timeout/);
+  // A page read at another head is no answer: the PR's metadata (and its checks) describe one head, the page another.
+  await assert.rejects(() => refuse(ok({ data: { repository: { pullRequest: { headRefOid: "c".repeat(40), baseRefOid: sha, files: { pageInfo: { hasNextPage: false }, nodes: [] } } } } })), /moved while its files were read/);
 });
 
 test("a PR read keeps GitHub's explicit nulls, so grading can tell a PR that is gone from one it could not read", async () => {

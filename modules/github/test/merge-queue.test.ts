@@ -33,7 +33,8 @@ function fakeGitHub(prs) {
       // `filePages`: a PR whose file list GitHub cut at 100, answered one page at a time by the cursor ("f1" is page 2).
       if (body.query.includes("after: $after")) {
         const page = p?.filePages?.[Number(String(v.after).replace(/^f/, ""))];
-        return page ? { status: 200, body: { data: { repository: { pullRequest: { files: { pageInfo: { hasNextPage: page.length >= 100, endCursor: `f${Number(String(v.after).replace(/^f/, "")) + 1}` }, nodes: page.map((path) => ({ path })) } } } } } } : { status: 500, body: { errors: [{ message: "fake GitHub: no such file page" }] } };
+        // The head and base the page was read at: the reader refuses a page from another head than the PR read's.
+        return page ? { status: 200, body: { data: { repository: { pullRequest: { headRefOid: p.headAt ?? p.head, baseRefOid: p.baseAt ?? "b".repeat(40), files: { pageInfo: { hasNextPage: page.length >= 100, endCursor: `f${Number(String(v.after).replace(/^f/, "")) + 1}` }, nodes: page.map((path) => ({ path })) } } } } } } : { status: 500, body: { errors: [{ message: "fake GitHub: no such file page" }] } };
       }
       if (body.query.includes("pullRequest(number")) {
         // `lag`: GitHub's read still shows the PR open for that many polls (its merge not yet reflected); a repo's allowed
@@ -43,7 +44,7 @@ function fakeGitHub(prs) {
         return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main" }, squashMergeAllowed: p.squash !== false, rebaseMergeAllowed: p.rebase === true, pullRequest: {
           id: "PR_1", number: v.number, url: `https://github.com/${repo}/pull/${v.number}`, state: stale ? "OPEN" : p.state ?? "OPEN", isDraft: false, reviewDecision: p.review ?? null,
           mergedAt: stale ? null : p.mergedAt ?? null, mergeCommit: !stale && p.merged ? { oid: p.merged, message: String(p.message ?? "") } : null,
-          mergeStateStatus: p.checks === "SUCCESS" ? "CLEAN" : "BLOCKED", headRefOid: p.head, headRefName: "feature", isCrossRepository: false, baseRefName: p.base ?? "main",
+          mergeStateStatus: p.checks === "SUCCESS" ? "CLEAN" : "BLOCKED", headRefOid: p.head, baseRefOid: "b".repeat(40), headRefName: "feature", isCrossRepository: false, baseRefName: p.base ?? "main",
           files: p.filePages
             ? { pageInfo: { hasNextPage: true, endCursor: "f1" }, nodes: p.filePages[0].map((path) => ({ path })) }
             : { pageInfo: { hasNextPage: false }, nodes: (p.files ?? ["lib/x.mjs"]).map((path) => ({ path })) }, latestOpinionatedReviews: { nodes: [] },
@@ -1946,6 +1947,23 @@ test("a PR cut at 100 files is read page by page: non-image files with a skipped
   await other.settle();
   assert.equal(other.outcomes[0]?.ok, false);
   assert.match(String(other.outcomes[0]?.text), /changes an image but its image-scan check was skipped/);
+});
+
+test("a file page from a head other than the first read's is no answer: two heads' files are never one list", async (t) => {
+  // A push between the first read and the page request: the PR's metadata and checks describe the old head, the page the new
+  // one. Reading them as one list could hide a Dockerfile the new head added, so the poll waits and reads again.
+  const headMoved = { head: HEAD, checks: "SUCCESS", filePages: [Array.from({ length: 100 }, (_, i) => `src/f${i}.ts`), ["deploy/Dockerfile"]], headAt: "d".repeat(40) };
+  const one = await setup(t, { prs: { "acme-agents/widget": headMoved } });
+  await one.merge("k-00000000000000fc", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await one.handle.stepMerges();
+  assert.equal(one.outcomes.length, 0, "a list spanning two heads is retried, never merged");
+  // A base that advanced does the same: GitHub's file list is the diff against the merge base, so a page read after it is
+  // another diff than the one whose checks were read.
+  const baseMoved = { head: HEAD, checks: "SUCCESS", filePages: [Array.from({ length: 100 }, (_, i) => `src/f${i}.ts`), ["deploy/Dockerfile"]], baseAt: "e".repeat(40) };
+  const two = await setup(t, { prs: { "acme-agents/widget": baseMoved } });
+  await two.merge("k-00000000000000fd", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await two.handle.stepMerges();
+  assert.equal(two.outcomes.length, 0, "a list spanning two base tips is retried, never merged");
 });
 
 test("a file page that can't be read throws, so the gate never answers from the pages it happens to have", async (t) => {
