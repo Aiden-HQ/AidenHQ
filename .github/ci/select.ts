@@ -30,23 +30,29 @@ export function suitesFor(map: AreaMap, files: string[]): Selection {
 }
 
 /**
- * A test job's shards: enough that each runs in about TARGET seconds (its suites' measured `secs` summed, over how many of
- * them a 4-CPU runner runs side by side: `parallel`), at most MAX_SHARDS, filled heaviest first into the lightest shard so
- * they finish together. The packages job's suites each use every CPU (node --test over many files): one at a time; the
- * modules' small suites overlap about two at a time (measured 2026-11-20: a shard took half its suites' sum).
+ * A test job's shards: the fewest (at most MAX_SHARDS) whose heaviest runs in about TARGET seconds. Its suites run side by side
+ * on a 4-CPU runner, so a shard's time is its suites' `secs` summed: each is the suite's share of the time a shard took on CI,
+ * its log group's time scaled so a shard's shares add up to the shard's own time (areas.json; the run's `##[group]<suite>
+ * (exit 0, Ns)` lines, 2026-11-27). Filled heaviest first into the lightest shard so they finish together. A split must save
+ * more than a quarter of the longest suite's time (a job costs ~10 s of checkout and install), so a suite longer than the
+ * target is the goal itself.
  */
-// At most 3 (owner, 2026-11-22: fewer runner starts after the test trim; each start costs ~20 s of checkout and install).
-const MAX_SHARDS = 3, TARGET = 40;
-export function shard(tests: { name: string; dir: string; run?: string; secs: number }[], parallel: number) {
+// At most 3 (owner, 2026-11-22: fewer runner starts after the test trim).
+const MAX_SHARDS = 3, TARGET = 35;
+type Test = { name: string; dir: string; run?: string; secs: number };
+export function shard(tests: Test[]) {
   const sorted = [...tests].sort((a, b) => b.secs - a.secs || a.name.localeCompare(b.name));
   if (!sorted.length) return [];
-  const total = sorted.reduce((n, t) => n + t.secs, 0);
-  const k = Math.min(MAX_SHARDS, Math.ceil(total / (parallel * TARGET)));
-  const shards = Array.from({ length: k }, (_, i) => ({ shard: i + 1, load: 0, entries: [] as { name: string; dir: string; run?: string; secs: number }[] }));
-  for (const t of sorted) {
-    const s = shards.reduce((lo, x) => (x.load < lo.load ? x : lo));
-    s.load += t.secs;
-    s.entries.push({ name: t.name, dir: t.dir, run: t.run, secs: t.secs });
+  const goal = Math.max(TARGET, sorted[0]!.secs * 1.25);
+  let shards: { shard: number; load: number; entries: Test[] }[] = [];
+  for (let k = 1; k <= MAX_SHARDS; k++) {
+    shards = Array.from({ length: k }, (_, i) => ({ shard: i + 1, load: 0, entries: [] }));
+    for (const t of sorted) {
+      const s = shards.reduce((lo, x) => (x.load < lo.load ? x : lo));
+      s.load += t.secs;
+      s.entries.push({ name: t.name, dir: t.dir, run: t.run, secs: t.secs });
+    }
+    if (Math.max(...shards.map((s) => s.load)) <= goal) break;
   }
   return shards;
 }
@@ -58,15 +64,20 @@ const changed = (a: string, b: string) => git("diff", "--name-only", "--no-renam
 function main() {
   const env = process.env;
   const map: AreaMap = JSON.parse(readFileSync(".github/ci/areas.json", "utf8"));
-  const sel = env.ALL ? { all: true, why: env.ALL, names: map.suites.map((s) => s.name) } : suitesFor(map, changed(env.BASE!, env.HEAD!));
+  const every = (why: string) => ({ all: true, why, names: map.suites.map((s) => s.name) });
+  // BASE is the commit the change is based on: a diff that can't be computed (no base: a new branch or a force push; a base the
+  // checkout lacks) tests every suite.
+  let sel;
+  if (!env.BASE || /^0+$/.test(env.BASE)) sel = every("there is no base commit to diff");
+  else try { sel = suitesFor(map, changed(env.BASE, env.HEAD!)); } catch { sel = every(`the diff from ${env.BASE.slice(0, 12)} can't be computed`); }
   const names = sel.names;
   if (sel.all) console.error(`Every suite: ${sel.why}`);
-  // A slow suite (`main: true`) runs only on a push to main (MAIN): a flake there never holds a PR or a merge train.
+  // A slow suite (`main: true`) runs only on a push to main (MAIN) that touches its paths: a flake there never holds a PR or a merge train.
   const tests = map.suites
     .filter((s: Suite) => names.includes(s.name) && (!s.main || env.MAIN))
     .map((s: Suite) => ({ name: s.name, dir: s.dir ?? s.name, run: s.run, secs: s.secs ?? 5, ...(s.job ? { job: s.job } : {}) }));
   // The test jobs' shards; heavy: the jobs that may run on our own runners (ci.yml's `runner` step), the packages shards and board.
-  const pk = shard(tests.filter((t) => t.job == null), 1), md = shard(tests.filter((t) => t.job === "modules"), 2);
+  const pk = shard(tests.filter((t) => t.job == null)), md = shard(tests.filter((t) => t.job === "modules"));
   const plan = { packages: pk, modules: md, heavy: pk.length + (tests.some((t) => t.job === "board") ? 1 : 0) };
   process.stdout.write(`${JSON.stringify({ tests, shards: plan })}\n`);
 }
