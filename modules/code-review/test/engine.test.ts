@@ -1665,7 +1665,7 @@ test("a head the instance's own App opened is never pending on the caller's non-
 test("a private org member counted a member from write access is never pending on the caller's raw CONTRIBUTOR association", async () => {
   const w = gatedWorld();
   await w.tick(); w.later(1000);
-  w.pr(9, sha("9"), { author: "maxsam4", association: "COLLABORATOR", elevated: true }); // the reader raised it: write access, membership private
+  w.pr(9, sha("9"), { author: "dana", association: "COLLABORATOR", elevated: true }); // the reader raised it: write access, membership private
   await w.tick();
   w.finish(0, NONE); await w.tick();
   assert.equal(w.engine.verdict(REPO, 9, sha("9")).tier.state, "classified");
