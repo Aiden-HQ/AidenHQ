@@ -238,8 +238,10 @@ async function main() {
   const structural = [
     ...diff.filter((f) => OTHER_LOCK.test(f) && textAt(head, f) !== undefined).map((f) => `${f}: Bun is the one package manager: install with bun (bun.lock), never another lockfile`),
     ...diff.filter((f) => /(^|\/)\.npmrc$/.test(f) && textAt(head, f) !== undefined).map((f) => `${f}: an .npmrc can point installs at another registry: none is allowed`),
-    // Every changed bun.lock has the canonical bunfig.toml beside it, and a changed bunfig.toml must stay canonical.
-    ...[...new Set([...files.filter((f) => textAt(head, f) !== undefined).map((f) => `${dirOf(f)}bunfig.toml`), ...diff.filter((f) => /(^|\/)bunfig\.toml$/.test(f) && textAt(head, f) !== undefined)])]
+    // Every changed bun.lock has the canonical bunfig.toml beside it, and a changed (or deleted) bunfig.toml beside a bun.lock
+    // must stay canonical.
+    ...[...new Set([...files, ...diff.filter((f) => /(^|\/)bunfig\.toml$/.test(f))].map((f) => `${dirOf(f)}bunfig.toml`))]
+      .filter((f) => textAt(head, `${dirOf(f)}bun.lock`) !== undefined)
       .map((f) => bunfigProblem(f, textAt(head, f))).filter((p): p is string => !!p),
     ...files.flatMap((f) => { const t = textAt(head, f); return t === undefined ? [] : lockProblems(f, t); }),
   ];

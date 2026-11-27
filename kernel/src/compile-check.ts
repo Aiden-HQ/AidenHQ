@@ -51,6 +51,11 @@ export type CompileDeps = {
   install?: (o: RunInput) => Promise<void>;
   /** The pinned Bun the apply installs (ops/lib/bun.sh's stable link); the target's deps install with it. */
   bun?: string;
+  /**
+   * Bun's install cache (default: the host's own, ~/.bun/install/cache). Never the vault or the host home itself: it is read for
+   * the packages the last real apply downloaded, so an offline host can still check a target the apply could install.
+   */
+  cache?: string;
   /** The staged compile in the extracted product tree (default: install, then the target's own compiler). */
   run?: (o: RunInput) => Promise<Verdict>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -169,13 +174,16 @@ export const stagedEnv = (productDir: string, instanceDir: string, i: Snapshot, 
 });
 /**
  * The env a target tree's `bun install` runs with (no lifecycle scripts, but it still reads the target's files): the least there
- * is, a PATH, a HOME (Bun's install cache), a locale and a temp dir — no host checkout, state, transcripts, vault or config path,
- * and none of the kernel's keys. `HOME` stays the host's so Bun's cache (~/.bun/install/cache) is the warm one the apply's own
- * install uses (an empty cache would turn a cached offline install into a network failure, which the check must not read as a verdict).
+ * is, a PATH, a HOME, a locale and a temp dir — no host checkout, state, transcripts, vault or config path, and none of the
+ * kernel's keys — plus Bun's install cache, the warm one the apply's own install uses (an empty cache would turn a cached offline
+ * install into a network failure, which the check must not read as a verdict).
  */
 const INSTALL_ENV = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"];
-export const installEnv = (base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv =>
-  Object.fromEntries(Object.entries(base).filter(([k]) => INSTALL_ENV.includes(k)));
+/** `BUN_INSTALL_CACHE_DIR`: where Bun keeps the packages it has already downloaded. */
+export const installEnv = (base: NodeJS.ProcessEnv = process.env, cache?: string): NodeJS.ProcessEnv => ({
+  ...Object.fromEntries(Object.entries(base).filter(([k]) => INSTALL_ENV.includes(k))),
+  ...(cache ? { BUN_INSTALL_CACHE_DIR: cache } : {}),
+});
 
 /** The apply's first message line from a failed compile: from `compile: …` (or a thrown error's line) on, the first line. */
 export function firstDiagnostic(stderr: unknown): string {
@@ -271,7 +279,7 @@ export function run(cmd: string, args: string[], cwd: string, env: NodeJS.Proces
  * from before Bun, from its package-lock.json). A failed install is
  * operational (an offline host), so the caller retries: never a refusal of the target.
  */
-async function installCompiler(o: RunInput, bun: string) {
+async function installCompiler(o: RunInput, bun: string, cache?: string) {
   for (const d of ["scripts", "kernel"]) {
     const name = existsSync(join(o.productDir, d, "bun.lock")) ? "bun.lock" : "package-lock.json";
     const lock = join(o.productDir, d, name);
@@ -282,9 +290,9 @@ async function installCompiler(o: RunInput, bun: string) {
       continue;
     }
     // The install gets installEnv() — no path to the host's checkout, config, data or vault — unlike the compiler below, which
-    // the apply's own staged compile reads those with. Bun's cache under HOME is the apply's warm one: an offline host reuses
-    // what the last real apply already downloaded instead of failing the check.
-    const installed = await run(bun, ["install", "--cwd", d, "--frozen-lockfile", "--ignore-scripts", "--silent"], o.productDir, installEnv(o.env), left(o.until ?? Number.POSITIVE_INFINITY, 240_000));
+    // the apply's own staged compile reads those with. The cache is Bun's package *cache* only (never the host home or the
+    // vault), so the apply's warm cache serves here too: an offline host reuses what the last real apply already downloaded.
+    const installed = await run(bun, ["install", "--cwd", d, "--frozen-lockfile", "--ignore-scripts", "--silent"], o.productDir, installEnv(o.env, cache), left(o.until ?? Number.POSITIVE_INFINITY, 240_000));
     if (!installed.ok) throw new Error(`the target product's ${d} deps didn't install: ${firstDiagnostic(installed.stderr) || "bun install failed"}`);
   }
 }
@@ -386,7 +394,7 @@ export function createCompileCheck(d: CompileDeps) {
       if (old !== undefined) env.AIDENHQ_OLD_BUNDLE = old;
       mkdirSync(join(dir, "home"), { recursive: true });
       const o = { productDir, instanceDir, repo: d.repo, env, until };
-      const r = d.run ? await d.run(o) : await stagedCompile(o, d.install ?? ((x) => installCompiler(x, d.bun ?? "bun")));
+      const r = d.run ? await d.run(o) : await stagedCompile(o, d.install ?? ((x) => installCompiler(x, d.bun ?? "bun", d.cache)));
       log("compile check", { product, instance: base, ok: r.ok, ms: Date.now() - t0 });
       return { ...r, base };
     } finally {
