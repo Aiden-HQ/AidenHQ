@@ -619,8 +619,9 @@ const graderToken = (task: string, agent: string) => mintToken(secret("gateway_j
 const checks = createChecks({ db: records.db, registry: checksRegistry, owner: ownerApi, secret, resolver, log, pending: (task) => records.list(["review", "owner", "approved"], 100, { task }),
   // A task's own change requests on this server: none may be open when it closes (a green-but-unmerged change is not shipped).
   localChanges: async ({ id, identifier }) => localHost() ? (await localCode.open()).filter((c) => (c.task && (c.task === id || c.task === identifier))).map((c) => ({ url: c.url, checks: c.checks.map(({ ok, pending }) => ({ ok, pending })) })) : [] });
-// Tasks the removed finish hold left in review close a minute after start (the control plane is up by then).
+// Tasks the removed finish hold left in review close once their gate passes: tried hourly until none is left (a no-op after).
 setTimeout(() => void checks.releaseHolds(), 60_000).unref();
+every(() => void checks.releaseHolds(), 60 * 60_000);
 // First-run setup (/setup): the keys the modules ask for go into the vault view (AIDENHQ_SECRETS_DIR) as new 0600 files renamed into place; the
 // vault's recovery key waits there (ops/setup.sh --unattended moves it out of root's home) until the owner has seen it.
 const secretsDir = env("AIDENHQ_SECRETS_DIR", "");

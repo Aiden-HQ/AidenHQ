@@ -1326,7 +1326,8 @@ const TOOLS: Record<string, Tool> = {
       const grade = target ? gradeFor(target, rubric, deliverable, description) : undefined;
       for (const k of new Set(markers)) {
         const existing = await findByMarker(k, statuses);
-        if (existing) return { ...(await brief(existing)), deduplicated: true };
+        // A retry files the rubric again on an open task this caller made (the module ignores an identical replay).
+        if (existing) return { ...(await brief(existing)), deduplicated: true, ...(grade && OPEN_STATUSES.split(",").includes(existing.status) ? await fileGrade(existing.id, grade) : {}) };
       }
       // A new filing only: an existing task returned above is a retry, not a new PR, so the instance-repo refusal never blocks it.
       refuseInstanceRepoPr(deliverable, (Array.isArray(rubric) ? rubric : []).map((c) => String(c).trim()).filter(Boolean), description);

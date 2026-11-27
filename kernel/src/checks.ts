@@ -112,8 +112,8 @@ export function createChecks({ db, registry, owner, secret, resolver, pending = 
 
   /**
    * Tasks the removed finish hold left waiting in review (its `check_holds` rows): each closes done, as its agent finished it,
-   * once the gate passes, with the hold's label taken off; then the table goes. A read or move that fails is tried again at the
-   * next start.
+   * once the gate passes, with the hold's label taken off; then the table goes. A read or move that fails (or a gate that still
+   * refuses) is tried again on the next run.
    */
   async function releaseHolds() {
     if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'check_holds'").get()) return;
@@ -125,7 +125,10 @@ export function createChecks({ db, registry, owner, secret, resolver, pending = 
           await finish(i.id);
           const labels = await owner("GET", `/api/companies/${encodeURIComponent(i.companyId ?? "")}/labels`);
           const grading = Array.isArray(labels.json) ? (labels.json as { id: string; name?: string }[]).find((l) => l.name === "grading")?.id : undefined;
-          const ids = i.labelIds ?? (i.labels ?? []).map((l) => l.id);
+          // Read again just before the move: a task reopened or cancelled meanwhile keeps its new state and labels.
+          const now = await issue(i.id);
+          if (now.status !== "in_review") { db.prepare("DELETE FROM check_holds WHERE task = ?").run(t); continue; }
+          const ids = now.labelIds ?? (now.labels ?? []).map((l) => l.id);
           const r = await owner("PATCH", `/api/issues/${encodeURIComponent(i.id)}`, { status: "done", ...(grading && ids.includes(grading) ? { labelIds: ids.filter((x) => x !== grading) } : {}) });
           if (r.status >= 300) throw new Error(`the control plane answered ${r.status}`);
           log("held task released", { task: i.identifier ?? i.id });

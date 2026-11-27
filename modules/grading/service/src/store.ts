@@ -20,6 +20,8 @@ export interface Row {
   model: string;
   reason: string;
   tries: number;
+  /** An unmet result's notice reached the delegator (or had nobody to reach). */
+  told: boolean;
   checkedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -53,8 +55,8 @@ export function template(kind: string, dir: string = fileURLToPath(new URL("../r
   return readFileSync(file, "utf8").split("\n").filter((l) => l.startsWith("- ")).map((l) => l.slice(2).trim());
 }
 
-type Raw = { task: string; filer: string; rubric: string; kind: string; ref: string; state: string; criteria: string; model: string; reason: string; tries: number; checked_at: string | null; created_at: string; updated_at: string };
-const fromRaw = (r: Raw): Row => ({ task: r.task, filer: r.filer, rubric: JSON.parse(r.rubric), deliverable: { kind: r.kind, ref: r.ref }, state: r.state as State, criteria: JSON.parse(r.criteria), model: r.model, reason: r.reason, tries: r.tries, checkedAt: r.checked_at, createdAt: r.created_at, updatedAt: r.updated_at });
+type Raw = { task: string; filer: string; rubric: string; kind: string; ref: string; state: string; criteria: string; model: string; reason: string; tries: number; told: number; checked_at: string | null; created_at: string; updated_at: string };
+const fromRaw = (r: Raw): Row => ({ task: r.task, filer: r.filer, rubric: JSON.parse(r.rubric), deliverable: { kind: r.kind, ref: r.ref }, state: r.state as State, criteria: JSON.parse(r.criteria), model: r.model, reason: r.reason, tries: r.tries, told: Boolean(r.told), checkedAt: r.checked_at, createdAt: r.created_at, updatedAt: r.updated_at });
 
 export class Store {
   private db: DatabaseSync;
@@ -66,7 +68,7 @@ export class Store {
     db.exec(`CREATE TABLE IF NOT EXISTS rubrics (
       task TEXT PRIMARY KEY, filer TEXT NOT NULL, rubric TEXT NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL DEFAULT '',
       state TEXT NOT NULL DEFAULT 'open', criteria TEXT NOT NULL DEFAULT '[]', model TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
-      tries INTEGER NOT NULL DEFAULT 0, checked_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
+      tries INTEGER NOT NULL DEFAULT 0, told INTEGER NOT NULL DEFAULT 0, checked_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
   }
 
   get(task: string): Row | undefined {
@@ -74,8 +76,18 @@ export class Store {
     return r && fromRaw(r);
   }
 
+  /** Rows still to check, and unmet results whose notice hasn't landed; the least recently looked at first. */
   open(): Row[] {
-    return (this.db.prepare("SELECT * FROM rubrics WHERE state = 'open' ORDER BY updated_at").all() as unknown as Raw[]).map(fromRaw);
+    return (this.db.prepare("SELECT * FROM rubrics WHERE state = 'open' OR (state = 'unmet' AND told = 0) ORDER BY updated_at").all() as unknown as Raw[]).map(fromRaw);
+  }
+
+  /** Looked at, nothing to do yet: to the back of the queue. */
+  touch(task: string) {
+    this.db.prepare("UPDATE rubrics SET updated_at = ? WHERE task = ?").run(new Date().toISOString(), task);
+  }
+
+  told(task: string) {
+    this.db.prepare("UPDATE rubrics SET told = 1 WHERE task = ?").run(task);
   }
 
   /**
@@ -94,12 +106,12 @@ export class Store {
     return !have;
   }
 
-  /** The check's result: met or unmet with each criterion's reason. */
-  record(task: string, rubric: string[], criteria: Criterion[], model: string) {
+  /** The check's result: met or unmet with each criterion's reason. False: the rubric was refiled meanwhile, nothing recorded. */
+  record(task: string, rubric: string[], criteria: Criterion[], model: string): boolean {
     const now = new Date().toISOString();
     const state = criteria.some((c) => c.met === "no") ? "unmet" : "met";
     // Only onto the rubric the check read: a refiling that landed meanwhile is checked on the next pass.
-    this.db.prepare("UPDATE rubrics SET state = ?, criteria = ?, model = ?, reason = '', checked_at = ?, updated_at = ? WHERE task = ? AND rubric = ?").run(state, JSON.stringify(criteria), model, now, now, task, JSON.stringify(rubric));
+    return this.db.prepare("UPDATE rubrics SET state = ?, criteria = ?, model = ?, reason = '', told = ?, checked_at = ?, updated_at = ? WHERE task = ? AND state = 'open' AND rubric = ?").run(state, JSON.stringify(criteria), model, state === "met" ? 1 : 0, now, now, task, JSON.stringify(rubric)).changes > 0;
   }
 
   /** A check that could not be made: tried again on the next pass, recorded failed after MAX_TRIES. */

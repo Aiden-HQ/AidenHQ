@@ -85,6 +85,24 @@ test("everything met: recorded, nobody told; a cancelled task's rubric is droppe
   assert.equal(w.store.get("T2"), undefined);
 });
 
+test("a notice that fails to send is sent on the next pass, without a second check", async () => {
+  const w = world([{ id: "1", met: "yes", reason: "a" }, { id: "2", met: "yes", reason: "b" }, { id: "3", met: "no", reason: "skipped" }]);
+  w.store.file("T1", "agent:lead", RUBRIC, { kind: "pr", ref: "" });
+  w.tasks.T1.status = "done";
+  let down = true;
+  const kernel = async (m: string, p: string, b?: any) => (p === "/v1/wakes" && down ? Promise.reject(new Error("502")) : w.kernel(m, p, b));
+  const checker = createChecker({ store: w.store, kernel, ask: w.ask, model: "m" });
+  await checker.pass();
+  assert.equal(w.store.get("T1")!.state, "unmet");
+  assert.equal(w.wakes.length, 0);
+  down = false;
+  await checker.pass();
+  assert.equal(w.wakes.length, 1);
+  assert.equal(w.asked(), 1);
+  await checker.pass();
+  assert.equal(w.wakes.length, 1);
+});
+
 test("an answer that doesn't match the rubric is not a result", () => {
   assert.throws(() => parse(JSON.stringify({ criteria: [{ id: "1", met: "yes", reason: "" }] }), 3));
   assert.throws(() => parse(JSON.stringify({ criteria: [{ id: "1", met: "maybe", reason: "" }] }), 1));
