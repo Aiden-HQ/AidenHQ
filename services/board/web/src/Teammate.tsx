@@ -228,7 +228,7 @@ function SetUp({ a, onSignIn }: { a: RosterAgent; onSignIn: () => void }) {
 function SettingValue({ row }: { row: SettingRow }) {
   const [open, setOpen] = useState(false);
   const id = useId();
-  const summary = settingSummary(row.value);
+  const summary = settingSummary(row.value, row.values);
   const full = yamlValue(row.value);
   // A list cut to three names, a list of objects shown by name only, or a long summary: the rest is hidden behind the toggle.
   // A value without a toggle is never clamped, so nothing on the card is hidden without a way to reach it.
