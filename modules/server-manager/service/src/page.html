@@ -68,6 +68,8 @@
   let added = [], drafts = {}, lastGood = { drafts: {}, removing: new Set(), added: [] }, sentRev = 0, removing = new Set(), openName = null, drawn = false;
   // Each machine's last readout (server_manager_status), by name: the page shows its state, last check and counts, never a key.
   let stateOf = {};
+  // A check in flight, by machine name: its button says so and is disabled until the read answers.
+  const checking = new Set();
   const advOpen = new Set();
   const machines = () => [...cfg.machines.map((m) => ({ name: m.name, effective: m.effective })), ...added.map((name) => ({ name, effective: { name, ...DEFAULT() } }))];
   const DEFAULT = () => ({ address: "", user: "", key: "", port: 22, enabled: true, expected_fingerprint: "", security_minutes: 60, weekly_day: "mon", weekly_time: "03:00", reboot_policy: "auto", quiet_start: "03:00", quiet_end: "05:00" });
@@ -211,16 +213,20 @@
     const name = m.name, open = openName === name, d = draft(name), gone = removing.has(name), fresh = added.includes(name);
     const tags = [fresh ? h("span", { className: "tag edit", textContent: "Added on Save" }) : dirty(name) ? h("span", { className: "tag edit", textContent: "Edited" }) : null, gone ? h("span", { className: "tag failed", textContent: "Removed on Save" }) : null];
     const btn = (label, fn, cls = "") => { const b = h("button", { type: "button", textContent: label, className: cls }); b.addEventListener("click", fn); return b; };
+    const checkBtn = () => { const b = btn(checking.has(name) ? "Checking…" : "Check now", () => checkNow(name), "check"); b.disabled = checking.has(name); return b; };
     const acts = gone ? [btn("Keep", () => { removing.delete(name); redraw(); propose(); })]
       : open && fresh ? [btn("Discard", () => { added = added.filter((x) => x !== name); delete drafts[name]; redraw(); propose(); })]
       : open ? [btn("Remove", () => { removing.add(name); redraw(); propose(); })]
-      : [btn("Edit", () => { openName = name; redraw(); })];
+      : [btn("Edit", () => { openName = name; redraw(); }), checkBtn()];
     const st = stateOf[name];
     const stTags = st ? [
       h("span", { className: `tag ${st.security ? "needs" : st.reboot_needed ? "needs" : "ok"}`, textContent: st.distro ?? st.state }),
       st.security != null ? h("span", { className: `tag ${st.security ? "needs" : "ok"}`, textContent: `${st.security} security` }) : null,
       st.pending != null ? h("span", { className: "tag", textContent: `${st.pending} pending` }) : null,
       st.reboot_needed ? h("span", { className: "tag needs", textContent: "reboot needed" }) : null,
+      // Disk on / and /boot (§9, beside the other state): a full /boot turns a kernel update into a machine that does not come back.
+      st.disk && st.disk.root_free_gb != null ? h("span", { className: `tag ${st.disk.root_free_gb < 1 ? "needs" : ""}`, textContent: `${st.disk.root_free_gb} GB free on /` }) : null,
+      st.disk && st.disk.boot_free_gb != null ? h("span", { className: `tag ${st.disk.boot_free_gb < 1 ? "needs" : ""}`, textContent: `${st.disk.boot_free_gb} GB free on /boot` }) : null,
       st.last_check ? h("span", { className: "tag", textContent: `checked ${ago(st.last_check)}` }) : h("span", { className: "tag", textContent: st.state }),
     ].filter(Boolean) : [];
     return h("div", { className: `card mc${open && !gone ? " open" : ""}${drawn ? " seen" : ""}` }, h("div", { className: "top" }, h("div", { className: "who" }, h("div", { className: "name" }, h("span", { textContent: name }), ...tags.filter(Boolean)), h("div", { className: "sum", textContent: summaryOf(d) }), stTags.length ? h("div", { className: "state" }, ...stTags) : null), h("div", { className: "acts" }, ...acts)), ...(open && !gone ? body(name) : []));
@@ -230,6 +236,24 @@
     const every = m.security_minutes >= 60 && m.security_minutes % 60 === 0 ? `${m.security_minutes / 60}h` : `${m.security_minutes}m`;
     return `Checks every ${every}; weekly pass ${m.weekly_day} ${m.weekly_time}; ${m.reboot_policy === "auto" ? "reboots" : "asks first"} in its ${m.quiet_start}–${m.quiet_end} window.`;
   };
+
+  // Check now (§9): the one action of the read path. It reads and files nothing; the module writes the machine's status row from
+  // what it saw, and the page redraws its state tags from the fresh readout.
+  async function checkNow(name) {
+    if (checking.has(name)) return;
+    checking.add(name); redraw();
+    try {
+      const out = await tool("server_manager_check", { name });
+      const one = (out && out.checked && out.checked[0]) || null;
+      if (one && one.detail) say(`${name}: ${one.detail}`, true);
+      else say(`${name} checked: ${one ? `${one.pending ?? 0} pending, ${one.security ?? 0} security` : "no result"}.`);
+      try {
+        const status = await tool("server_manager_status", {});
+        stateOf = Object.fromEntries((status.servers ?? []).map((s) => [s.name, s]));
+      } catch { /* the check's own answer already said what it saw */ }
+    } catch (e) { say(e.message, true); }
+    finally { checking.delete(name); redraw(); }
+  }
 
   // ---- Add server: a name field under the page's header. Adding lists it with defaults and opens it; the board's bar saves it.
   const NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;

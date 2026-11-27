@@ -100,3 +100,15 @@ test("a malformed value never reaches a tool: the machine list stays empty when 
   const out = JSON.parse(r.result.content[0].text);
   assert.deepEqual(out.servers, []);
 });
+
+test("the three write tools are the owner's own actions: an agent's call is refused before anything runs", async () => {
+  // §9: a patch, a reboot and a host-key reset verify the caller came from the owner's signed-in session, not an agent's
+  // assertion. The view route sends kind: "owner" with no agent; an agent's call carries its key.
+  for (const name of ["server_manager_patch", "server_manager_reboot", "server_manager_host_key_reset"]) {
+    const refused = await call({ jsonrpc: "2.0", id: 20, method: "tools/call", params: { name, arguments: {} } }, agent);
+    assert.equal(refused.result.isError, true, `${name} refuses an agent`);
+    assert.match(refused.result.content[0].text, /the owner's/);
+    const own = await call({ jsonrpc: "2.0", id: 21, method: "tools/call", params: { name, arguments: {} } }, owner);
+    assert.match(own.result.content[0].text, /next change/, "the owner reaches the tool itself (which lands in the next change)");
+  }
+});

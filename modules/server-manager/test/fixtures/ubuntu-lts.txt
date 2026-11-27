@@ -1,0 +1,99 @@
+### os-release
+PRETTY_NAME="Ubuntu 24.04.3 LTS"
+NAME="Ubuntu"
+VERSION_ID="24.04"
+VERSION="24.04.3 LTS (Noble Numbat)"
+VERSION_CODENAME=noble
+ID=ubuntu
+ID_LIKE=debian
+HOME_URL="https://www.ubuntu.com/"
+
+### apt-get -s upgrade
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+The following packages will be upgraded:
+  libc6 openssl tzdata
+3 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+Inst libc6 [2.39-0ubuntu8.3] (2.39-0ubuntu8.5 Ubuntu:24.04/noble-security [amd64])
+Inst openssl [3.0.13-0ubuntu3.2] (3.0.13-0ubuntu3.4 Ubuntu:24.04/noble-security [amd64])
+Inst tzdata [2024a-2ubuntu1] (2024b-1ubuntu1.1 Ubuntu:24.04/noble-updates [all])
+Conf libc6 (2.39-0ubuntu8.5 Ubuntu:24.04/noble-security [amd64])
+Conf openssl (3.0.13-0ubuntu3.4 Ubuntu:24.04/noble-security [amd64])
+Conf tzdata (2024b-1ubuntu1.1 Ubuntu:24.04/noble-updates [all])
+
+### apt-cache policy
+libc6:
+  Installed: 2.39-0ubuntu8.3
+  Candidate: 2.39-0ubuntu8.5
+  Version table:
+  *** 2.39-0ubuntu8.3 500
+        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
+            100 /var/lib/dpkg/status
+     2.39-0ubuntu8.5 500
+        500 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages
+openssl:
+  Installed: 3.0.13-0ubuntu3.2
+  Candidate: 3.0.13-0ubuntu3.4
+  Version table:
+     3.0.13-0ubuntu3.2 500
+        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
+     3.0.13-0ubuntu3.4 500
+        500 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages
+tzdata:
+  Installed: 2024a-2ubuntu1
+  Candidate: 2024b-1ubuntu1.1
+  Version table:
+     2024a-2ubuntu1 500
+        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
+     2024b-1ubuntu1 500
+        500 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages
+     2024b-1ubuntu1.1 500
+        500 http://esm.ubuntu.com/apps/ubuntu noble-apps-security/main amd64 Packages
+curl:
+  Installed: 8.5.0-2ubuntu9
+  Candidate: 8.5.0-2ubuntu9
+  Version table:
+  *** 8.5.0-2ubuntu9 500
+        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
+            100 /var/lib/dpkg/status
+vim:
+  Installed: 2:9.1.0016-1ubuntu7
+  Candidate: 2:9.1.0016-1ubuntu7.3
+  Version table:
+     2:9.1.0016-1ubuntu7 500
+        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
+     2:9.1.0016-1ubuntu7.3 500
+        500 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages
+
+### apt-mark showhold
+vim
+
+### ubuntu-security-status --format json
+{"packages":{"installed":200,"security":2,"esm_apps_security":1},"summary":{"packages":{"security":2}},"packages_detail":[{"name":"libc6","is_esm_app":false},{"name":"openssl","is_esm_app":false},{"name":"tzdata","is_esm_app":true}]}
+
+### reboot
+yes
+
+### systemctl list-units --type=service --state=running --no-legend --plain
+  cron.service              loaded active running Regular background program processing daemon
+  ssh.service               loaded active running OpenBSD Secure Shell server
+  systemd-journald.service  loaded active running Journal Service
+  nginx.service             loaded active running A high performance web server
+
+### free
+root 18.4
+boot 0.42
+
+### boot id
+3f2a1e5b-8c3d-4c7e-9a1b-2d4f5e6a7b8c
+
+### apt-config dump
+APT "";
+APT::Periodic "";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::Update-Package-Lists "1";
+
+### unattended-upgrades
+enabled
