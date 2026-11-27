@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runs the suites listed in $1 (one per line: name<TAB>dir<TAB>run<TAB>secs) side by side, one per CPU (node's count: `nproc` shows
 # the host's CPUs inside a container with a quota). Each gets its own
-# timeout, 3x its measured time (`secs` in areas.json) and at least 90 s, so a hang fails with its own log instead of the
-# job's. No retries: a flaky test is removed, never re-run (owner). Prints each suite's log in a group, then the failed
+# timeout, 3x its listed time (`secs` in areas.json: its share of a shard's time) and at least 180 s (the CPU-bound suites run
+# 2-3x slower side by side), so a hang fails with its own log instead of the job's. No retries: a flaky test is removed, never re-run (owner). Prints each suite's log in a group, then the failed
 # suites, and adds a table of times to the job summary (the numbers that keep `secs` honest).
 set -uo pipefail
 list="$1"
@@ -11,7 +11,7 @@ one() {
   IFS=$'\t' read -r name dir run secs <<< "$1"
   local n t start rc
   n=$(tr '/#' '__' <<< "$name")
-  t=$(( secs * 3 > 90 ? secs * 3 : 90 ))
+  t=$(( secs * 3 > 180 ? secs * 3 : 180 ))
   start=$(date +%s)
   # The map is read from the base, so a PR that deletes a suite's folder still lists it: nothing is left to test.
   if [ -d "$dir" ]; then (cd "$dir" && timeout -k 10 "$t" bash -eo pipefail -c "$run") > "$logs/$n.log" 2>&1; rc=$?; else echo "gone: $dir" > "$logs/$n.log"; rc=0; fi
