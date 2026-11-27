@@ -196,6 +196,13 @@ test("a higher-priority mask cancels a lower-priority install link", async () =>
 
 // Precedence is per dependency file, not per instance: masking default.target's dependency leaves a valid timers.target
 // dependency, which still enables the runner.
+test("a mask of one target's dependency does not hide another target's link", async () => {
+  const h = host();
+  symlinkSync("/dev/null", join(h.wants, "aidenhq-ci-runner@3.service"));
+  h.link("aidenhq-ci-runner@3", h.timers);
+  assert.deepEqual(await enabled(h), ["aidenhq-ci-runner@3.service"], "the instance is still enabled through timers.target");
+});
+
 // `default.target` is often an Alias= of another target (workstation.target). systemd reads the unit id's dependency dirs
 // and its aliases' as one set and keeps the first file of each name, so a mask under either name cancels the other's link.
 // The alias is often declared in a different (higher-priority) unit dir than the one holding the dependency link: a vendor

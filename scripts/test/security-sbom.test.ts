@@ -694,6 +694,182 @@ test("security-sbom: a running container whose image record is gone is inventori
   assert.ok(!modes.some((m) => /modules\/security\/sbom\/\.export/.test(m)), `an export sits inside the scanner mount: ${modes.join("\n")}`);
 });
 
+test("security-sbom: an image inspect that fails with invalid reference format is inventoried from the container root", { skip: NOT_LINUX }, async () => {
+  // A running container's image is an id, and the daemon can be handed a reference it cannot parse at all: "invalid
+  // reference format" is the daemon saying it has no image record for that reference, exactly as "No such image" is. The
+  // container is then the only copy of the filesystem, so it is inventoried from its root under its own key — a scan row
+  // with a real SBOM, not an error line that the scanner's failedAt() guard would read as an unverified image.
+  const { status, out, targets, calls, dir } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:1576dd87", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    invalidRefs: ["sha256:1576dd87"],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:sha256:1576dd87");
+  assert.ok(row, `no row for the invalid-reference container image:
+${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.notEqual(row[1], "-", `it was not scanned: ${row[2]}`);
+  assert.equal(row[2], "", "the invalid-reference container scan has no error");
+  assert.equal(row[3], "container:c1", "the row names the container whose filesystem it read");
+  assert.ok(existsSync(join(dir, "data/modules/security/sbom/current", row[1]!)), `the row has no syft-json file on disk: ${row[1]}`);
+  assert.ok(calls.some((c) => /^export .* -o \S+ c1$/.test(c) || /^export .* c1$/.test(c)), `no export of c1:\n${calls.join("\n")}`);
+  const call = calls.find((c) => c.startsWith("run ") && c.includes("--source-name image:sha256:1576dd87"));
+  assert.ok(call, `no syft run for the target:\n${calls.join("\n")}`);
+  assert.match(call, / dir:\/src /, "the extracted root was scanned as a directory");
+  assert.ok(!calls.some((c) => c.startsWith("save ")), `nothing was saved:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: a shared image key still marks the batch complete", { skip: NOT_LINUX }, async () => {
+  // Two units can be inventoried under one target key: two containers on one image index, whose manifests are both
+  // scanned under the index's own key. That is one row, not a missing unit. Counting rows against planned units would
+  // leave the batch short of its marker for ever, and every dead target would stay absent from the scanner's view.
+  const A = "a".repeat(64), B = "b".repeat(64);
+  const { status, out, targets, dir } = await run({}, {
+    computers: { images: { cfg: "cfg:1" } },
+    containers: [
+      { id: "c1", image: "sha256:index", config: "sha256:index", label: "-", descriptor: { digest: "sha256:" + A, platform: { os: "linux", architecture: "amd64" } } },
+      { id: "c2", image: "sha256:index", config: "sha256:index", label: "-", descriptor: { digest: "sha256:" + B, platform: { os: "linux", architecture: "amd64" } } },
+    ],
+    tags: { "cfg:1": "sha256:cccc" },
+    manifests: { "cfg:1": "sha256:cccc" },
+    platformManifests: { "sha256:index": { "linux/amd64": "sha256:" + A } },
+    sizes: { "sha256:cccc": 1024, ["sha256:" + A]: 1024, ["sha256:" + B]: 1024 },
+    held: ["sha256:index", "sha256:cccc"],
+  });
+  assert.equal(status, 0, out);
+  // Two units were planned (the index and the configured tag) but the index is one key with one row.
+  const imageKeys = targets.filter((t) => t[0].startsWith("image:")).map((t) => t[0]).sort();
+  assert.deepEqual([...new Set(imageKeys)], ["image:cfg:1", "image:sha256:index"], `unexpected image keys:\n${imageKeys.join("\n")}`);
+  assert.ok(existsSync(join(dir, "data/modules/security/sbom/current/images.complete")), `a batch with every planned key covered carries the marker:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+});
+
+test("security-sbom: two containers on one gone image are both exported and scanned under its one row", { skip: NOT_LINUX }, async () => {
+  // Two replicas of a service run the same image variant, and the daemon no longer holds it: keying the unit by image and
+  // platform makes them one target, so a fallback that kept only the first container would leave the second's production
+  // filesystem uninventoried. Both are exported, both roots are scanned by the one syft run, and the row names both ids.
+  const { status, out, targets, calls, modes } = await run({}, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local" },
+      { id: "c2", image: "sha256:1111", config: "aidenhq/board:local" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096, c2: 4096 },
+    computers: { images: { image: "aidenhq/board:local" } },
+  });
+  assert.equal(status, 0, out);
+  const rows = targets.filter((t) => t[0] === "image:sha256:1111");
+  assert.equal(rows.length, 1, `one row per target key:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(rows[0]![2], "", "the container scan has no error");
+  assert.equal(rows[0]![3], "container:c1,c2", "the row names both containers its filesystem came from");
+  const exports = calls.filter((c) => c.startsWith("export "));
+  assert.deepEqual(exports.map((c) => c.split(" ").pop()).sort(), ["c1", "c2"], `both containers were exported:\n${exports.join("\n")}`);
+  const run_ = calls.filter((c) => c.startsWith("run ") && c.includes("--source-name image:sha256:1111"));
+  assert.equal(run_.length, 1, `one scan of the shared target:\n${run_.join("\n")}`);
+  assert.match(run_[0]!, / dir:\/src /);
+  // One root, not one subdirectory per replica: both containers' files are in the scanned root at the container's own
+  // paths, so syft finds `/etc/os-release` where it looks for it.
+  assert.equal(modes.filter((m) => m.startsWith("tree ")).length, 1, modes.join("\n"));
+  assert.ok(modes.some((m) => m.startsWith("file ") && m.endsWith("/etc/os-release")), modes.join("\n"));
+});
+
+test("security-sbom: two replicas that differ on one file both keep their content in the scanned root", { skip: NOT_LINUX }, async () => {
+  // Two containers of one gone image can each have changed the same path in their writable layer. Extracting one straight
+  // over the other would keep only the second's file and the single scan would miss the first replica's packages while the
+  // row claimed both. Each replica is extracted on its own and merged without clobbering, so both files survive: the path
+  // held by the first, and a path only the second has.
+  const { status, out, targets, modes } = await run({ EXPORT_EXTRAS: "c1:usr/lib/libdup.so=one;c2:usr/lib/libdup.so=two;c2:usr/lib/replica-only.so=only" }, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local" },
+      { id: "c2", image: "sha256:1111", config: "aidenhq/board:local" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096, c2: 4096 },
+    computers: { images: { image: "aidenhq/board:local" } },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(row, `no row:\n${targets.map((t) => t.join("\t")).join("\n")}\n${out}`);
+  assert.equal(row[2], "", `the unit errored: ${row[2]}`);
+  const contents = modes.filter((m) => m.startsWith("content ")).map((m) => m.slice(8));
+  assert.ok(contents.some((c) => c.endsWith(" one")), `c1's version of the shared path was lost: ${modes.join("\n")}`);
+  assert.ok(contents.some((c) => c.endsWith(" two")), `c2's version of the shared path was lost: ${modes.join("\n")}`);
+  assert.ok(contents.some((c) => c.endsWith(" only")), `c2's own file was dropped: ${modes.join("\n")}`);
+});
+
+test("security-sbom: a distro's symlinks survive the replica merge, so syft still sees /etc/os-release", { skip: NOT_LINUX }, async () => {
+  // A Debian/Ubuntu root keeps `/etc/os-release -> ../usr/lib/os-release` and `/bin -> usr/bin`. A merge that carried only
+  // regular files would leave neither, syft would report no distro, and grype would skip the distro-specific advisories
+  // for a container that is in production.
+  const { status, out, targets, modes } = await run({
+    EXPORT_EXTRAS: "c1:usr/lib/os-release=ID=debian",
+    EXPORT_SYMLINKS: "c1:etc/os-release=../usr/lib/os-release;c1:bin=usr/bin",
+    EXPORT_DIR_MODE: "",
+  }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(row, `no row:\n${targets.map((t) => t.join("\t")).join("\n")}\n${out}`);
+  assert.equal(row[2], "", `the unit errored: ${row[2]}`);
+  assert.ok(modes.some((m) => m === "link etc/os-release ../usr/lib/os-release"), `the distro link was dropped: ${modes.join("\n")}`);
+  assert.ok(modes.some((m) => m === "link bin usr/bin"), `the /bin link was dropped: ${modes.join("\n")}`);
+});
+
+test("security-sbom: a replica that has a directory where the other has a file keeps its files", { skip: NOT_LINUX }, async () => {
+  // c1 has a regular file at opt/app/plugins; c2 has a directory there with an installed plugin. Merging c2 straight in
+  // would fail --mkdir -p runs into the file ancestor-- and lose the plugin. The entry whose ancestor is a file is kept
+  // beside the other replica's under .replicas/, so the one scan reads both.
+  const { status, out, targets, modes } = await run({
+    EXPORT_EXTRAS: "c1:opt/app/plugins=file;c2:opt/app/plugins/installed.txt=plugin",
+  }, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local" },
+      { id: "c2", image: "sha256:1111", config: "aidenhq/board:local" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096, c2: 4096 },
+    computers: { images: { image: "aidenhq/board:local" } },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.equal(row?.[2], "", `the unit errored: ${row?.[2]}`);
+  assert.ok(modes.some((m) => m === "regular opt/app/plugins"), `c1's file was lost: ${modes.join("\n")}`);
+  assert.ok(modes.some((m) => m === "regular .replicas/c2/opt/app/plugins/installed.txt"), `c2's plugin was lost: ${modes.join("\n")}`);
+});
+
+test("security-sbom: a container path with a glob character is still checked for a symlink ancestor", { skip: NOT_LINUX }, async () => {
+  // A container names its own paths, so one can be `d*` or `lib[1]`. The pass runs from the checkout root, where `d*`
+  // expands to `data`. A walk that let the shell expand the ancestor would test the merged root's `data` (an ordinary
+  // directory), not the container's own `d*` entry, so the link would go unnoticed and c2's `d*/app/.bash_profile` would
+  // be written through it, outside the staged root.
+  const { status, out, targets, modes } = await run({
+    EXPORT_SYMLINKS: "c1:d*=../../../../../../home/service",
+    EXPORT_EXTRAS: "c2:d*/app/.bash_profile=evil",
+  }, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local" },
+      { id: "c2", image: "sha256:1111", config: "aidenhq/board:local" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096, c2: 4096 },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.equal(row?.[2], "", `the unit errored: ${row?.[2]}\n${modes.join("\n")}`);
+  assert.ok(!modes.some((m) => m === "regular d*/app/.bash_profile"), `the merge wrote through a glob-named link: ${modes.join("\n")}`);
+  assert.ok(modes.some((m) => m === "link d* ../../../../../../home/service"), `c1's link was dropped: ${modes.join("\n")}`);
+  assert.ok(modes.some((m) => m === "regular .replicas/c2/d*/app/.bash_profile"), `c2's file was not kept beside the link: ${modes.join("\n")}`);
+});
+
 test("security-sbom: a replica's symlink is never followed, so no file is written outside the staged root", { skip: NOT_LINUX }, async () => {
   // A container controls its own tree. One replica holds `app -> /home/service` (the service user's home on the host) and
   // the other has `app/.bash_profile`: a merge that followed the link through `-d` would write that file to the host as the
@@ -722,6 +898,163 @@ test("security-sbom: a replica's symlink is never followed, so no file is writte
   assert.ok(modes.some((m) => m === "regular .replicas/probe"), `c2's own .replicas was moved: ${modes.join("\n")}`);
 });
 
+test("security-sbom: the host scan excludes the pass's export directory where it is reachable under /", { skip: NOT_LINUX }, async () => {
+  // With AIDENHQ_DATA_DIR on another disk the export directory is a sibling of the mounted sbom directory, not below it,
+  // so excluding the sbom tree alone would leave staged container roots reachable to the host scan.
+  const { status, out, calls } = await run();
+  assert.equal(status, 0, out);
+  const host = syft(calls, "host");
+  assert.ok(host.excludes.some((p) => p.endsWith("sbom-exports/**")), `the export directory is not excluded: ${JSON.stringify(host.excludes)}`);
+});
+
+test("security-sbom: a nested dev directory is kept; only the container root's device nodes are left out", { skip: NOT_LINUX }, async () => {
+  // GNU tar matches an unanchored `dev/*` at any depth, so a plain exclusion would also drop `/opt/app/dev/node_modules`
+  // (a dependency tree inside a deployed app) and the row would claim a complete scan of a partial filesystem. The
+  // exclusion is anchored: the root's device nodes go, a nested `dev` stays.
+  const { status, out, targets, modes } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.equal(row?.[2], "", `the container scan errored: ${row?.[2]}`);
+  assert.ok(modes.some((m) => m.startsWith("file ") && m.endsWith("/opt/app/dev/node_modules/pkg.json")), `a nested dev/ tree was dropped: ${modes.join("\n")}`);
+  assert.ok(!modes.some((m) => m.startsWith("present ") && m.endsWith("/dev/null")), `the root's device node was extracted: ${modes.join("\n")}`);
+});
+
+test("security-sbom: a slow listing of a replica root is cut off by the snapshot deadline", { skip: NOT_LINUX }, async () => {
+  // A dependency-heavy root can hold millions of entries, and the merge walks it while the apply lock is held. The walk
+  // is bounded like the rest of the merge: a budget that runs out during it is a per-target line, not an apply waiting.
+  const started = Date.now();
+  const { status, out, targets } = await run({ AIDENHQ_SBOM_SNAPSHOT_SECS: "3", FAKE_FIND_SLEEP: "40" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096 },
+  });
+  const took = (Date.now() - started) / 1000;
+  assert.equal(status, 0, out);
+  assert.ok(took < 25, `the pass held the lock for ${took}s on a 3s budget`);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "a root whose listing was cut off was scanned");
+  assert.match(line[2], /docker export|snapshot deadline/, line[2]);
+});
+
+test("security-sbom: a read-only directory in the exported root does not stop cleanup", { skip: NOT_LINUX }, async () => {
+  // Tar restores the container's own modes, so a read-only dependency tree (a Go module cache, say) holds directories
+  // this user cannot unlink inside. A plain `rm -rf` would fail under `set -e` before the batch is published and leave
+  // runtime data on disk; the pass grants itself owner write before removing its own tree.
+  const { status, out, dir } = await run({ EXPORT_DIR_MODE: "555" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  const sbom = join(dir, "data/modules/security/sbom");
+  assert.ok(existsSync(join(sbom, "current/targets.tsv")), "the batch was not published");
+  assert.ok(!existsSync(join(sbom, "..", "sbom-exports")), "the read-only export tree was left behind");
+  assert.ok(!existsSync(join(sbom, ".export")), "an export directory was left inside the scanner's mount");
+});
+
+test("security-sbom: an inspect that fails for another reason is an error line, not a container export", { skip: NOT_LINUX }, async () => {
+  // The image still exists, but the daemon's size read fails for a reason other than the image being gone (a timeout, a
+  // refused socket, a daemon mid-restart). Exporting the live container then would publish a filesystem scan under the
+  // image's target: an inventory of the wrong thing that the absent-tag guards would read as a clean image. Only the
+  // daemon's own "No such image" takes the export path.
+  const { status, out, targets, calls } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    sizeErrors: ["sha256:1111"],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  assert.deepEqual(calls.filter((c) => c.startsWith("export ")), [], `a live container was exported for a failed inspect:\n${calls.join("\n")}`);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "the target was recorded as scanned");
+  assert.match(line[2], /docker image inspect/, line[2]);
+});
+
+test("security-sbom: a reference probe that fails for another reason is an error line, not a container export", { skip: NOT_LINUX }, async () => {
+  // The container's index is still in the store, but the reference probe on it fails for a reason other than absence (a
+  // timeout, a refused socket). The bare platform manifest then answers "No such image" only because it is not an image
+  // record of its own, so the image may still be held: exporting the live container here would publish a filesystem scan
+  // under the image's target, and the absent-tag guards would read that as a clean image. It stays an error line.
+  const { status, out, targets, calls } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:index", config: "aidenhq/board:local", descriptor: { digest: "sha256:1111", platform: { os: "linux", architecture: "amd64" } } }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    inspectErrors: ["sha256:index"],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  assert.deepEqual(calls.filter((c) => c.startsWith("export ")), [], `a live container was exported for an unanswered probe:\n${calls.join("\n")}`);
+  const line = targets.find((t) => t[0] === "image:sha256:index");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "the target was recorded as scanned");
+  assert.match(line[2], /unexpected EOF/, line[2]);
+});
+
+test("security-sbom: a tag probe's warning ahead of the id is an unanswered probe, not a moved tag", { skip: NOT_LINUX }, async () => {
+  // A daemon that logs to stdout prints a warning before the id. Taken as the tag's answer, the warning is "not the
+  // running manifest", the tag is read as moved off the image, and the bare pin's "No such image" then passes for proof
+  // that the image is gone. The probe's answer is only an answer when it is one image id.
+  const { status, out, targets, calls } = await run({ FAKE_TAG_NOISE: "aidenhq/board:local" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    held: [],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  assert.deepEqual(calls.filter((c) => c.startsWith("export ")), [], `a live container was exported for a noisy probe:\n${calls.join("\n")}`);
+  const line = targets.find((t) => t[0].startsWith("image:"));
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "the target was recorded as scanned");
+  assert.match(line[2], /WARNING|did not answer/, line[2]);
+});
+
+test("security-sbom: a probe killed before it prints is not read as the image being gone", { skip: NOT_LINUX }, async () => {
+  // `docker_call` bounds every probe with `timeout`, and a killed process writes nothing: its output is empty. Read as an
+  // answer, that is "not No such image" but also not a resolved reference, and the bare pin's own "No such image" would
+  // then send the pass down the container-export path for an image the daemon may still hold.
+  const { status, out, targets, calls } = await run({ INSPECT_SILENT: "sha256:1111" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  assert.deepEqual(calls.filter((c) => c.startsWith("export ")), [], `a live container was exported for a silent probe:\n${calls.join("\n")}`);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "the target was recorded as scanned");
+  assert.match(line[2], /did not answer/, line[2]);
+});
+
+test("security-sbom: a tag whose probe fails is not read as a moved tag, so the container is not exported", { skip: NOT_LINUX }, async () => {
+  // The still-running image may well be the one this tag names, and only the daemon's answer about the tag failed (a
+  // timeout, a refused socket). The bare manifest's "No such image" then proves nothing about the image, so exporting the
+  // container would inventory a live filesystem under an image target whose absent-tag guards would read it as clean.
+  const { status, out, targets, calls } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    held: [],
+    inspectErrors: ["aidenhq/board:local"],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  assert.deepEqual(calls.filter((c) => c.startsWith("export ")), [], `a live container was exported for an unanswered tag probe:\n${calls.join("\n")}`);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "the target was recorded as scanned");
+  assert.match(line[2], /unexpected EOF/, line[2]);
+});
+
 test("security-sbom: a container export that fails records its image id and the docker error, and the batch still lands", { skip: NOT_LINUX }, async () => {
   // The image record is gone and the container cannot be exported either (a daemon that will not), so the pass records
   // the per-target error naming the target and the daemon's text, and still publishes its batch.
@@ -739,6 +1072,69 @@ test("security-sbom: a container export that fails records its image id and the 
   assert.equal(line[1], "-", "a failed export was scanned");
   assert.match(line[2], /docker export: .*cannot export container c1/, line[2]);
   assert.ok(!targets.some((t) => t[0] === "image:sha256:1111" && t[1] !== "-"), "the failed target was also scanned");
+});
+
+test("security-sbom: a container whose root filesystem does not fit above the floor is a line and is not extracted", { skip: NOT_LINUX }, async () => {
+  // 31 GB free, a 30 GB floor: one GB of room. The container's export tar would be over it, so the write is refused before
+  // it fills the disk, and the row says so rather than being extracted or left as a gap.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "31000000" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "a container whose root does not fit was scanned");
+  // The plan refuses a root filesystem twice its size against the room before the export starts; either way the row is a
+  // line with the numbers, and nothing of it is extracted or scanned.
+  assert.match(line[2], /does not fit|no space left|file too large/, line[2]);
+  assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("--source-name image:sha256:1111")), `an over-floor export was scanned:\n${calls.join("\n")}`);
+  assert.ok(!calls.some((c) => c.startsWith("export ")), `an over-floor export was started:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: a container export that outgrows the room is stopped, recorded, and never extracted", { skip: NOT_LINUX }, async () => {
+  // The daemon sized the container at 4 KB, but its export is 8 GB and only 1 GB sits above the floor: the write's cap
+  // stops it, and the target is a line rather than a tree that would fill the disk. This is the real shape, where a
+  // container's runtime data grows after it was sized.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "32500000" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    containerSizes: { c1: 4096 },
+    exportGrow: { c1: 8 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "a container whose export outgrew the room was scanned");
+  assert.match(line[2], /outgrew the .* GB above the .* GB floor/, line[2]);
+  assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("--source-name image:sha256:1111")), `an outgrown export was scanned:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: only the container with no image record is exported; the one whose image the daemon holds is saved", { skip: NOT_LINUX }, async () => {
+  // Criterion 6: the fallback must not touch the image path. One container runs an image the daemon still holds (it is
+  // saved and scanned from the archive), the other's image record is gone (it is exported). The export log names only the
+  // second.
+  const { status, out, targets, calls } = await run({}, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local" },
+      { id: "c2", image: "sha256:2222", config: "gate:local" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:9999", "gate:local": "sha256:2222" },
+    held: ["sha256:2222"],
+    sizes: { "sha256:2222": 1024 },
+    containerSizes: { c1: 4096 },
+    computers: { images: { image: "aidenhq/board:local", gate: "gate:local" } },
+  });
+  assert.equal(status, 0, out);
+  const kept = targets.find((t) => t[0] === "image:gate:local" || t[0] === "image:sha256:2222");
+  assert.ok(kept && kept[1] !== "-", `the held image was not scanned:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.match(syft(calls, kept[0]!).line, /docker-archive:\/image\.tar/, "the held image was read from its archive");
+  const exports = calls.filter((c) => c.startsWith("export "));
+  assert.deepEqual(exports.map((c) => c.split(" ").pop()), ["c1"], `only the unresolvable container was exported:\n${exports.join("\n")}`);
+  assert.match(syft(calls, "image:sha256:1111").line, / dir:\/src /);
 });
 
 test("security-sbom: the pass removes its private export directory, so no container tar or rootfs is left in data/", { skip: NOT_LINUX }, async () => {
@@ -781,6 +1177,26 @@ test("security-sbom: a moved tag with the compose platform manifest is scanned f
   assert.ok(!calls.some((c) => c.startsWith("run ") && / docker:sha256:/.test(c)), `never the daemon source for a bare id:\n${calls.join("\n")}`);
 });
 
+test("security-sbom: a manifest with no image record of its own is exported from the index that holds it", { skip: NOT_LINUX }, async () => {
+  // On the containerd store a platform manifest inside a multi-platform index is not an image record: a bare digest
+  // names nothing. The index in `held` still contains it, so the pass must resolve through that index rather than drop
+  // the container with "No such image".
+  const { status, out, targets, calls } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:index", config: "aidenhq/board:local", label: "sha256:2222" }],
+    tags: { "aidenhq/board:local": "sha256:9999", "sha256:index": "sha256:index" },
+    manifests: { "aidenhq/board:local": "sha256:9999", "sha256:index": "sha256:2222" },
+    held: ["sha256:index"],
+    sizes: { "sha256:2222": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const scanned = targets.find((t) => t[0] === "image:sha256:index");
+  assert.ok(scanned, `the running image was not scanned:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.notEqual(scanned[1], "-", `the target reached syft: ${scanned[2]}`);
+  assert.ok(calls.some((c) => c.startsWith("save ") && c.includes("sha256:index")), `nothing exported the holding index:\n${calls.join("\n")}`);
+  assert.match(syft(calls, "image:sha256:index").line, /docker-archive:\/image\.tar/);
+  assert.ok(!targets.some((t) => t[0] === "image:sha256:2222"), "the manifest id is not a second key for the same image");
+});
+
 test("security-sbom: an apply holding the lock skips the pass and leaves current/ untouched", { skip: NOT_LINUX }, async () => {
   const sentinel = "host\t-\told pass\t\n";
   const { root, scriptPath } = isolatedCheckout();
@@ -814,6 +1230,37 @@ test("security-sbom: a container enumeration that fails keeps the previous batch
   assert.equal(batchRaw, sentinel, "the previous batch is the one the scanner still reads");
 });
 
+test("security-sbom: an inspect that fails for a container still running keeps the previous batch", { skip: NOT_LINUX }, async () => {
+  const sentinel = "host\t-\told pass\t\n";
+  const { status, out, batchRaw } = await run({}, {
+    inspectFails: ["c1"],
+    seed: (data) => {
+      const dir = join(data, "modules/security/sbom/current");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "targets.tsv"), sentinel);
+    },
+  });
+  assert.equal(status, 0, out);
+  assert.match(out, /docker inspect failed for running container c1/);
+  assert.equal(batchRaw, sentinel);
+});
+
+test("security-sbom: an image that cannot fit is a line, and no save is written for it", { skip: NOT_LINUX }, async () => {
+  // 25 GB free, under the 30 GB floor: the target is recorded before `docker save` can fill the disk.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "25000000" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:2222" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: ["sha256:2222"],
+    sizes: { "sha256:2222": 30 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-");
+  assert.match(line[2], /does not fit/);
+  assert.ok(!calls.some((c) => c.startsWith("save ")), `a save ran below the floor:\n${calls.join("\n")}`);
+});
+
 test("security-sbom: a tag that moves mid-pass is read from the image the lock verified", { skip: NOT_LINUX }, async () => {
   // The tag matches the container during the snapshot and is pinned there; after two reads it names a rebuilt image,
   // by the time the pass would scan it. The image must be read from an immutable reference (the container's own id)
@@ -845,6 +1292,15 @@ test("security-sbom: a tag that stays put is scanned from its own archive", { sk
   assert.ok(scanned && scanned[1] !== "-", targets.map((t) => t.join("\t")).join("\n"));
   assert.match(syft(calls, "image:aidenhq/board:local").line, /docker-archive:\/image\.tar/);
   assert.ok(!calls.some((c) => c.includes("docker:aidenhq/board:local")), calls.join("\n"));
+});
+
+test("security-sbom: with the lock free the same fixture produces the full target list", { skip: NOT_LINUX }, async () => {
+  const { status, out, targets } = await run();
+  assert.equal(status, 0, out);
+  const names = targets.map((t) => t[0]);
+  assert.ok(names.includes("host"), names.join(","));
+  assert.ok(names.includes("image:aidenhq/board:local"), names.join(","));
+  assert.ok(names.some((t) => t.startsWith("repo:product")), names.join(","));
 });
 
 test("security-sbom: the apply lock is held through the saves and free during every scan", { skip: NOT_LINUX }, async () => {
@@ -966,6 +1422,195 @@ test("security-sbom: without config/computers.json the previous batch stays, so 
   }
 });
 
+test("security-sbom: a browser render starting or stopping does not move the target's name", { skip: NOT_LINUX }, async () => {
+  // ops/computer-images.sh runs the browser under `computer-browser:current` while a render is open, and the configured
+  // image is the hash tag that alias points at. The same image is therefore a container unit on one pass and a configured
+  // unit on the next. The batch keys it by the configured tag either way: the store reconciles findings by exact target
+  // name, so a key that followed the render would settle them when it started and re-open them when it ended.
+  const computers = { images: { browser: "aidenhq/computer-browser:h1" } };
+  const renderRunning = await run({}, {
+    computers,
+    containers: [{ id: "c1", image: "sha256:index1", config: "aidenhq/computer-browser:current", label: "sha256:bbbb" }],
+    tags: { "aidenhq/computer-browser:current": "sha256:index1", "aidenhq/computer-browser:h1": "sha256:bbbb" },
+    manifests: { "aidenhq/computer-browser:current": "sha256:bbbb", "aidenhq/computer-browser:h1": "sha256:bbbb" },
+    held: ["sha256:index1"],
+    sizes: { "sha256:index1": 1024, "sha256:bbbb": 1024 },
+  });
+  const idle = await run({}, {
+    computers,
+    containers: [{ id: "c1", image: "sha256:gggg", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:gggg", "aidenhq/computer-browser:h1": "sha256:bbbb" },
+    manifests: { "aidenhq/board:local": "sha256:gggg", "aidenhq/computer-browser:h1": "sha256:bbbb" },
+    sizes: { "sha256:bbbb": 1024 },
+  });
+  for (const r of [renderRunning, idle]) {
+    assert.equal(r.status, 0, r.out);
+    const keys = r.targets.filter((t) => t[0].startsWith("image:aidenhq/computer-browser")).map((t) => t[0]);
+    assert.deepEqual(keys, ["image:aidenhq/computer-browser:h1"], `one target, under the configured name:\n${r.targets.map((t) => t.join("\t")).join("\n")}`);
+  }
+});
+
+test("security-sbom: a container whose own id is exportable is scanned from that id, not dropped", { skip: NOT_LINUX }, async () => {
+  // A container started without compose: no label. Its tag moved to another build, but the container's own index is
+  // still held and contains the running platform. `pin_of` resolves that index to the platform manifest, so an equality
+  // test against the manifest alone would reject the very reference that can export the image.
+  const { status, out, targets, calls } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:index", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    manifests: { "aidenhq/board:local": "sha256:9999", "sha256:index": "sha256:2222" },
+    held: ["sha256:index"],
+    sizes: { "sha256:index": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const scanned = targets.find((t) => t[0] === "image:sha256:index");
+  assert.ok(scanned, `the running image was not scanned:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.notEqual(scanned[1], "-", `it reached syft: ${scanned[2]}\n${calls.join("\n")}`);
+  assert.ok(calls.some((c) => c.startsWith("save ") && c.includes("sha256:index")), `the own id was not exported:\n${calls.join("\n")}`);
+  assert.match(syft(calls, "image:sha256:index").line, /docker-archive:\/image\.tar/);
+  assert.doesNotMatch(scanned[2], /No such image/, "it is not recorded as a gap");
+});
+
+test("security-sbom: a failed follow-up listing keeps the previous batch", { skip: NOT_LINUX }, async () => {
+  // The batched inspect fails, one container then inspects fine and another keeps failing, and the re-list that decides
+  // "gone or still running" itself fails. Treating that as an empty list would publish a partial batch.
+  const sentinel = "host\t-\told pass\t\n";
+  const { status, out, batchRaw } = await run({}, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local" },
+      { id: "c2", image: "sha256:3333", config: "gate:local" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:1111", "gate:local": "sha256:3333" },
+    inspectFails: ["c2"],
+    psFailsFrom: 2,
+    seed: (data) => {
+      const dir = join(data, "modules/security/sbom/current");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "targets.tsv"), sentinel);
+    },
+  });
+  assert.equal(status, 0, out);
+  assert.match(out, /could not re-list containers/);
+  assert.equal(batchRaw, sentinel, "the previous batch is the one the scanner still reads");
+});
+
+test("security-sbom: a Docker save that stops answering is cut off by the snapshot deadline", { skip: NOT_LINUX }, async () => {
+  // The save hangs and the snapshot budget is two seconds. The call must be terminated, the image recorded as a line, and
+  // the pass must finish (releasing the apply lock) rather than hold it while an apply waits.
+  const started = Date.now();
+  const { status, out, targets, locks } = await run({ AIDENHQ_SBOM_SNAPSHOT_SECS: "2", FAKE_SAVE_SLEEP: "20" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:2222" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: ["sha256:2222"],
+    sizes: { "sha256:2222": 1024 },
+  });
+  const took = (Date.now() - started) / 1000;
+  assert.equal(status, 0, out);
+  assert.ok(took < 15, `the pass held the lock for ${took}s on a 2s budget`);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, `the image was not recorded:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(line[1], "-", "it was not scanned");
+  assert.ok(locks.every((l) => l.startsWith("save held") || l.startsWith("run free")), locks.join("\n"));
+});
+
+test("security-sbom: reading the archive back is bounded by the snapshot deadline too", { skip: NOT_LINUX }, async () => {
+  // The plain-save check reads the archive while the apply lock is still held. A multi-GB archive on slow storage must not
+  // hold the lock past the budget: the read is cut off, the image is a line, and the pass finishes.
+  const started = Date.now();
+  const { status, out, targets, locks } = await run({ FAKE_API: "1.47", FAKE_SAVE_SHAPE: "one", FAKE_SAVE_PIN: "sha256:1111", AIDENHQ_SBOM_SNAPSHOT_SECS: "3", FAKE_ARCHIVE_SLEEP: "30" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    manifests: { "aidenhq/board:local": "sha256:1111" },
+    held: [],
+    sizes: { "aidenhq/board:local": 1024 },
+  });
+  const took = (Date.now() - started) / 1000;
+  assert.equal(status, 0, out);
+  assert.ok(took < 20, `the pass held the lock for ${took}s on a 3s budget`);
+  const line = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "an archive whose check timed out was scanned");
+  assert.match(line[2], /snapshot deadline reached while checking the archive/, line[2]);
+  assert.ok(locks.every((l) => l.startsWith("save held") || l.startsWith("run free")), locks.join("\n"));
+});
+
+test("security-sbom: a tagged image that cannot fit is a line and saves nothing", { skip: NOT_LINUX }, async () => {
+  // 31 GB free, a 30 GB floor: one GB of room above the floor. A tagged image whose archive needs more than that must be
+  // a line before any `docker save` writes, not a save that fills the disk and a check afterwards.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "31000000" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:1111" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    manifests: { "aidenhq/board:local": "sha256:1111" },
+    sizes: { "aidenhq/board:local": 4 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "it was not scanned");
+  assert.match(line[2], /does not fit/);
+  assert.ok(!calls.some((c) => c.startsWith("save ")), `a save ran with one GB above the floor:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: an image is sized through any local reference that can export it", { skip: NOT_LINUX }, async () => {
+  // The container's own id is gone and its bare platform manifest is not an image record, but another local tag points at
+  // an index that holds that manifest. Resolving an export reference before the size check keeps the image scanable
+  // rather than recording it as unreadable.
+  const { status, out, targets, calls } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:gone", config: "aidenhq/board:local", label: "sha256:2222" }],
+    tags: { "aidenhq/board:local": "sha256:9999", "other:local": "sha256:index" },
+    manifests: { "aidenhq/board:local": "sha256:9999", "other:local": "sha256:2222" },
+    held: ["sha256:index"],
+    sizes: { "other:local": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const scanned = targets.find((t) => t[0] === "image:sha256:gone");
+  assert.ok(scanned, `the running image was not scanned:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.notEqual(scanned[1], "-", `it reached syft: ${scanned[2]}\n${calls.join("\n")}`);
+  assert.doesNotMatch(scanned[2], /no local image exports|No such image/);
+  assert.ok(calls.some((c) => c.startsWith("save ") && c.endsWith(" other:local")), `the other tag did not export it:\n${calls.join("\n")}`);
+  assert.match(syft(calls, "image:sha256:gone").line, /docker-archive:\/image\.tar/);
+});
+
+test("security-sbom: two images whose archives and workspaces fit are both scanned", { skip: NOT_LINUX }, async () => {
+  // 60 GB free, a 30 GB floor: 30 GB of room. Both 5 GB archives stay on disk until their scans (10 GB), and the scan of
+  // either unpacks its own 5 GB beside them: 15 GB, which fits. Charging every image its own workspace up front, or
+  // charging an archive twice, would reject the second for no reason.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "60000000" }, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:2222" },
+      { id: "c2", image: "sha256:3333", config: "gate:local", label: "sha256:4444" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:9999", "gate:local": "sha256:8888" },
+    held: ["sha256:2222", "sha256:4444"],
+    sizes: { "sha256:2222": 5 * 1024 ** 3, "sha256:4444": 5 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  for (const name of ["image:sha256:1111", "image:sha256:3333"]) {
+    const scanned = targets.find((t) => t[0] === name);
+    assert.ok(scanned, targets.map((t) => t.join("\t")).join("\n"));
+    assert.notEqual(scanned[1], "-", `${name} was not scanned: ${scanned[2]}`);
+  }
+  assert.equal(calls.filter((c) => c.startsWith("save ")).length, 2);
+});
+
+test("security-sbom: an image is sized as the reference that is exported, not another that answers", { skip: NOT_LINUX }, async () => {
+  // The running platform is held by `other:local` (an index), and the container's own id resolves to nothing. Sizing must
+  // read the index that will be saved, not fall back to a size the pass never proved covers the export.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "35000000" }, {
+    containers: [{ id: "c1", image: "sha256:gone", config: "aidenhq/board:local", label: "sha256:2222" }],
+    tags: { "aidenhq/board:local": "sha256:9999", "other:local": "sha256:index" },
+    manifests: { "aidenhq/board:local": "sha256:9999", "other:local": "sha256:2222" },
+    held: ["sha256:index"],
+    // The index the save reads is 40 GB: it cannot fit in the 5 GB above the floor, whatever else might answer.
+    sizes: { "other:local": 40 * 1024 ** 3, "sha256:gone": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:sha256:gone");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "the oversized export was not scanned");
+  assert.match(line[2], /does not fit/);
+  assert.ok(!calls.some((c) => c.startsWith("save ")), `a save ran for an image that does not fit:\n${calls.join("\n")}`);
+});
+
 test("security-sbom: a container's own platform is what is inspected and exported", { skip: NOT_LINUX }, async () => {
   // An amd64 host running the arm64 variant of a multi-platform image, with no compose label: the daemon resolves the
   // index to its amd64 manifest, but the container's `ImageManifestDescriptor` names the arm64 one it runs. Exporting or
@@ -989,6 +1634,57 @@ test("security-sbom: a container's own platform is what is inspected and exporte
   assert.ok(!calls.some((c) => c.startsWith("save ") && /--platform linux\/amd64 /.test(c)), `the daemon's platform was exported:\n${calls.join("\n")}`);
   // The compose label is the arm64 manifest the container runs, so the target stays the tag.
   assert.ok(!targets.some((t) => t[0] === "image:sha256:arm64"), "the manifest id is not a second key for the same image");
+});
+
+test("security-sbom: a moved tag on an emulated container exports the container, never the daemon's variant", { skip: NOT_LINUX }, async () => {
+  // The tag moved to a rebuilt image; the container runs the arm64 variant whose manifest no local reference holds. The
+  // tag resolves to a different arm64 build, so no image path may be taken: the daemon's amd64 variant must not be
+  // exported under this target. The container itself is in production, so its root filesystem is what is inventoried.
+  const arm = { digest: "sha256:arm64", platform: { os: "linux", architecture: "arm64", variant: "v8" } };
+  const { status, out, targets, calls } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:index", config: "aidenhq/board:local", descriptor: arm }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    manifests: { "aidenhq/board:local": "sha256:9999" },
+    platformManifests: { "aidenhq/board:local": { "linux/arm64/v8": "sha256:other-arm" } },
+    // The container's own index is gone and no reference holds its arm64 manifest.
+    held: ["sha256:some-other-index"],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  // The only variant here runs off the daemon's platform, so its key carries the platform: the plain key belongs to the
+  // daemon's own platform alone, and a suffix that appears or goes with other variants would move the target's name.
+  const row = targets.find((t) => t[0] === "image:sha256:index@linux/arm64/v8");
+  assert.ok(row, targets.map((t) => t.join("\t")).join("\n"));
+  assert.notEqual(row[1], "-", `the container root was scanned: ${row[2]}`);
+  assert.equal(row[3], "container:c1");
+  assert.match(syft(calls, "image:sha256:index@linux/arm64/v8").line, / dir:\/src /);
+  assert.ok(!calls.some((c) => c.startsWith("save ")), `an image variant was exported:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: a daemon without a platform descriptor keeps the server platform and says so", { skip: NOT_LINUX }, async () => {
+  // An older daemon or a single-platform store reports no `ImageManifestDescriptor`. The pass then reads on the server
+  // platform, as before, and prints how many containers it did that for, so a platform assumption is never silent.
+  const { status, out, targets } = await run();
+  assert.equal(status, 0, out);
+  assert.match(out, /1 container\(s\) report no platform manifest descriptor; read on the Docker server platform linux\/amd64/);
+  const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(scanned && scanned[1] !== "-", targets.map((t) => t.join("\t")).join("\n"));
+});
+
+test("security-sbom: a daemon whose template has no descriptor field still publishes on the server platform", { skip: NOT_LINUX }, async () => {
+  // `ImageManifestDescriptor` is a field a daemon either has or does not; asking for it on an older one fails the whole
+  // template. The pass must fall back to the older template and read on the server platform, not keep the old batch
+  // forever because docker refuses the format.
+  const { status, out, targets } = await run({ NO_DESCRIPTOR_FIELD: "1" }, {
+    noDescriptorField: true,
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    heldIds: ["sha256:1111"],
+  });
+  assert.equal(status, 0, out);
+  assert.match(out, /1 container\(s\) report no platform manifest descriptor; read on the Docker server platform linux\/amd64/);
+  const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(scanned && scanned[1] !== "-", targets.map((t) => t.join("\t")).join("\n"));
 });
 
 test("security-sbom: two containers running one index on different platforms are two targets", { skip: NOT_LINUX }, async () => {
@@ -1049,6 +1745,71 @@ test("security-sbom: a set whose archives plus the largest exceed the room is sc
   assert.ok(lastSave > firstScan, "every save must be accounted for");
 });
 
+test("security-sbom: a size that only fits in bytes is admitted, not rounded out of its wave", { skip: NOT_LINUX }, async () => {
+  // 41.25 GB free, a 30 GB floor: 11.25 GB of room. The image is 5.25 GiB: its archive plus its own workspace is 10.5 GiB,
+  // which fits. Rounded up to 6 GB the admission would ask for 12 GB and reject the image, even though the byte-exact save
+  // and scan both fit. It must be saved and scanned.
+  const { status, out, targets } = await run({ FAKE_FREE_KB: String(11.25 * 1024 * 1024 + 30 * 1024 * 1024) }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:1111" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    held: ["sha256:1111"],
+    sizes: { "sha256:1111": Math.round(5.25 * 1024 ** 3) },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(row, targets.map((t) => t.join("\t")).join("\n"));
+  assert.notEqual(row[1], "-", `the image fits and must be scanned: ${row[2]}`);
+});
+
+test("security-sbom: a target no wave can hold is a line naming the admitted total, its size, the largest and the room", { skip: NOT_LINUX }, async () => {
+  // 40 GB free, a 30 GB floor: 10 GB of room. A 6 GB image needs its 6 GB archive held to scan plus 6 GB to unpack it, 12 GB
+  // in all, which no wave of 10 GB ever has. The line must state the budget that decided it rather than "6 GB does not fit
+  // in 10 GB", which reads as though the image alone were over the room.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "41943040" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:2222" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: ["sha256:2222"],
+    sizes: { "sha256:2222": 6 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-");
+  assert.match(line[2], /admitted 0 GB of archives/);
+  assert.match(line[2], /this 6 GB image/);
+  assert.match(line[2], /largest archive 6 GB/);
+  assert.match(line[2], /room 10 GB above the 30 GB floor/);
+  assert.match(line[2], /short by 2 GB/);
+  assert.ok(!calls.some((c) => c.startsWith("save ")), `a save ran for an image no wave can hold:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: an apply that takes the lock between waves leaves those images as lines, not gaps", { skip: NOT_LINUX }, async () => {
+  // The first wave exports and scans; an apply starts while the scans run and holds the apply lock, so the second wave
+  // cannot export. The images it would have carried must be recorded with the reason, never silently dropped.
+  const ids = ["sha256:a1", "sha256:a2", "sha256:a3", "sha256:a4", "sha256:a5"];
+  const sizes = [6, 7, 8, 9, 10];
+  const { status, out, targets, calls, lateHeld } = await run({ FAKE_FREE_KB: "62914560", FAKE_TAKE_LOCK_ON_HOST_SCAN: "1" }, {
+    containers: ids.map((id, i) => ({ id: `c${i + 1}`, image: id, config: `svc${i + 1}:local`, label: id })),
+    tags: Object.fromEntries(ids.map((id, i) => [`svc${i + 1}:local`, id])),
+    held: ids,
+    sizes: Object.fromEntries(ids.map((id, i) => [id, sizes[i] * 1024 ** 3])),
+  });
+  assert.equal(status, 0, out);
+  // The fixture held the lock from the host scan through the pass, past the second wave's save attempt, so that wave
+  // could not export. `run` released it (and waited for it) whatever the pass returned.
+  assert.ok(lateHeld, "the fixture never took the apply lock");
+  const rows = targets.filter((t) => t[0].startsWith("image:"));
+  assert.equal(rows.length, ids.length, `every running image has a row:\n${rows.map((t) => t.join("\t")).join("\n")}`);
+  const scanned = rows.filter((t) => t[1] !== "-");
+  const unreached = rows.filter((t) => /not reached/.test(t[2]));
+  assert.ok(scanned.length >= 1, `the first wave was still scanned:\n${rows.map((t) => t.join("\t")).join("\n")}`);
+  assert.ok(unreached.length >= 1, `the later wave's images are lines:\n${rows.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(scanned.length + unreached.length, ids.length, rows.map((t) => t.join("\t")).join("\n"));
+  assert.match(out, /an apply took the apply lock between waves/);
+  // The later wave wrote no bytes, and the pass still swapped its batch in.
+  assert.equal(calls.filter((c) => c.startsWith("save ")).length, scanned.length);
+});
+
 test("security-sbom: a save that overshoots its estimate is deleted rather than left under the floor", { skip: NOT_LINUX }, async () => {
   // 40 GB free, a 30 GB floor: 10 GB of room. The daemon reports a 5 GB image, but the save would write 15 GB and take
   // the disk under the floor. The write is capped at the room above the floor, so the kernel stops it before the host's
@@ -1066,6 +1827,177 @@ test("security-sbom: a save that overshoots its estimate is deleted rather than 
   assert.equal(row[1], "-", "the overshooting save is not scanned");
   assert.match(row[2], /archive outgrew the 10 GB above the 30 GB floor/);
   assert.doesNotMatch(row[2], /^15 GB/);
+});
+
+test("security-sbom: a save stopped at its cap is retried in a solo wave, not skipped for the pass", { skip: NOT_LINUX }, async () => {
+  // 68 GB free, a 30 GB floor: 38 GB of room. Five 5 GB images and one reported at 6 GB are admitted together, but the
+  // last one's save really writes 15 GB while the five archives already hold 25 GB: 40 GB, over the room, so the cap
+  // stops it. Its scan needs 15 GB more, 30 GB in all, which a wave of its own holds but not beside the others'
+  // archives. It must be deferred and scanned alone, not lost for the pass.
+  const containers = [];
+  const tags = {};
+  const sizes = {};
+  const saveGrow = {};
+  for (let i = 1; i <= 5; i++) {
+    containers.push({ id: `c${i}`, image: `sha256:s${i}`, config: `small${i}:local`, label: `sha256:s${i}` });
+    tags[`small${i}:local`] = `sha256:s${i}`;
+    sizes[`sha256:s${i}`] = 5 * 1024 ** 3;
+  }
+  containers.push({ id: "c6", image: "sha256:big", config: "big:local", label: "sha256:big" });
+  tags["big:local"] = "sha256:big";
+  sizes["sha256:big"] = 6 * 1024 ** 3;
+  saveGrow["sha256:big"] = 15 * 1024 ** 3;
+  for (let i = 1; i <= 5; i++) saveGrow[`sha256:s${i}`] = 5 * 1024 ** 3;
+  const { status, out, targets } = await run({ FAKE_FREE_KB: String(68 * 1024 * 1024) }, {
+    containers, tags, held: Object.keys(tags).map((k) => tags[k]), sizes, saveGrow,
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:big:local");
+  assert.ok(row, targets.map((t) => t.join("\t")).join("\n"));
+  assert.notEqual(row[1], "-", `the capped save must be retried in a solo wave: ${row[2]}`);
+  assert.match(out, /image:big:local deferred to wave/);
+});
+
+test("security-sbom: a first save blocked by temporary pressure is deferred, then a line if it persists", { skip: NOT_LINUX }, async () => {
+  // 40 GB free, a 30 GB floor: 10 GB of room. A 5 GB image needs 10 GB, so the survey admits it. Once the survey has read
+  // the disk, another writer takes 6 GB, so the image's first save sees only 4 GB and is blocked with nothing of its own
+  // written. That may be temporary: it is deferred to a wave of its own, not skipped on first sight. The retry meets the
+  // same pressure, so the second block is a line with the numbers.
+  const { status, out, targets } = await run({ FAKE_FREE_KB: String(40 * 1024 * 1024), FAKE_TAKE_AFTER_DF: "1", FAKE_TAKE_BYTES: String(6 * 1024 ** 3) }, {
+    containers: [{ id: "c1", image: "sha256:b1", config: "big:local", label: "sha256:b1" }],
+    tags: { "big:local": "sha256:b1" },
+    held: ["sha256:b1"],
+    sizes: { "sha256:b1": 5 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:big:local");
+  assert.ok(row, targets.map((t) => t.join("\t")).join("\n"));
+  assert.match(out, /image:big:local deferred to wave/);
+  assert.equal(row[1], "-", `the second block is a line: ${row[2]}`);
+});
+
+test("security-sbom: a save that no longer fits beside its wave's archives is deferred, then scanned", { skip: NOT_LINUX }, async () => {
+  // 60 GB free, a 30 GB floor: 30 GB of room. The daemon reports 7 GB and 9 GB, so one wave admits both (16 GB of
+  // archives plus a 9 GB workspace = 25 GB). The 7 GB image's archive is really 14 GB: after it is written only 16 GB are
+  // left above the floor, so the 9 GB image plus its 9 GB workspace no longer fits and its save is refused. That is the
+  // wave's own archives holding the room, not the disk: it must be deferred to the next wave, where the first archive is
+  // scanned and freed, and scanned there rather than skipped on every pass.
+  const { status, out, targets } = await run({ FAKE_FREE_KB: String(60 * 1024 * 1024) }, {
+    containers: [
+      { id: "c1", image: "sha256:b1", config: "big1:local", label: "sha256:b1" },
+      { id: "c2", image: "sha256:b2", config: "big2:local", label: "sha256:b2" },
+    ],
+    tags: { "big1:local": "sha256:b1", "big2:local": "sha256:b2" },
+    held: ["sha256:b1", "sha256:b2"],
+    sizes: { "sha256:b1": 7 * 1024 ** 3, "sha256:b2": 9 * 1024 ** 3 },
+    saveGrow: { "sha256:b1": 14 * 1024 ** 3, "sha256:b2": 9 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const rows = targets.filter((t) => t[0].startsWith("image:"));
+  for (const name of ["image:big1:local", "image:big2:local"]) {
+    const row = rows.find((t) => t[0] === name);
+    assert.ok(row, rows.map((t) => t.join("\t")).join("\n"));
+    assert.notEqual(row[1], "-", `${name} was not scanned: ${row[2]}`);
+  }
+  assert.match(out, /image:big2:local deferred to wave 2/);
+  assert.doesNotMatch(out, /skipped:/);
+});
+
+test("security-sbom: an archive too large for its wave is retried after the others are freed, not skipped", { skip: NOT_LINUX }, async () => {
+  // 55 GB free, a 30 GB floor: 25 GB of room. The daemon reports 7 GB and 9 GB, so one wave admits both (16 GB of
+  // archives plus a 9 GB workspace = 25 GB). The 9 GB image's archive is really 10 GB. The two archives therefore hold
+  // 17 GB, leaving only 8 GB above the floor: unpacking the 10 GB image beside the 7 GB archive needs 17 GB, so the
+  // largest scan fails its first check. It must be retried, not dropped: once the 7 GB archive is scanned and removed,
+  // its own 10 GB archive plus 10 GB to unpack fits in the 15 GB that are then free above the floor.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: String(55 * 1024 * 1024) }, {
+    containers: [
+      { id: "c1", image: "sha256:b1", config: "big1:local", label: "sha256:b1" },
+      { id: "c2", image: "sha256:b2", config: "big2:local", label: "sha256:b2" },
+    ],
+    tags: { "big1:local": "sha256:b1", "big2:local": "sha256:b2" },
+    held: ["sha256:b1", "sha256:b2"],
+    sizes: { "sha256:b1": 9 * 1024 ** 3, "sha256:b2": 7 * 1024 ** 3 },
+    saveGrow: { "sha256:b1": 10 * 1024 ** 3, "sha256:b2": 7 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  for (const name of ["image:big1:local", "image:big2:local"]) {
+    const row = targets.find((t) => t[0] === name);
+    assert.ok(row, targets.map((t) => t.join("\t")).join("\n"));
+    assert.notEqual(row[1], "-", `${name} was not scanned: ${row[2]}`);
+  }
+  const scans = calls.filter((c) => c.startsWith("run ") && c.includes("--source-name image:"));
+  assert.equal(scans.length, 2, `both images were scanned:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: when a wave's real bytes outgrow its room, the smallest archive is deferred with the numbers", { skip: NOT_LINUX }, async () => {
+  // 60 GB free, a 30 GB floor: 30 GB of room. The daemon reports 10 GB and 9 GB, so one wave admits both. The archives
+  // are really 12 GB and 10 GB: both save, and the two hold 22 GB, leaving only 8 GB above the floor, so neither scan can
+  // unpack its workspace there (10 > 8 and 9 > 8). Removing the smaller 10 GB archive leaves 18 GB of room for the 12 GB
+  // archive and its 10 GB workspace, and the smaller image is saved again in a later wave (where it fits alone) rather
+  // than skipped for the pass. Nothing is skipped at all.
+  const { status, out, targets } = await run({ FAKE_FREE_KB: String(60 * 1024 * 1024) }, {
+    containers: [
+      { id: "c1", image: "sha256:b1", config: "big1:local", label: "sha256:b1" },
+      { id: "c2", image: "sha256:b2", config: "big2:local", label: "sha256:b2" },
+    ],
+    tags: { "big1:local": "sha256:b1", "big2:local": "sha256:b2" },
+    held: ["sha256:b1", "sha256:b2"],
+    sizes: { "sha256:b1": 10 * 1024 ** 3, "sha256:b2": 9 * 1024 ** 3 },
+    saveGrow: { "sha256:b1": 12 * 1024 ** 3, "sha256:b2": 10 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const small = targets.find((t) => t[0] === "image:big2:local");
+  const large = targets.find((t) => t[0] === "image:big1:local");
+  assert.ok(small && large, targets.map((t) => t.join("\t")).join("\n"));
+  assert.notEqual(large[1], "-", `the larger image must be scanned: ${large[2]}`);
+  assert.notEqual(small[1], "-", `the smaller image is scanned in a later wave: ${small[2]}`);
+  // The deferral states the real budget in gigabytes, not the raw bytes the round measured, and names the smaller archive
+  // as the one taken out.
+  assert.match(out, /image:big2:local deferred to wave 2: admitted 12 GB of archives, this 10 GB image, largest archive 12 GB, room 8 GB above the 30 GB floor on .*, short by 1 GB/);
+  assert.doesNotMatch(out, /skipped:/);
+});
+
+test("security-sbom: an archive whose scan can never fit is dropped at scan time, after both saves", { skip: NOT_LINUX }, async () => {
+  // 68 GB free, a 30 GB floor: 38 GB of room. The daemon reports 14 GB and 10 GB, so both are admitted (24 GB of archives
+  // plus a 14 GB workspace = 38 GB). The 14 GB image's archive is really 25 GB: 35 GB held leaves 3 GB, so neither scan
+  // fits yet. Both saves must happen first; then the round drops the archive that can never scan (25 GB held plus 14 GB of
+  // workspace is 39 GB, over the whole pool), and the 10 GB image scans in the room that frees.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: String(68 * 1024 * 1024) }, {
+    containers: [
+      { id: "c1", image: "sha256:b1", config: "big1:local", label: "sha256:b1" },
+      { id: "c2", image: "sha256:b2", config: "big2:local", label: "sha256:b2" },
+    ],
+    tags: { "big1:local": "sha256:b1", "big2:local": "sha256:b2" },
+    held: ["sha256:b1", "sha256:b2"],
+    sizes: { "sha256:b1": 14 * 1024 ** 3, "sha256:b2": 10 * 1024 ** 3 },
+    saveGrow: { "sha256:b1": 25 * 1024 ** 3, "sha256:b2": 10 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  assert.equal(calls.filter((c) => c.startsWith("save ")).length, 2, `both archives were saved before pruning:\n${calls.join("\n")}`);
+  const small = targets.find((t) => t[0] === "image:big2:local");
+  const huge = targets.find((t) => t[0] === "image:big1:local");
+  assert.ok(small && huge, targets.map((t) => t.join("\t")).join("\n"));
+  assert.notEqual(small[1], "-", `the scannable image must be scanned: ${small[2]}`);
+  assert.equal(huge[1], "-", `the archive whose scan can never fit is the line: ${huge[2]}`);
+  assert.match(huge[2], /does not fit/);
+});
+
+test("security-sbom: an archive is admitted only when its own scan has workspace left", { skip: NOT_LINUX }, async () => {
+  // 40 GB free, a 30 GB floor: 10 GB of room. A 9 GB image's archive fits, but unpacking it beside the archive needs its
+  // size again, so the scan would refuse it and the pass would save it every night and never read it. It must be a line
+  // and no save may run.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "40000000" }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:2222" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: ["sha256:2222"],
+    sizes: { "sha256:2222": 9 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:sha256:1111");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "the image whose scan could not fit was not saved");
+  assert.match(line[2], /does not fit/);
+  assert.ok(!calls.some((c) => c.startsWith("save ")), `an archive was saved for a scan that cannot fit:\n${calls.join("\n")}`);
 });
 
 test("security-sbom: a compose label that disagrees with the container's digest does not take the tag's target", { skip: NOT_LINUX }, async () => {
@@ -1140,6 +2072,47 @@ test("security-sbom: a daemon older than API 1.48 exports without --platform ins
   assert.doesNotMatch(save, /--platform/, `a plain save was not used:\n${save}`);
 });
 
+test("security-sbom: a later scan's space is measured with the archives its predecessors freed", { skip: NOT_LINUX }, async () => {
+  // 50 GB free, a 30 GB floor: 19 GB of room (free is in KiB, so 52,000,000). Three 4 GB archives are 12 GB, and scanning the largest first unpacks 4 GB
+  // beside all 12 GB once; after that the scanned archive is gone, so later scans need less. Refusing the third because
+  // "every archive twice over" would scan fewer images than the disk can hold.
+  const { status, out, targets, calls } = await run({ FAKE_FREE_KB: "52000000" }, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:aa11" },
+      { id: "c2", image: "sha256:3333", config: "gate:local", label: "sha256:bb22" },
+      { id: "c3", image: "sha256:5555", config: "tasks-mcp:local", label: "sha256:cc33" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:9991", "gate:local": "sha256:9992", "tasks-mcp:local": "sha256:9993" },
+    held: ["sha256:aa11", "sha256:bb22", "sha256:cc33"],
+    sizes: { "sha256:aa11": 4 * 1024 ** 3, "sha256:bb22": 4 * 1024 ** 3, "sha256:cc33": 4 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const scanned = targets.filter((t) => t[0].startsWith("image:") && t[1] !== "-");
+  assert.equal(scanned.length, 3, `all three archives fit and scan:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(calls.filter((c) => c.startsWith("save ")).length, 3);
+});
+
+test("security-sbom: archives are exported smallest first and scanned largest first", { skip: NOT_LINUX }, async () => {
+  // The snapshot deadline is spent on exports, so a large save that runs it out must not take the smaller archives with
+  // it: the small images are written first and still land. Scanning wants the opposite order (largest first, so the peak
+  // is at the first scan while every archive is still on disk). One order for both would fail one of the two.
+  const { status, out, calls } = await run({ FAKE_FREE_KB: "60000000" }, {
+    containers: [
+      { id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:aa11" },
+      { id: "c2", image: "sha256:3333", config: "gate:local", label: "sha256:bb22" },
+      { id: "c3", image: "sha256:5555", config: "tasks-mcp:local", label: "sha256:cc33" },
+    ],
+    tags: { "aidenhq/board:local": "sha256:9991", "gate:local": "sha256:9992", "tasks-mcp:local": "sha256:9993" },
+    held: ["sha256:aa11", "sha256:bb22", "sha256:cc33"],
+    sizes: { "sha256:aa11": 2 * 1024 ** 3, "sha256:bb22": 8 * 1024 ** 3, "sha256:cc33": 4 * 1024 ** 3 },
+  });
+  assert.equal(status, 0, out);
+  const saves = calls.filter((c) => c.startsWith("save "));
+  assert.deepEqual(saves.map((c) => c.split(" ").pop()), ["sha256:aa11", "sha256:cc33", "sha256:bb22"], `exports were not smallest first:\n${saves.join("\n")}`);
+  const scans = calls.filter((c) => c.startsWith("run ") && c.includes("--source-name image:"));
+  assert.deepEqual(scans.map((c) => c.match(/--source-name (image:\S+)/)?.[1]), ["image:sha256:3333", "image:sha256:5555", "image:sha256:1111"], `scans were not largest first:\n${scans.join("\n")}`);
+});
+
 test("security-sbom: a pre-1.48 daemon does not plain-save a tag whose archive holds several platforms", { skip: NOT_LINUX }, async () => {
   // On a containerd store an old daemon's plain save of a tag writes every platform it holds; the archive would contain
   // variants the container does not run and the size check would not cover it. The save runs, and its archive has to
@@ -1158,6 +2131,79 @@ test("security-sbom: a pre-1.48 daemon does not plain-save a tag whose archive h
   assert.equal(line[1], "-", "a multi-platform archive was scanned");
   assert.match(line[2], /names 2 manifests/, line[2]);
   assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("--source-name image:")), `a multi-platform archive was scanned:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: a pre-1.48 daemon does not treat an immutable index id as a single image", { skip: NOT_LINUX }, async () => {
+  // On the containerd store a container's `.Image` is the top-level index, and it is an inspectable immutable id, so
+  // `resolve_ref` legitimately returns it. Immutability is not one variant: a plain save of that id writes every platform
+  // the index holds, which a line must record rather than a scan under the running variant's target.
+  const { status, out, targets, calls } = await run({ FAKE_API: "1.47", FAKE_SAVE_SHAPE: "nested" }, {
+    containers: [{ id: "c1", image: "sha256:index", config: "aidenhq/board:local" }],
+    // The tag has moved to another build, so the container is keyed and pinned by its own index id, which is held and
+    // immutable: the resolver legitimately returns it as the export reference.
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: ["sha256:index"],
+    sizes: { "sha256:index": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:sha256:index");
+  assert.ok(line, `no target for the container:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.equal(line[1], "-", "a multi-platform index archive was scanned");
+  assert.match(line[2], /names 2 platform manifests/, line[2]);
+  assert.ok(calls.some((c) => c.startsWith("save ") && c.endsWith(" sha256:index") && !c.includes("--platform")), calls.join("\n"));
+  assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("--source-name image:")), `a multi-platform archive was scanned:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: a pre-1.48 daemon accepts a legacy manifest.json archive of the running image", { skip: NOT_LINUX }, async () => {
+  // A pre-containerd store's plain save has no index.json: its manifest.json has one entry per image, naming that image's
+  // config. One entry is one image, but it still has to be the running one, so the entry's config digest is matched
+  // against the pin.
+  const config = `sha256:${"c".repeat(64)}`;
+  const { status, out, targets } = await run({ FAKE_API: "1.47", FAKE_SAVE_SHAPE: "legacy", FAKE_SAVE_PIN: config }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    manifests: { "aidenhq/board:local": config },
+    held: [],
+    sizes: { "aidenhq/board:local": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(scanned && scanned[1] !== "-", targets.map((t) => t.join("\t")).join("\n"));
+});
+
+test("security-sbom: a legacy manifest.json archive of another image is a line", { skip: NOT_LINUX }, async () => {
+  // The single entry has to be the running image's config. Another build's config is a line, not a scan under this target.
+  const { status, out, targets } = await run({ FAKE_API: "1.47", FAKE_SAVE_SHAPE: "legacy", FAKE_SAVE_PIN: `sha256:${"d".repeat(64)}` }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    manifests: { "aidenhq/board:local": `sha256:${"c".repeat(64)}` },
+    held: [],
+    sizes: { "aidenhq/board:local": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const line = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(line, targets.map((t) => t.join("\t")).join("\n"));
+  assert.equal(line[1], "-", "another image's archive was scanned");
+  assert.match(line[2], /not the running image/, line[2]);
+});
+
+
+test("security-sbom: a classic-store image id is matched as the manifest's config digest", { skip: NOT_LINUX }, async () => {
+  // Docker's classic image store reports .Id as the *config* digest, while a plain save's index.json names the manifest
+  // digest. Comparing only manifest digests would reject every correct archive on such a host and drop every image from
+  // the batch, so the sole manifest's config.digest counts as the running image too.
+  const { status, out, targets, calls } = await run({ FAKE_API: "1.47", FAKE_SAVE_SHAPE: "classic", FAKE_SAVE_PIN: "sha256:1111", FAKE_SAVE_MANIFEST_DIGEST: `sha256:${"a".repeat(64)}` }, {
+    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:1111" },
+    manifests: { "aidenhq/board:local": "sha256:1111" },
+    held: [],
+    sizes: { "aidenhq/board:local": 1024 },
+  });
+  assert.equal(status, 0, out);
+  const scanned = targets.find((t) => t[0] === "image:aidenhq/board:local");
+  assert.ok(scanned, targets.map((t) => t.join("\t")).join("\n"));
+  assert.notEqual(scanned[1], "-", `a classic-store archive was refused: ${scanned[2]}`);
+  assert.ok(calls.some((c) => c.startsWith("save ") && !c.includes("--platform")), calls.join("\n"));
 });
 
 test("security-sbom: a pre-1.48 daemon refuses an archive it cannot verify", { skip: NOT_LINUX }, async () => {
@@ -1232,6 +2278,33 @@ test("security-sbom: an app checkout that is a symlink to another tree is a line
   assert.ok(line[2].includes(join(platform, "roadmap-keeper/src")), `and the path it should have been: ${line[2]}`);
   assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("--source-name app:roadmap-keeper")),
     `a symlinked checkout was handed to syft:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: a redirected .platform or data/apps directory does not re-key its apps", { skip: NOT_LINUX }, async () => {
+  // The checkout resolves inside the redirected tree, so a comparison that resolved the apps paths on both sides would
+  // see the two paths as equal and publish another tree's apps under their own names. The expected path is lexical below
+  // this checkout, so the redirect is a line for each app it appears to hold — at either level.
+  const redirects = [
+    // old is linked over data/apps/.platform; the app lives at old/<name>/src.
+    (root, old) => { mkdirSync(join(root, "data/apps"), { recursive: true }); symlinkSync(old, join(root, "data/apps/.platform")); return join(old, "roadmap-keeper/src"); },
+    // old is linked over data/apps; the app lives at old/.platform/<name>/src.
+    (root, old) => { mkdirSync(join(root, "data"), { recursive: true }); symlinkSync(old, join(root, "data/apps")); return join(old, ".platform/roadmap-keeper/src"); },
+  ];
+  for (const redirect of redirects) {
+    const { root, scriptPath } = isolatedCheckout();
+    const old = join(root, "shared/old-apps");
+    const cell = redirect(root, old);
+    mkdirSync(cell, { recursive: true });
+    writeFileSync(join(cell, "package-lock.json"), "{}\n");
+    const { status, out, targets, calls } = await run({}, { scriptPath });
+    assert.equal(status, 0, out);
+    const line = targets.find((t) => t[0] === "app:roadmap-keeper");
+    assert.ok(line, `no line for the redirected tree ${cell}:\n${targets.map((t) => t.join("\t")).join("\n")}`);
+    assert.equal(line[1], "-", "the redirected tree was not scanned");
+    assert.ok(line[2].includes(cell), `the line names what the checkout resolved to: ${line[2]}`);
+    assert.ok(!calls.some((c) => c.startsWith("run ") && c.includes("--source-name app:roadmap-keeper")),
+      `a redirected checkout was handed to syft ${cell}:\n${calls.join("\n")}`);
+  }
 });
 
 test("security-sbom: an ordinary app checkout is scanned and its row carries the checkout's HEAD", { skip: NOT_LINUX }, async () => {

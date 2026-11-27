@@ -317,6 +317,41 @@ test("pins: apt repositories and install rules are scoped to their own Docker st
   assert.equal(tried[0], "http://archive.ubuntu.com/ubuntu jammy-updates main");
 });
 
+test("pins: a stage extending another inherits its apt repositories, and siblings stay separate", async () => {
+  const d = "@sha256:" + "f".repeat(64);
+  const text = [
+    `FROM debian:trixie-slim${d} AS base`,
+    `RUN echo "deb [trusted=yes] https://repo.example/apt trixie main" >/etc/apt/sources.list.d/r.list`,
+    `FROM base AS extended`,
+    "RUN apt-get install -y inherited=1.0",
+    `FROM ubuntu:jammy${d} AS sibling`,
+    "RUN apt-get install -y jq=1.6.1-1",
+  ].join("\n");
+  const r = scanFile("Dockerfile", text);
+  const [inherited, sibling] = r.pins.filter((p) => p.kind === "apt");
+  assert.deepEqual([inherited.distro, inherited.release], ["debian", "trixie"]);
+  assert.deepEqual(inherited.sources, ["https://repo.example/apt trixie main"]);
+  assert.deepEqual([sibling.distro, sibling.release, sibling.sources], ["ubuntu", "jammy", []]);
+  const tried = [];
+  await dateApt(inherited, async (_k, _n, { source }) => { tried.push(source); return { published: day(30), via: "test" }; });
+  assert.deepEqual(tried, ["https://repo.example/apt trixie main"]);
+
+  // A child's additions don't reach back into its parent, and an unpinned install stays a problem in the stage whose
+  // filesystem actually has the repository.
+  const child = [
+    `FROM debian:trixie-slim${d} AS base`,
+    "RUN apt-get install -y unpinned-ok",
+    `FROM base AS child`,
+    `RUN echo "deb [trusted=yes] https://repo.example/apt trixie main" >/etc/apt/sources.list.d/r.list`,
+    "RUN apt-get install -y unpinned-now-a-problem",
+    `FROM base AS other`,
+    "RUN apt-get install -y still-unpinned-ok",
+  ].join("\n");
+  const problems = scanFile("Dockerfile", child).problems;
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /unpinned-now-a-problem/);
+});
+
 test("pins: a sources.list.d file copied from another stage carries its repository into the destination", async () => {
   const d = "@sha256:" + "f".repeat(64);
   const copy = [

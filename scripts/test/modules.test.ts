@@ -204,6 +204,12 @@ test("legacy lists stay closed: links, root secrets and host variables may only 
   assert.ok(within(LEGACY_HOST_ENV, was.host));
   assert.deepEqual(OPS_NETWORKS, { ci: "aidenhq-ci" });
 });
+test("untrusted app compiles to untrusted: true", () => {
+  const [app] = compile(mods, finst(["appmod"])).apps.apps;
+  assert.equal(app.untrusted, true); assert.equal(app.isolation, undefined); assert.equal(app.module, "appmod");
+  assert.equal(app.path, "modules/appmod/apps/web");
+});
+test("untrusted module may not ship connections", () => assert.throws(() => compile(mods, finst(["shady"])), /untrusted module shady may not declare connections/));
 test("kernel roles are the kernel's: no module declares one or a write kind's name, and requests only defined ones", () => {
   const dir = mkdtempSync(join(tmpdir(), "prod-"));
   cpSync(join(here, "fixtures/mods"), dir, { recursive: true });
