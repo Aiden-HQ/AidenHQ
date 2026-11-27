@@ -1,7 +1,7 @@
 # Visual UI review: design
 
 Status: approved v6 (owner, 2026-11-26; build all three phases). Evidence: three spikes on 2026-11-26 (bug finding, discovery/logins,
-design critique), to be committed as instance repo `docs/product-history/research/2026-11-26-visual-ui-review-spike.md`.
+design critique), kept in the instance repo under `docs/product-history/research/2026-11-26-visual-ui-review/`.
 Reviewed by a cold builder read and two Codex consults; "(my call)" marks choices made in those passes.
 
 ## Intent
