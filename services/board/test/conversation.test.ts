@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { chatAgentMarker, conversation, foldOutcomeLines } from "../src/chats.js";
 import type { Comment } from "../src/paperclip.js";
 

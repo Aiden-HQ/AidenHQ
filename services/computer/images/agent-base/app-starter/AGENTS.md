@@ -17,7 +17,7 @@ it screenshots from this table.
 | Routes, shell and header | `src/App.tsx` (`ROUTES`, the shell); every route is also in `server.mjs` `PAGES` |
 | API (`/api/health`, `/api/items`) and the CSP | `server.mjs` |
 | Pages and stateful URLs the UI review visits | `feature-map.json` |
-| Component tests and their setup | `src/**/*.test.tsx`, `src/test/setup.ts`, `vite.config.ts` (`test`) |
+| Component tests and their setup | `src/**/*.test.tsx`, `src/test/setup.ts`, `bunfig.toml` |
 | Browser checks and screenshots | `e2e/`, `playwright.config.ts` |
 | Theme | `src/index.css` (and a `theme.css` when re-themed) |
 
@@ -26,7 +26,7 @@ it screenshots from this table.
 ```sh
 npm ci                            # once
 npm run lint                      # ESLint, about a second
-npx vitest run src/pages/x.test.tsx   # one component test file (seconds, no build)
+bun test src/pages/x.test.tsx     # one component test file (seconds, no build)
 node --test test/app.test.mjs     # one server test file
 npm test                          # every test: component tests, then build, serve and check the pages, CSP, health and API
 npm run preview                   # build, then serve the app with its sample data on 4173 (stop with Ctrl-C)
@@ -40,10 +40,10 @@ npx playwright test e2e/flows.spec.ts --project desktop-light   # one browser fl
   against the real app (`e2e/flows.spec.ts` is the pattern). `npm run screens` starts the seeded preview itself, waits
   for it and stops it; the screenshots land in `.aidenhq/out/<page>-<project>.png`, ready to attach; `SCREENS=/,/teams npm
   run screens` limits them to the pages a change touches.
-- **A component's logic** (what a form sends, what a list shows for given data): a Vitest test next to it,
-  `src/**/*.test.tsx`, rendered with Testing Library and driven with user-event. `vite.config.ts` gives every test a
-  happy-dom DOM set up before any component loads, so Radix dialogs, sheets and selects open as in a browser;
-  `src/test/dialog-form.test.tsx` is the pattern to copy. Stub `fetch` for the API (`vi.stubGlobal`).
+- **A component's logic** (what a form sends, what a list shows for given data): a `bun test` test next to it,
+  `src/**/*.test.tsx`, rendered with Testing Library and driven with user-event. `bunfig.toml` preloads a
+  happy-dom DOM (`src/test/setup.ts`) before any component loads, so Radix dialogs, sheets and selects open as in a browser;
+  `src/test/dialog-form.test.tsx` is the pattern to copy. Stub `fetch` for the API (assign `globalThis.fetch`, restore it in `afterEach`).
 - **The API and data:** a server test in `test/` (`test/app.test.mjs`).
 - **Sample data:** the preview's data lives with the server (`server.mjs` here; a real app's seed or fixtures file), so
   every state a reviewer needs is one URL in `feature-map.json`.

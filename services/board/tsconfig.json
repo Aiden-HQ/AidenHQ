@@ -12,7 +12,7 @@
     "declaration": false,
     "sourceMap": true,
     "allowImportingTsExtensions": false,
-    "types": ["node"]
+    "types": ["node", "bun"]
   },
   "include": ["src", "test"],
   "exclude": ["test/web", "test/share-e2e.test.ts"]

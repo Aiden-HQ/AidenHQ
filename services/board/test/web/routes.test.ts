@@ -1,6 +1,5 @@
-// @vitest-environment happy-dom
 // Old addresses land on their new homes once (App.tsx redirectOld), and closing an overlay goes back to the page under it.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "bun:test";
 import { key, mountApp, settle, unmountApp } from "./app-fixture";
 
 afterEach(unmountApp);

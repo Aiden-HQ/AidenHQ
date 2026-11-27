@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { createApp } from "../src/app.js";
 import { chatAgentMarker } from "../src/chats.js";
 import type { Comment, Issue, Paperclip } from "../src/paperclip.js";

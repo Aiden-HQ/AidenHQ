@@ -1,0 +1,4 @@
+[test]
+# Component tests live in src/; test/ holds the server tests, which run on node.
+root = "src"
+preload = ["./src/test/setup.ts"]

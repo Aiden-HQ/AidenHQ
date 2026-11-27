@@ -4,7 +4,7 @@
 import { request, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { createApp } from "../src/app.js";
 import { createKernelAuth } from "../src/kernel-auth.js";
 import type { Paperclip } from "../src/paperclip.js";

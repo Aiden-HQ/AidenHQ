@@ -1,7 +1,6 @@
-// @vitest-environment happy-dom
 // The task drawer's title (web/src/Drawer.tsx Title): an edit in progress survives a refresh that changes the title, and
 // Escape drops it without saving.
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Title } from "../../web/src/Drawer";

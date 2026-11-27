@@ -1,7 +1,7 @@
 import { request, type ClientRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "bun:test";
 import { createApp } from "../src/app.js";
 import type { Issue, Paperclip } from "../src/paperclip.js";
 import type { LiveRun } from "../src/runs.js";
@@ -77,7 +77,7 @@ it("tells open boards what agents change: each task by its id, and the chat it b
   tier0.wait = "waiting on slack's rate limit (retry 2)";
   await until("event: approvals", 5);
   req.destroy();
-  const frames = (name: string) => text.match(new RegExp(`event: ${name}\\ndata: .*`, "g"));
+  const frames = (name: string): string[] => text.match(new RegExp(`event: ${name}\\ndata: .*`, "g")) ?? [];
   expect(frames("chat")).toEqual(Array(2).fill(`event: chat\ndata: {"issue":"${chat.id}"}`));
   expect(frames("progress")).toEqual([`event: progress\ndata: {"issue":"${kid.id}"}`, `event: progress\ndata: {"issue":"${chat.id}"}`]);
 });

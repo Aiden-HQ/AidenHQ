@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "bun:test";
 import { createApp } from "../src/app.js";
 import type { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";

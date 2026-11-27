@@ -1,5 +1,5 @@
 // Which Approvals tab a card is in (web/src/conversation.ts): a card in flight has not ended, so the Done tab never lists it.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { headOf, inFilter, inProgress, isNoise, seenByOwner, shownInChat } from "../../web/src/conversation";
 import type { Approval } from "../../web/src/types";
 

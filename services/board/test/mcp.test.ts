@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { stringify } from "yaml";
 import { createApp } from "../src/app.js";
 import { NOTICE_MARKER } from "../src/board.js";
@@ -212,7 +212,8 @@ describe("mcp end to end", () => {
     expect(unread).toMatchObject({ replied: false });
     runSaw = ["opening"];
     const read = (await call("ask", { text: "board question two", wait_seconds: 1 })).json.result.structuredContent;
-    expect(read).toMatchObject({ replied: true, reply: expect.stringContaining("board answer") });
+    expect(read.replied).toBe(true);
+    expect(read.reply).toContain("board answer");
     expect(read.reply, "a form's options ride with its text, so the caller answers with their exact words").toContain("Question: Which way?\nOptions (pick one): Install twin@acme | Build new");
     runSaw = [];
   });
@@ -221,7 +222,8 @@ describe("mcp end to end", () => {
     const t0 = Date.now();
     const { json } = await call("ask", { text: "What is on my plate?", wait_seconds: 1 });
     expect(Date.now() - t0).toBeLessThan(3000);
-    expect(json.result.structuredContent).toMatchObject({ chat: expect.stringMatching(/^WOR-/), replied: false, reply: null });
+    expect(json.result.structuredContent).toMatchObject({ replied: false, reply: null });
+    expect(json.result.structuredContent.chat).toMatch(/^WOR-/);
     expect(json.result.content[0].text).toContain("still working");
     // The wait is capped by the schema (the transport stays under Cloudflare's 100 s).
     const ask = (await rpc("tools/list", {})).json.result.tools.find((t: { name: string }) => t.name === "ask");

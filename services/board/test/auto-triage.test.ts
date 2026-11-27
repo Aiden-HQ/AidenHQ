@@ -1,7 +1,7 @@
 // First-pass triage on the board (owner, 2026-11-27): an agent's placement carries its reason until the owner moves the task;
 // agents' own tasks, reports and the chaser's handed-back parts get no column; a stale New task moves to Later only after a
 // brief that mentioned it is out.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { assignees, buildBoard } from "../src/board.js";
 import { crewOf, foldedChildren } from "../src/crew.js";
 import type { Agent, Issue } from "../src/paperclip.js";

@@ -48,8 +48,8 @@ const syntax = {
   ],
 }
 const globals = ["setTimeout", "setInterval", "requestAnimationFrame"].map((name) => ({ name, message: effectMsg("this timer") }))
-// Component tests render through Testing Library; Vitest's environment (vite.config.ts `test`) has the DOM ready first.
-const domTest = { group: ["jsdom", "happy-dom", "react-dom/client", "react-dom/test-utils"], message: "Render with @testing-library/react (render, screen, user-event): vite.config.ts gives every test a ready DOM, set up before any component loads, so Radix dialogs and selects work. src/test/dialog-form.test.tsx is the pattern." }
+// Component tests render through Testing Library; bun test's preload (bunfig.toml, src/test/setup.ts) has the DOM ready first.
+const domTest = { group: ["jsdom", "happy-dom", "react-dom/client", "react-dom/test-utils"], message: "Render with @testing-library/react (render, screen, user-event): bunfig.toml preloads a ready DOM for every test, set up before any component loads, so Radix dialogs and selects work. src/test/dialog-form.test.tsx is the pattern." }
 const router = { patterns: [{ group: ["react-router", "react-router-dom", "wouter", "@tanstack/react-router"], message: nav("the starter has its own router") }] }
 
 // Rules for a directory that is exempt from the named groups.
