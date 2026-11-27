@@ -39,6 +39,8 @@ describe("fleet owner-words gate", () => {
     const rows = [{ title: "Owner tasks: re-triage" }, { title: "Daily brief" }];
     expect(pick(rows, "owner tasks re-triage", "routine", (r) => [r.title])).toBe(rows[0]);
     expect(() => pick([{ title: "Health check: EU" }, { title: "Health check - EU" }], "health check eu", "routine", (r) => [r.title])).toThrow(/several/);
+    const sync = [{ title: "Sync: customer data (EU)" }, { title: "Sync: customer database (US)" }];
+    expect(pick(sync, "sync customer data", "routine", (r) => [r.title])).toBe(sync[0]);
   });
   it("accepts the owner's opening chat message as the board recorded it, once per task", async () => {
     const typed = "Run the daily brief now please";
