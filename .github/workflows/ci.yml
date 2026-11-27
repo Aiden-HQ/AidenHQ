@@ -48,7 +48,7 @@ jobs:
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON(needs.checks.outputs.runner) }}
     timeout-minutes: 6
     # This job runs the suites, so it runs PR code (`npm ci` and its lifecycle scripts included): read-only, no secret, and
-    # no `checks: write`. `post-checks` below is the only job that may write a check.
+    # no `checks: write`.
     permissions:
       contents: read
     strategy:
@@ -65,7 +65,7 @@ jobs:
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       # kernel/contract.lock.json against the PR's base lock (scripts/lean/contract-lock.ts): a stable entry is never
-      # removed or reshaped. The scripts suite checks the lock against the code on every run.
+      # removed or reshaped. The compiler suite checks the lock against the code.
       # The base checkout and the checker are separate steps: only the fetch holds the token, and its step has ended before
       # any PR code (the checker, which reads `contract-lock.ts` from this checkout) runs. `env -u` would not be enough: a
       # child can still read its parent's environment through `/proc`.
@@ -82,7 +82,10 @@ jobs:
         env:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          (cd scripts && npm ci --ignore-scripts)
+          # the checker imports the kernel's sources, so it needs the kernel's packages too
+          (cd scripts && npm ci --ignore-scripts) & s=$!
+          (cd kernel && npm ci --ignore-scripts) & k=$!
+          wait $s && wait $k || exit 1
           node --disable-warning=ExperimentalWarning scripts/lean/contract-lock.ts --check --base "$PR_BASE"
       - name: Test
         # Runs PR code (`npm ci` and the suites). This workflow passes no token or secret to this step: no `${{ secrets.* }}`,
@@ -178,136 +181,12 @@ jobs:
           bash .github/ci/run-suites.sh "$list"
           vanished after
 
-  # One GitHub check per suite a shard's plan ran, on the PR head: the `checks` job's plan says which suites (its map comes
-  # from the tested tree, `.github/ci/select.ts`), and the shard's own Actions job conclusion says they passed. Nothing here reads a log or the Test step's output: the shard jobs run `npm ci`
-  # (PR lifecycle scripts) and print their results into the log, so log text is not evidence. This job runs only the posting
-  # script and checks out no PR code. A fork PR or a push posts nothing. A posting failure (logged, `continue-on-error`) leaves the suites without a check
-  # (fail closed) and stays out of `ci-required`'s gate, so it cannot make `ci-required` red.
-  post-checks:
-    needs: [checks, packages, modules]
-    if: ${{ always() && needs.checks.result == 'success' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      actions: read # the run's job instances and the head tree's directories
-      checks: write # the one check per suite, on the PR head
-    steps:
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24.x
-      - name: Post a check run for each suite a shard ran
-        # Publishing is best effort: a failure here is logged (the ::warning below) and never turns the PR red or blocks a merge.
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          TESTED_SHA: ${{ github.sha }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          PACKAGES: ${{ needs.checks.outputs.packages }}
-          MODULES: ${{ needs.checks.outputs.modules }}
-        run: |
-          node --input-type=module <<'EOF'
-          const { REPO, RUN_ID, HEAD_SHA, TESTED_SHA, HEAD_REPO, PACKAGES, MODULES } = process.env;
-          // Same-repository pull requests only: a fork PR's head repo differs, and a push has no pull_request head at all, so
-          // this exits before posting anything. The job's `if:` says the same; this is the script's own guard, not a comment.
-          if (!HEAD_SHA || HEAD_REPO !== REPO) { console.log(`not a same-repo pull request (head ${HEAD_REPO ?? "<none>"}): posting no checks`); process.exit(0); }
-          // The plan is the `checks` job's own output and nothing else: the shards' `matrix.entries` are that output, never a
-          // log, the Test step's output or a job summary. Empty means no packages/modules shard ran at all, so nothing posts.
-          // Each prefix parses on its own, so a malformed one is reported without discarding the other's valid checks.
-          const plan = [];
-          for (const [prefix, raw] of [["packages", PACKAGES], ["modules", MODULES]]) {
-            let shards;
-            try { shards = JSON.parse(raw || "[]"); } catch (err) { console.log(`::warning::needs.checks.outputs.${prefix} is not JSON (${err.message}): no ${prefix} checks`); continue; }
-            if (!Array.isArray(shards)) { console.log(`::warning::needs.checks.outputs.${prefix} is not a JSON array: no ${prefix} checks`); continue; }
-            // The shard and its entries are validated here too: `[null]` or an entry without a `dir` would otherwise throw in the
-            // shared posting loop and take the other prefix's checks with it. A bad shard is skipped on its own, never fatal.
-            const ok = shards.filter((s) => s && Number.isInteger(s.shard) && Array.isArray(s.entries)
-              && s.entries.every((e) => e && typeof e.name === "string" && typeof e.dir === "string"));
-            if (ok.length !== shards.length) console.log(`::warning::needs.checks.outputs.${prefix}: ${shards.length - ok.length} malformed shard(s) skipped`);
-            if (ok.length) plan.push([prefix, ok]);
-          }
-          const base = "https://api.github.com";
-          const headers = { authorization: `Bearer ${process.env.GH_TOKEN}`, accept: "application/vnd.github+json", "content-type": "application/json" };
-          const get = async (path) => {
-            const res = await fetch(`${base}${path}`, { headers });
-            if (!res.ok) throw new Error(`GET ${path} failed: ${res.status}`);
-            return res.json();
-          };
-          // Every job instance this run has, across pages (`filter=latest` keeps the latest instance of each job name, so a shard that passed in an earlier attempt
-          // and was not re-run still appears, with that attempt's `run_attempt`).
-          const jobs = [];
-          for (let page = 1; ; page++) {
-            const data = await get(`/repos/${REPO}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100&page=${page}`);
-            jobs.push(...(data.jobs ?? []));
-            if (jobs.length >= (data.total_count ?? 0) || (data.jobs ?? []).length === 0) break;
-          }
-          // A suite's directory must be a directory at the PR head, where the check is posted, and in the tree the shards tested
-          // (`github.sha`, the PR's merge commit): the contents API answers 404 for a missing one, and lists a file as an object
-          // (run-suites.sh tests -d, writes `gone: <dir>` and exits 0, so it did not run). Both must hold, so neither a directory
-          // only the merge brought in nor one only the head carries earns a check for a suite that did not run.
-          const dirs = new Map();
-          const isDir = async (dir, ref) => {
-            const key = `${dir}\t${ref}`;
-            if (dirs.has(key)) return dirs.get(key);
-            const path = dir.split("/").map(encodeURIComponent).join("/");
-            const res = await fetch(`${base}/repos/${REPO}/contents/${path}?ref=${encodeURIComponent(ref)}`, { headers });
-            if (res.status === 404) dirs.set(key, false);
-            else if (!res.ok) throw new Error(`GET contents/${dir} failed: ${res.status}`);
-            else dirs.set(key, Array.isArray(await res.json())); // a directory lists as an array, a file as an object
-            return dirs.get(key);
-          };
-          const exists = async (dir) => (await isDir(dir, HEAD_SHA)) && (await isDir(dir, TESTED_SHA));
-          const post = async (body) => {
-            const res = await fetch(`${base}/repos/${REPO}/check-runs`, { method: "POST", headers, body: JSON.stringify(body) });
-            if (!res.ok) throw new Error(`POST check-runs failed: ${res.status} ${await res.text()}`);
-          };
-          // Check runs already on the head, so a failed-job re-run (which sees the same passing shard jobs again) posts nothing twice.
-          const have = new Set();
-          for (let page = 1; ; page++) {
-            const data = await get(`/repos/${REPO}/commits/${HEAD_SHA}/check-runs?filter=all&per_page=100&page=${page}`);
-            for (const c of data.check_runs ?? []) have.add(`${c.name}\t${c.external_id}`);
-            if (have.size >= (data.total_count ?? 0) || (data.check_runs ?? []).length === 0) break;
-          }
-          let posted = 0;
-          try {
-          for (const [prefix, shards] of plan) {
-            for (const shard of shards) {
-              const name = `${prefix} (${shard.shard})`;
-              const matches = jobs.filter((j) => j.name === name);
-              if (matches.length !== 1) { console.log(`no single ${name} job instance in this run: posting nothing for this shard`); continue; }
-              const job = matches[0];
-              if (job.conclusion !== "success" || job.head_sha !== HEAD_SHA) { console.log(`${name} did not conclude success on the head: posting nothing for this shard`); continue; }
-              for (const entry of shard.entries) {
-                if (have.has(`${entry.name}\t${RUN_ID}/${job.id}/${shard.shard}`)) continue;
-                if (!(await exists(entry.dir))) { console.log(`${entry.name}: ${entry.dir} is not a directory at the head or in the tested tree: posting no check`); continue; }
-                await post({
-                  name: entry.name,
-                  head_sha: HEAD_SHA,
-                  status: "completed",
-                  conclusion: "success",
-                  external_id: `${RUN_ID}/${job.id}/${shard.shard}`,
-                  output: { title: `${entry.name} passed`, summary: `Suite ${entry.name} ran in ${name} and passed.` },
-                });
-                posted++;
-              }
-            }
-          }
-          } catch (err) {
-            console.log(`::warning::could not post every check run (${posted} posted): ${err.message}`);
-            process.exitCode = 1;
-          }
-          console.log(`Posted ${posted} check run(s).`);
-          EOF
-
   board:
     needs: checks
     if: contains(fromJSON(needs.checks.outputs.tests).*.name, 'services/board')
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON(needs.checks.outputs.runner) }}
     timeout-minutes: 3
-    # The board suite is PR code: read-only, no secret, no `checks: write` (only `post-checks` has it).
+    # The board suite is PR code: read-only, no secret, no `checks: write`.
     permissions:
       contents: read
     steps:
@@ -366,13 +245,20 @@ jobs:
       # the head, like the suite map and the eval gate below: this step runs code from the image, so a PR able to choose the
       # image could point it at a promtool that exits 0 and skip the rules. Only the rules under test come from the head; a
       # change to the Dockerfile still runs on main's push with its own image. `test rules` also runs `check rules`
-      # internally; both are run so a malformed rule file fails with promtool's own message before a test does.
+      # internally; both are run so a malformed rule file fails with promtool's own message before a test does. A pull request
+      # that leaves modules/monitoring/prometheus alone skips all three steps (a push to main or a merge train always checks them).
+      # They stay here, not in a test suite: only this job has the base commit to read the image from, while the suites' jobs
+      # run PR code on a shallow checkout.
       - name: promtool image
         id: promtool
         run: |
           # a merge train is a push of main plus the PRs: its base is main, never an earlier train commit
           [ "$GITHUB_EVENT_NAME" = pull_request ] && PR_BASE=$(git rev-parse HEAD^1)
           case "$GITHUB_REF" in refs/heads/merge-train/*) PR_BASE=$(git rev-parse origin/main) ;; refs/heads/main) PR_BASE= ;; esac
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] && git diff --quiet "$PR_BASE" HEAD -- modules/monitoring/prometheus; then
+            echo "the monitoring rules are unchanged: promtool skipped"
+            exit 0
+          fi
           if [ -n "${PR_BASE:-}" ]; then
             image=$(git show "$PR_BASE:modules/monitoring/prometheus/Dockerfile" | sed -n 's/^FROM \([^ ]*\).*/\1/p' | head -n 1)
           else
@@ -387,10 +273,12 @@ jobs:
           echo "promtool from ${image}"
           echo "image=$image" >> "$GITHUB_OUTPUT"
       - name: promtool check rules
+        if: steps.promtool.outputs.image != ''
         env:
           IMAGE: ${{ steps.promtool.outputs.image }}
         run: docker run --rm --entrypoint /bin/promtool -v "$PWD/modules/monitoring/prometheus:/rules:ro" -w /rules "$IMAGE" check rules rules.yml
       - name: promtool test rules
+        if: steps.promtool.outputs.image != ''
         env:
           IMAGE: ${{ steps.promtool.outputs.image }}
         run: docker run --rm --entrypoint /bin/promtool -v "$PWD/modules/monitoring/prometheus:/rules:ro" -w /rules "$IMAGE" test rules rules.test.yml
@@ -753,7 +641,24 @@ jobs:
     permissions:
       contents: read
       checks: read
+      actions: write # cancel this run when a newer push superseded it (the step below; this job runs no PR code)
+      pull-requests: read # the PR's current head
     steps:
+      # A newer push cancels this run's jobs, yet this job still runs and would post a red for the old head. When a job was
+      # cancelled and the PR's head has moved on, cancel this run too and post nothing; a cancelled job on the current head (a
+      # timeout, a manual cancel) falls through to the gate and fails it.
+      - if: ${{ github.event_name == 'pull_request' && contains(needs.*.result, 'cancelled') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          now=$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha) || exit 0
+          [ "$now" != "$HEAD_SHA" ] || exit 0
+          gh run cancel "$RUN_ID" -R "$REPO" || exit 0
+          sleep 60 # the cancel ends this job
       # A title/body edit: every job but `policy` skipped with it, so the head's verdict is what its newest real check runs say.
       # The run that tested the code is still on the head and its red is not the edit's to clear; `policy` is the edit's own, so
       # a fixed title turns this green. The aggregate itself is what this job posts, so it is not read back.
