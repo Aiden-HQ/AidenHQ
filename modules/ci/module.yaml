@@ -1,7 +1,7 @@
 name: ci
 description: "Self-hosted GitHub Actions runners (labels self-hosted, aidenhq) for the fleet org's app repos and any other org the owner's GitHub sign-in registers runners in (the product repo's): one fresh container per job."
 # No agents and no connections: the runner service (compose.yaml) is started per job by the host's
-# aidenhq-ci-runner@[<org>-]<n> units (ops/ci-runner.sh), never by `docker compose up`. docs/operations.md, "CI runners".
+# aidenhq-ci-runner@[<org>-]<n> units (ops/ci-runner.sh), never by `docker compose up`. modules/ci/README.md, "How it runs".
 # The self-hosted Actions runner. on_demand: `docker compose up` never starts it; each aidenhq-ci-runner@[<org>-]<n> unit runs
 # `docker compose run --rm ci-runner` (ops/ci-runner.sh), so every job gets a new container (nothing shared between jobs),
 # which registers ephemerally, runs one job, exits and is removed. It gets only a one-hour registration token (RUNNER_TOKEN,
@@ -38,7 +38,7 @@ services:
           # Another org's runners join its runner group (only the repos it lists), never that org's Default (all repos).
           group=()
           if [ "$${RUNNER_URL,,}" != "https://github.com/$${AIDENHQ_FLEET_ORG,,}" ]; then
-            group=(--runnergroup "$${AIDENHQ_ORG_RUNNER_GROUP:?set settings.ci_org_runner_group for $$RUNNER_URL (docs/operations.md, CI runners)}")
+            group=(--runnergroup "$${AIDENHQ_ORG_RUNNER_GROUP:?set settings.ci_org_runner_group for $$RUNNER_URL (modules/ci/README.md, How it runs)}")
           fi
           ./config.sh --unattended --ephemeral --disableupdate --url "$$RUNNER_URL" --token "$$RUNNER_TOKEN" --name "aidenhq-$$(hostname)" --labels aidenhq --work _work "$${group[@]}"
           unset RUNNER_TOKEN
@@ -64,7 +64,7 @@ codehost:
 settings:
   # Repositories outside the fleet org whose jobs the runners take (space-separated owner/name), from a push to the
   # default branch or a same-repo PR only (runner/job-started.ts). That org's runner group
-  # (ci_org_runner_group) must also serve them (docs/operations.md, "CI runners").
+  # (ci_org_runner_group) must also serve them (modules/ci/README.md, "How it runs").
   ci_runner_repos:
     default: "Aiden-HQ/AidenHQ Aiden-HQ/aidenhq-distro"
     pattern: '^[\w.-]+/[\w.-]+( [\w.-]+/[\w.-]+)*$'

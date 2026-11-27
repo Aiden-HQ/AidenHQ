@@ -155,3 +155,5 @@ apply. Fleet Ops has `grafana?: read` (granted whenever the grafana module is on
 3. Optional (agents read metrics): the service account token above, the `grafana` module with `grafana_source: local`.
 
 No sudo is needed: every metric is read as the owner's user. Turning the module off removes the services and the timer.
+
+`CoreServiceDown` and `ApplyFailed` also send the chief of staff one line.
