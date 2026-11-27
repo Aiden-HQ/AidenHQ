@@ -609,9 +609,10 @@ describe("the GitHub App", () => {
       const url = new URL(String(input));
       const auth = String((init?.headers as Record<string, string>).authorization);
       w.calls.push({ method: init?.method ?? "GET", path: url.pathname, auth });
+      // The bot user is public: read with no credentials (GitHub's user lookup takes no App JWT).
+      if (url.pathname === "/users/aidenhq-review%5Bbot%5D") return auth === "undefined" ? new Response(JSON.stringify({ id: 900, login: "aidenhq-review[bot]" })) : new Response("{}", { status: 401 });
       if (!/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/.test(auth)) return new Response("{}", { status: 401 });
       if (url.pathname === "/app") return new Response(JSON.stringify({ id: 4242, slug: "aidenhq-review" }));
-      if (url.pathname === "/users/aidenhq-review%5Bbot%5D") return new Response(JSON.stringify({ id: 900, login: "aidenhq-review[bot]" }));
       if (url.pathname === "/repos/acme/payments/installation") return installed ? new Response(JSON.stringify({ id: 55, permissions })) : new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
       if (url.pathname === "/app/installations/55/access_tokens") return new Response(JSON.stringify({ token: "ghs_app55", expires_at: new Date(Date.now() + 3_600_000).toISOString() }), { status: 201 });
       return new Response("{}", { status: 404 });

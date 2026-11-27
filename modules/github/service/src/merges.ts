@@ -70,6 +70,8 @@ export function createMerges(d: {
   /** A merge attempt's actor on `repo` (client.ts actorFor, op merge), and the actor a kept request's key names. */
   actorFor: (repo: string) => Promise<Pick<Actor, "key" | "rest">>;
   actorByKey: (key: string) => Promise<Pick<Actor, "rest">>;
+  /** The instance App's bot login (`<slug>[bot]`), whose signed replies answer members' comments. */
+  bot?: () => Promise<string | undefined>;
   /** The listed repos ("owner/name": the Maintainer's and Ship's lists): merged here as in the agents org, read when each PR is polled. */
   listed?: string[];
   /** Code review's verdict for a PR head (undefined: may merge; wait: why not yet). */
@@ -153,7 +155,8 @@ export function createMerges(d: {
       if (r.status >= 300 || r.body?.errors?.length || !node) throw new Error(`GitHub GraphQL: the PR's comments couldn't be read (${r.status})`);
       return node;
     }, c.since);
-    return openMemberComments(pr, { ...c, isMember: (login, association) => d.flow!.isMember(login, association, repo) });
+    const bot = String((await d.bot?.().catch(() => undefined)) ?? "").replace(/\[bot\]$/i, "");
+    return openMemberComments(pr, { ...c, isMember: (login, association) => d.flow!.isMember(login, association, repo), ...(bot ? { bot } : {}) });
   }
   /**
    * The pull request's complete file list: the pages after the first while GitHub says there are more (merge-gate.ts allPrFiles).

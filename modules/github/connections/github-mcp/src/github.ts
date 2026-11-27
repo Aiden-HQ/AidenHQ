@@ -640,7 +640,10 @@ export class GitHub {
     if (!project) return out;
     out.project = { title: project.title, url: project.url };
     try {
-      const board = await this.on({ org: parseProject(input.project!).org }, "project");
+      // The App adds the issue only where it can read it: its installation on the issue's repo, in the project's own org (the
+      // project permission is an org one). An issue in another org's repo goes on the board as the owner.
+      const org = parseProject(input.project!).org;
+      const board = this.actor ? this : this.with(org.toLowerCase() === owner.toLowerCase() ? await this.access.actorFor({ repo: `${owner}/${name}` }, "project") : await this.access.actorByKey("owner"));
       const added = await board.graphql<{ addProjectV2ItemById: { item: { id: string } } }>("addItem", { project: project.id, content: issue.node_id });
       out.project.added = true;
       if (project.option && project.field) {

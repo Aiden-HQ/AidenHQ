@@ -48,6 +48,8 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
   };
   const lookups = new Map<string, { found: Installation | null; at: number }>();
   const tokens = new Map<number, { token: string; expires: number }>();
+  /** Each installation's accepted permissions as last read: a change drops its cached token. */
+  const seen = new Map<number, string>();
   let who: { for: string; identity: AppIdentity; at: number } | undefined;
   /** Why the App last failed, kept for the App it happened to (`for`, its id) until a call as it works again. */
   let failed: { for: string; why: string } | undefined;
@@ -60,7 +62,7 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
 
   async function api(method: string, path: string, auth: string, body?: unknown): Promise<{ status: number; body: any }> {
     if (blockedUntil > now()) throw new AppError(`the GitHub App is rate limited until ${new Date(blockedUntil).toISOString()}`);
-    const r = await fetchImpl(`${API}${path}`, { method, headers: { authorization: `Bearer ${auth}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq", ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(20_000) })
+    const r = await fetchImpl(`${API}${path}`, { method, headers: { ...(auth ? { authorization: `Bearer ${auth}` } : {}), accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "aidenhq", ...(body ? { "content-type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(20_000) })
       .catch((e: Error) => { throw new AppError(`the GitHub App: GitHub didn't answer (${String(e.message).slice(0, 120)})`); });
     const retry = Number(r.headers.get("retry-after"));
     if (r.status === 429 || (r.status === 403 && ((Number.isFinite(retry) && retry > 0) || r.headers.get("x-ratelimit-remaining") === "0"))) {
@@ -85,6 +87,9 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
       if (r.status === 404) continue;
       if (r.status !== 200 || !Number.isInteger(r.body?.id)) throw refused(`couldn't look up its installation (${path})`, r);
       found = { id: Number(r.body.id), permissions: perms(r.body.permissions), html_url: String(r.body.html_url ?? ""), account: String(r.body.account?.login ?? "") };
+      // A token minted before the installation accepted (or lost) a permission carries the old set: it goes with the old answer.
+      const sig = JSON.stringify(Object.entries(found.permissions).sort());
+      if (seen.get(found.id) !== sig) { tokens.delete(found.id); seen.set(found.id, sig); }
       break;
     }
     lookups.set(k, { found, at: now() });
@@ -109,6 +114,8 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
     /** Drops the cached installation of a repo (`owner/name`) or account: GitHub refused a call its accepted permissions allowed. */
     evict: (target: string): void => {
       const t = target.toLowerCase();
+      // Its tokens go too: a refusal may be a token minted before a permission was accepted.
+      for (const [k, v] of lookups) if ((k.endsWith(`:repo:${t}`) || k.endsWith(`:org:${t}`)) && v.found) tokens.delete(v.found.id);
       for (const k of lookups.keys()) if (k.endsWith(`:repo:${t}`) || k.endsWith(`:org:${t}`) || (!t.includes("/") && k.includes(`:repo:${t}/`))) lookups.delete(k);
     },
     /** An installation token, reused until 5 minutes before it expires; `fresh` drops the cached one (GitHub refused it). */
@@ -141,7 +148,8 @@ export function gitHubApp({ dir, fetchImpl = fetch, now = Date.now }: { dir: str
       const app = await api("GET", "/app", jwt(c));
       if (app.status !== 200 || typeof app.body?.slug !== "string") throw refused("couldn't read the App", app);
       const login = `${app.body.slug}[bot]`;
-      const bot = await api("GET", `/users/${encodeURIComponent(login)}`, jwt(c));
+      // The bot user is public: GitHub's user lookup takes no App JWT, so it is read without credentials.
+      const bot = await api("GET", `/users/${encodeURIComponent(login)}`, "");
       if (bot.status !== 200 || !Number.isInteger(bot.body?.id)) throw refused(`couldn't read its bot ${login}`, bot);
       const identity = { id: Number(app.body.id), slug: String(app.body.slug), login, botId: Number(bot.body.id) };
       who = { for: c.id, identity, at: now() };

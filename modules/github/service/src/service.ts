@@ -1651,7 +1651,11 @@ export function createService(o: Options) {
     const refused = await precheck();
     if (refused) return { ok: false, text: refused };
     let r: { status: number; body: any } | undefined;
-    try { r = await actor.rest("PUT", path, { sha: a.head, merge_action: "merge_queue" }); } catch (e) { log("async merge request unanswered", { pr: url, err: String((e as Error).message).slice(0, 200) }); }
+    try { r = await actor.rest("PUT", path, { sha: a.head, merge_action: "merge_queue" }); } catch (e) {
+      // GitHub refused the App (a 403 the client throws typed): its refusal, said, never a request that may have gone through.
+      if ((e as { status?: number }).status === 403) return { ok: false, text: `GitHub refused to queue ${url}: ${String((e as Error).message).slice(0, 300)}` };
+      log("async merge request unanswered", { pr: url, err: String((e as Error).message).slice(0, 200) });
+    }
     // No answer at all (a timeout, a 5xx): the request may have been made and GitHub names it on a repeat (409) while it is
     // pending, so the caller reads the PR back and, not queued, asks again next round — never a hold on an answer that never came.
     if (!r || r.status >= 500) return { ok: false, ambiguous: true, text: `${PENDING} ${url}: GitHub didn't answer the async merge request for ${head}: not merged.` };
@@ -1925,6 +1929,7 @@ export function createService(o: Options) {
   });
   const merges = createMerges({
     ship: o.ship, approvals: (repo: string, n: number) => appApprovals.of(repo, n), actorFor: (repo: string) => actorOn(repo, "merge"), actorByKey: (key: string) => access.actorByKey(key),
+    bot: async () => (await o.app?.identity())?.login,
     flow, taskOf: (repo, n) => flow.taskOf(repo, n),
     taskStatus: async (task) => String(((await kernel("GET", `/v1/work?task=${encodeURIComponent(task)}`)) as { status?: unknown })?.status ?? "") || null,
     // A task's id from its identifier: the kernel's work read resolves it by its jobs, which carry the id.

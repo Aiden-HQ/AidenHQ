@@ -103,10 +103,11 @@ export function createFlow(d: FlowDeps) {
     }
     return writers.get(k)!.write;
   }
-  /** Whether `who` is our App's bot (by its live login; GraphQL names it without `[bot]`). */
+  /** Whether `who` is our App's bot, by its REST login (`<slug>[bot]`, which no person's login can be: GitHub names a person's
+   * without brackets). A bare GraphQL login is never taken for it: a person may hold the slug as their own login. */
   async function isBot(who?: string | null): Promise<boolean> {
-    const bot = login(await d.bot?.().catch(() => undefined));
-    return Boolean(bot && login(who) === bot);
+    const bot = String((await d.bot?.().catch(() => undefined)) ?? "").toLowerCase();
+    return Boolean(bot.endsWith("[bot]") && String(who ?? "").toLowerCase() === bot);
   }
   /** Whether GitHub itself says `who` belongs to the repo: the owner's login, an OWNER, MEMBER or COLLABORATOR association, or write on `repo`. */
   async function isMember(who?: string | null, association?: string | null, repo?: string): Promise<boolean> {

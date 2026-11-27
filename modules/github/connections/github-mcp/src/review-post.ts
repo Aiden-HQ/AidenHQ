@@ -102,7 +102,7 @@ export class ReviewPoster {
   private readonly replaced = new Map<string, number>();
   constructor(
     private readonly gh: GitHub,
-    private readonly access: Pick<GitHubAccess, "identity" | "actorFor">,
+    private readonly access: Pick<GitHubAccess, "identity" | "actorFor" | "connected">,
     private readonly onFailure?: (err: unknown) => void,
     /** The instance's optional GitHub App (github-app.ts): who its bot is, for the threads it started. */
     private readonly app?: Pick<GitHubApp, "identity">,
@@ -120,10 +120,12 @@ export class ReviewPoster {
     return { gh: this.gh.with(actor), who: { login: norm(login), bot: actor.kind === "app", identity: actor.kind } };
   }
 
-  /** Who may own a thread: the owner, and the App's bot while an App is set up (also threads it started before a switch). */
+  /** Who may own a thread: the owner (while signed in), and the App's bot while an App is set up (also threads it started before a switch). */
   private async ourIdentities(): Promise<Who[]> {
     const bot = await this.app?.identity();
-    return [await this.owner(), ...(bot ? [{ login: norm(bot.login), bot: true, identity: "app" as const }] : [])];
+    // The owner's login only names threads the owner posted: a sign-in that lapsed must not stop the App posting its own.
+    const owner = this.access.connected() ? await this.owner() : undefined;
+    return [...(owner ? [owner] : []), ...(bot ? [{ login: norm(bot.login), bot: true, identity: "app" as const }] : [])];
   }
 
   /**
@@ -185,13 +187,15 @@ export class ReviewPoster {
 
   /** Where comments may land on the reviewed commit's diff (its merge base to it, whatever the PR's head is now): each changed
    * file's right-side lines; a file with no patch (binary, too large) has none and takes a file comment. */
-  private async diffLines(ref: Ref, base: string, head: string, current: boolean): Promise<Map<string, Set<number>>> {
+  private async diffLines(ref: Ref, gh: GitHub, base: string, head: string, current: boolean): Promise<Map<string, Set<number>>> {
     // The PR's own files (up to 3,000, paged) while it is still at the reviewed commit; after it moved, the compare of the reviewed
     // commit (GitHub lists at most its first 300 files: a finding past them is listed in the summary, without a thread).
     const files: { filename: string; patch?: string }[] = [];
+    // The PR's files are read as the writer; the compare is a Contents read, which a review's writer needn't hold, so it goes as
+    // the client picks (the App where it may, else the owner).
     if (current) {
       for (let page = 1; page <= 30; page++) {
-        const fs = await this.gh.request<{ filename: string; patch?: string }[]>("GET", `${api(ref)}/pulls/${ref.number}/files`, { query: { per_page: 100, page } });
+        const fs = await gh.request<{ filename: string; patch?: string }[]>("GET", `${api(ref)}/pulls/${ref.number}/files`, { query: { per_page: 100, page } });
         files.push(...fs);
         if (fs.length < 100) break;
       }
@@ -199,8 +203,8 @@ export class ReviewPoster {
     return new Map(files.map((f) => [f.filename, f.patch ? rightLines(f.patch) : new Set<number>()]));
   }
 
-  private async pull(ref: Ref): Promise<GhPr> {
-    const pr = await this.gh.request<GhPr>("GET", `${api(ref)}/pulls/${ref.number}`, {});
+  private async pull(ref: Ref, gh: GitHub = this.gh): Promise<GhPr> {
+    const pr = await gh.request<GhPr>("GET", `${api(ref)}/pulls/${ref.number}`, {});
     // A merged PR still takes its review (GitHub accepts one); a closed one doesn't.
     if (pr.state !== "open" && !pr.merged) throw new GitHubRefused(`${ref.owner}/${ref.repo}#${ref.number} isn't open or merged`);
     return pr;
@@ -369,13 +373,13 @@ export class ReviewPoster {
     const ref = { ...split(r.repo), number: r.pr };
     const w = await this.attempt(r.repo, "pr");
     const who = w.who;
-    const pr = await this.pull(ref);
+    const pr = await this.pull(ref, w.gh);
     // This run's review, looked up before anything else it needs: a create whose answer was lost (a timeout, a gateway that
     // dropped the reply) may already have made it, and a retry that first read the threads and the diff could exhaust its attempts
     // there and report "not posted" about a review readers can see. Its id settles that question straight away.
     let review: { id: number; html_url: string; body?: string } | undefined;
     for (let page = 1; page <= 10 && !review; page++) {
-      const rs = await this.gh.request<{ id: number; html_url: string; body?: string; user?: Author }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews`, { query: { per_page: 100, page } });
+      const rs = await w.gh.request<{ id: number; html_url: string; body?: string; user?: Author }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews`, { query: { per_page: 100, page } });
       // The writer's own (a review the owner posted before the App was installed is left as it is: the App posts its own).
       review = rs.find((x) => x.body?.includes(RUN_MARK(a.run)) && isWho(who, x.user));
       if (rs.length < 100) break;
@@ -385,15 +389,15 @@ export class ReviewPoster {
     // A review that is already on the pull request makes what follows best-effort: its threads and diff are read for its remaining
     // comments, and a read that fails leaves those in the summary instead of reporting the review as not posted.
     let threads: Awaited<ReturnType<ReviewPoster["threads"]>> = [];
-    if (review) threads = (await tryTo("reading the review's threads", () => this.threads(ref))) ?? [];
-    else threads = await this.threads(ref);
+    if (review) threads = (await tryTo("reading the review's threads", () => this.threads(ref, w.gh))) ?? [];
+    else threads = await this.threads(ref, w.gh);
     // Threads already open for a finding: the service's recorded ones, and this run's own from an earlier attempt (its run marker).
     const own = new Set(a.own);
     const earlier = new Map(threads.filter((t) => t.finding && (own.has(t.comment) || (t.run === a.run && isWho(who, { login: t.author, type: t.bot ? "Bot" : "User" })))).map((t) => [t.finding!, t.url]));
     // Only findings whose comment the AI reviewer's card showed get one (the card renders the same choice, without GitHub's view).
     const { comments: carded, scale } = card(a);
     const shown = new Set(carded.map((c) => c.id));
-    const anchored = anchors(r.findings, review ? ((await tryTo("reading the diff", () => this.diffLines(ref, r.base, r.head, pr.head.sha === r.head))) ?? new Map()) : await this.diffLines(ref, r.base, r.head, pr.head.sha === r.head));
+    const anchored = anchors(r.findings, review ? ((await tryTo("reading the diff", () => this.diffLines(ref, w.gh, r.base, r.head, pr.head.sha === r.head))) ?? new Map()) : await this.diffLines(ref, w.gh, r.base, r.head, pr.head.sha === r.head));
     const place = new Map([...anchored].filter(([id]) => shown.has(id)));
     const first = renderReview(r, a.run, { place, earlier, gated: a.gated, scale, tier: a.tier, tier_why: a.tier_why, first: a.first });
     const onLines = first.comments.filter((c) => !c.file);
@@ -405,7 +409,7 @@ export class ReviewPoster {
         body: { event: "COMMENT", commit_id: r.head, body: withFooter(first.summary, AGENT), ...(onLines.length ? { comments: onLines.map((c) => ({ path: c.path, line: c.line, side: "RIGHT", ...(c.start_line ? { start_line: c.start_line } : {}), body: c.body })) } : {}) },
       }).catch(async (e: Error) => {
         for (let page = 1; page <= 10; page++) {
-          const rs = await this.gh.request<{ id: number; html_url: string; body?: string; user?: Author }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews`, { query: { per_page: 100, page } }).catch(() => []);
+          const rs = await w.gh.request<{ id: number; html_url: string; body?: string; user?: Author }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews`, { query: { per_page: 100, page } }).catch(() => []);
           const found = rs.find((x) => x.body?.includes(RUN_MARK(a.run)) && isWho(who, x.user));
           if (found) return found;
           if (rs.length < 100) break;
@@ -430,7 +434,7 @@ export class ReviewPoster {
       for (let attempt = 1; ; attempt++) {
         try {
           for (let page = 1; page <= 10; page++) {
-            const cs = await this.gh.request<{ id: number; html_url: string; body?: string }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews/${review!.id}/comments`, { query: { per_page: 100, page } });
+            const cs = await w.gh.request<{ id: number; html_url: string; body?: string }[]>("GET", `${api(ref)}/pulls/${ref.number}/reviews/${review!.id}/comments`, { query: { per_page: 100, page } });
             for (const c of cs) keep(c);
             if (cs.length < 100) break;
           }
@@ -441,7 +445,7 @@ export class ReviewPoster {
             // Its comments can't be listed by the review: its threads still name them (each first comment, its run's marker), so
             // the ids are recovered from there, merged by id with every page that was read, rather than left for a caller's retry
             // that would only find them the same way.
-            const mine = (await this.threads(ref).catch(() => [])).filter((t) => t.run === a.run && isWho(who, { login: t.author, type: t.bot ? "Bot" : "User" }));
+            const mine = (await this.threads(ref, w.gh).catch(() => [])).filter((t) => t.run === a.run && isWho(who, { login: t.author, type: t.bot ? "Bot" : "User" }));
             for (const t of mine) if (!seen.has(t.comment)) seen.set(t.comment, { id: t.comment, url: t.url, ...(t.finding ? { finding: t.finding } : {}) });
             if (!seen.size) throw e;
             made.push(...seen.values());
