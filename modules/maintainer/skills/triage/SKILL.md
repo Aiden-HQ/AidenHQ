@@ -16,9 +16,9 @@ problem, another project's behaviour, or a claim the code disproves) and `fixed`
 <owner>/<repo>#<n>`, `Not fixing: <reason>`, or the `Fixed by` line), and then:
 - `comment`: the comment alone; the issue stays open.
 - `label`: the comment and the verdict's label (`duplicate`, `invalid` or `fixed`, with `github_issue_label`); the issue stays
-  open, and the fix label comes off it when it carries one.
+  open.
 - `close`: the comment is the close's `note` (`github_issue_state`): `not_planned` for duplicate and invalid, `completed` for fixed.
-An issue carrying one of the repo's `protected_labels` stays open: under `close` its verdict is the label instead. Under `comment` or `label` the verdict is complete with the issue open, and the run finishes there.
+An issue carrying one of the repo's `protected_labels` stays open: under `close` its verdict is the label instead. Under `comment` or `label` the fix label comes off the issue when it carries one, the verdict is complete with the issue open, and the run finishes there.
 
 ## What to weigh
 

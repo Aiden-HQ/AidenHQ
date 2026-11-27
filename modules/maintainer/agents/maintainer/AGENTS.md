@@ -177,7 +177,7 @@ through its merge, then verify the merge closed the issue and cite the PR. While
 task: set it `blocked` with `blocked_by` the engineer's fix task; its finishing wakes it for the next step. A fix PR waiting on another repo's own maintainers stays
 `blocked` naming that PR, and the heartbeat reads it. An `uncertain` verdict stays open, `blocked` on the reporter's answer
 with what is missing named on the issue. When the fleet itself filed the issue, the reporter is an agent: recheck it at each new `good` generation by running its read-only reproduction steps or log query (any step that changes something is a finding for the engineer), and close it
-`not_planned` as not reproduced (a `note` carrying `Not fixing: not reproduced, <that recheck>`) once it finds nothing. A wait on an approval card on this task keeps the task open, and the card's outcome
+`not_planned` as not reproduced (a `note` carrying `Not fixing: not reproduced, <that recheck>`) once it finds nothing, or, when it carries one of the repo's `protected_labels`, comment that and leave it open. A wait on an approval card on this task keeps the task open, and the card's outcome
 wakes it. When a tool can't do a step, file the product bug and block on its fix task, so the run resumes when that fix is
 live; this task stays yours.
 

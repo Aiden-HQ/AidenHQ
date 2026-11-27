@@ -345,7 +345,7 @@ const token = (env: NodeJS.ProcessEnv) => {
 
 /** The labelled-issue task's done condition, once, as "Done conditions" in the handbook says it: the grader's three criteria. */
 const ISSUE_DONE = [
-  "The issue is resolved on GitHub: closed; or left open with the Maintainer's verdict, as the repo's settings ask (a comment by an owner, member or collaborator whose first line is `Not fixing: <reason>`, `Duplicate of <owner>/<repo>#<n>` or a `Fixed by` line, with the `invalid`, `duplicate` or `fixed` label where it labelled, and the fix label off); or parked by the repo's owner or a member in a comment on it.",
+  "The issue is resolved on GitHub: closed; or left open with the Maintainer's verdict, as the repo's settings ask (a comment by an owner, member or collaborator carrying a `Not fixing: <reason>`, `Duplicate of <owner>/<repo>#<n>` or `Fixed by` line, with the `invalid`, `duplicate` or `fixed` label where it labelled, and the fix label off); or parked by the repo's owner or a member in a comment on it.",
   "Its resolution is shown there: closed as completed with a merged fixing PR cited, or as not planned or a duplicate with the reason, or that verdict comment, or the owner's parking word.",
   "The task's comment names the issue as owner/name#number with its URL, the resolution and the close's citation.",
 ];

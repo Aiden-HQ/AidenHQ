@@ -30,9 +30,10 @@ export function applyRepoChange(list: Dict[], c: { fields?: Record<string, Dict>
     for (const k of Object.keys(fields)) if (!(FIELDS as readonly string[]).includes(k)) throw new Error(`fields: ${FIELDS.join(", ")}`);
     if (at(repo) < 0) throw new Error(`${repo} isn't listed: add it from the Ship page`);
     value = value.map((e) => { if (String(e.repo).toLowerCase() !== repo.toLowerCase()) return e; const m: Dict = { ...e, ...fields }; for (const k of FIELDS) if (m[k] === null) delete m[k]; return m; });
-    summary.push(`${repo}: ${Object.entries(fields).map(([k, v]) => v === null ? `${k} back to default` : `${k} ${JSON.stringify(v)}`).join(", ")}`);
+    if (Object.keys(fields).length) summary.push(`${repo}: ${Object.entries(fields).map(([k, v]) => v === null ? `${k} back to default` : `${k} ${JSON.stringify(v)}`).join(", ")}`);
   }
-  if (!summary.length) throw new Error("say what to change: fields, or a repo to remove");
+  if (!c.fields && !c.remove) throw new Error("say what to change: fields, or a repo to remove");
+  if (!summary.length) summary.push("no changes");
   parseRepos(JSON.stringify(value)); // the whole list checked as the github module will read it
   return { value, summary };
 }
