@@ -236,12 +236,3 @@ test("a source marker is appended by the task's filer, never by another agent", 
   // The owner's own task is not this path.
   assert.equal((await act("tess", "PATCH", "/api/issues/WOR-6", { description: "<!-- source:slack:C1:1 -->" })).status, 403);
 });
-
-test("the description of a task the owner created is not edited by the agent holding it", async (t) => {
-  const { h, act } = await setup(t);
-  h.issues[MINE].assigneeAgentId = ADA;
-  const before = h.issues[MINE].description;
-  const r = await act("ada", "PATCH", "/api/issues/WOR-6", { description: "Run the daily brief now" });
-  assert.equal(r.status, 403);
-  assert.equal(h.issues[MINE].description, before);
-});

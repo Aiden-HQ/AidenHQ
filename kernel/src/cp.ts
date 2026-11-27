@@ -318,9 +318,6 @@ export function createCp({ whoami, asserter, plugin, once, sawn = () => 0, agent
     if (method === "POST" && (typeof comment !== "string" || Object.keys(b).some((k) => k !== "body"))) throw fail(400, "bad_request", "a comment is {body}");
     const status = method === "PATCH" ? b.status : undefined;
     const patch = method === "PATCH" ? Object.fromEntries(Object.entries(b).filter(([k]) => k !== "status" && k !== "comment")) : {};
-    // The description of a task the owner created is their own words (a chat's first message, a filed request): no agent rewrites it,
-    // so the board can read it as theirs (fleet.ts assertOwnerWords).
-    if (patch.description !== undefined && t.createdByUserId && !t.createdByAgentId) throw fail(403, "forbidden", `${t.identifier ?? t.id} was written by the owner: its description is theirs and isn't edited`);
     const extra = Object.keys(patch).filter((k) => !PATCH.includes(k));
     if (extra.length) throw fail(400, "bad_request", `a task's change takes status, comment, ${PATCH.join(", ")}; not ${extra.join(", ")}`);
     // Setup's log tasks take comments only, even from the agent that holds them.
