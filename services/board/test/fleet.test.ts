@@ -87,6 +87,27 @@ describe("fleet owner-words gate", () => {
     const relayed = "pause the slack scout\n\n<!-- aidenhq-from:WOR-3:11111111-1111-1111-1111-111111111111 -->";
     await expect(gate(pcWith(relayed), "pause_agent", "slack scout", "pause the slack scout")).rejects.toThrow(Refused);
   });
+  it("refuses a negated request and accepts a plain one", async () => {
+    for (const q of ["don't run the daily brief now", "please do not run the daily brief now", "never ever run the daily brief", "dont run the daily brief now", "hold off on run the daily brief", "I said stop, don't run the daily brief now"])
+      await expect(gate(pcWith(q), "run_routine", "daily brief", q)).rejects.toThrow(Refused);
+    for (const q of ["please run the daily brief now", "go ahead and run the daily brief", "yes, run the daily brief now", "no. run the daily brief now"])
+      await expect(gate(pcWith(q), "run_routine", "daily brief", q)).resolves.toBe("c1");
+  });
+  it("links the request to its target and ignores an unrelated stop", async () => {
+    const q = "don't run the daily brief, run the weekly brief";
+    await expect(gate(pcWith(q), "run_routine", "daily brief", q)).rejects.toThrow(Refused);
+    await expect(gate(pcWith(q), "run_routine", "weekly brief", q)).resolves.toBe("c1");
+    const mixed = "run the daily brief and stop the weekly brief";
+    await expect(gate(pcWith(mixed), "run_routine", "weekly brief", mixed)).rejects.toThrow(Refused);
+    await expect(gate(pcWith(mixed), "run_routine", "daily brief", mixed)).resolves.toBe("c1");
+    await expect(gate(pcWith("hold off on pause the slack scout"), "pause_agent", "slack scout", "hold off on pause the slack scout")).rejects.toThrow(Refused);
+    await expect(gate(pcWith("stop it and run the daily brief"), "run_routine", "daily brief", "stop it and run the daily brief")).resolves.toBe("c1");
+  });
+  it("reads negation from the whole message, not only the quote", async () => {
+    await expect(gate(pcWith("don't run the daily brief now"), "run_routine", "daily brief", "run the daily brief now")).rejects.toThrow(/ask for it|not the owner's own words/);
+    await expect(gate(pcWith("Don't forget to run the daily brief now"), "run_routine", "daily brief", "run the daily brief now")).resolves.toBe("c1");
+    await expect(gate(pcWith("Don't forget to run the daily brief now"), "run_routine", "daily brief", "don't forget to run the daily brief now")).resolves.toBe("c1");
+  });
   it("fails closed without an author id, on a missing verb or target, and on short quotes", async () => {
     await expect(gate(pcWith("pause the slack scout", null), "pause_agent", "slack scout", "pause the slack scout")).rejects.toThrow(Refused);
     await expect(gate(pcWith("pause the slack scout", "other"), "pause_agent", "slack scout", "pause the slack scout")).rejects.toThrow(Refused);

@@ -107,9 +107,29 @@ export function unfenced(text: string): string {
 
 const VERBS: Record<string, RegExp> = {
   run: /\b(run|start|trigger)\b/i,
-  pause: /\b(pause|stop|hold)\b/i,
+  pause: /\b(pause|stop|hold(?! off))\b/i,
   resume: /\b(resume|restart|unpause)\b/i,
 };
+
+const ANY_VERB = Object.values(VERBS).map((r) => r.source).join("|");
+const NEGATION = /\b(don['’]?t|do not|never|no|not|stop|cancel|hold off on|avoid)\b/i;
+
+/**
+ * True when a match of `verb` inside `q` (found at `at` in `text`, the owner's whole message) is a request for `named`: the target is in the words that follow that verb (up to the next verb of any kind or sentence
+ * end, so "don't run the daily brief, run the weekly brief" does not run the daily one), and no negation word sits in the 3 words before it within the same clause ("don't run", "never ever run"). Negation is read from the
+ * message, not only the quote, so where the caller starts the quote changes nothing. "Don't forget to run" asks; "stop it and run" asks.
+ */
+function asks(text: string, at: number, q: string, verb: RegExp, named: string): boolean {
+  for (const m of q.matchAll(new RegExp(verb.source, "gi"))) {
+    const rest = q.slice(m.index + m[0].length);
+    const end = rest.search(new RegExp(`${ANY_VERB}|[.;!?\\n]`, "i"));
+    const seg = m[0] + " " + (end < 0 ? rest : rest.slice(0, end));
+    if (!` ${words(seg)} `.includes(` ${named} `)) continue;
+    const clause = text.slice(0, at + m.index).split(/[.,;:!?\n]|\b(?:and|then|but)\b/i).pop()!.replace(/\b(don['’]?t|do not) (forget|hesitate) to\b/gi, "");
+    if (!NEGATION.test(clause.trim().split(/\s+/).slice(-3).join(" "))) return true;
+  }
+  return false;
+}
 
 const APPS_URL = (process.env.APPS_MCP_URL ?? "http://apps-mcp:8090").replace(/\/$/, "");
 
@@ -149,17 +169,23 @@ export async function assertOwnerWords(pc: Paperclip, store: Pick<Store, "meta">
   if (q.length < 12) throw new Refused("refused: `quote` must be the owner's exact words (at least 12 characters)");
   const named = words(target);
   if (!named || !` ${words(q)} `.includes(` ${named} `)) throw new Refused(`refused: the owner's words must name the target ("${target}")`);
-  if (!VERBS[action.split("_")[0]!]!.test(q)) throw new Refused(`refused: the owner's words must ask for it (${action.split("_")[0]}...)`);
+  const verb = VERBS[action.split("_")[0]!]!;
+  if (!verb.test(q)) throw new Refused(`refused: the owner's words must ask for it (${action.split("_")[0]}...)`);
   const me = await pc.me();
   if (!me) throw new Refused("refused: owner unknown");
   const task = await pc.issue(taskRef);
   if (task.assigneeAgentId !== caller.id) throw new Refused("refused: the current task is not assigned to you");
+  // The quote must occur verbatim in the message at a spot where the action is not negated.
+  const asksIn = (text: string) => {
+    for (let i = text.indexOf(q); i >= 0; i = text.indexOf(q, i + 1)) if (asks(text, i, q, verb, named)) return true;
+    return false;
+  };
   const owns = (body: string, at: string) =>
     // Only original words: anything the board or runner relayed or posted (from/for-others/delivered/runner markers) never counts.
     !/<!-- aidenhq-/.test(body) &&
     !VOICE.test(body) &&
     Date.now() - Date.parse(at) < QUOTE_MAX_AGE_MS &&
-    unfenced(body.replace(/<!--[\s\S]*?-->/g, "")).toLowerCase().includes(q);
+    asksIn(unfenced(body.replace(/<!--[\s\S]*?-->/g, "")).toLowerCase());
   const hit = (await pc.comments(task.id)).find((c) => c.authorType === "user" && Boolean(c.authorUserId) && c.authorUserId === me && owns(c.body, c.createdAt));
   if (hit) return hit.id;
   // A new chat's first message is the task's description, not a comment: the board recorded it when the owner started the chat.
