@@ -95,17 +95,13 @@ describe("teammates", () => {
     expect((await hiring.homeStart("owner", true, undefined))?.nextUp?.ref).toBe("twin@acme:scout");
     expect(await hiring.homeStart("owner", false, undefined)).toBeUndefined();
 
-    const tasks: { title: string; description: string; source: string }[] = [];
     const accounts = { call: async () => ({ ready: true, waiting: false }) } as never;
-    const routes = welcomeRoutes({ accounts, store, marker: join(mkdtempSync(join(tmpdir(), "welcome-")), "welcome-sent"), fileTask: async (x) => void tasks.push(x), teammates: hiring.rows });
+    const routes = welcomeRoutes({ accounts, store, marker: join(mkdtempSync(join(tmpdir(), "welcome-")), "welcome-sent") });
     const finish = routes.find((r) => r.method === "POST")!;
     const get = routes.find((r) => r.method === "GET")!;
     expect(await get.handle([] as never, undefined, who("owner"), "")).toEqual({ finished: false, modelReady: true, recoveryKeyWaiting: false });
     expect(await finish.handle([] as never, {}, who("owner"), "")).toEqual({ ok: true });
     expect(await finish.handle([] as never, {}, who("owner"), "")).toEqual({ ok: true });
-    expect(tasks.length).toBe(1);
-    expect(tasks[0]!.source).toBe("welcome");
-    expect(tasks[0]!.description).toContain("Tess · Follow-up chaser");
     expect(store.meta("welcome_finished")).toBeTruthy();
   });
 });

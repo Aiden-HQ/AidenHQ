@@ -1,5 +1,5 @@
 // Home (GET /api/home): what needs the owner, what the team did since he last looked, his world today, the teammates with
-// news and one idea, in one response. Built from what the board already reads (the kernel's task states and cards,
+// news, in one response. Built from what the board already reads (the kernel's task states and cards,
 // Paperclip's tasks, the roster) and two module reads (board.reads: owner-channel's `told` ledger, google's
 // `calendar_today`). Who a row is from is always a teammate: a hidden agent's row is its teammate's (teammates.ts).
 import type { Logger } from "pino";
@@ -33,11 +33,10 @@ export type Home = {
   needs: NeedRow[];
   since: { groups: { teammate: FaceRef; latest: SinceItem; count: number }[]; items: SinceItem[]; total: number } | null;
   world: {
-    waiting_on: { identifier: string; title: string; age_days: number; quiet_days: number }[] | null;
+    waiting_on: { id: string; identifier: string; title: string; age_days: number; quiet_days: number }[] | null;
     today: { timezone: string; events: { id: string; start: string; title: string; all_day: boolean; prep?: string }[] } | null;
   };
   team: { teammate: FaceRef; line: string }[];
-  idea: { identifier: string; teammate: FaceRef; question: string; options: string[]; waitSince: string } | null;
 };
 
 export type HomeDeps = {
@@ -62,8 +61,6 @@ const DAY = 86_400_000;
 /** The since window's oldest start: the ledger's age. */
 const MAX_WINDOW = 14 * DAY;
 const TODAY_MS = 5 * 60_000;
-/** The most people waiting on a reply that Needs you lists (the oldest first); Intake can file many. */
-const REPLIES = 10;
 /** Kinds of ledger rows Home tells again (decisions and alerts are needs or already seen). */
 const SINCE_KINDS = ["done", "fyi", "digest"];
 /** The most since items one response carries ("All N" says when it shows fewer than the total). */
@@ -134,9 +131,9 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
     return { key, name: r?.name ?? String(d.compiled()?.agents?.[key]?.name ?? key), job: r?.teammate?.job ?? keys.get(key)?.job ?? "", face: r?.teammate?.face ?? null, state };
   };
 
-  // Needs: every task with the owner's attention (a card on it is the card's row), every owner card, ideas aside.
+  // Needs: every task with the owner's attention (a card on it is the card's row), every owner card.
   const snoozed = d.store.snoozed(viewer.accountId, as_of);
-  const states = await d.shownRows(read.tasks.filter((r) => byId.has(r.task) && !labelled(byId.get(r.task)!, "idea") && r.attention.some((a) => a.who === "owner" && ["owner_wait", "handback", "card"].includes(a.why))));
+  const states = await d.shownRows(read.tasks.filter((r) => byId.has(r.task) && r.attention.some((a) => a.who === "owner" && ["owner_wait", "handback", "card"].includes(a.why))));
   const cardRows = new Map(cards.map((c) => [c.id, c]));
   /** `snooze`: the key a snooze hides it by: an answer row's task and wait (a new question on the task is a new row), else its id. */
   type Pending = { id: string; snooze?: string; agentKey: string; build: () => NeedRow };
@@ -173,9 +170,8 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
   // (Snoozed asks count too: a snoozed ask hides its task, it does not turn it into a reply.)
   const asked = new Set(pending.flatMap((p) => { const r = p.build(); return [r.id, ...(r.task ? [r.task.identifier] : [])]; }));
   const replies = open
-    .filter((i) => labelled(i, "needs-response") && !labelled(i, "idea") && !asked.has(i.id) && !asked.has(i.identifier) && !snoozed.has(i.id))
+    .filter((i) => labelled(i, "needs-response") && !asked.has(i.id) && !asked.has(i.identifier) && !snoozed.has(i.id))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-    .slice(0, REPLIES)
     .map((i): NeedRow => {
       // Intake's task format: the description opens with `Type:` (Slack, Email) and `From:`; the title is "Reply to <person>: <topic>".
       const field = (k: string) => new RegExp(`^${k}:[ \\t]*(.+)$`, "im").exec(i.description ?? "")?.[1]?.trim();
@@ -209,23 +205,12 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
   const since = kept.length ? { groups: [...groups.values()], items: kept.slice(0, SINCE_ITEMS), total: kept.length } : null;
 
   // World: what the owner waits on (open tasks labelled waiting-on) and his calendar today.
-  const waiting = open.filter((i) => labelled(i, "waiting-on")).map((i) => ({ identifier: i.identifier, title: i.title, age_days: Math.floor((nowMs - Date.parse(i.createdAt)) / DAY), quiet_days: Math.floor((nowMs - Date.parse(i.lastActivityAt ?? i.updatedAt)) / DAY) }));
+  const waiting = open.filter((i) => labelled(i, "waiting-on") && !snoozed.has(i.id)).map((i) => ({ id: i.id, identifier: i.identifier, title: i.title, age_days: Math.floor((nowMs - Date.parse(i.createdAt)) / DAY), quiet_days: Math.floor((nowMs - Date.parse(i.lastActivityAt ?? i.updatedAt)) / DAY) }));
   const prepFor = (id: string) => open.find((i) => i.description?.includes(id))?.identifier;
   const world = {
     waiting_on: waiting.length ? waiting : null,
     today: today && { timezone: today.timezone, events: today.events.map((e) => { const prep = prepFor(e.id); return { ...e, ...(prep ? { prep } : {}) }; }) },
   };
-
-  // Ideas: the oldest open task labelled idea that waits for the owner's answer.
-  const ideaRow = read.tasks
-    .filter((r) => byId.has(r.task) && labelled(byId.get(r.task)!, "idea") && waitsForAnswer(r) && r.wait_since)
-    .sort((a, b) => a.wait_since!.localeCompare(b.wait_since!))[0];
-  let idea: Home["idea"] = null;
-  if (ideaRow) {
-    const i = byId.get(ideaRow.task)!;
-    const q = boundQuestions(askedQuestions(await d.pc.comments(i.id).catch(() => [] as Comment[]), i.assigneeAgentId), ideaRow.question ?? "");
-    idea = { identifier: i.identifier, teammate: face(keyOfAgent(i.assigneeAgentId)), question: ideaRow.question ?? "", options: q[0]?.options ?? [], waitSince: ideaRow.wait_since! };
-  }
 
   return {
     as_of,
@@ -236,7 +221,6 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
     since,
     world,
     team: teamRow(keys, since, !partial, face),
-    idea,
   };
 }
 

@@ -36,9 +36,9 @@ ideal result.
 
    Google is a teammate's setup flow when that teammate needs it. A **guided Google setup** (create your own OAuth
    client, then connect) is Google's setup flow.
-4. **It ends on Home** (Part 4): Next up beside Needs you, and Aiden offers one next step at a time as an idea.
+4. **It ends on Home** (Part 4): Next up under the greeting, then Needs you.
 5. **Every module that needs user setup has a setup flow,** one generic component opened at `/setup/<module>`.
-   Onboarding and hiring show the ones a teammate needs inline, Aiden's ideas link to them, and Modules' Turn on opens
+   Onboarding and hiring show the ones a teammate needs inline, and Modules' Turn on opens
    them after install or enable. Skipped ones stay reachable that way. Background work never pings the owner; his own request gets the one Connect link in that conversation.
 6. **No GitHub needed, apps included.** A new on-server code host (`codehost-local`) lets agents build, review, merge
    and deploy apps with git repos on the server. GitHub becomes an optional add-on for syncing off the server.
@@ -90,7 +90,7 @@ ideal result.
 - **B. Grow the kernel's `/setup` into the whole wizard.** Rejected: plain server-rendered HTML, and it pulls sign-in
   flows the board owns into the trusted kernel.
 - **C. Aiden runs everything in chat.** Rejected by the owner, who wants a guided first run. Aiden handles everything
-  after it, one idea at a time.
+  after it.
 
 ## Design
 
@@ -329,10 +329,8 @@ one primary button.
 
 ### Part 4: after onboarding
 
-Finishing lands on Home. The board records it, then files one chief-of-staff task (source `welcome`) naming who is on the
-team (a refused filing is logged and never holds the owner in onboarding); Aiden
-answers with his first idea (his `ideas` skill), one question at a time. Later modules and teammates are set up from
-the hiring page (`#/team/hire`), from Home's Next up, or when Aiden's idea links one there.
+Finishing lands on Home. The board records it. Later modules and teammates are set up from
+the hiring page (`#/team/hire`) or from Home's Next up.
 
 ### Part 4b: on-server code host (`codehost-local`)
 
@@ -419,11 +417,10 @@ The prompt's final message links to it.
 | kernel `/setup` | account, authenticator, OpenRouter PKCE (+ paste fallback); recovery key and `github_bot_token` move out |
 | kernel | admin secret-write endpoint for declared `setup:` secrets, recreating that module's containers; `/recovery-key` show-once page |
 | `scripts/modules.ts`, compile | `board.setup_flows` point validated and written into `config/points/board.json` |
-| board | `/setup/<module>` flow component, `GET /api/setup-flows`, `/welcome` onboarding (one teammate, reach + push test), hiring (`#/team/hire`), the welcome task to Aiden at the end |
+| board | `/setup/<module>` flow component, `GET /api/setup-flows`, `/welcome` onboarding (one teammate, reach + push test), hiring (`#/team/hire`) |
 | modules needing user setup (list above) | `board.setup_flows` points and `setup:` fields replacing shell-only setup; Telegram and Slack pairing; Slack and Google join the bundle |
 | modules: codehost role | new `codehost-local`; `codehost-github` provides `codehost`; engineering requires `codehost`; GitHub modules leave the bundle |
 | apps platform, runner, ci | read repos and run checks through the code host role |
-| modules: chief-of-staff | the `ideas` skill (one next step at a time) |
 | docs | SETUP.md's default path becomes "paste the prompt"; today's manual path moves to docs/setup.md as reference |
 
 ## Order
@@ -435,7 +432,7 @@ The prompt's final message links to it.
    the recovery-key step.
 4. The setup flows: Telegram and Slack pairing first (onboarding's reach step), then every other module on the list, in
    parallel lanes.
-5. Aiden's ideas, the guided Google flow and the `/start` page.
+5. The guided Google flow and the `/start` page.
 6. `codehost-local` and the code host role (can run in parallel with 2 to 5). GitHub leaves the bundle only when it
    lands.
 
@@ -447,7 +444,7 @@ form.
 - Exact copy for each step (owner reviews it before merge).
 - Onboarding's visual details within the design system.
 - How the kernel finds and recreates a module's containers.
-- Test shape: one end-to-end that walks first run → onboarding finish (`{}`) → one welcome task for Aiden, no chat, plus
+- Test shape: one end-to-end that walks first run → onboarding finish (`{}`), no chat, plus
   the unattended-install test updated for the shorter `/setup`.
 
 ## Decided with the owner
@@ -475,7 +472,7 @@ form.
 - A secret save recreates only that module's containers, directly from the kernel; no settings-change path.
 - The recovery key is shown on a kernel page, never through the board.
 - Telegram and Slack both pair with a one-time code that only a signed-in admin can mint.
-- The board, not `ops/setup.sh`, files Aiden's welcome task, when onboarding finishes in any way.
+- The board, not `ops/setup.sh`, records that onboarding finished, in any way.
 - `github_bot_token` leaves first run and is offered with "connect GitHub".
 
 ## Unverified: the builder checks these first
