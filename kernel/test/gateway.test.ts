@@ -229,7 +229,7 @@ test("gateway: the install's day and month limits count every call, every caller
   // The model picker's catalog: the list the gateway already holds, for the board's key only.
   assert.equal((await fetch(`${front.url}/v1/models/catalog`, { headers: { authorization: "Bearer nope" } })).status, 401);
   const { models } = await (await fetch(`${front.url}/v1/models/catalog`, { headers: { authorization: "Bearer gw-board" } })).json();
-  assert.deepEqual(models.find((x) => x.id === "anthropic/claude-haiku-5.5"), { id: "anthropic/claude-haiku-5.5", name: "anthropic/claude-haiku-5.5", provider: "anthropic", created: 0, context: 0, output: 4096, in: 1, out: 1, tools: false, reasoning: false });
+  assert.deepEqual(models.find((x) => x.id === "anthropic/claude-haiku-5.5"), { id: "anthropic/claude-haiku-5.5", name: "anthropic/claude-haiku-5.5", provider: "anthropic", created: 0, context: 0, output: 4096, in: 1, cached_in: 0.1, out: 1, tools: false, reasoning: false });
   // An engine sizes its context window from /api/v1/models, with its own job credential.
   assert.equal((await fetch(`${front.url}/api/v1/models`, { headers: { authorization: "Bearer nope" } })).status, 401);
   const listed = await (await fetch(`${front.url}/api/v1/models?ids=anthropic%2Fclaude-haiku-5.5`, { headers: { authorization: `Bearer ${job()}` } })).json();

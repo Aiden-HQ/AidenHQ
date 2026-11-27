@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { bare, family, listing, prefixOf, type CatalogModel } from "../src/model-catalog.js";
 
-const m = (id: string, created: number, o: Partial<CatalogModel> = {}): CatalogModel => ({ id, name: id, provider: id.replace(/^~/, "").split("/")[0]!, created, context: 200000, in: 1, out: 2, tools: true, reasoning: false, ...o });
+const m = (id: string, created: number, o: Partial<CatalogModel> = {}): CatalogModel => ({ id, name: id, provider: id.replace(/^~/, "").split("/")[0]!, created, context: 200000, in: 1, cached_in: null, out: 2, tools: true, reasoning: false, ...o });
 const catalog = [
   m("openai/gpt-6.2-sol", 300), m("openai/gpt-6.1-sol", 200), m("openai/gpt-6.1-sol-20260101", 100), m("~openai/gpt-sol-latest", 300),
   m("anthropic/claude-sonnet-5.5", 300), m("anthropic/claude-sonnet-5", 100), m("meta-llama/llama-3.3-70b-instruct", 50), m("meta-llama/llama-3.3-8b-instruct", 50), m("x/no-tools", 10, { tools: false }),
