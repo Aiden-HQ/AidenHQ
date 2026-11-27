@@ -73,7 +73,7 @@ test("Ship nudges and closes a quiet PR itself, in fixed words: a nudge is one c
 test("a close reads the PR again first: an author who acted since the batch read keeps it open", async () => {
   const day = 86_400_000, now = Date.parse("2026-12-20T00:00:00Z");
   const row = (activity: string) => ({ number: 9, author_kind: "human" as const, draft: false, last_author_activity: activity, review_requested: false, waiting_on_author: "failing checks (1)" });
-  const state: Record<string, string> = { ship_quiet_prs: JSON.stringify({ repos: { "acme/app": { nudged: { 9: { at: "2026-12-01T00:00:00Z", author_activity_at: "2026-11-20T00:00:00Z", close_at: "2026-12-08T00:00:00Z" } } } } }) };
+  const state: Record<string, string> = { maintainer_prs: JSON.stringify({ repos: { "acme/app": { nudged: { 9: { at: "2026-12-01T00:00:00Z", author_activity_at: "2026-11-20T00:00:00Z", close_at: "2026-12-08T00:00:00Z" } } } } }) };
   const store = { meta: (k: string) => state[k], setMeta: (k: string, v: string) => void (state[k] = v) };
   let reads = 0;
   const prs = async () => ({ repos: [{ repo: "acme/app", quiet_pr_days: 7, prs: [row(++reads === 1 ? "2026-11-20T00:00:00Z" : new Date(now - day).toISOString())] }] });

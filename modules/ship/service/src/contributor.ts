@@ -67,8 +67,8 @@ export function prDue(pr: PrRow, nudge: Nudge | undefined, staleDays: number, no
 /** The date a nudge filed now promises the PR closes: the window in force when it is posted. */
 export const nudgeDeadline = (now: number, staleDays: number, draft: boolean) => now + staleDays * DAY * (draft ? 2 : 1);
 
-// Its own key: a nudge recorded under the Maintainer's old key was a task filed, not a comment known posted, so none carries over.
-const PR_STATE_KEY = "ship_quiet_prs";
+// The key the pass has always kept its state under: a nudge already promised keeps its date across the move to Ship.
+const PR_STATE_KEY = "maintainer_prs";
 /** The PR pass runs at most this often: the quiet windows are days, and each human PR costs several GitHub reads. */
 const PR_EVERY = 60 * MIN;
 interface PrState {
@@ -165,6 +165,7 @@ export function contributorPrAct(o: { comment: (repo: string, n: number, text: s
   return async (repo, t, opt) => {
     if (t.kind === "nudge") return (await o.comment(repo, t.number, nudgeText(t))) ? "done" : false;
     if (!opt?.noted && !(await o.comment(repo, t.number, closeText(repo)))) return false;
-    return (await o.close(repo, t.number)) ? "done" : "noted";
+    // Once the comment is up, any failure of the close (a refusal or a throw) leaves it `noted`: a retry only closes.
+    return (await o.close(repo, t.number).catch(() => false)) ? "done" : "noted";
   };
 }

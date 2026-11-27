@@ -100,13 +100,15 @@ const prStore = {
 const prLog = { info: (o: object, m: string) => log(m, o as Record<string, unknown>), warn: (o: object, m: string) => log(m, o as Record<string, unknown>) };
 const prs = contributorPrs({
   url: env.SHIP_CONTRIBUTOR_PRS_URL ?? "http://github:8086/internal/ship/contributor-prs", token,
-  repos: () => [...new Set([...(env.SHIP_PRODUCT_REPO ? [env.SHIP_PRODUCT_REPO] : []), ...Object.keys((raw().repos as Record<string, unknown>) ?? {})])].flatMap((repo) => { const d = effective(raw(), repo, scope())?.quiet_pr_days; return d ? [{ repo, quiet_pr_days: d }] : []; }),
+  repos: () => [...new Map([...(env.SHIP_PRODUCT_REPO ? [env.SHIP_PRODUCT_REPO] : []), ...Object.keys((raw().repos as Record<string, unknown>) ?? {})].map((r) => [r.toLowerCase(), r])).values()].flatMap((repo) => { const d = effective(raw(), repo, scope())?.quiet_pr_days; return d ? [{ repo, quiet_pr_days: d }] : []; }),
 });
 const firePr = contributorPrAct({
   comment: async (repo, n, text) => (await gh("POST", `/repos/${repo}/issues/${n}/comments`, { body: withFooter(text, "Ship") })).status < 300,
   close: async (repo, n) => (await gh("PATCH", `/repos/${repo}/pulls/${n}`, { state: "closed" })).status < 300,
 });
-setInterval(() => { if (!paused() && token()) void prTick({ prs, firePr, store: prStore, log: prLog }).catch((e) => log("contributor PR pass failed", { err: String(e) })); }, 5 * 60_000).unref();
+// One pass at a time: a long pass never overlaps the next look (which would act on the same state twice).
+let prPass = false;
+setInterval(() => { if (prPass || paused() || !token()) return; prPass = true; void prTick({ prs, firePr, store: prStore, log: prLog }).catch((e) => log("contributor PR pass failed", { err: String(e) })).finally(() => { prPass = false; }); }, 5 * 60_000).unref();
 
 createServer(async (req, res) => {
   if (await mcp(req, res)) return;
