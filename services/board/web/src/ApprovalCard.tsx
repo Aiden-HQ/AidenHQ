@@ -31,7 +31,7 @@ export const withAI = (a: Approval) => a.state === "pending" && !forOwner(a);
  * signed-in admin's session; the kernel checks it and decides against the digest this card shows, so a card that changed
  * meanwhile fails alone and says so. A decision sent stays sent: the buttons come back only if it failed.
  */
-export function Decide({ a, hold, size, onDecided }: { a: Approval; hold?: boolean; size?: "sm"; /** Called once the decision is in (Home collapses the row to a receipt). */ onDecided?: (d: "approve" | "reject") => void }) {
+export function Decide({ a, hold, size, onDecided, onBusy }: { a: Approval; hold?: boolean; size?: "sm"; /** Called once the decision is in (Home collapses the row to a receipt). */ onDecided?: (d: "approve" | "reject") => void; /** A decision is in flight (Home holds its other buttons meanwhile). */ onBusy?: (on: boolean) => void }) {
   const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
@@ -39,12 +39,15 @@ export function Decide({ a, hold, size, onDecided }: { a: Approval; hold?: boole
   const decide = async (d: "approve" | "reject") => {
     setBusy(d);
     setError(null);
+    onBusy?.(true);
     try {
       await api.decide(a.id, a.digest, d, d === "reject" ? reason.trim() || undefined : undefined);
       onDecided?.(d);
     } catch (e) {
       setError((e as Error).message);
       setBusy(null);
+    } finally {
+      onBusy?.(false);
     }
   };
   const off = busy !== null || Boolean(hold);

@@ -8,6 +8,8 @@ import type { AddressInfo } from "node:net";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { aboutTask } from "../src/home.js";
+import { mergedDescription } from "../src/merge.js";
 import { ViewError, type ViewHost } from "../src/module-views.js";
 import type { Issue, Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
@@ -126,5 +128,16 @@ describe("home", () => {
     expect((await call("GET", "/api/home")).needs.map((n: { id: string }) => n.id)).toEqual(["k-b2", "k-a1", reply.id]);
     await call("POST", "/api/home/snooze", { id: `${asking.id}:${first.needs[2].waitSince}`, on: false });
     expect((await call("GET", "/api/home")).needs.map((n: { id: string }) => n.id)).toEqual(["k-b2", "k-a1", asking.id, reply.id]);
+  });
+});
+
+describe("aboutTask", () => {
+  it("reads only the task's own Source block, never a merged task's", () => {
+    const own = { description: "Chase the signed contract." };
+    const merged = { identifier: "WOR-9", title: "Reply to Priya", description: "## Source\n\nType: Slack\nPermalink: https://acme.slack.com/archives/C1/p1\n\n## Reason\n\nShe asks." };
+    const a = aboutTask({ id: "i1", identifier: "WOR-1", title: "Contract", description: mergedDescription(own, merged), createdAt: "2026-11-26T00:00:00Z" } as Issue, undefined, null);
+    expect(a.source).toBeNull();
+    expect(a.reason).toBeUndefined();
+    expect(a.body).toBe("Chase the signed contract.");
   });
 });

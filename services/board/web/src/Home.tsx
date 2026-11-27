@@ -399,7 +399,7 @@ function RowActions({ row, answer, decided, snooze, done, dismiss }: { row: Need
   if (row.kind === "approval")
     return (
       <>
-        <Decide a={row.card} size="sm" onDecided={(d) => decided(row, d)} />
+        <Decide a={row.card} size="sm" hold={busy} onBusy={setBusy} onDecided={(d) => decided(row, d)} />
         {later}
       </>
     );
@@ -567,12 +567,12 @@ function RowDetail({ row, projects, onClose, receipt, ...acts }: { row: NeedRow;
     </p>
   ) : row.kind === "answer" ? (
     <div className="home-detail-answer">
-      <AnswerForm key={row.waitSince} questions={row.questions.length ? row.questions : [{ question: row.question, options: row.options }]} askedAbove onAnswer={(t) => acts.answer(row, t)} />
+      <AnswerForm key={row.waitSince} questions={row.questions.length ? row.questions : [{ question: row.question, options: row.options }]} askedAbove onAnswer={(t) => (setBusy(true), acts.answer(row, t).finally(() => setBusy(false)))} />
       {later}
     </div>
   ) : row.kind === "approval" ? (
     <>
-      {row.card.state === "pending" && <Decide a={row.card} onDecided={(d) => acts.decided(row, d)} />}
+      {row.card.state === "pending" && <Decide a={row.card} hold={busy} onBusy={setBusy} onDecided={(d) => acts.decided(row, d)} />}
       {later}
     </>
   ) : (

@@ -94,7 +94,8 @@ const http = (v: string | undefined) => (v && /^https?:\/\/\S+$/i.test(v) ? v : 
 
 /** What the drawer details about a task: `holder` is its agent's name (null for a person's task). */
 export function aboutTask(i: Issue, parent: Issue | undefined, holder: string | null): About {
-  const text = displayText(i.description);
+  // Only the task's own part: a merged task's text (merge.ts, under "## Merged from …") is never this task's source.
+  const text = displayText(i.description).split(/^## Merged from /m)[0]!.trim();
   const block = section(text, "Source");
   let source: About["source"] = null;
   if (block !== undefined) {
