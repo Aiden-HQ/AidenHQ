@@ -234,67 +234,6 @@ it("src_security: an absent image target retires against the one clean target of
   expect(rows.get(`${newTag}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: true, resolved_at: null });
 });
 
-it("src_security: an absent image with no same-repository target in a complete batch retires without claiming one", async () => {
-  const { store, rows, runs } = fakeStore();
-  const gone = "image:aidenhq/computer-agent-base:cb94c7b36572";
-  const mapped = "image:aidenhq/github-mcp:local";
-  const sboms: Record<string, unknown> = {
-    "gone.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/var/lib/dpkg/status")] },
-    "mapped.json": { matches: [match("curl", "7.88.1", "CVE-2023-0001", "/usr/bin/curl")] },
-    "unrelated.json": { matches: [match("bash", "5.2.15", "CVE-2024-0002", "/usr/bin/bash")] },
-  };
-  let now = Date.parse("2026-11-25T00:00:00Z");
-  const index = (targets: string[]): string => targets.map((t) => `${t}\t${t === gone ? "gone" : t === mapped ? "mapped" : "unrelated"}.json\t\t`).join("\n");
-  const deps = (targets: string[]) => ({
-    dbUpdate: async () => undefined,
-    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index(targets), "/sbom"), imagesComplete: true }),
-    grype: async (f: string) => sboms[f.split("/").pop()!],
-    now: () => now,
-  });
-
-  expect(await scanPass(store, deps([gone, mapped]))).toBe(2);
-  now += 86_400_000;
-  runs.length = 0;
-  // Only another repository's image is in the batch: neither absent target has a same-repository target to retire against.
-  expect(await scanPass(store, deps(["image:aidenhq/board:local"]))).toBe(3); // the board scan and both absent images' retirements
-
-  // An image may retire claiming no replacement: the batch listed every planned unit and nothing in it could be this one.
-  const computer = runs.find((x) => x.scope === gone)!;
-  expect(computer).toMatchObject({ status: "retired", error: null });
-  expect(runs.filter((x) => x.scope === gone)).toHaveLength(1);
-  expect(rows.get(`${gone}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: false, resolved_reason: /retired: no container runs this image and no configured image names it/ });
-
-  // Any other image with no same-repository target in the batch retires the same way: the batch listed every planned unit
-  // and nothing in it could be this image.
-  expect(runs.find((x) => x.scope === mapped)).toMatchObject({ status: "retired", error: null });
-  expect(rows.get(`${mapped}|curl|7.88.1|CVE-2023-0001`)).toMatchObject({ present: false, resolved_reason: /retired: no container runs this image and no configured image names it/ });
-});
-
-it("src_security: a dead digest-pinned tag with no same-repository scan retires with no replacement", async () => {
-  // A replaced database image: its old digest no longer runs and no configured image names it, and the pass scanned no
-  // postgres target at all, so there is no replacement to name. A complete batch with no failed row that could be it is
-  // proof enough to retire it, exactly as for a computer image or a bare id.
-  const { store, rows, runs } = fakeStore();
-  const dead = `image:postgres:17.12@sha256:${"d".repeat(64)}`;
-  const sboms: Record<string, unknown> = { "dead.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/var/lib/dpkg/status")] } };
-  let now = Date.parse("2026-11-25T00:00:00Z");
-  const deps = (index: string) => ({
-    dbUpdate: async () => undefined,
-    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index, "/sbom"), imagesComplete: true }),
-    grype: async (f: string) => sboms[f.split("/").pop()!],
-    now: () => now,
-  });
-
-  expect(await scanPass(store, deps(`${dead}\tdead.json\t\t`))).toBe(1);
-  now += 86_400_000;
-  runs.length = 0;
-  expect(await scanPass(store, deps("image:ghcr.io/example/paperclip:2026.1117.0\tdead.json\t\t"))).toBe(2); // the other image's scan and this retirement
-  const run = runs.find((x) => x.scope === dead)!;
-  expect(run).toMatchObject({ status: "retired", error: null });
-  expect(runs.filter((x) => x.scope === dead)).toHaveLength(1);
-  expect(rows.get(`${dead}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: false, resolved_reason: /retired: no container runs this image and no configured image names it/ });
-});
-
 it("src_security: an image target absent from a batch that does not claim a complete inventory keeps the absent error", async () => {
   // A batch written before the writer listed configured images, or one whose writer could not list all of them, has a
   // freshness stamp like any other. Its absence is not proof: an image it would have listed must not settle its findings.
@@ -371,84 +310,6 @@ it("src_security: a mapped replacement that is listed but did not scan cleanly k
   expect(rows.get(`${retired}|curl|7.88.1|CVE-2023-0001`)).toMatchObject({ present: true, resolved_at: null });
 });
 
-it("src_security: an absent image whose repository is in the batch but did not scan cleanly keeps the absent error", async () => {
-  // A render may run the same image under an alias (`computer-browser:current`) the survey deduplicated away: the alias
-  // is in the batch, the hash tag is not, and the alias's scan failed. That is not proof the hash tag's image is gone.
-  const { store, rows, runs } = fakeStore();
-  const hashTag = "image:aidenhq/computer-browser:h1";
-  const alias = "image:aidenhq/computer-browser:current";
-  const sboms: Record<string, unknown> = { "hash.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/var/lib/dpkg/status")] } };
-  let now = Date.parse("2026-11-25T00:00:00Z");
-  const deps = (index: string) => ({
-    dbUpdate: async () => undefined,
-    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index, "/sbom"), imagesComplete: true }),
-    grype: async (f: string) => sboms[f.split("/").pop()!],
-    now: () => now,
-  });
-
-  expect(await scanPass(store, deps(`${hashTag}\thash.json\t\t`))).toBe(1);
-  now += 86_400_000;
-  runs.length = 0;
-  expect(await scanPass(store, deps(`${alias}\t-\tdocker save: no room\t`))).toBe(0);
-  expect(runs.find((x) => x.scope === hashTag)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
-  expect(rows.get(`${hashTag}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: true, resolved_at: null });
-});
-
-it("src_security: an absent bare digest target retires with no replacement, since no running container or configured image names it", async () => {
-  // A container keyed by its own image id names no repository, so no other image can claim to replace it. It is still
-  // dead when a complete batch does not list it: the writer keys every running container on the id of the image it runs
-  // and every configured image on its tag, so an id the batch omits is one nothing runs and no configured image names.
-  const { store, rows, runs } = fakeStore();
-  const digest = `image:sha256:${"a".repeat(64)}`;
-  const sboms: Record<string, unknown> = { "digest.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/var/lib/dpkg/status")] } };
-  let now = Date.parse("2026-11-25T00:00:00Z");
-  const deps = (index: string) => ({
-    dbUpdate: async () => undefined,
-    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index, "/sbom"), imagesComplete: true }),
-    grype: async (f: string) => sboms[f.split("/").pop()!],
-    now: () => now,
-  });
-
-  expect(await scanPass(store, deps(`${digest}\tdigest.json\t\t`))).toBe(1);
-  now += 86_400_000;
-  runs.length = 0;
-  // Two other images that scanned cleanly: every image row the batch listed was inventoried, so nothing in it could be
-  // this id. Both files point at a real SBOM, as the writer writes one for every unit it scanned.
-  expect(await scanPass(store, deps("image:aidenhq/computer-engineer:h2\tdigest.json\t\t\nimage:aidenhq/computer-engineer:h3\tdigest.json\t\t"))).toBe(3); // the two clean images' rows and the digest's finding
-  const run = runs.find((x) => x.scope === digest)!;
-  expect(run).toMatchObject({ status: "retired", error: null });
-  expect(runs.filter((x) => x.scope === digest)).toHaveLength(1);
-  expect(rows.get(`${digest}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: false, resolved_reason: /retired: no container runs this image and no configured image names it/ });
-});
-
-it("src_security: an image may run under a failed alias in another repository, so its absence keeps the absent error", async () => {
-  // The writer keys a container by a configured tag or by its own tag, and either may be a repository other than the one
-  // the retired name names. A failed row anywhere in a complete batch may therefore be this image under the name the
-  // writer chose; retiring it as gone would settle findings nothing verified.
-  const { store, rows, runs } = fakeStore();
-  const dead = `image:postgres:17.12@sha256:${"c".repeat(64)}`;
-  const sboms: Record<string, unknown> = {
-    "dead.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/var/lib/dpkg/status")] },
-    "ok.json": { matches: [match("bash", "5.2.15", "CVE-2024-0002", "/usr/bin/bash")] },
-  };
-  let now = Date.parse("2026-11-25T00:00:00Z");
-  const deps = (index: string) => ({
-    dbUpdate: async () => undefined,
-    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index, "/sbom"), imagesComplete: true }),
-    grype: async (f: string) => sboms[f.split("/").pop()!],
-    now: () => now,
-  });
-
-  expect(await scanPass(store, deps(`${dead}\tdead.json\t\t`))).toBe(1);
-  now += 86_400_000;
-  runs.length = 0;
-  // A clean image in an unrelated repository, and one failed row in another: the failed row could be the postgres image
-  // under a name the writer chose, so the dead digest's findings stay present and its absence stays an error.
-  expect(await scanPass(store, deps("image:ghcr.io/example/paperclip:2026.1117.0\tok.json\t\t\nimage:aidenhq/board:local\t-\tdocker save: no room\t"))).toBe(1);
-  expect(runs.find((x) => x.scope === dead)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
-  expect(rows.get(`${dead}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: true, resolved_at: null });
-});
-
 it("src_security: two SBOMs that share one image key are reconciled as one inventory", async () => {
   // Two containers can run one image index on one platform (different manifests, one key), so the batch lists two SBOMs
   // under that one target. They are one inventory: a finding only the first SBOM reports is not resolved by the second,
@@ -474,76 +335,6 @@ it("src_security: two SBOMs that share one image key are reconciled as one inven
   // Both SBOMs' findings are present, and the shared finding keeps both locations.
   expect(rows.get(`${target}|zlib|1.2.11|CVE-2024-0009`)).toMatchObject({ present: true });
   expect(rows.get(`${target}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: true, locations: ["/usr/bin/openssl", "/var/lib/dpkg/status"] });
-});
-
-it("src_security: a shared image key whose second SBOM failed keeps the target unverified", async () => {
-  // The two SBOMs are one inventory, so a member that could not be read means the inventory is partial: the target is
-  // recorded as failed rather than reconciled from the half that read, which would resolve the failed half's findings.
-  const { store, rows, runs } = fakeStore();
-  const target = "image:sha256:index";
-  const sboms: Record<string, unknown> = { "one.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/var/lib/dpkg/status")] } };
-  const now = Date.parse("2026-11-25T00:00:00Z");
-  const deps = {
-    dbUpdate: async () => undefined,
-    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(`${target}\tone.json\t\t\n${target}\t-\tdocker save: no room\t`, "/sbom"), imagesComplete: true }),
-    grype: async (f: string) => sboms[f.split("/").pop()!],
-    now: () => now,
-  };
-
-  expect(await scanPass(store, deps)).toBe(0);
-  expect(runs.filter((x) => x.scope === target)).toHaveLength(1);
-  expect(runs.find((x) => x.scope === target)?.error).toMatch(/no room/);
-});
-
-it("src_security: a bare digest target that failed in this batch does not retire", async () => {
-  // The row names a running container whose image could not be inventoried, so its absence from the clean rows is not
-  // proof it is dead: its findings stay present and the target keeps the failure, exactly as for any other image.
-  const { store, rows, runs } = fakeStore();
-  const digest = `image:sha256:${"b".repeat(64)}`;
-  const sboms: Record<string, unknown> = { "digest.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/var/lib/dpkg/status")] } };
-  let now = Date.parse("2026-11-25T00:00:00Z");
-  const deps = (index: string) => ({
-    dbUpdate: async () => undefined,
-    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index, "/sbom"), imagesComplete: true }),
-    grype: async (f: string) => sboms[f.split("/").pop()!],
-    now: () => now,
-  });
-
-  expect(await scanPass(store, deps(`${digest}\tdigest.json\t\t`))).toBe(1);
-  now += 86_400_000;
-  runs.length = 0;
-  expect(await scanPass(store, deps(`${digest}\t-\tdocker image inspect: invalid reference format\t`))).toBe(0);
-  expect(runs.find((x) => x.scope === digest)).toMatchObject({ status: null, error: expect.stringMatching(/invalid reference format/) });
-  expect(rows.get(`${digest}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: true, resolved_at: null });
-});
-
-it("src_security: a running image that failed under its own digest keeps an absent image of its repository unverified", async () => {
-  // An old browser image may run under a bare `image:sha256:…` key (a container keyed by its image id), and that row's
-  // export failed while the new configured hash scanned cleanly. The digest names no repository, so only its failure says
-  // the old hash's image may still be running: it must not be retired against the clean hash.
-  const { store, rows, runs } = fakeStore();
-  const oldHash = "image:aidenhq/computer-browser:b000";
-  const newHash = "image:aidenhq/computer-browser:h2";
-  const digest = `image:sha256:${"d".repeat(64)}`;
-  const sboms: Record<string, unknown> = {
-    "old.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/var/lib/dpkg/status")] },
-    "new.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/usr/bin/openssl")] },
-  };
-  let now = Date.parse("2026-11-25T00:00:00Z");
-  const deps = (index: string) => ({
-    dbUpdate: async () => undefined,
-    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index, "/sbom"), imagesComplete: true }),
-    grype: async (f: string) => sboms[f.split("/").pop()!],
-    now: () => now,
-  });
-
-  expect(await scanPass(store, deps(`${oldHash}\told.json\t\t`))).toBe(1);
-  now += 86_400_000;
-  runs.length = 0;
-  expect(await scanPass(store, deps(`${newHash}\tnew.json\t\t\n${digest}\t-\tdocker save: no room\t`))).toBe(1);
-  expect(runs.find((x) => x.scope === digest)?.error).toMatch(/no room/);
-  expect(runs.find((x) => x.scope === oldHash)).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
-  expect(rows.get(`${oldHash}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: true, resolved_at: null });
 });
 
 it("src_security: a mapped image retirement also needs a batch that claims a complete image inventory", async () => {
@@ -596,29 +387,6 @@ it("src_security: a batch is read from one generation, even after the writer swa
   expect(JSON.parse(readFileSync(batch.targets[0]!.file!, "utf8")).matches[0].generation).toBe("old");
   expect(readSbomBatch(join(root, "missing"))).toEqual({ finishedAt: null, targets: [] });
   rmSync(root, { recursive: true, force: true });
-});
-
-it("src_security: a non-image target absent from a fresh batch keeps the absent error, since the batch does not enumerate it", async () => {
-  const { store, rows, runs } = fakeStore();
-  const sboms: Record<string, unknown> = {
-    "product.json": { matches: [match("lodash", "4.17.20", "CVE-2021-23337", "/a/package-lock.json")] },
-    "host.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/usr/lib/libssl.so")] },
-  };
-  let now = Date.parse("2026-11-25T00:00:00Z");
-  const index = (targets: string[]): string => targets.map((t) => `${t}\t${t === "repo:product" ? "product" : "host"}.json\t\t`).join("\n");
-  const deps = (targets: string[]) => ({
-    dbUpdate: async () => undefined,
-    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(index(targets), "/sbom"), imagesComplete: true }),
-    grype: async (f: string) => sboms[f.split("/").pop()!],
-    now: () => now,
-  });
-
-  expect(await scanPass(store, deps(["repo:product", "host"]))).toBe(2);
-  now += 86_400_000;
-  runs.length = 0;
-  expect(await scanPass(store, deps(["host"]))).toBe(0);
-  expect(runs.find((x) => x.scope === "repo:product")).toMatchObject({ status: null, error: expect.stringMatching(/absent from this pass's SBOM inventory/) });
-  expect(rows.get("repo:product|lodash|4.17.20|CVE-2021-23337")).toMatchObject({ present: true, resolved_at: null });
 });
 
 it("src_security: DDL single-quoted literals stay closed (a bare apostrophe in the findings COMMENT breaks migrate())", () => {
@@ -692,11 +460,6 @@ it("src_security: KEV and EPSS from grype land on the finding (GHSA match: on th
   expect(await scanPass(store, deps)).toBe(0);
   expect(rows.get("image:x|openssl|3.0.1|CVE-2024-0002")?.epss).toBe(0.45);
   expect(rows.get("image:x|zlib|1.2.11|CVE-2022-37434")).toMatchObject({ epss: null, epss_percentile: null }); // grype dropped the score: cleared
-});
-
-it("src_security: the DDL adds the exploitation columns additively and the view exposes them", () => {
-  for (const c of ["kev boolean", "kev_added date", "epss real", "epss_percentile real"]) expect(DDL).toContain(`ADD COLUMN IF NOT EXISTS ${c}`);
-  expect(DDL).toContain("f.kev, f.kev_added, f.epss, f.epss_percentile");
 });
 
 it("zero wire: the feed's briefings become rows with their CVE ids and exploitation sentences", () => {

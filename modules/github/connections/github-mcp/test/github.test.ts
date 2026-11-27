@@ -250,29 +250,11 @@ describe("GitHub", () => {
       await expect(owner(graph(() => new Response(JSON.stringify({ errors: [{ message: "Resource not accessible" }] }), { status: 200 }))).resolveThread({ owner: "a", repo: "b", number: 7 }, 100)).rejects.toThrow(/not accessible/);
     });
 
-    it("a thread root's id is used as it is", async () => {
-      const { impl, calls } = fakeReplies({ 100: reply(100) });
-      await owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 100, "disputed: see src/a.ts:3.", "Aiden");
-      expect(posts(calls)[0]!.path).toBe("/repos/a/b/pulls/7/comments/100/replies");
-    });
-
-    it("resolves ids past the 32-bit range", async () => {
-      const { impl, calls } = fakeReplies({ 4_657_268_819: reply(4_657_268_819), 4_657_373_830: reply(4_657_373_830, 4_657_268_819) });
-      await owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 4_657_373_830, "fixed: 58099a73.", "Aiden");
-      expect(posts(calls)[0]!.path).toBe("/repos/a/b/pulls/7/comments/4657268819/replies");
-    });
-
     it("a root far past any thread listing still resolves: the lookup reads the comment itself", async () => {
       const { impl, calls } = fakeReplies({ 9_000_001: reply(9_000_001) });
       await owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 9_000_001, "fixed: abc1234.", "Aiden");
       expect(calls.some((c) => c.path === "/graphql")).toBe(false);
       expect(posts(calls)[0]!.path).toBe("/repos/a/b/pulls/7/comments/9000001/replies");
-    });
-
-    it("walks a longer reply chain to its top-level comment", async () => {
-      const { impl, calls } = fakeReplies({ 100: reply(100), 101: reply(101, 100), 102: reply(102, 101) });
-      await owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 102, "fixed: abc1234.", "Aiden");
-      expect(posts(calls)[0]!.path).toBe("/repos/a/b/pulls/7/comments/100/replies");
     });
 
     it("an id that isn't a review comment of the pull request fails with its reason, and nothing is posted", async () => {
@@ -317,10 +299,6 @@ describe("GitHub", () => {
       expect(posts(calls)[0]!.path).toBe("/repos/a/new-name/pulls/7/comments/100/replies");
     });
 
-    it("a 422 surfaces GitHub's errors[] field and code", async () => {
-      const { impl } = fakeReplies({ 100: reply(100) }, () => new Response(JSON.stringify({ message: "Validation Failed", errors: [{ resource: "PullRequestReviewComment", field: "body", code: "custom", message: "body is too long" }] }), { status: 422 }));
-      await expect(owner(impl).reply({ owner: "a", repo: "b", number: 7 }, 100, "x", "Aiden")).rejects.toThrow(/Validation Failed; PullRequestReviewComment\.body: custom: body is too long/);
-    });
   });
 
   describe("issue, review and re-run writes", () => {

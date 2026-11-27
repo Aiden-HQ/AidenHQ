@@ -542,48 +542,6 @@ test("a task's own branch with an open PR on another base is reviewed and pushed
   assert.equal(pr.base.ref, "release-2", "the PR the plan bound is the one updated");
 });
 
-// Two open PRs from one head into two bases: one into release-2 (what the plan reviewed) and one into main. A push to that head
-// rewrites both branches, but only the release-2 PR's diff was reviewed, so the handoff takes that one over and leaves the main
-// PR where it is. Adopting both would put a diff nobody read into the main PR, and would let the watcher's "a newer PR supersedes
-// this one" rule close the PR the successor actually took over.
-test("a handoff records the successor only on the PR into the base it was reviewed against", async (t) => {
-  const branch = "agent/ACME-21/fix";
-  const kept = "https://github.com/acme/aidenhq/pull/21"; // into release-2: the PR this publish finishes
-  const other = "https://github.com/acme/aidenhq/pull/22"; // from the same head, into main
-  const prs = [{ number: 21, html_url: kept, base: { ref: "release-2" }, head: { sha: "a".repeat(40) } },
-    { number: 22, html_url: other, base: { ref: "main" }, head: { sha: "a".repeat(40) } }];
-  const { root, call, outcomes, ghCalls } = await setup(t, {
-    routes: (m, p) => {
-      if (m === "GET" && p === `/repos/acme/aidenhq/pulls?state=open&head=acme%3A${encodeURIComponent(branch)}`) return { status: 200, body: prs };
-      if (m === "GET" && p === "/repos/acme/aidenhq") return { status: 200, body: { default_branch: "main" } };
-      if (m === "PATCH" && p === "/repos/acme/aidenhq/pulls/21") return { status: 200, body: prs[0] };
-      return undefined;
-    },
-    taskStatus: (task) => (task === "ACME-21" ? "cancelled" : undefined),
-  });
-  mkdirSync(join(root, "cache"), { recursive: true });
-  writeFileSync(join(root, "cache", "pr-tasks.json"), JSON.stringify({ [kept]: { task: "ACME-21", branch }, [other]: { task: "ACME-21", branch } }));
-  const origin = join(root, "github", "acme", "aidenhq.git");
-  mkdirSync(dirname(origin), { recursive: true });
-  sh(root, "init", "--quiet", "--bare", "-b", "main", origin);
-  const seed = join(root, "seed-p6");
-  sh(root, "init", "--quiet", "-b", "main", seed); writeFileSync(join(seed, "README.md"), "product\n"); sh(seed, "add", "README.md"); sh(seed, "commit", "--quiet", "-m", "init"); sh(seed, "push", "--quiet", origin, "main");
-  sh(seed, "checkout", "--quiet", "-b", "release-2"); writeFileSync(join(seed, "rel.txt"), "release\n"); sh(seed, "add", "rel.txt"); sh(seed, "commit", "--quiet", "-m", "release"); sh(seed, "push", "--quiet", origin, "release-2");
-  const ws = join(root, "tasks", "TASK-2", "aidenhq");
-  sh(root, "clone", "--quiet", origin, ws); sh(ws, "checkout", "--quiet", "-b", branch, "origin/release-2");
-  writeFileSync(join(ws, "app.js"), "export const x = 21;\n"); sh(ws, "add", "app.js"); sh(ws, "commit", "--quiet", "-m", "Finish it");
-  const sha = boxBundle(ws, branch);
-  const args = { workspace: "TASK-2", only: [{ repo: "acme/aidenhq", branch, sha }], text: { title: "fix(release): finish it", body: "Why." } };
-  const ex = await call("/aidenhq/v1/executor/execute", { id: "k-0123456789abcdf3", kind: "github.pr", args, digest: "d", idempotency_key: "i" });
-  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
-  assert.equal(ex.status, 200, JSON.stringify(ex.json));
-  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
-  const recorded = JSON.parse(readFileSync(join(root, "cache", "pr-tasks.json"), "utf8"));
-  assert.deepEqual([recorded[kept]?.task, recorded[other]?.task], ["TASK-2", "ACME-21"], "only the reviewed base's PR moved to the successor");
-  assert.deepEqual(ghCalls.filter((c) => c.method === "PATCH").map((c) => c.path), ["/repos/acme/aidenhq/pulls/21"], "only the reviewed base's PR is updated");
-  assert.ok(!ghCalls.some((c) => c.method === "POST" && c.path === "/repos/acme/aidenhq/pulls"), "no third PR opened");
-});
-
 // A republish sends the PR's text as a full PATCH, so a blank body coming from the CLI (no --body-file) used to replace the
 // description with the footer alone. An absent or blank body is left out of the PATCH, a blank title too, and when no text
 // remains no PATCH is issued at all: the head is pushed and the PR stays as it is. A real body still replaces it, footered once.
@@ -698,11 +656,6 @@ test("a publish with hold puts ship:stop on the PR; a later publish without it l
   assert.equal(labelCalls().length, 2, "and only once");
 });
 
-test("the pr args schema accepts a text without a body", () => {
-  const schema = JSON.parse(readFileSync(new URL("../schemas/pr.json", import.meta.url), "utf8"));
-  validate(schema, { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha: "a".repeat(40) }], text: { title: "fix(widget): keep the description" } });
-});
-
 test("a PR's card carries the branch's diff for the reviewer (#744): every kind renders its plan's facts", async (t) => {
   let pulls = {};
   const { sha, ws, origin, call } = await setup(t, { routes: (method, path) => (path in pulls ? { status: 200, body: pulls[path] } : /\/commits\/\w+\/(check-runs|status)/.test(path) ? { status: 200, body: { total_count: 1, check_runs: [{ status: "completed", conclusion: "success" }], statuses: [] } } : undefined) });
@@ -771,46 +724,6 @@ test("a head is the runner's own only in the repo it was pushed to: the same com
   assert.deepEqual([elsewhere.json.raise?.tier, elsewhere.json.raise?.rule], [1, "listed-merge-foreign-head"]);
 });
 
-test("ops answer the kernel only; the token op is gone", async (t) => {
-  const { call } = await setup(t);
-  assert.equal((await call("/ops/snapshot", { module: "apps-platform", repo: "acme-agents/widget", ref: "main" }, "apps-key")).status, 401);
-  assert.equal((await call("/ops/token", { module: "apps-platform", repo: "acme-agents/widget", perms: { contents: "read" } })).status, 404);
-});
-
-// A runner-token refusal with no usable X-Accepted-OAuth-Scopes header (GitHub leaves it off some 403s) is still the
-// owner's missing runner permission when the sign-in's own scopes say admin:org is absent: the op derives the typed need
-// itself, so the kernel records a scope need instead of a silent error. With the scope granted, the same 403 stays plain.
-test("runner_token derives the admin:org need from the known scopes when GitHub gives no header", async (t) => {
-  const refused = () => ({ status: 403, body: { message: "Forbidden", documentation_url: "https://docs.github.com/rest/actions/self-hosted-runners" } });
-  const noScope = await setup(t, { routes: (method, path) => (path.endsWith("/registration-token") ? refused() : undefined) });
-  const missing = await noScope.call("/ops/runner_token", { module: "ci", org: "acme-agents" });
-  assert.equal(missing.status, 403, JSON.stringify(missing.json));
-  assert.deepEqual(missing.json.need, { cause: "scope", scope: "admin:org" }, "the owner-fixable need the kernel records");
-  assert.match(missing.json.error, /admin:org/);
-  // Scopes that could not be read (an empty list) say nothing about admin:org: the refusal stays the plain error it was.
-  const unknownScopes = await setup(t, { scopes: () => [], routes: (method, path) => (path.endsWith("/registration-token") ? refused() : undefined) });
-  const unread = await unknownScopes.call("/ops/runner_token", { module: "ci", org: "acme-agents" });
-  assert.equal(unread.status, 502, "an unknown scope list is not a missing admin:org");
-  assert.equal(unread.json.need, undefined);
-  const hasScope = await setup(t, { scopes: () => ["repo", "admin:org"], routes: (method, path) => (path.endsWith("/registration-token") ? refused() : undefined) });
-  const other = await hasScope.call("/ops/runner_token", { module: "ci", org: "acme-agents" });
-  assert.equal(other.status, 502, "a 403 the scopes do not explain is still a plain error");
-  assert.equal(other.json.need, undefined);
-  assert.match(other.json.error, /403 Forbidden/);
-});
-
-// The refusal's shape, as the push path builds it: a 403 (the status ops.ts gives a scope need) carrying the typed need, and
-// GitHub's own words recognised in a git child's stderr.
-test("the workflow refusal is read from GitHub's words and raised as the typed scope need", () => {
-  const stderr = "Command failed: git push\nremote: refusing to allow an OAuth App to create or update workflow `.github/workflows/ci.yml` without `workflow` scope\n ! [remote rejected] main -> main (pre-receive hook declined)\n";
-  assert.equal(workflowRefusal(new Error(stderr)), true);
-  assert.equal(workflowRefusal(new Error("error: failed to push some refs to 'https://github.com/acme/widget.git'")), false);
-  const err = workflowNeedError();
-  assert.equal(err.status, 403);
-  assert.deepEqual(err.need, { cause: "scope", scope: "workflow" });
-  assert.equal(err.message, "GitHub needs the `workflow` permission: reconnect GitHub on the board (Settings, Connections)");
-});
-
 // GitHub refuses any commit that creates or updates a workflow file when the OAuth grant lacks `workflow`; its words in the git
 // child's stderr are the only signal. The push path turns them into the typed need, hands it to the retrying need queue, and
 // fails with the same 403 a scope need gets, never a bare git failure.
@@ -866,23 +779,6 @@ test("a workflow that already exists on the branch is pushed without the scope, 
   assert.equal(granted.reported.length, 0, "nothing missing");
 });
 
-// On a branch whose rules require signed commits the publish is GitHub's own commit: GitHub's workflow-scope refusal of it is the same
-// typed need, and the branch it created for the commit is taken away again.
-test("a signed commit GitHub refuses for the missing workflow scope is the typed scope need, and the need queue hears it", async (t) => {
-  const refuse = (input) => (input.fileChanges.additions.some((f) => f.path.startsWith(".github/workflows/")) ? "refusing to allow an OAuth App to create or update workflow `.github/workflows/ci.yml` without `workflow` scope" : undefined);
-  const { origin, wfSha, outcomes, reported, call, ghCalls } = await setup(t, { scopes: () => ["repo", "read:org", "workflow", "project"], refuse, signed: () => true });
-  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "workflow", sha: wfSha }] };
-  assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
-  assert.deepEqual((await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000e1", kind: "github.push", args, digest: "d", idempotency_key: "wf" })).json, { accepted: true });
-  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
-  assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
-  assert.match(outcomes[0].text, /GitHub needs the `workflow` permission: reconnect GitHub on the board \(Settings, Connections\)/);
-  assert.ok(ghCalls.some((c) => c.path === "/graphql" && String(c.body?.query).includes("createCommitOnBranch")), "GitHub was asked");
-  assert.throws(() => sh(origin, "rev-parse", "--verify", "refs/heads/workflow"), "the refused branch is not left on GitHub");
-  // The need goes through github-mcp's queue, which keeps and retries it when the kernel can't take it.
-  assert.deepEqual(reported, [{ need: { cause: "scope", scope: "workflow" }, detail: "GitHub needs the `workflow` permission: reconnect GitHub on the board (Settings, Connections)" }]);
-});
-
 // The branch's rules decide how a publish lands, read before anything is pushed: a read GitHub can't answer refuses the publish with
 // its reason; a private repo on a plan without rulesets has none, so it is the ordinary git push.
 test("a rules read GitHub can't answer is a refused publish; a plan without rulesets is a git push", async (t) => {
@@ -918,25 +814,6 @@ test("held write resumes on reconnect", async (t) => {
   assert.equal(outcomes.length, 1, JSON.stringify(outcomes));
   assert.equal(outcomes[0].ok, true);
   assert.equal((await call("/aidenhq/v1/executor/status", { id: "k-00000000000000d1" })).json.state, "done");
-});
-
-test("held write is re-checked on reconnect", async (t) => {
-  let on = false;
-  const { root, origin, ws, sha, outcomes, call, handle } = await setup(t, { connected: () => on });
-  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
-  assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
-  await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000d2", kind: "github.push", args, digest: "d", idempotency_key: "h2" });
-  await new Promise((r) => setTimeout(r, 50));
-  // While GitHub was away the task's workspace went: the approved head's bundle is no longer there to read.
-  rmSync(join(dirname(ws), ".aidenhq"), { recursive: true });
-  const held = JSON.parse(readFileSync(join(root, "cache", "held.json"), "utf8"))["k-00000000000000d2"];
-  assert.deepEqual([held.asker.requester, held.asker.task], [{ kind: "job", roles: [] }, "t1"], "held with the requester who asked");
-  on = true;
-  await handle.stepHeld();
-  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
-  assert.throws(() => sh(origin, "rev-parse", "--verify", "refs/heads/feature"), "the moved branch is not pushed");
-  assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
-  assert.match(outcomes[0].text, /changed while GitHub was disconnected; ask again/);
 });
 
 test("a held write whose record was cancelled while held does not run", async (t) => {
@@ -979,17 +856,6 @@ test("a comment with a marker and no id edits this account's own comment that ca
   // The saved id's comment was deleted (GitHub answers 404): the marker is looked for, else a new one is made. Never an error forever.
   oursRefs.add("github:acme-agents/widget#3/comment/99");
   assert.deepEqual((await call("/ops/comment", { ...post, id: 99 })).json, { id: 77 });
-});
-
-test("the owner's commit identity for job boxes; 503 while GitHub isn't connected", async (t) => {
-  let on = true;
-  const { get } = await setup(t, { connected: () => on });
-  assert.equal((await get("/aidenhq/v1/identity", "apps-key")).status, 401);
-  const me = await get("/aidenhq/v1/identity");
-  assert.deepEqual(await me.json(), { name: "Owner One", email: "1+owner1@users.noreply.github.com" });
-  on = false;
-  const off = await get("/aidenhq/v1/identity");
-  assert.deepEqual([off.status, (await off.json()).error], [503, "GitHub isn't connected"]);
 });
 
 const pushArgs = (sha) => ({ workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] });

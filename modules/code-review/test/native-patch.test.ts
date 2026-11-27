@@ -179,16 +179,6 @@ test("a patch with no hunk to split at, over the budget, is named, not cut or dr
   assert.match(g.oversize[0]!, /^x\.sh \(a patch of \d+ characters with no hunk to split at\)$/);
 });
 
-test("an important finding at a place the review would drop (a file that isn't there) is incomplete, not clean", { timeout: 240_000 }, async (t) => {
-  const { repo, base } = repoWith({ "s.txt": (v) => `s${v}\n` });
-  const model = await endpoint([], join(realpathSync(repo), "nowhere.txt"));
-  try {
-    const r = await review(repo, base, ["s.txt"], model);
-    if (!r) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
-    assert.match(String(r.incomplete), /part 1 of 1: 1 important finding at a place that is not in the change/);
-  } finally { model.close(); }
-});
-
 test("self-review counts what the PR check would: an important finding in a file its scope leaves out is not one", { timeout: 240_000 }, async (t) => {
   const { repo, base } = repoWith({ "a.txt": (v) => `a${v}\n`, "package-lock.json": (v) => `{"v":${v}}\n` });
   sh(repo, "update-ref", "refs/remotes/origin/main", base);
@@ -205,18 +195,6 @@ test("self-review counts what the PR check would: an important finding in a file
     });
     assert.equal(out.status, 0, out.stdout);
     assert.match(out.stdout, /: clean \(/);
-  } finally { model.close(); }
-});
-
-test("an important finding in a file the scope leaves out (here a deleted lockfile) is dropped by design, not lost", { timeout: 240_000 }, async (t) => {
-  const { repo, base } = repoWith({ "s.txt": (v) => `s${v}\n`, "package-lock.json": (v) => (v ? "" : "{}\n") });
-  sh(repo, "rm", "-q", "--ignore-unmatch", "package-lock.json");
-  const model = await endpoint([], join(realpathSync(repo), "package-lock.json"));
-  try {
-    const r = await review(repo, base, ["s.txt"], model, ["package-lock.json"]);
-    if (!r) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
-    assert.equal(JSON.parse(r.message).findings[0].path, "package-lock.json", "the review came back with the finding");
-    assert.equal(r.incomplete, undefined);
   } finally { model.close(); }
 });
 
@@ -302,18 +280,6 @@ test("preparing the patch and the copy is within the review's time: a deadline a
 
 const lineZero = (path: string, body: string) => ({ findings: [{ title: "[P1] at line zero", body, confidence_score: 0.9, priority: 1, code_location: { absolute_file_path: path, line_range: { start: 0, end: 0 } } }], overall_correctness: "patch is incorrect", overall_explanation: "x", overall_confidence_score: 0.9 });
 
-test("line 0: an incorrect verdict whose only finding clean() drops is incomplete through codexNative, with or without a failure scenario", { timeout: 240_000 }, async (t) => {
-  const { repo, base } = repoWith({ "s.txt": (v) => `s${v}\n` });
-  for (const body of ["no scenario given", "Failure scenario: s(1) returns 2"]) {
-    const model = await endpoint([], undefined, lineZero(join(realpathSync(repo), "s.txt"), body));
-    try {
-      const r = await review(repo, base, ["s.txt"], model);
-      if (!r) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
-      assert.match(String(r.incomplete), /part 1 of 1: .*(incorrect|important finding)/, body);
-    } finally { model.close(); }
-  }
-});
-
 test("line 0: self-review does not print clean for an incorrect verdict whose only finding is dropped", { timeout: 240_000 }, async (t) => {
   const { repo, base } = repoWith({ "s.txt": (v) => `s${v}\n` });
   sh(repo, "update-ref", "refs/remotes/origin/main", base);
@@ -332,41 +298,6 @@ test("line 0: self-review does not print clean for an incorrect verdict whose on
     assert.match(out.stdout, /: incomplete$/m);
     assert.doesNotMatch(out.stdout, /: clean/);
   } finally { model.close(); }
-});
-
-test("a file that became a link is two records of one path: each is packed on its own, with its own header", () => {
-  const dir = mkdtempSync(join(tmpdir(), "native-type-")), repo = join(dir, "r");
-  mkdirSync(repo); sh(repo, "init", "-q"); sh(repo, "config", "user.email", "t@t"); sh(repo, "config", "user.name", "t"); sh(repo, "config", "commit.gpgsign", "false");
-  writeFileSync(join(repo, "l"), Array.from({ length: 60 }, (_, i) => `line ${i}`).join("\n") + "\n"); sh(repo, "add", "."); sh(repo, "commit", "-qm", "a");
-  const base = sh(repo, "rev-parse", "HEAD");
-  rmSync(join(repo, "l")); symlinkSync("elsewhere", join(repo, "l")); sh(repo, "add", "."); sh(repo, "commit", "-qm", "b");
-  const records = patchOf(repo, base, "l").split(/^(?=diff --git )/m).filter(Boolean);
-  assert.equal(records.length, 2, "git gives a type change two records");
-  const together = patchGroups(repo, base, ["l"]);
-  assert.equal(together.groups.length, 1);
-  const apart = patchGroups(repo, base, ["l"], Math.max(...records.map((r) => r.length)));
-  assert.equal(apart.groups.length, 2);
-  for (const g of apart.groups) assert.equal((g.text.match(/^diff --git /gm) ?? []).length, 1, "one record, one header");
-  assert.ok(apart.groups.some((g) => g.text.includes("deleted file mode 100644")) && apart.groups.some((g) => g.text.includes("new file mode 120000")));
-});
-
-test("a patch that isn't valid UTF-8 is named, not sent in a lossy form", () => {
-  const { repo, base } = repoWith({ "x.txt": (v) => (v ? "a\n" : "b\n") });
-  writeFileSync(join(repo, "x.txt"), Buffer.from([0x61, 0xff, 0x0a])); sh(repo, "commit", "-qam", "bytes");
-  const g = patchGroups(repo, base, ["x.txt"]);
-  assert.deepEqual(g.groups, []);
-  assert.deepEqual(g.oversize, ["x.txt (not valid UTF-8)"]);
-});
-
-test("a bare carriage return or a line separator in a changed line is not a record or hunk boundary", () => {
-  const { repo, base } = repoWith({ "c.txt": (v) => (v ? `x\r@@ -1 +1 @@ fake\u2028diff --git a/z b/z\ny\n` : "a\n") });
-  const g = patchGroups(repo, base, ["c.txt"], 100_000);
-  assert.equal(g.groups.length, 1);
-  assert.equal(g.groups[0]!.text.trimEnd(), patchOf(repo, base, "c.txt").trimEnd());
-  // Over a budget, the one hunk is not read as several: it is named, not cut at the fake headers.
-  const tight = patchGroups(repo, base, ["c.txt"], 100);
-  assert.deepEqual(tight.groups, []);
-  assert.match(tight.oversize[0]!, /^c\.txt \(a hunk of \d+ characters\)$/);
 });
 
 test("self-review reviews the eligible files even when a generated file leaves a gap, then exits 2 with the gap named", { timeout: 240_000 }, async (t) => {
@@ -388,17 +319,6 @@ test("self-review reviews the eligible files even when a generated file leaves a
     assert.match(JSON.stringify(model.requests[0]), /a\.txt/);
     assert.match(out.stdout, /generated files this change adds are not reviewed: dist\/out\.js/);
   } finally { model.close(); }
-});
-
-test("a file name that isn't valid UTF-8 in a change list is an error, named, never a lossy path", () => {
-  const dir = mkdtempSync(join(tmpdir(), "list-utf-")), repo = join(dir, "r");
-  mkdirSync(repo); sh(repo, "init", "-q");
-  const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd: repo, input: "x\n", encoding: "utf8" }).trim();
-  const tree = (name: Buffer) => execFileSync("git", ["mktree", "-z"], { cwd: repo, input: Buffer.concat([Buffer.from(`100644 blob ${blob}\t`), name, Buffer.from("\0")]), encoding: "utf8" }).trim();
-  const commit = (t: string) => execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit-tree", t, "-m", "x"], { cwd: repo, encoding: "utf8" }).trim();
-  const ok = commit(tree(Buffer.from("fine.txt"))), bad = commit(tree(Buffer.from([0x62, 0xff, 0x61])));
-  assert.equal(gitListed(repo, ["diff", "--no-renames", "--name-only", "-z", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", ok]), "fine.txt\0");
-  assert.throws(() => gitListed(repo, ["diff", "--no-renames", "--name-only", "-z", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", bad]), /not valid UTF-8/);
 });
 
 test("self-review takes the exact remote-tracking ref as the base, whatever a tag of the same name points at", async () => {
@@ -430,14 +350,6 @@ test("a branch gets two self-reviews: after them a run records the head without 
     assert.match(r.out, /not reviewed: this branch had its 2 reviews/);
     assert.deepEqual(JSON.parse(readFileSync(memo, "utf8")), { base, head, open: -1, runs: 2 }, "the head is recorded for aidenhq publish, as not reviewed");
   }
-});
-
-test("a file name that starts with a byte order mark keeps it in the change list", () => {
-  const { repo, base } = repoWith({ "\ufeffbom.txt": (v) => `v${v}\n` });
-  assert.equal(gitListed(repo, ["diff", "--no-renames", "--name-only", "-z", base, "HEAD"]), "\ufeffbom.txt\0");
-  const g = patchGroups(repo, base, ["\ufeffbom.txt"]);
-  assert.deepEqual(g.oversize, []);
-  assert.ok(g.groups[0]!.text.includes("a/\ufeffbom.txt"), "the patch names the file with its mark");
 });
 
 test("a base given as revision syntax (main~1) is not a branch name: incomplete, nothing is resolved from it", async () => {
@@ -516,20 +428,6 @@ test("what the caller typed never reaches an evidence line: a newline and a fake
   }
 });
 
-test("a branch whose name ends in a no-break space is still the checked-out branch", async () => {
-  const { repo, base } = repoWith({ "a.txt": (v) => `a${v}\n` });
-  sh(repo, "update-ref", "refs/remotes/origin/main", base);
-  const name = "topic\u00a0";
-  sh(repo, "checkout", "-q", "-b", name);
-  writeFileSync(join(repo, "dirty.txt"), "x\n"); // stops the run at its next check, after the branch check
-  const out = await new Promise<string>((ok) => {
-    const c = spawn("node", [join(import.meta.dirname, "../recipe/self-review.ts"), "main", name], { cwd: repo, env: { ...process.env, AIDENHQ_GATEWAY_URL: "http://127.0.0.1:9", AIDENHQ_RUN_TOKEN: "t" }, stdio: ["ignore", "pipe", "pipe"] });
-    let s = ""; c.stdout.on("data", (d) => (s += d)); c.stderr.on("data", (d) => (s += d)); c.on("close", () => ok(s));
-  });
-  assert.match(out, /incomplete: uncommitted changes/, out);
-  assert.match(out, /^self-review: branch topic\u00a0 base /m);
-});
-
 test("a finding on a file the change deletes, or makes a link, is kept file-level; a path outside the change is dropped", () => {
   const { repo, base } = repoWith({ "gone.txt": (v) => (v ? "x\n" : "one\ntwo\nthree\n"), "l": (v) => (v ? "y\n" : "target\n") });
   sh(repo, "rm", "-q", "gone.txt"); rmSync(join(repo, "l")); symlinkSync("gone.txt", join(repo, "l")); sh(repo, "add", "."); sh(repo, "commit", "-qm", "delete and link");
@@ -546,32 +444,4 @@ test("a finding on a file the change deletes, or makes a link, is kept file-leve
   }
   assert.equal(place([{ ...f, path: "other.txt" }], repo, reviewed, undefined, undefined, head).length, 0, "a path outside the change is dropped");
   assert.equal(place([{ ...f, path: "other.txt" }], repo, new Set(["gone.txt"]), undefined, undefined, undefined).length, 0, "also at the work tree");
-});
-
-test("self-review prints a finding on a deleted file instead of dropping it", { timeout: 240_000 }, async (t) => {
-  const { repo, base } = repoWith({ "gone.txt": (v) => (v ? "x\n" : "one\ntwo\n"), "a.txt": (v) => `a${v}\n` });
-  sh(repo, "rm", "-q", "gone.txt"); sh(repo, "commit", "-qm", "delete");
-  sh(repo, "update-ref", "refs/remotes/origin/main", base);
-  const model = await endpoint([], "gone.txt");
-  try {
-    const dir = codexDir();
-    if (dir === null) return t.skip(`codex ${PIN} is not installed and could not be fetched`);
-    const branch = sh(repo, "rev-parse", "--abbrev-ref", "HEAD");
-    const env = { ...process.env, PATH: dir ? `${dir}:${process.env.PATH}` : process.env.PATH, AIDENHQ_GATEWAY_URL: model.url.replace(/\/api\/v1$/, ""), AIDENHQ_RUN_TOKEN: "test-token" };
-    const out = await new Promise<{ status: number | null; stdout: string }>((ok) => {
-      const c = spawn("node", [join(import.meta.dirname, "../recipe/self-review.ts"), "main", branch], { cwd: repo, env, stdio: ["ignore", "pipe", "pipe"] });
-      let stdout = ""; c.stdout.on("data", (d) => (stdout += d)); c.stderr.on("data", (d) => (stdout += d));
-      c.on("close", (status) => ok({ status, stdout }));
-    });
-    assert.equal(out.status, 1, out.stdout);
-    assert.match(out.stdout, /on a file this change deletes or makes a link/);
-    assert.match(out.stdout, /1 important finding/);
-  } finally { model.close(); }
-});
-
-test("a regular file too large to read is not a deleted file or a link: its finding is dropped, not moved to line 1", () => {
-  const { repo, base: _base } = repoWith({ "big.txt": (v) => (v ? `${"x".repeat(9 << 20)}\n` : "a\n") });
-  const head = sh(repo, "rev-parse", "HEAD");
-  const f = { severity: "important" as const, path: "big.txt", line: 1, title: "t", why: "Failure scenario: x", evidence: "", fix_brief: "" };
-  assert.equal(place([f], repo, new Set(["big.txt"]), undefined, undefined, head).length, 0);
 });

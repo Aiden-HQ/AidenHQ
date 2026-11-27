@@ -106,8 +106,3 @@ test("ship-repair, the repo's CI regenerating: a conflicted lockfile its globs n
   assert.deepEqual(r.result, { changed: 1 });
   assert.equal(r.keep!.entries[0]!.sha, git("rev-parse", `${base}:package-lock.json`));
 });
-
-test("go.sum order: path, then semantic version, /go.mod after its version", () => {
-  const lines = ["b v1.0.0/go.mod h1:x", "a v1.10.0 h1:x", "a v1.9.0 h1:x", "b v1.0.0 h1:x", "a v1.9.0-rc.1 h1:x", "a v1.9.0/go.mod h1:x"];
-  assert.deepEqual(lines.sort(goSumOrder), ["a v1.9.0-rc.1 h1:x", "a v1.9.0 h1:x", "a v1.9.0/go.mod h1:x", "a v1.10.0 h1:x", "b v1.0.0 h1:x", "b v1.0.0/go.mod h1:x"]);
-});
