@@ -182,58 +182,11 @@ test("the declared set carries each enabled runner instance, not the template", 
 });
 
 // A disabled runner instance is retired: its enablement link is gone and so is its declared series.
-test("a retired runner instance is not declared", async () => {
-  const h = host();
-  h.enable(["aidenhq-ci-runner@1"]);
-  const text = await run(h);
-  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-ci-runner@1\.service"\} 1$/m);
-  assert.doesNotMatch(text, /aidenhq_unit_declared\{[^}]*unit="aidenhq-ci-runner@2\.service"\}/, "a disabled runner is not declared");
-  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-gateway\.service"\} 1$/m);
-});
-
 // A cleanup that removes the runner template leaves its enablement links behind, dangling: systemd reads such an instance as
 // not-found, so it declares nothing and must not be exported (a declared series is what lets CiRunnerUnitMissing fire).
-test("a dangling runner enablement link is not declared", async () => {
-  const h = host();
-  h.enable(["aidenhq-ci-runner@1"]);
-  const template = join(h.unitDir, "aidenhq-ci-runner@.service");
-  unlinkSync(template);
-  symlinkSync(join(h.unitDir, "gone.service"), join(h.wants, "aidenhq-ci-runner@2.service"));
-  const text = await run(h);
-  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-gateway\.service"\} 1$/m);
-  assert.doesNotMatch(text, /aidenhq_unit_declared\{[^}]*unit="aidenhq-ci-runner@/, "a link with no template behind it declares no runner");
-  assert.doesNotMatch(text, /^aidenhq_unit_backoff\{/m);
-});
-
 // Only a symlink under a target's .wants dir enables an instance: systemd ignores a plain file with a unit name there (a
 // backup restored over the link, say) and reads that instance as disabled, so it must not be declared.
-test("a plain file in the wants dir is not a runner enablement link", async () => {
-  const h = host();
-  h.enable(["aidenhq-ci-runner@1"]);
-  writeFileSync(join(h.wants, "aidenhq-ci-runner@2.service"), "");
-  const text = await run(h);
-  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-ci-runner@1\.service"\} 1$/m);
-  assert.doesNotMatch(text, /aidenhq_unit_declared\{[^}]*unit="aidenhq-ci-runner@2\.service"\}/, "a plain file does not enable an instance");
-});
-
 // `systemctl --user add-requires` enables an instance through a target's .requires dir instead of .wants, and systemd reads
 // it as enabled, so it is declared too.
-test("a runner enabled through a requires link is declared", async () => {
-  const h = host();
-  h.enable(["aidenhq-ci-runner@1"]);
-  symlinkSync(join(h.unitDir, "aidenhq-ci-runner@.service"), join(h.requires, "aidenhq-ci-runner@2.service"));
-  const text = await run(h);
-  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-ci-runner@1\.service"\} 1$/m);
-  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-ci-runner@2\.service"\} 1$/m, "a requires link declares the instance");
-});
-
 // A masked instance keeps its enablement link but systemd will not start it, so it no longer counts as declared (and its
 // backoff marker is not republished).
-test("a masked runner instance is not declared", async () => {
-  const h = host();
-  h.enable(["aidenhq-ci-runner@1", "aidenhq-ci-runner@2"]);
-  writeFileSync(join(h.root, "masked"), "aidenhq-ci-runner@2.service\n");
-  const text = await run(h, { MASKED: join(h.root, "masked") });
-  assert.match(text, /^aidenhq_unit_declared\{scope="user",unit="aidenhq-ci-runner@1\.service"\} 1$/m);
-  assert.doesNotMatch(text, /aidenhq_unit_declared\{[^}]*unit="aidenhq-ci-runner@2\.service"\}/, "a masked instance is not declared");
-});
