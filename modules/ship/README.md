@@ -35,13 +35,19 @@ The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui
   where the author allows maintainer edits; otherwise the PR holds.
 - **One decision per pass.** Merge-gate's `decide` returns `wait`, `repair`, `fix_ci`, `fix_review`, `approve`, `enqueue`,
   `merge`, `done`, `stall` or `fail`, and each writer re-decides right before it writes. Nothing moves on a draft, a stop label (`stop_label`, default `ship:stop`), a person assigned to the PR, or a hold.
-- **Repair.** The repo's own `actions` (slash commands, workflows) run first, then GitHub's update-branch, then on a conflict
-  the `ship-repair` check job: a credential-free box merges the base in, takes the base side of generated paths and lockfiles,
-  runs the discovered generator (`.gitattributes` `linguist-generated`, known lockfiles, generated-file headers; the `generated`
-  setting overrides) and returns the files, which github commits as the App. A leftover conflict or a failed generator wakes the
+- **Repair** (PRs into the default branch: the merge gate waits on any other base before a conflict is looked at). The repo's own
+  `actions` run first: each a workflow with `workflow_dispatch`, dispatched on the default branch (the repo's own trusted copy, so
+  a PR doesn't change what runs with its secrets) with the PR's number as an input
+  (`inputs: { pr: "{pr}" }`); ship follows the run GitHub names, and a failed run moves on to the next step, then to ship's own.
+  Then GitHub's update-branch, then on a conflict the `ship-repair` check job: a credential-free box merges the base's live tip in
+  (none when the head already holds it), takes the base side of generated paths and lockfiles, runs the discovered generator
+  (`.gitattributes` `linguist-generated`, known lockfiles, generated-file headers; the `generated` setting overrides; with
+  `generated.ci: <check>` a check in the repo's own CI regenerates them: the box takes their base side and runs nothing, and ship
+  merges a head its repair made that way only once that check passed on it, holding the PR after 30 minutes without it) and returns the files, which github commits
+  as the App. A leftover conflict or a failed generator wakes the
   Engineer once per head. A stacked PR waits on the PR it stands on, then github's `retarget` moves it to the default branch.
 - **Fixes.** The task is woken for red required checks (a failure that is red on the base too is a wait), unanswered review
-  findings and members' unanswered review comments, one wake at a time in the same session. A model fix touching a `protected`
+  findings and members' unanswered review comments (never those of the repo's `ignore_authors`, its automation accounts), one wake at a time in the same session. A model fix touching a `protected`
   path puts the PR on hold; the deterministic repair may still regenerate lockfiles.
 - **Approval and merge.** Where the target branch's rules or code review's gate require it, the App approves the exact head when
   the head's risk tier has `approve: on`, code review's pass stands on it and checks are green (`observe` writes what it would
@@ -66,8 +72,9 @@ Without ship, no PR is watched: Engineers merge their own green PRs (`aidenhq me
 
 Sam (the `ship` agent) is ship's teammate: he answers the owner about a PR's merge state, holds and the queue, and changes
 the settings when asked. The `ship` connection. Read: `ship_config`, `ship_status`. Write: `ship_configure`. Both need the
-`ship-admin` role (Sam, the Maintainer and Aiden hold it); the owner's own Fleet page calls them too, and `ship_configure` then only returns the typed settings change (the board files it on his Save). A repo ship doesn't cover yet is the owner's to add from the Fleet page: Add writes only its `ship` entry and Remove drops only that. The Maintainer and code review are separate: adding a repo to Ship never lists it there (the owner does that from their pages), and a repo code review doesn't watch merges by the `unwatched` setting. Ship reads no other module's list. A change that loosens anything (more hand-off, a higher or removed cap, a tier's approve or merge raised, `dependabot: all`, quiet-PR closing turned on) is the owner's, made from the
-Fleet page.
+`ship-admin` role (Sam, the Maintainer and Aiden hold it); the owner's own Fleet page calls them too, and `ship_configure` then only returns the typed settings change (the board files it on his Save). A repo ship doesn't cover yet is the owner's to add from the Fleet page: Add writes only its `ship` entry and Remove drops only that. The Maintainer and code review are separate: adding a repo to Ship never lists it there (the owner does that from their pages), and a repo code review doesn't watch merges by the `unwatched` setting. Ship reads no other module's list. A change that loosens anything (more hand-off, a higher or removed cap, a tier's approve or merge raised, `dependabot: all`, quiet-PR closing turned on, a login added to
+`ignore_authors`: its comments stop gating a merge) is the owner's, made from the Fleet page; removing an `ignore_authors` login is
+not.
 
 ## New installs
 
