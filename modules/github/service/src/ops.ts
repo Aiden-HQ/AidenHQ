@@ -149,8 +149,10 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
     if (pr && typeof pr === "object" && pr.files) {
       pr.files = await allPrFiles(pr.files, async (after) => {
         const r = await ok(ctx, "POST", "/graphql", { query: PR_FILES_QUERY, variables: { owner: s.org, repo: s.name, number: b.number, after } });
+        const errors: any[] = Array.isArray(r.body?.errors) ? r.body.errors : [];
         const page = r.body?.data?.repository?.pullRequest?.files;
-        if (!page || typeof page !== "object" || !Array.isArray(page.nodes) || !page.pageInfo) throw fail(502, `GitHub has no readable ${s.slug}#${b.number} files after the first page`);
+        // A 200 carrying GraphQL errors and partial data is no answer: a page with a file missing must not read as complete.
+        if (errors.length || !page || typeof page !== "object" || !Array.isArray(page.nodes) || !page.pageInfo) throw fail(502, `GitHub has no readable ${s.slug}#${b.number} files after the first page: ${String(errors[0]?.message ?? `HTTP ${r.status}`)}`);
         return page;
       });
     }
