@@ -46,13 +46,23 @@ export function parseBunLock(text: string): BunLock {
   return JSON.parse(out);
 }
 
-// The one bunfig.toml a directory with a bun.lock may carry: exact saves and the 7-day minimum release age, nothing that
-// changes where packages come from. Compared line by line, comments and blank lines aside.
+// The bunfig.toml every directory with a bun.lock carries: its `[install]` is exactly exact saves and the 7-day minimum
+// release age, nothing that changes where packages come from (registry, scopes, cafile...). Its only other table is `[test]`
+// (bun test's settings, e.g. a preload); nothing outside a table. Compared line by line, comments and blank lines aside.
 export const BUNFIG = ["[install]", "exact = true", "minimumReleaseAge = 604800"];
 export const bunfigProblem = (file: string, text: string | undefined) => {
   if (text === undefined) return `${file}: missing; every bun.lock has a bunfig.toml beside it (${BUNFIG.join("; ")})`;
-  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
-  return JSON.stringify(lines) === JSON.stringify(BUNFIG) ? undefined : `${file}: must be exactly ${BUNFIG.join("; ")} (comments aside): another setting could change where or what bun installs`;
+  const tables = new Map<string, string[]>();
+  let at: string | undefined;
+  for (const l of text.split("\n").map((x) => x.trim()).filter((x) => x && !x.startsWith("#"))) {
+    if (l.startsWith("[")) { at = l; if (tables.has(at)) return `${file}: ${l} appears twice`; tables.set(at, []); continue; }
+    if (at === undefined) return `${file}: ${l.slice(0, 40)} is outside a table: only [install] and [test] are allowed`;
+    tables.get(at)!.push(l);
+  }
+  const bad = [...tables.keys()].filter((t) => t !== "[install]" && t !== "[test]");
+  if (bad.length) return `${file}: ${bad.join(", ")}: only [install] and [test] are allowed (another table could change where or what bun installs)`;
+  return JSON.stringify(["[install]", ...(tables.get("[install]") ?? [])]) === JSON.stringify(BUNFIG) ? undefined
+    : `${file}: [install] must be exactly ${BUNFIG.slice(1).join("; ")} (comments aside): another setting could change where or what bun installs`;
 };
 
 const EXACT = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;

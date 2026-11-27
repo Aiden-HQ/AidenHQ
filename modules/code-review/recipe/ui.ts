@@ -121,7 +121,8 @@ export async function capture({ spec, ws, out, env = process.env }: { spec: UiSp
   // version 9 with no such field gets pnpm 8, which reads it (a newer pnpm refuses it under --frozen-lockfile).
   const pnpmLock = /lockfileVersion:\s*['"]?(\d+)/.exec(readSmall(join(ws, "pnpm-lock.yaml"), 4096) ?? "")?.[1];
   const pnpm = typeof packageManager === "string" || !pnpmLock || Number(pnpmLock) >= 9 ? "pnpm" : "pnpm@8";
-  const [pm, ...via] = existsSync(join(ws, "pnpm-lock.yaml")) ? ["corepack", pnpm] : existsSync(join(ws, "yarn.lock")) ? ["corepack", "yarn"] : ["npm"];
+  // Bun (the image's pinned one) for a bun.lock, the app starter's.
+  const [pm, ...via] = existsSync(join(ws, "bun.lock")) ? ["bun"] : existsSync(join(ws, "pnpm-lock.yaml")) ? ["corepack", pnpm] : existsSync(join(ws, "yarn.lock")) ? ["corepack", "yarn"] : ["npm"];
   const install = [...via, ...(pm === "npm" ? [existsSync(join(ws, "package-lock.json")) ? "ci" : "install"] : ["install", "--frozen-lockfile"])];
   const tmp = mkdtempSync(join(env.TMPDIR || "/tmp", "ui-scan-"));
   const ui = join(out, "ui"), url = `http://127.0.0.1:${PORT}`, pagesFile = join(ws, ".aidenhq-ui", "pages.json");

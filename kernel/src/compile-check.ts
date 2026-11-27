@@ -17,7 +17,7 @@ import YAML from "yaml";
 const SHA = /^[0-9a-f]{40}$/;
 /**
  * A failure that says a source couldn't be fetched (not the target refusing the instance): the compiler's own network errors, each
- * matched by the phrase git/npm/node print, never by a bare `SSL`/`TLS` token — a target's *refusal* can legitimately name TLS
+ * matched by the phrase git/bun/node print, never by a bare `SSL`/`TLS` token — a target's *refusal* can legitimately name TLS
  * (a setting the new product dropped reads "kernel TLS module … is gone"), and reading that as operational would retry the tip
  * for ever instead of refusing it.
  */
@@ -49,11 +49,8 @@ export type CompileDeps = {
    * test so the check runs offline; production never overrides it.
    */
   install?: (o: RunInput) => Promise<void>;
-  /**
-   * npm's package cache (default: the host's own, under its HOME). Never the vault or the host home itself: it is read for the
-   * tarballs the last real apply downloaded, so an offline host can still check a target the apply could install.
-   */
-  cache?: string;
+  /** The pinned Bun the apply installs (ops/lib/bun.sh's stable link); the target's deps install with it. */
+  bun?: string;
   /** The staged compile in the extracted product tree (default: install, then the target's own compiler). */
   run?: (o: RunInput) => Promise<Verdict>;
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -171,17 +168,14 @@ export const stagedEnv = (productDir: string, instanceDir: string, i: Snapshot, 
   VAULT_FOLDERS: i.vaultFolders, KNOWLEDGE_BASES: i.knowledgeBases, TRANSCRIPTS_DIR: i.transcriptsDir,
 });
 /**
- * The env a target tree's `npm ci` runs with. It runs the target's own lifecycle scripts before anything is checked, so it gets
- * the least there is: a PATH, a HOME (npm's cache), a locale and a temp dir — no host checkout, state, transcripts, vault or
- * config path, and none of the kernel's keys. `HOME` stays the host's so npm's cache is the warm one the apply's own install
- * uses (an empty cache would turn a cached offline install into a network failure, which the check must not read as a verdict).
+ * The env a target tree's `bun install` runs with (no lifecycle scripts, but it still reads the target's files): the least there
+ * is, a PATH, a HOME (Bun's install cache), a locale and a temp dir — no host checkout, state, transcripts, vault or config path,
+ * and none of the kernel's keys. `HOME` stays the host's so Bun's cache (~/.bun/install/cache) is the warm one the apply's own
+ * install uses (an empty cache would turn a cached offline install into a network failure, which the check must not read as a verdict).
  */
 const INSTALL_ENV = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"];
-/** `npm_config_cache`: where npm keeps the tarballs it has already downloaded. */
-export const installEnv = (base: NodeJS.ProcessEnv = process.env, cache?: string): NodeJS.ProcessEnv => ({
-  ...Object.fromEntries(Object.entries(base).filter(([k]) => INSTALL_ENV.includes(k))),
-  ...(cache ? { npm_config_cache: cache } : {}),
-});
+export const installEnv = (base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv =>
+  Object.fromEntries(Object.entries(base).filter(([k]) => INSTALL_ENV.includes(k)));
 
 /** The apply's first message line from a failed compile: from `compile: …` (or a thrown error's line) on, the first line. */
 export function firstDiagnostic(stderr: unknown): string {
@@ -271,31 +265,32 @@ export function run(cmd: string, args: string[], cwd: string, env: NodeJS.Proces
 }
 
 /**
- * The target tree's compiler deps, by the apply's own rule (ops/apply-config-work.sh:170-173: `npm ci` for `scripts` and
- * `kernel` when a lockfile differs from what is installed). The checkout's install is the running product's, so it is reused,
- * linked, when the target's lockfile is byte-identical; otherwise `npm ci` installs the target's own. A failed install is
+ * The target tree's compiler deps, by the apply's own rule (ops/apply-config-work.sh installDeps: `bun install` for `scripts`
+ * and `kernel` when a lockfile differs from what is installed). The checkout's install is the running product's, so it is
+ * reused, linked, when the target's lockfile is byte-identical; otherwise `bun install` installs the target's own (a target
+ * from before Bun, from its package-lock.json). A failed install is
  * operational (an offline host), so the caller retries: never a refusal of the target.
  */
-async function installCompiler(o: RunInput, cache?: string) {
+async function installCompiler(o: RunInput, bun: string) {
   for (const d of ["scripts", "kernel"]) {
-    const lock = join(o.productDir, d, "package-lock.json");
-    const running = join(o.repo, d, "package-lock.json");
+    const name = existsSync(join(o.productDir, d, "bun.lock")) ? "bun.lock" : "package-lock.json";
+    const lock = join(o.productDir, d, name);
+    const running = join(o.repo, d, name);
     const modules = join(o.repo, d, "node_modules");
     if (existsSync(lock) && existsSync(running) && existsSync(modules) && readFileSync(lock).equals(readFileSync(running))) {
       symlinkSync(modules, join(o.productDir, d, "node_modules"), "dir");
       continue;
     }
-    // Installs run the target's own lifecycle scripts: they get installEnv() — no path to the host's checkout, config, data or
-    // vault — unlike the compiler below, which the apply's own staged compile reads those with. `npm_config_cache` is the package
-    // *cache* only (a directory of tarballs keyed by integrity hash, never the host home or the vault), so the apply's warm cache
-    // serves here too: an offline host reuses what the last real apply already downloaded instead of failing the check.
-    const installed = await run("npm", ["ci", "--prefix", d, "--silent"], o.productDir, installEnv(o.env, cache), left(o.until ?? Number.POSITIVE_INFINITY, 240_000));
-    if (!installed.ok) throw new Error(`the target product's ${d} deps didn't install: ${firstDiagnostic(installed.stderr) || "npm ci failed"}`);
+    // The install gets installEnv() — no path to the host's checkout, config, data or vault — unlike the compiler below, which
+    // the apply's own staged compile reads those with. Bun's cache under HOME is the apply's warm one: an offline host reuses
+    // what the last real apply already downloaded instead of failing the check.
+    const installed = await run(bun, ["install", "--cwd", d, "--frozen-lockfile", "--ignore-scripts", "--silent"], o.productDir, installEnv(o.env), left(o.until ?? Number.POSITIVE_INFINITY, 240_000));
+    if (!installed.ok) throw new Error(`the target product's ${d} deps didn't install: ${firstDiagnostic(installed.stderr) || "bun install failed"}`);
   }
 }
 
 /** The default `run`: the target tree's compiler deps, then its own compiler, staged — as the apply does both. */
-async function stagedCompile(o: RunInput, install: (o: RunInput) => Promise<void>, cache?: string): Promise<Verdict> {
+async function stagedCompile(o: RunInput, install: (o: RunInput) => Promise<void>): Promise<Verdict> {
   // The deps install first, before the host's .env is in the tree: a target's lifecycle scripts shouldn't find it. The compiler
   // needs it exactly as the apply's checkout has it, so it is seeded after.
   await install(o);
@@ -391,7 +386,7 @@ export function createCompileCheck(d: CompileDeps) {
       if (old !== undefined) env.AIDENHQ_OLD_BUNDLE = old;
       mkdirSync(join(dir, "home"), { recursive: true });
       const o = { productDir, instanceDir, repo: d.repo, env, until };
-      const r = d.run ? await d.run(o) : await stagedCompile(o, d.install ?? ((x) => installCompiler(x, d.cache)), d.cache);
+      const r = d.run ? await d.run(o) : await stagedCompile(o, d.install ?? ((x) => installCompiler(x, d.bun ?? "bun")));
       log("compile check", { product, instance: base, ok: r.ok, ms: Date.now() - t0 });
       return { ...r, base };
     } finally {

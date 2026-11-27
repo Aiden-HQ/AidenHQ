@@ -56,6 +56,8 @@ test("lockfile and bunfig shape", () => {
   assert.match(lockProblems("bun.lock", '{ // c\n "lockfileVersion": 1 }').join(), /cannot be parsed/);
   assert.match(lockProblems("bun.lock", '{ "lockfileVersion": 9, "workspaces": {} }').join(), /lockfileVersion 9/);
   assert.equal(bunfigProblem("bunfig.toml", "# why\n[install]\nexact = true\nminimumReleaseAge = 604800\n"), undefined);
+  assert.equal(bunfigProblem("bunfig.toml", "[install]\nexact = true\nminimumReleaseAge = 604800\n[test]\npreload = [\"./setup.ts\"]\n"), undefined);
   assert.match(bunfigProblem("bunfig.toml", undefined), /missing/);
-  assert.match(bunfigProblem("bunfig.toml", '[install]\nexact = true\nminimumReleaseAge = 604800\nregistry = "https://evil.example/"\n'), /must be exactly/);
+  assert.match(bunfigProblem("bunfig.toml", "[install]\nexact = true\nminimumReleaseAge = 604800\n[install.scopes]\nx = \"https://evil.example/\"\n"), /only \[install\] and \[test\]/);
+  assert.match(bunfigProblem("bunfig.toml", '[install]\nexact = true\nminimumReleaseAge = 604800\nregistry = "https://evil.example/"\n'), /\[install\] must be exactly/);
 });

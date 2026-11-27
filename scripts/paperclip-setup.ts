@@ -33,7 +33,7 @@ let YAML: any;
 try {
   YAML = requireFromScripts("yaml");
 } catch {
-  console.error("Missing dependency: run `npm ci --prefix scripts` first.");
+  console.error("Missing dependency: run `bun install --cwd scripts --frozen-lockfile` first.");
   process.exit(1);
 }
 

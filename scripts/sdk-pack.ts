@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// kernel/sdk's prepack: Node won't strip types under node_modules, so `npm pack` ships JavaScript. Writes kernel/sdk/dist/:
+// kernel/sdk's prepack: Node won't strip types under node_modules, so `bun pm pack` ships JavaScript. Writes kernel/sdk/dist/:
 // src/ and bin/ compiled by tsc (`.ts` imports renamed `.js`), with declarations beside them so modules typecheck against
-// it. Needs kernel/sdk's dev dependencies (`npm ci` there). The third-party twin installs the local tarball
+// it. Needs kernel/sdk's dev dependencies (`bun install` there). The third-party twin installs the local tarball
 // (fixtures/twin). Published by .github/workflows/sdk-publish.yml on an `sdk-v*` tag.
 import { execFileSync } from "node:child_process";
 import { chmodSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
