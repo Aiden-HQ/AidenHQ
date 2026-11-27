@@ -13,7 +13,7 @@ Nothing to connect. It follows the paired owner chat from `channel-telegram`.
 
 The `chat_lane` connection:
 
-- Read: `wake_list` (the wakes you set with `wake_at`, which count toward its cap; a `task_wait`'s resume time is on the task, not here).
+- Read: `wake_list` (the wakes you set with `wake_at`, which count toward its cap; a `task_wait`'s resume time is in its own result, not here).
 - Write: `wake_at` (wake yourself later, a reminder or follow-up) and `chat_send` (answer in your own lane chat from a
   background run).
 

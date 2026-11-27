@@ -91,7 +91,7 @@ export function buildServer(lane: LaneTools, caller?: Caller): McpServer {
     "wake_list",
     {
       description:
-        "The wakes you set with `wake_at` that are still pending, oldest first, with the task each is for (or your chat) and its owner-local time: what counts toward the 50-wake cap, so a refusal can be diagnosed. Wakes on tasks that are done or cancelled don't count, and are dropped when due instead of posted. A `task_wait` isn't listed here: its resume time is in the `task_wait` result and on the task's state (scheduled for).",
+        "The wakes you set with `wake_at` that are still pending, oldest first, with the task each is for (or your chat) and its owner-local time: what counts toward the 50-wake cap, so a refusal can be diagnosed. Wakes on tasks that are done or cancelled don't count, and are dropped when due instead of posted. A `task_wait` isn't listed here: its resume time is the `until` you gave it, returned in the `task_wait` result.",
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
