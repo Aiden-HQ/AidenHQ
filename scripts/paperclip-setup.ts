@@ -547,7 +547,9 @@ const reviewLogs = await ensureReviewLogs({ api, companyId: company.id, step, ho
 const chatTasks = isWork ? await ensureChatTasks({ api, companyId: company.id, step, holders, ownerName: cfg.owner_name, agents: Object.fromEntries(Object.entries<Obj>(cfg.agents ?? {}).filter(([k, x]) => x.chat && agents[k]).map(([k, x]) => [k, x.name])) }) : {};
 writeGrants(agents, reviewLogs, chatTasks);
 lap("tasks");
-await ensureEventsPlugin({ api, step, pluginDir: join(repo, "services/paperclip-events"), stampFile: join(resolve(repo, env("AIDENHQ_DATA_DIR", "./data")), "paperclip-events.hash") }).catch((e) => fail(e.message));
+// The installed content is Paperclip's to serve, not its to report: the directory hash setup last installed is kept beside the
+// grants table (config/grants, host state that survives an apply), so a post.js change without a version bump reinstalls.
+await ensureEventsPlugin({ api, step, pluginDir: join(repo, "services/paperclip-events"), stateFile: join(configDir, "grants", "paperclip-events-installed.json") }).catch((e) => fail(e.message));
 lap("plugins");
 // ops-mcp acts in Paperclip as the agent with the ops-key role.
 const opsAgents = Object.keys(cfg.agents ?? {}).filter((k) => !cfg.agents[k].member_of && cfg.agents[k].roles?.includes("ops-key"));

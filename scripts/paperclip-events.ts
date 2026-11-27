@@ -1,37 +1,46 @@
 // The kernel's Paperclip plugin (services/paperclip-events): Paperclip's task events reach the kernel's wake inbox, and its
-// `post` action lets the kernel write as an agent. Installed from its read-only mount, and reinstalled when the hash of its
-// files differs from the one stamped at the last install, when Paperclip's installed version differs from package.json (a rollback
-// replaced it), or when it errored. The version is a label; the hash decides for changed files. Each agent's own Paperclip key is the kernel's to call that action with (kernel/src/outcomes.ts).
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+// `post` action lets the kernel write as an agent. Installed from its read-only mount, and reinstalled when its directory's
+// content changes, when it errored, or when it is absent: Paperclip's GET /api/plugins reports only the manifest's version,
+// and post.js has changed without a bump before (evidence/source scopes, #1958), so the version string alone misses it.
+// Each agent's own Paperclip key is the kernel's to call that action with (kernel/src/outcomes.ts).
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
+import { dirHash } from "./dir-hash.ts";
 import { mapLimit } from "./modules.ts";
 import type { Api } from "./record-agent.ts";
 
 const PLUGIN_PATH = "/opt/aidenhq-events";
 const PLUGIN_KEY = "aidenhq.events";
 
-/** Hash of every file under `dir` (relative path and bytes, sorted): what the install copies, so a changed file changes it. */
-export function hashTree(dir: string): string {
-  const files = (readdirSync(dir, { recursive: true }) as string[]).filter((f) => !f.split("/").includes("node_modules") && statSync(join(dir, f)).isFile()).sort();
-  const h = createHash("sha256");
-  for (const f of files) h.update(`${f}\0`).update(readFileSync(join(dir, f))).update("\0");
-  return h.digest("hex").slice(0, 16);
+/** The plugin's version: manifest.js and package.json must agree (manifest.js's own comment), because setup keys the plugin
+ * record on it; a mismatch fails setup here rather than installing a plugin that never updates. The manifest is read as
+ * text, never imported: its code runs inside Paperclip, not as the host deploy user where this runs. */
+export function pluginVersion(pluginDir: string) {
+  const version = JSON.parse(readFileSync(join(pluginDir, "package.json"), "utf8")).version;
+  const at = /\bversion:\s*["'`]([^"'`]*)["'`]/.exec(readFileSync(join(pluginDir, "manifest.js"), "utf8"))?.[1];
+  if (at !== version) throw new Error(`${join(pluginDir, "manifest.js")} says version ${JSON.stringify(at)} but package.json says ${JSON.stringify(version)}: keep them equal`);
+  return version as string;
 }
 
-/** `pluginDir`: the plugin's source (the mount's host side). `stampFile`: where the installed hash is kept (Paperclip's record keeps only the manifest version). */
-export async function ensureEventsPlugin({ api, step, pluginDir, stampFile }: { api: Api; step: (msg: string) => void; pluginDir: string; stampFile: string }) {
-  const hash = hashTree(pluginDir);
+/** Installs the plugin from `pluginDir` unless Paperclip has it at `version`, without an error, and with the content
+ * `stateFile` records: the directory hash of the last install, kept across applies since Paperclip can't report it.
+ * `stateFile` may point into a directory that does not exist yet. */
+export async function ensureEventsPlugin({ api, step, pluginDir, stateFile }: { api: Api; step: (msg: string) => void; pluginDir: string; stateFile: string }) {
+  const version = pluginVersion(pluginDir);
+  const hash = dirHash(pluginDir);
+  const installed = existsSync(stateFile) ? readFileSync(stateFile, "utf8").trim() : "";
   const plugins = (await api("GET", "/api/plugins")).json;
   const mine = (Array.isArray(plugins) ? plugins : plugins.plugins ?? []).find((p: { pluginKey: string }) => p.pluginKey === PLUGIN_KEY);
-  const stamped = existsSync(stampFile) ? readFileSync(stampFile, "utf8").trim() : "";
-  const version = JSON.parse(readFileSync(join(pluginDir, "package.json"), "utf8")).version;
-  if (mine && stamped === hash && mine.version === version && mine.status !== "error") return;
+  if (mine && mine.version === version && mine.status !== "error" && installed === hash) return;
+  // Dropped before Paperclip is touched: a reinstall that dies after it replaced the plugin leaves no stamp to trust, so the
+  // next setup (a retry, or a rollback that runs it again) installs rather than keeps a generation it cannot vouch for.
+  rmSync(stateFile, { force: true });
   if (mine) await api("DELETE", `/api/plugins/${mine.id}`);
   await api("POST", "/api/plugins/install", { packageName: PLUGIN_PATH, isLocalPath: true });
-  writeFileSync(stampFile, hash);
-  step(`Installed the kernel's Paperclip plugin ${hash}`);
+  mkdirSync(dirname(stateFile), { recursive: true });
+  writeFileSync(stateFile, hash);
+  step(`Installed the kernel's Paperclip plugin ${version} (${hash.slice(0, 12)})`);
 }
 
 /**
