@@ -40,9 +40,12 @@ export const scopeOf = (kind: ChatKind): Scope => (kind === "dm" || kind === "se
 
 /** Muted by its own setting, or by its scope's default when it uses that. Archive is not mute. */
 export function effectiveMute(chat: Pick<Td.chat, "type" | "notification_settings">, scopes: ScopeSettings): boolean {
-  const n = chat.notification_settings;
-  return n.use_default_mute_for ? scopes[scopeOf(chatKind(chat.type))] > 0 : n.mute_for > 0;
+  return isMuted(chat.notification_settings, scopes[scopeOf(chatKind(chat.type))]);
 }
+
+/** The mute rule itself, given the chat's scope default `mute_for`. */
+export const isMuted = (n: Pick<Td.chatNotificationSettings, "use_default_mute_for" | "mute_for">, scopeMuteFor: number): boolean =>
+  n.use_default_mute_for ? scopeMuteFor > 0 : n.mute_for > 0;
 
 /** Whether a chat's messages are stored at all (rules 1 and 2). */
 export function storesChat(chat: { id: number; type: ChatKind; muted: boolean }, setting: "tagged" | "all", excluded: Set<number>): boolean {
@@ -53,7 +56,7 @@ export function storesChat(chat: { id: number; type: ChatKind; muted: boolean },
 /** The message's text and its entities: a text message's, or a media caption's. */
 export function formatted(content: Td.MessageContent): Td.formattedText | undefined {
   const c = content as { text?: Td.formattedText; caption?: Td.formattedText };
-  return c._ === "messageText" ? c.text : c.caption;
+  return content._ === "messageText" ? c.text : c.caption;
 }
 
 export function mentionsMe(m: Td.message, me: Me): boolean {
