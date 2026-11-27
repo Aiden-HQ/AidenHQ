@@ -40,6 +40,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSync } from "node:sqlite";
 import YAML, { Scalar } from "yaml";
 import { pinOwner } from "../sdk/src/pin-owner.ts";
+import { hourWords, NIGHT } from "./clock.ts";
 import { ciRefusal, ciRunsUrl, resolveRelease } from "../../scripts/compiler/release.ts";
 import { OFFICIAL, repoAt, type Fetch, type Where } from "../../scripts/compiler/sources.ts";
 
@@ -49,10 +50,6 @@ export const KERNEL = "Aiden-HQ/AidenHQ";
 const GITHUB = "https://github.com";
 const NAME = /^\d{4}\.\d{1,2}(\.\d+){0,2}$/;
 const SHA = /^[0-9a-f]{40}$/;
-/** The night, in the owner's timezone: an automatic install starts at or after FROM and before TO. */
-export const NIGHT = { from: 2, to: 5 };
-/** An hour of the owner's day as he reads it: "2:00 AM" (time_format 12h, the default) or "02:00" (24h). */
-export const hourWords = (hour: number, format?: string) => (format === "24h" ? `${String(hour).padStart(2, "0")}:00` : `${hour % 12 || 12}:00 ${hour < 12 ? "AM" : "PM"}`);
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
 
 /** A release that failed verification: never installed, and the owner is told once. Anything else (network) is retried. */

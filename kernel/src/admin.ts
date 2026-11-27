@@ -26,7 +26,8 @@ import { MODEL_KEY, type ModelStep } from "../../modules/models-openrouter/src/m
 import type { AdminSession, Step } from "./accounts.ts";
 import { ORG, manifest, type MadeApp } from "./github-app.ts";
 import type { Api } from "./channels.ts";
-import { NIGHT, hourWords, type State as UpdateState } from "./updates.ts";
+import { NIGHT, hourWords } from "./clock.ts";
+import type { State as UpdateState } from "./updates.ts";
 
 type Deps = {
   accounts: {
