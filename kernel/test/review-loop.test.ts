@@ -15,7 +15,7 @@ import { createResolver } from "../src/net.ts";
 import { RETRY_MS } from "../src/tier.ts";
 import { readBody, serve } from "./helpers.ts";
 
-const until = async (fn) => { for (let i = 0; i < 300 && !fn(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(fn()); };
+const until = async (fn) => { for (let i = 0; i < 1000 && !fn(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(fn()); }; // 10 s: the kernel suite runs six files at once
 const KIND = "acme.post";
 const OK = { decision: "approve", code: "clean", reason: "fine", model: "~acme/model-a" };
 
