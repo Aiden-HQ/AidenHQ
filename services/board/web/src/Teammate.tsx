@@ -1,7 +1,7 @@
 // A teammate's page (#/team/<key>[/c/<chat>]): who it is and what it does now, Pause, one Advanced link; its chat (the
 // newest open one, any of its chats from the switcher, or a new one) beside a generic side column: what it does, its recent
 // work, how it is set up (its modules' declared settings) and the team behind it. Nothing here is per-module.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { SignInRequired, api } from "./api";
 import { load, useCached } from "./cache";
 import { Composer, Conversation } from "./ChatPane";
@@ -12,7 +12,7 @@ import { RenameButton, statusLine } from "./Team";
 import { SkeletonLines } from "./Skeleton";
 import type { Assignee, ChatRow, RosterAgent, SettingRow } from "./types";
 import { Banner, Button, Card, Disclosure, EmptyState, Face, Facts, LinkButton, Menu, Page, SectionCard, Segmented, StatusDot, Tag, faceProps, faceStateOf, type TagTone } from "./ui";
-import { settingSummary, settingTitle, yamlValue } from "./settings-format";
+import { settingOmitted, settingSummary, settingTitle, yamlValue } from "./settings-format";
 import { ago } from "./util";
 import "./team.css";
 
@@ -218,9 +218,29 @@ function SetUp({ a, onSignIn }: { a: RosterAgent; onSignIn: () => void }) {
   if (!controls.length || (q.data && !rows.length)) return null;
   return (
     <SectionCard title={`How ${a.name} is set up`}>
-      {q.data ? <Facts items={rows.map((s) => [settingTitle(s), <span key={s.key} className="mate-val" title={yamlValue(s.value)}>{settingSummary(s.value)}</span>, s.doc] as const)} /> : <SkeletonLines lines={3} />}
+      {q.data ? <Facts items={rows.map((s) => [settingTitle(s), <SettingValue key={s.key} row={s} />, s.doc] as const)} /> : <SkeletonLines lines={3} />}
       <p className="mate-foot">Change any of this by asking {a.name}.</p>
     </SectionCard>
+  );
+}
+
+/** A setting's value in the card: its summary, and a Show all button when the summary leaves part of the value out. */
+function SettingValue({ row }: { row: SettingRow }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const summary = settingSummary(row.value);
+  const full = yamlValue(row.value);
+  // A list cut to three names, a list of objects shown by name only, or a long summary: the rest is hidden behind the toggle.
+  // A value without a toggle is never clamped, so nothing on the card is hidden without a way to reach it.
+  const cut = settingOmitted(row.value) || summary.length > 120;
+  if (!cut) return <span className="mate-val" title={full}>{summary}</span>;
+  return (
+    <span className="mate-val-wrap">
+      <span id={id} className={`mate-val mate-val-cut${open ? " open" : ""}`} title={full}>{open ? full : summary}</span>
+      <button type="button" className="link-btn small mate-more" aria-expanded={open} aria-controls={id} aria-label={`${open ? "Show less" : "Show all"} of ${settingTitle(row)}`} onClick={() => setOpen(!open)}>
+        {open ? "Show less" : "Show all"}
+      </button>
+    </span>
   );
 }
 

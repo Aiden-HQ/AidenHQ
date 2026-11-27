@@ -109,6 +109,18 @@ export function settingSummary(v: unknown): string {
   return String(v);
 }
 
+/** Whether a setting's summary leaves part of its value out: a list cut short, or a list of objects shown by name only. */
+export function settingOmitted(v: unknown): boolean {
+  if (Array.isArray(v)) return v.length > MAX_LISTED || v.some((x) => x !== null && typeof x === "object");
+  if (v && typeof v === "object") {
+    const filled = Object.entries(v).filter(([, x]) => !isEmpty(x));
+    // { apps: [...] }: the one list is the value.
+    if (filled.length === 1 && Array.isArray(filled[0]![1])) return settingOmitted(filled[0]![1]);
+    return filled.length > MAX_LISTED || filled.some(([, x]) => Array.isArray(x) || (x !== null && typeof x === "object"));
+  }
+  return false;
+}
+
 /** What a value shows as on the page. */
 export const shown = (v: unknown) => (v === null || v === undefined || v === "" ? "not set" : Array.isArray(v) ? (v.length ? v.join(", ") : "none") : typeof v === "object" ? JSON.stringify(v) : String(v));
 
