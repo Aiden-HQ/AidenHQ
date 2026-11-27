@@ -762,7 +762,7 @@ bad_gh="$(echo "$gh_routes" | grep -v '{ method: "GET", path: ' | grep -vxF \
 [ -n "$gh_routes" ] && [ -z "$bad_gh" ] && grep -q 'guard(method, path, opts.body)' modules/github/connections/github-mcp/src/github.ts && [ "$(grep -c 'fetchImpl(' modules/github/connections/github-mcp/src/github.ts)" = 2 ] \
   && grep -q '!to || !logHostAllowed(to)' modules/github/connections/github-mcp/src/github.ts \
   && grep -qF 'await this.fetchImpl(to, { redirect: "error", signal: AbortSignal.timeout(30_000) })' modules/github/connections/github-mcp/src/github.ts \
-  && grep -qF '{ method: "PATCH", path: /\/issues\/[0-9]+$/, fields: ["state", "state_reason"] },' modules/github/connections/github-mcp/src/github.ts \
+  && grep -qF '{ method: "PATCH", path: /\/issues\/[0-9]+$/, fields: ["state", "state_reason", "body"] },' modules/github/connections/github-mcp/src/github.ts \
   && grep -qF '{ method: "PATCH", path: /\/issues\/comments\/[0-9]+$/, fields: ["body"] },' modules/github/connections/github-mcp/src/github.ts \
   && grep -qF '{ method: "POST", path: /\/comments\/[0-9]+\/replies$/, fields: ["body"] },' modules/github/connections/github-mcp/src/github.ts \
   && grep -qF '{ method: "PUT", path: /\/pulls\/[0-9]+\/reviews\/[0-9]+$/, fields: ["body"] },' modules/github/connections/github-mcp/src/github.ts \

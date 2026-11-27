@@ -118,8 +118,8 @@ export function createScheduler(d: ScheduleDeps) {
       if (done.has(name)) continue;
       const r = await d.passes.startPass(name, "deploy");
       log("deploy pass", { app: name, ...("refused" in r ? { refused: r.refused } : { run: r.run }) });
-      // A transient failure keeps the feed's cursor, so the next tick reads this deploy again (a pass it did start answers "already running").
-      if ("retry" in r && r.retry) throw new Error(`${name}'s deploy pass wasn't started: ${r.refused}`);
+      // A transient failure, or a pass already running (it may have captured the old version), keeps the feed's cursor: the next tick reads this deploy again, until its own pass starts.
+      if (("retry" in r && r.retry) || ("refused" in r && r.refused === "already running")) throw new Error(`${name}'s deploy pass wasn't started: ${r.refused}`);
       done.add(name);
     }
   }

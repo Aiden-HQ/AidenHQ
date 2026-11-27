@@ -38,7 +38,7 @@ test("one active pass per app", async () => {
 });
 
 test("triggers follow each app's schedule: a deploy or a default-branch push starts only an after-deploy app's pass", async () => {
-  const { tick, k, settings } = setup();
+  const { tick, k, settings, finish } = setup();
   settings({ apps: [{ name: "acme", url: U, schedule: "after-deploy" }, { name: "beta", url: U2, schedule: "on-request" }, { name: "gamma", url: U, repo: "Acme/Gamma", schedule: "after-deploy" }] });
   await tick(); // takes the feeds' watermarks
   assert.equal(k.filed.length, 0, "quiet start: nothing runs by itself");
@@ -51,6 +51,11 @@ test("triggers follow each app's schedule: a deploy or a default-branch push sta
   k.event("apps", "app.deployed", "acme");
   await tick();
   assert.equal(k.filed.length, 2);
+  // The deploy is kept, not dropped: once acme's running pass has ended, the next tick starts the pass that reviews it.
+  const running = k.filed[0]!;
+  finish(running); k.close(running.id, "done");
+  await tick();
+  assert.equal(k.filed.length, 3, "the deploy that met a running pass is reviewed after it");
 });
 
 test("always runs back to back until the cap, then waits for the next UTC day; a pass spending past midnight counts on its day", async () => {
