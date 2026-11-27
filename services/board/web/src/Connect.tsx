@@ -31,7 +31,7 @@ export function useConnectNeeded(can: Can): Map<string, { c: Connectable; word: 
           new Map(
             d.connections.flatMap((r) => {
               const v = connectionStatus(r, can);
-              return r.signIn && v.action ? [[r.module, { c: { id: r.name, label: displayName(r.name), signIn: r.signIn }, word: v.action.label }] as const] : [];
+              return r.signIn && v.action ? [[r.module, { c: { id: r.signIn.id ?? r.name, label: displayName(r.name), signIn: r.signIn }, word: v.action.label }] as const] : [];
             }),
           ),
         ),

@@ -36,7 +36,7 @@ export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: Con
   const tiles = (list: typeof rows) => (
     <TileGrid>
       {list.map(({ r, v }) => (
-        <ConnectionTile key={r.name} r={r} v={v} can={can} connect={q.get("connect") === r.name ? { error: q.get("error"), account: q.get("account") } : undefined} onAsked={clear} />
+        <ConnectionTile key={r.name} r={r} v={v} can={can} connect={q.get("connect") === (r.signIn?.id ?? r.name) ? { error: q.get("error"), account: q.get("account") } : undefined} onAsked={clear} />
       ))}
     </TileGrid>
   );
@@ -81,7 +81,7 @@ export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: Con
 /** One connection: a tile with its state and its one action (Connect, Reconnect, Set up); everything else in its dialog. */
 function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionRow; v: Verdict; can: Can; connect?: { error: string | null; account?: string | null }; onAsked: () => void }) {
   const [open, setOpen] = useState(false);
-  const c = { id: r.name, label: displayName(r.name), signIn: r.signIn };
+  const c = { id: r.signIn?.id ?? r.name, label: displayName(r.name), signIn: r.signIn };
   // A module sign-in connects in one click (Connect.tsx); Google's own Connect is a link; one that needs its client made first
   // (a setup flow) says Set up.
   const connect = v.action ? (
@@ -129,8 +129,8 @@ function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionR
           </p>
           {v.hint && <p className="st-hint">{v.hint}</p>}
           <SignInLines c={c} can={can.signIn} />
-          {r.signIn?.state === "ok" && <TestSignIn id={r.name} />}
-          {r.signIn?.state === "ok" && r.signIn.disconnect && can.signIn && <DisconnectSignIn id={r.name} label={displayName(r.name)} />}
+          {r.signIn?.state === "ok" && <TestSignIn id={r.signIn.id ?? r.name} />}
+          {r.signIn?.state === "ok" && r.signIn.disconnect && can.signIn && <DisconnectSignIn id={r.signIn.id ?? r.name} label={displayName(r.name)} />}
           {r.google?.accounts.some((a) => a.state === "ok") && <TestSignIn id={r.name} google />}
           {!connect && r.setup && v.status === "not_configured" && <p className="st-hint">{r.setup}</p>}
           <Facts r={r} />

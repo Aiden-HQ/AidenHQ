@@ -1582,7 +1582,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       ),
     ]);
     // Its Connect: the picker first where the proxy offers a choice of scopes, and the per-install values first while it has none.
-    const signIns = Object.fromEntries(states.map((s) => [s.id, s.status && { ...s.status, offer: s.offer, ...(s.mode === "device" || s.mode === "qr" ? { mode: s.mode } : {}), ...(s.disconnect ? { disconnect: true as const } : {}), ...(asksValues(s.status) && s.fields.length ? { fields: s.fields } : {}) }] as const));
+    const signIns = Object.fromEntries(states.map((s) => [s.id, s.status && { ...s.status, id: s.id, offer: s.offer, ...(s.mode === "device" || s.mode === "qr" ? { mode: s.mode } : {}), ...(s.disconnect ? { disconnect: true as const } : {}), ...(asksValues(s.status) && s.fields.length ? { fields: s.fields } : {}) }] as const));
     return connectionsView({ compiled, catalog, probes: probed.probes, signIns, google, sources });
   }
 
