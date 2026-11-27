@@ -1,7 +1,7 @@
 // The server-manager service: one container (`server-manager-ssh`), on :8103, holding a server's private key only at connect time
-// and the only thing in the fleet that speaks to a server (spec §2, §4). Slice 1 serves the MCP connection `server-manager` with the
-// config read path (`server_manager_config`, `server_manager_status`), its Fleet page view, and the `validate` hook (a settings
-// change and a key's clear). The SSH transport, the apt adapter and the write kinds land in later slices on this same service.
+// and the only thing in the fleet that speaks to a server (spec §2, §4). It serves the MCP connection `server-manager` with the
+// config read path (`server_manager_config`, `server_manager_status`), the SSH check (`server_manager_check`), its Servers page
+// view, and the `validate` hook (a settings change and a key's clear). The write kinds and the executor land on this same service.
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -10,19 +10,24 @@ import { createMcp, pageHtml, serveMcp } from "./mcp.ts";
 import { StatusStore } from "./status-store.ts";
 import { configTools } from "./tools.ts";
 import { validate, type ValidateInput } from "./validate.ts";
+import { readKeys, type Transport } from "./ssh.ts";
 
 const env = process.env;
 const log = (msg: string, f?: Record<string, unknown>) => console.log(new Date().toISOString(), msg, JSON.stringify(f ?? {}));
 const file = (p: string | undefined) => { try { return p ? readFileSync(p, "utf8").trim() : ""; } catch { return ""; } };
 const kernelUrl = env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
 const serviceKey = () => file(env.SERVERS_SERVICE_KEY_FILE);
-// Settings.servers_machines as the instance holds it (a JSON list); read on each call so a saved change applies without a restart.
+// Settings.servers_machines as the instance holds it (a JSON list). It is the container's environment, fixed at start: a saved
+// change applies because the kernel applies the settings change by recreating this service with the new value, never mid-process.
 const machines = () => env.SERVERS_MACHINES ?? "[]";
 const status = new StatusStore(env.SERVERS_STATE_DIR ?? "/data");
+// The key map (servers_keys) and the transport's paths: read fresh on every check, never cached and never logged.
+const keys = () => readKeys(env.SERVERS_KEYS_FILE);
+const transport: Transport = { config: { stateDir: env.SERVERS_STATE_DIR ?? "/data", tmpDir: env.SERVERS_TMP_DIR } };
 
 const jwks = kernelJwks(`${kernelUrl}/v1/jwks`);
 const mcp = serveMcp(
-  createMcp("server-manager", configTools({ machines, status }), [{ uri: "ui://server-manager/page", html: pageHtml(new URL("./", import.meta.url)) }]),
+  createMcp("server-manager", configTools({ machines, status, keys, transport, log }), [{ uri: "ui://server-manager/page", html: pageHtml(new URL("./", import.meta.url)) }]),
   serviceKey,
   async (req) => ({ ...(await verifyCaller(req, jwks, "server-manager")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }),
 );

@@ -19,7 +19,8 @@ SELECT set_config('aidenhq.pw_src_slack', :'pw_src_slack', false),
        set_config('aidenhq.pw_src_docs', :'pw_src_docs', false),
        set_config('aidenhq.pw_src_security', :'pw_src_security', false),
        set_config('aidenhq.pw_src_hubspot', :'pw_src_hubspot', false),
-       set_config('aidenhq.pw_src_tasks', :'pw_src_tasks', false);
+       set_config('aidenhq.pw_src_tasks', :'pw_src_tasks', false),
+       set_config('aidenhq.pw_src_servers', :'pw_src_servers', false);
 
 DO $$
 DECLARE
@@ -29,7 +30,7 @@ BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'agents_open') THEN CREATE ROLE agents_open NOLOGIN; END IF;
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'writers') THEN CREATE ROLE writers NOLOGIN; END IF;
 
-  FOREACH r IN ARRAY ARRAY['src_slack', 'src_github', 'src_jira', 'src_meetings', 'src_docs', 'src_security', 'src_hubspot'] LOOP
+  FOREACH r IN ARRAY ARRAY['src_slack', 'src_github', 'src_jira', 'src_meetings', 'src_docs', 'src_security', 'src_hubspot', 'src_servers'] LOOP
     pw := current_setting('aidenhq.pw_' || r);
     CONTINUE WHEN pw = '';
     BEGIN
@@ -48,7 +49,8 @@ BEGIN
   END LOOP;
 END $$;
 SELECT set_config('aidenhq.pw_src_slack', '', false), set_config('aidenhq.pw_src_github', '', false), set_config('aidenhq.pw_src_jira', '', false),
-       set_config('aidenhq.pw_src_meetings', '', false), set_config('aidenhq.pw_src_docs', '', false), set_config('aidenhq.pw_src_security', '', false), set_config('aidenhq.pw_src_hubspot', '', false);
+       set_config('aidenhq.pw_src_meetings', '', false), set_config('aidenhq.pw_src_docs', '', false), set_config('aidenhq.pw_src_security', '', false), set_config('aidenhq.pw_src_hubspot', '', false),
+       set_config('aidenhq.pw_src_servers', '', false);
 
 -- Task search (the warehouse module's search service, docs/design/task-search.md): src_tasks writes one row per Paperclip task, with an embedding, and
 -- answers the board's searches. Not a source agents read: no agents_open grant (never raw rows for agents).

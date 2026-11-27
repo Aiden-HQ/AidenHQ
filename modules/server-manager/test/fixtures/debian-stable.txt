@@ -1,0 +1,75 @@
+### os-release
+PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+NAME="Debian GNU/Linux"
+VERSION_ID="12"
+VERSION="12 (bookworm)"
+VERSION_CODENAME=bookworm
+ID=debian
+
+### apt-get -s upgrade
+Reading package lists...
+Building dependency tree...
+Reading state information...
+Calculating upgrade...
+The following packages will be upgraded:
+  ca-certificates libc6
+2 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+Inst ca-certificates [20230311] (20230311+deb12u2 Debian-Security:12/bookworm-security [all])
+Inst libc6 [2.36-9+deb12u7] (2.36-9+deb12u8 Debian-Security:12/bookworm-security [amd64])
+Conf ca-certificates (20230311+deb12u2 Debian-Security:12/bookworm-security [all])
+Conf libc6 (2.36-9+deb12u8 Debian-Security:12/bookworm-security [amd64])
+
+### apt-cache policy
+libc6:
+  Installed: 2.36-9+deb12u7
+  Candidate: 2.36-9+deb12u8
+  Version table:
+  *** 2.36-9+deb12u7 500
+        500 http://deb.debian.org/debian bookworm/main amd64 Packages
+            100 /var/lib/dpkg/status
+     2.36-9+deb12u8 500
+        500 http://security.debian.org/debian-security bookworm-security/main amd64 Packages
+bash:
+  Installed: 5.2.15-2+b7
+  Candidate: 5.2.15-2+b7
+  Version table:
+  *** 5.2.15-2+b7 500
+        500 http://deb.debian.org/debian bookworm/main amd64 Packages
+            100 /var/lib/dpkg/status
+ca-certificates:
+  Installed: 20230311
+  Candidate: 20230311+deb12u2
+  Version table:
+  *** 20230311 500
+        500 http://deb.debian.org/debian bookworm/main amd64 Packages
+            100 /var/lib/dpkg/status
+     20230311+deb12u2 500
+        500 http://security.debian.org/debian-security bookworm-security/main amd64 Packages
+apt:
+  Installed: 2.6.1
+  Candidate: 2.6.1
+  Version table:
+  *** 2.6.1 500
+        500 http://deb.debian.org/debian bookworm/main amd64 Packages
+            100 /var/lib/dpkg/status
+
+### apt-mark showhold
+
+
+### reboot
+no
+
+### systemctl list-units --type=service --state=running --no-legend --plain
+  ssh.service               loaded active running OpenBSD Secure Shell server
+  systemd-journald.service  loaded active running Journal Service
+  postgresql@15-main.service loaded active running PostgreSQL 15
+
+### free
+root 9.1
+boot 1.8
+
+### boot id
+aa11bb22-cc33-dd44-ee55-ff6677889900
+
+### unattended-upgrades
+disabled

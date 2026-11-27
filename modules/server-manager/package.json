@@ -3,7 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "description": "Server Manager: the SSH-patching service (settings read path, the validate hook, the Servers page).",
-  "scripts": { "test": "NODE_PATH=../../scripts/node_modules node --disable-warning=ExperimentalWarning --test test/*.test.ts" }
+  "scripts": {
+    "test": "NODE_PATH=../../scripts/node_modules node --disable-warning=ExperimentalWarning --test test/*.test.ts"
+  }
 }

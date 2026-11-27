@@ -1,10 +1,12 @@
-// The Servers page's read tools, on the module's MCP connection `server-manager` (spec §9). Slice 1 is the config read path: the
-// machines as the instance holds them, with their defaults resolved, and each machine's last readout as the status store keeps it.
-// The SSH reads (`server_manager_check`) and the writes come in later slices; this file answers from settings and the status store
-// only, so it never opens a connection and never holds a key.
+// The Servers page's read tools, on the module's MCP connection `server-manager` (spec §9): the machines as the instance holds them
+// with their defaults resolved, each machine's last readout as the status store keeps it, and — this slice — the live read pass
+// over SSH (`server_manager_check`). The check is a read: it files no record (§6), and it is the only tool here that opens a
+// connection. The writes arrive with the executor (slice 3); until then the three write names answer plainly.
 import type { Tool } from "./mcp.ts";
 import { readMachines, MACHINE_FIELDS, DEFAULTS, listProblems, savedList, type Machine, type Problem } from "./config.ts";
 import type { StatusStore } from "./status-store.ts";
+import { readKeys, withConnection, type Keys, type SshMachine, type Transport } from "./ssh.ts";
+import { publish, publishRow, readHost, rowOf, stateOfError } from "./status.ts";
 
 type Dict = Record<string, unknown>;
 
@@ -16,7 +18,34 @@ export function summaryOf(m: Machine): string {
   return `${on}; weekly pass ${m.weekly_day} ${m.weekly_time}; ${reboot} (${m.quiet_start}–${m.quiet_end}); key "${m.key}".`;
 }
 
-export function configTools(d: { machines: () => string; status: StatusStore }): Tool[] {
+/** The three write tools are the owner's own actions on the page: an agent's call is refused, whoever it names (§9). */
+export function ownerOnly(who: { kind?: string }): void {
+  if (who.kind !== "owner") throw new Error("this action is the owner's: it is taken from the Servers page, and no agent may file it");
+}
+
+export function configTools(d: { machines: () => string; status: StatusStore; keys?: () => Keys; transport?: Transport; log?: (msg: string, f?: Record<string, unknown>) => void }): Tool[] {
+  const log = d.log ?? (() => undefined);
+  /** One machine's target for the transport: only the fields ssh.ts may see, and never the key's value. */
+  const target = (m: Machine): SshMachine => ({ name: m.name, address: m.address, port: m.port, user: m.user, key: m.key, expected_fingerprint: m.expected_fingerprint });
+  /**
+   * Checks one machine and records what it saw: the transport's read pass, the row (in the page's store) and the sanitized
+   * warehouse row. The record is filed only after the read, and a publish failure never fails the check.
+   */
+  async function checkOne(m: Machine, transport: Transport, keys: Keys) {
+    // The failure is a result, not an exception: a host that is unreachable, refuses the key or changed its host key records
+    // that state, so a stale healthy row is never left standing and the rest of the fleet is still checked.
+    const at = new Date().toISOString();
+    let checked: Awaited<ReturnType<typeof readHost>>;
+    try {
+      checked = await withConnection(transport, target(m), keys, async (c, pin) => readHost(c, pin));
+    } catch (e) {
+      checked = { ...stateOfError(e), ok: false };
+    }
+    const row = rowOf(m, checked, at);
+    d.status.put(row);
+    return { row, checked };
+  }
+
   /**
    * A saved entry that failed its own check is not in `readMachines`' list, so a whole-list replacement built from that list would
    * silently delete it. A draft may not drop a saved entry the draft does not itself name and carry: the page shows the entries
@@ -64,10 +93,49 @@ export function configTools(d: { machines: () => string; status: StatusStore }):
         return { changes: [`Servers: ${list!.length} machine${list!.length === 1 ? "" : "s"}`], _aidenhq: { settings_change: [{ kind: "setting", key: "servers_machines", value: list }] } };
       },
     },
-    // server_manager_check and the three writes arrive with the SSH transport (slices 2 and 3). They are registered now so every
-    // name the page lists resolves to a tool; until then each says plainly that the transport isn't here yet.
-    ...(["server_manager_check", "server_manager_patch", "server_manager_reboot", "server_manager_host_key_reset"] as const).map(
-      (name): Tool => ({ name, description: "Not available in this build yet: it needs the SSH transport, which lands in the next change.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, run: async () => { throw new Error(`${name} isn't available in this build yet: the SSH transport it needs is in the next change`); } }),
+    {
+      name: "server_manager_check",
+      description:
+        "Checks one server now, over SSH, and files nothing (§6): its distro, how many packages are upgradable and how many of those are security updates, whether a reboot is needed, disk on / and /boot, and the running services. Read-only: no package is installed and no service is touched. Results land in the page's status and the sanitized status row. Pass { name } for one machine, or nothing for every enabled machine.",
+      inputSchema: { type: "object", properties: { name: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{0,31}$" } }, additionalProperties: false },
+      run: async (a) => {
+        const transport = d.transport;
+        const keys = d.keys?.() ?? {};
+        if (!transport) throw new Error("the SSH transport isn't configured in this build");
+        const { machines } = readMachines(d.machines());
+        const name = typeof a.name === "string" ? a.name : undefined;
+        const list = machines.filter((m) => m.enabled && (!name || m.name === name));
+        if (name && !list.length) return { problem: `no enabled machine called ${name}` };
+        const results = [];
+        const rows = [];
+        for (const m of list) {
+          const { row, checked } = await checkOne(m, transport, keys);
+          rows.push(publishRow(m, checked, row.updated_at!));
+          results.push({
+            name: m.name, state: row.state, distro: row.distro, pending: row.pending, security: row.security, reboot_needed: row.reboot_needed,
+            disk: row.disk, last_check: row.updated_at,
+            ...(checked.ok
+              ? { services: checked.readout.services, fingerprint: checked.fingerprint ?? null, first_pinned: !!checked.first_pinned, security_note: checked.readout.security_note, unattended_upgrades: checked.readout.unattended_upgrades, holds: checked.readout.holds }
+              : { detail: checked.detail }),
+          });
+        }
+        await publish(rows, log);
+        return { checked: results };
+      },
+    },
+    // The three writes arrive with the executor (slice 3). They are registered now so every name the page lists resolves to a tool
+    // that says plainly where it is — and each already carries the caller rule it will keep: these are the owner's own actions,
+    // taken from the page's signed-in session, never an agent's assertion (§9). An agent's call is refused before anything else.
+    ...(["server_manager_patch", "server_manager_reboot", "server_manager_host_key_reset"] as const).map(
+      (name): Tool => ({
+        name,
+        description: "Not available in this build yet: the write path lands in the next change.",
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+        run: async (_a, who) => {
+          ownerOnly(who);
+          throw new Error(`${name} isn't available in this build yet: the write path is in the next change`);
+        },
+      }),
     ),
     {
       name: "server_manager_status",

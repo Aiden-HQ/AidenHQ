@@ -70,16 +70,29 @@ test("servers_machines is an entry list with a pattern, the owner's to write, an
 test("the one secret is the JSON map the Sign-ins panel writes, and the service mounts it read-only", () => {
   assert.equal(def.secrets.provided[0].name, "servers_keys");
   assert.equal(def.secrets.provided[0].setup.pattern, "^\\{[\\s\\S]*\\}$");
-  assert.deepEqual(def.services.run.ssh.secrets, ["servers_keys"]);
+  assert.equal(def.services.run.ssh.secrets[0], "servers_keys");
   assert.deepEqual(def.services.run.ssh.env.SERVERS_KEYS_FILE, "/run/secrets/servers_keys");
   assert.equal(def.services.run.ssh.port, 8103);
 });
 
-test("no warehouse source is advertised before its writer, schema and login ship", () => {
-  // A source a fresh install advertises must be queryable: this build has no src_servers writer (slice 2 does), so it declares no
-  // source. When the writer lands, this test flips with it, together with ops/warehouse-sources.sh and sources.sql.
+test("the warehouse source ships with its writer, schema and login: src_servers and its two views", () => {
+  // A source a fresh install advertises must be queryable: the writer (src/status.ts), the schema and the login land together in
+  // this change, together with ops/warehouse-sources.sh and sources.sql.
   const sources = def.contributes["warehouse.sources"];
-  assert.equal(sources, undefined);
+  assert.equal(sources.length, 1);
+  assert.equal(sources[0].schema, "src_servers");
+  assert.deepEqual(sources[0].views, [{ name: "servers", time: "updated_at" }, { name: "fleet", time: "updated_at" }]);
+  assert.match(sources[0].about, /one sanitized status row per machine/);
+  // The status writer's login and the network it reaches the warehouse on.
+  assert.ok(def.generated_secrets.includes("warehouse_src_servers_password"));
+  assert.deepEqual(def.services.run.ssh.links, ["sources"]);
+  assert.equal(def.services.run.ssh.env.WAREHOUSE_PASSWORD_FILE, "${secrets.warehouse_src_servers_password}");
+  assert.ok(def.services.run.ssh.secrets.includes("warehouse_src_servers_password"));
   // The warehouse is still required: the page and the status row's point live there.
   assert.ok(def.requires.includes("warehouse"));
+});
+
+test("the agent has one paperclip_tasks grant, the one its connections hold", () => {
+  // A top-level copy lands in the compiled agent object as a stray field and grants nothing: only `connections:` is a grant.
+  assert.equal(def.agents["server-manager"].paperclip_tasks, undefined);
 });
