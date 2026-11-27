@@ -12,6 +12,8 @@ export const TIERS = ["skip", "trivial", "standard", "sensitive"] as const;
 export type Tier = (typeof TIERS)[number];
 export const MERGE = ["off", "ready"] as const;
 export const FIX = ["conflicts", "ci", "review"] as const;
+/** Which Dependabot PRs get an Engineer task: none, only the ones whose checks fail, or all of them. */
+export const DEPENDABOT = ["off", "failing", "all"] as const;
 /** The stages a repo's own workflows run at (actions.ts): before ship's repair of a conflict, before it brings a branch up to
  * date, and before it merges. */
 export const STAGES = ["conflict", "behind", "before_merge"] as const;
@@ -39,6 +41,11 @@ export interface ShipSettings {
   ignore_authors: string[];
   /** The repo's own commands and workflows per stage (actions.ts). An ordinary setting: they are the repo's own CI. */
   actions: Partial<Record<(typeof STAGES)[number], ActionStep[]>>;
+  /** Dependabot PRs that get an Engineer task (loop.ts); a duty of its own: it runs whether or not `enabled` is. */
+  dependabot: (typeof DEPENDABOT)[number];
+  /** Nudge a human's PR quiet this many days, close it after as many more (drafts double; contributor.ts); null leaves them
+   * alone. A duty of its own, like `dependabot`. */
+  quiet_pr_days: number | null;
 }
 
 // Protected paths bind the model's fixes only: the deterministic repair may regenerate lockfiles.
@@ -48,7 +55,7 @@ const CAUTIOUS: ShipSettings = {
   enabled: true, handoff: "label", rebase: "conflict", generated: null, fix: ["conflicts", "ci", "review"], protected: PROTECTED,
   caps: { wakes_per_head: 3, ci_rounds: 3, same_check_heads: 2, rounds: 30, usd: 5, requeue_on_timeout: 1 },
   by_tier: { skip: { approve: "off", merge: "ready" }, trivial: { approve: "on", merge: "ready" }, standard: { approve: "observe", merge: "ready" }, sensitive: { approve: "off", merge: "ready" } },
-  unwatched: { merge: "ready" }, stop_label: "ship:stop", ignore_authors: [], actions: {},
+  unwatched: { merge: "ready" }, stop_label: "ship:stop", ignore_authors: [], actions: {}, dependabot: "off", quiet_pr_days: null,
 };
 const FULL: ShipSettings = {
   // Unguarded at ship's own policy layer. Host rules, human code-owner reviews and kernel authority still apply.
@@ -67,19 +74,18 @@ export const PRESETS: Record<"cautious" | "full", ShipSettings> = { cautious: CA
 const clone = <T>(v: T): T => structuredClone(v);
 
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
-export const FIELDS = ["preset", "enabled", "handoff", "rebase", "generated", "fix", "protected", "caps", "by_tier", "unwatched", "stop_label", "ignore_authors", "actions"];
+export const FIELDS = ["preset", "enabled", "handoff", "rebase", "generated", "fix", "protected", "caps", "by_tier", "unwatched", "stop_label", "ignore_authors", "actions", "dependabot", "quiet_pr_days"];
 const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 
-/** Where ship works: the fleet's own repos (the agents org as `org/*`, the product repo), always; a `maintainer_repos` repo only
- * once it has a ship entry (quiet until enabled). A wildcard owner and name matches all. */
-export interface Scope { fleet: string[]; listed: string[] }
+/** The fleet's own repos (the agents org as `org/*`, the product repo): ship works them with no entry of their own. Any other
+ * repo is ship's once the owner adds its entry (ship.repos, Ship's own list; quiet until enabled). A wildcard owner and name matches all. */
+export interface Scope { fleet: string[] }
 const match = (repo: string, list: string[]) => list.some((c) => { const [a, b] = c.toLowerCase().split("/"); const [r, n] = repo.toLowerCase().split("/"); return (a === "*" || a === r) && (b === "*" || b === n); });
-const ALL: Scope = { fleet: ["*/*"], listed: [] };
-/** Whether ship works the repo: a fleet repo, or a listed one (its ship entry is what turns a listed repo on). */
-export const covers = (repo: string, scope: Scope) => match(repo, scope.fleet) || match(repo, scope.listed);
-/** Whether removing the repo is allowed (removeRepo's rule, and the Fleet page's Remove button): a listed repo the fleet doesn't cover by itself, or an orphan entry. */
-export const removable = (repo: string, scope: Scope, hasEntry: boolean) =>
-  (!covers(repo, scope) && hasEntry) || (scope.listed.some((x) => x.toLowerCase() === repo.toLowerCase()) && !covers(repo, { fleet: scope.fleet, listed: [] }));
+const ALL: Scope = { fleet: ["*/*"] };
+/** Whether the repo is one of the fleet's own, which ship works with no entry. */
+export const inFleet = (repo: string, scope: Scope) => match(repo, scope.fleet);
+/** Whether removing the repo is allowed (removeRepo's rule, and the Fleet page's Remove button): an entry of a repo outside the fleet's own. */
+export const removable = (repo: string, scope: Scope, hasEntry: boolean) => hasEntry && !inFleet(repo, scope);
 
 /** The entry as a preset name plus overrides: `"full"`, `{ preset, ...fields }` or `{ ...fields }` over `base`. */
 function entryOf(e: unknown, base: "cautious" | "full"): { preset: "cautious" | "full"; over: Dict } {
@@ -110,7 +116,7 @@ export const presetOf = (raw: unknown, repo: string): "cautious" | "full" => {
 export function effective(raw: unknown, repo: string, scope: Scope): ShipSettings | null {
   const r = isMap(raw) ? raw : {};
   const key = Object.keys(isMap(r.repos) ? r.repos : {}).find((k) => k.toLowerCase() === repo.toLowerCase());
-  if (!match(repo, scope.fleet) && !(key && match(repo, scope.listed))) return null;
+  if (!key && !match(repo, scope.fleet)) return null;
   const d = defaultsOf(r);
   if (!key) return resolve(d.preset, d.over);
   const entry = (r.repos as Dict)[key];
@@ -151,6 +157,8 @@ function checkEntry(errors: string[], at: string, e: unknown) {
   if ("enabled" in e && typeof e.enabled !== "boolean") errors.push(`${at}.enabled: true or false`);
   if ("handoff" in e) oneOf(errors, `${at}.handoff`, e.handoff, HANDOFF);
   if ("rebase" in e) oneOf(errors, `${at}.rebase`, e.rebase, REBASE);
+  if ("dependabot" in e) oneOf(errors, `${at}.dependabot`, e.dependabot, DEPENDABOT);
+  if ("quiet_pr_days" in e && e.quiet_pr_days !== null && !(Number.isInteger(e.quiet_pr_days) && (e.quiet_pr_days as number) >= 1 && (e.quiet_pr_days as number) <= 365)) errors.push(`${at}.quiet_pr_days: a whole number of days (1-365), or null for off`);
   // The old per-repo shape is refused with its way out, never read (risk tiers spec §11).
   for (const k of OLD) if (k in e) errors.push(`${at}.${k}: approve and merge are per tier now: by_tier.<tier>.approve / merge; safe is gone: code review's tier rules say what is small and safe`);
   if ("by_tier" in e) {
@@ -202,7 +210,7 @@ export function oldShape(raw: unknown): string[] {
 }
 
 /** The errors in a raw `ship` value (none: valid). */
-export function validate(raw: unknown, scope: Scope): string[] {
+export function validate(raw: unknown): string[] {
   const errors: string[] = [];
   if (!isMap(raw)) return ["ship: a map { defaults, repos, paused }"];
   for (const k of Object.keys(raw)) if (!["defaults", "repos", "paused"].includes(k)) errors.push(`ship.${k}: unknown (defaults, repos, paused)`);
@@ -212,7 +220,6 @@ export function validate(raw: unknown, scope: Scope): string[] {
   if (!isMap(repos)) return [...errors, "ship.repos: a map of owner/name to a preset or fields"];
   for (const [repo, e] of Object.entries(repos)) {
     if (!REPO.test(repo)) { errors.push(`${repo.slice(0, 100)} isn't owner/name`); continue; }
-    if (!match(repo, scope.fleet) && !match(repo, scope.listed)) { errors.push(`${repo} isn't a repo ship covers (agents org, product repo or maintainer_repos)`); continue; }
     checkEntry(errors, repo, e);
   }
   return errors;
@@ -230,6 +237,10 @@ export function loosens(before: unknown, after: unknown, scope: Scope = ALL): st
     if (y.enabled && !x.enabled) add("enabled");
     if (rank(HANDOFF, y.handoff) > rank(HANDOFF, x.handoff)) add("handoff");
     if (y.rebase === "behind" && x.rebase !== "behind") add("rebase");
+    // The owner's gates the Maintainer's entries carried for these duties: every Dependabot PR, and closing quiet human PRs.
+    if (y.dependabot === "all" && x.dependabot !== "all") add("dependabot");
+    // Any sooner close: switched on, or a shorter window than before.
+    if (y.quiet_pr_days !== null && (x.quiet_pr_days === null || y.quiet_pr_days < x.quiet_pr_days)) add("quiet_pr_days");
     for (const t of TIERS) {
       if (rank(APPROVE, y.by_tier[t].approve) > rank(APPROVE, x.by_tier[t].approve)) add(`by_tier.${t}.approve`);
       if (y.by_tier[t].merge === "ready" && x.by_tier[t].merge !== "ready") add(`by_tier.${t}.merge`);
@@ -257,17 +268,15 @@ export function loosens(before: unknown, after: unknown, scope: Scope = ALL): st
   diff("defaults", dx, dy);
   for (const r of [...repos].sort()) {
     const x = effective(b, r, scope), y = effective(a, r, scope);
-    if (!x && y) out.push(`${r}.enabled`); // bringing a listed repo into scope is the owner's
+    if (!x && y) out.push(`${r}.enabled`); // a new entry (a repo added to Ship) is the owner's
     else if (x && y) diff(r, x, y);
   }
   if (b.paused === true && a.paused !== true) out.push("paused");
   return out;
 }
 
-/** The scope from the environment: the fleet org and the product repo, and maintainer_repos (JSON entries, or a comma list). */
+/** The fleet's own repos from the environment: the fleet org and the product repo. */
 export function scopeFrom(e: Record<string, string | undefined>): Scope {
-  const m = (() => { try { return JSON.parse(e.SHIP_MAINTAINER_REPOS || "null"); } catch { return null; } })();
-  const listed = Array.isArray(m) ? m.map((x) => (typeof x === "string" ? x : x?.repo)) : String(e.SHIP_MAINTAINER_REPOS ?? "").split(",");
   const ok = (l: unknown[]) => l.map((x) => String(x ?? "").trim()).filter((x) => /^[\w.-]+\/[\w.*-]+$/.test(x));
-  return { fleet: ok([e.SHIP_FLEET_ORG ? `${e.SHIP_FLEET_ORG}/*` : "", e.SHIP_PRODUCT_REPO]), listed: ok(listed) };
+  return { fleet: ok([e.SHIP_FLEET_ORG ? `${e.SHIP_FLEET_ORG}/*` : "", e.SHIP_PRODUCT_REPO]) };
 }

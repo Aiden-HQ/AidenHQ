@@ -101,7 +101,7 @@ test("a session's merge runs at once on a head the plan raises; an Engineer's go
   const records = openRecords(join(mkdtempSync(join(tmpdir(), "kernel-session-w-")), "kernel.db"));
   const executed = [];
   const github = {
-    plan: async ({ args }) => ({ args, targets: { head: "abc1234" }, raise: { tier: 1, rule: "maintained-merge-foreign-head", reason: "a head the runner didn't push" } }),
+    plan: async ({ args }) => ({ args, targets: { head: "abc1234" }, raise: { tier: 1, rule: "listed-merge-foreign-head", reason: "a head the runner didn't push" } }),
     execute: async (r) => (executed.push(r.args), { ok: true, text: "merged" }),
   };
   const opts = { records, registry: () => KINDS, connections: () => ({}), secret: () => "", resolver: {}, replay: async () => ({}), executors: () => ({ github, slack: github }), onTask: { open: async () => true, notify: async () => {} } };

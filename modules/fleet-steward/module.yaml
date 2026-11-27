@@ -30,7 +30,7 @@ settings:
     default: 10
 agents:
   fleet-steward:
-    skills: [ fleet-steward.agent-review, fleet-steward.fleet-check, fleet-steward.fleet-digest, fleet-steward.fleet-review, fleet-steward.handbook-prune, fleet-steward.knowledge-daily, fleet-steward.knowledge-lint, fleet-steward.review-digest, fleet-steward.route-security-fix, fleet-steward.routing-review, tasks.delegate-work ]
+    skills: [ fleet-steward.agent-review, fleet-steward.fleet-check, fleet-steward.fleet-digest, fleet-steward.fleet-review, fleet-steward.handbook-prune, fleet-steward.knowledge-daily, fleet-steward.knowledge-lint, fleet-steward.review-digest, fleet-steward.route-security-fix, fleet-steward.routing-review, tasks.delegate-work, tasks.owner-triage ]
     department: platform
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
@@ -48,12 +48,14 @@ agents:
       # Where the product-bug issues the Maintainer filed for it stand: a read. Filing is the Maintainer's; github_issue_link is
       # the report as the owner's prefilled link, for an install where GitHub isn't connected (prompt product-bugs).
       github?: [ github_product_issue_status, github_issue_link, github_issue_list ]
+      # Ship's status (a read): the weekly review's Dependabot step reads the product repo's `dependabot` from it.
+      ship?: [ ship_status ]
       # fleet_status through fleet-read (no fleet_control, no relaying, no approvals decided); coach_record through fleet-audit;
       # handbook_list/handbook_read through librarian; task_route, and task_finish/task_cancel on any agent's
       # task, through fleet-settle. task_create/task_delegate only to delegate_to below. task_handoff only on its own part of the
       # owner's task: a todo plus a recorded wait, nothing sent to the owner; any other task is settled with task_route/task_finish/task_cancel.
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_team,
-                         task_create, task_comment, task_delegate, task_route, task_handoff, task_block,
+                         task_create, task_comment, task_delegate, task_route, task_handoff, task_block, task_schedule,
                          task_cancel, task_finish,
                          fleet_status, fleet_catalog, fanout_map,
                          coach_record, handbook_list, handbook_read ]
@@ -70,6 +72,16 @@ agents:
     roles: [ fleet-read, fleet-settle, fleet-audit, librarian, routing-tuner, product-issues ]
 # Routine titles stay as they were: setup matches routines by title. The check task itself is filed by the service (kernel.tasks).
 routines:
+  # The owner's open backlog re-triaged once by the first-pass rules (skill owner-triage): no schedule, run on demand (the
+  # routine's Run now, or the chief of staff's run_routine on the owner's words).
+  owner-triage:
+    title: "Owner tasks: re-triage"
+    agent: fleet-steward
+    description: |
+      Today is {{date}}. Follow your owner-triage skill's re-triage pass over every open owner task an agent filed: close what
+      its evidence shows finished, cancel duplicates, place the rest, hand agent-doable prep to the chief of staff, then send
+      the one receipt. Then close this task with the counts.
+    concurrency: skip_if_active
   fleet-ops-digest:
     title: "Fleet Ops: daily digest"
     agent: fleet-steward

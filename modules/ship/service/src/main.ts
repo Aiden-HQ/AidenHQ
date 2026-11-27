@@ -5,15 +5,15 @@ import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
-import { parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
 import { adoptedPass, ended } from "./adopted.ts";
 import type { Kept } from "./handoff.ts";
 import { ciRecover } from "./ci-recover.ts";
 import { configTools } from "./config-tool.ts";
-import { contributorPrs, contributorPrWake, prTick } from "./contributor.ts";
+import { contributorPrAct, contributorPrs, prTick } from "./contributor.ts";
+import { withFooter } from "./aidenhq-sdk/attribution.ts";
 import { shipEffects } from "./effects.ts";
 import { effectRefusal } from "./safe.ts";
-import { followFeed, startLoop } from "./loop.ts";
+import { followFeed, startLoop, watchSet } from "./loop.ts";
 import { createMcp, pageHtml, serveMcp } from "./mcp.ts";
 import { effective, scopeFrom } from "./settings.ts";
 import { openState } from "./state.ts";
@@ -31,17 +31,15 @@ const json = (v: string | undefined) => { try { return JSON.parse(v || "null"); 
 // The ship setting with the kill switch (its own setting, ship_paused, so a repo proposal never carries it) folded in.
 const raw = () => { const v = json(env.SHIP_SETTINGS); return { ...(v && typeof v === "object" && !Array.isArray(v) ? v : {}), paused: env.SHIP_PAUSED === "true" }; };
 const scope = () => scopeFrom(env);
-const maintainerRepos = (): unknown[] => { const t = String(env.SHIP_MAINTAINER_REPOS ?? "").trim(); const v = t.startsWith("[") ? json(t) : t.split(",").map((x) => x.trim()).filter(Boolean); return Array.isArray(v) ? v : []; };
 const paused = () => raw().paused === true;
 /** The repo's settings when ship works it (on, in scope), else null. */
 const settingsOf = (repo: string) => { const s = effective(raw(), repo, scope()); return s?.enabled ? s : null; };
-const codeReview = () => { const v = json(env.SHIP_CODE_REVIEW); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; };
 
 const stateFile = env.SHIP_STATE_FILE ?? "/data/state.json";
 const state = openState(stateFile);
 const jwks = kernelJwks(`${kernelUrl}/v1/jwks`);
 const mcp = serveMcp(createMcp("ship", configTools({
-  raw, scope, state, maintainerRepos, codeReview,
+  raw, scope, state,
   file: async (changes, assertion) => {
     const r = await kernel.raw("POST", "/v1/settings/agent", { changes }, { "x-aidenhq-caller": assertion });
     if (r.status >= 300) throw new Error(`Refused: ${String(r.json?.error?.message ?? r.json?.error ?? r.status).slice(0, 1000)}`);
@@ -64,24 +62,14 @@ const gh = async (method: string, path: string, body?: unknown, o?: { deadline?:
   return r as { status: number; body: any };
 };
 
-// The repos the loop watches: the product repo and every maintained repo ship works (all duties), and the other maintained repos
-// with Dependabot on (that duty only).
-let unreadable = false;
-const maintained = (() => { try { return parseRepos(env.SHIP_MAINTAINER_REPOS ?? ""); } catch (e) { unreadable = true; log("maintainer_repos unreadable: only the product repo is watched, and no Dependabot task is filed", { err: String((e as Error).message).slice(0, 200) }); return []; } })();
 const dataDir = dirname(stateFile);
-/** Whether the loop still tracks a Dependabot task it filed on this repo (its loop.json). */
-const tracked = (repo: string) => { try { return Object.keys(JSON.parse(readFileSync(join(dataDir, "loop.json"), "utf8"))[repo.toLowerCase()]?.dependabot ?? {}).length > 0; } catch { return false; } };
-const repos = new Map<string, { duties: "all" | "dependabot"; dependabot?: "off" | "failing" | "all" }>();
-// Which Dependabot bumps get a task comes from the repo's maintainer_repos entry (the product repo, unlisted, takes every one).
-// A list that can't be read files none: a read failure is never the `all` default.
-const bumps = (repo: string) => unreadable ? "off" as const : maintained.find((m) => m.repo.toLowerCase() === repo.toLowerCase())?.dependabot;
-if (env.SHIP_PRODUCT_REPO && settingsOf(env.SHIP_PRODUCT_REPO)) repos.set(env.SHIP_PRODUCT_REPO, { duties: "all", dependabot: bumps(env.SHIP_PRODUCT_REPO) });
-for (const m of maintained) {
-  if (repos.has(m.repo)) continue;
-  if (settingsOf(m.repo)) repos.set(m.repo, { duties: "all", dependabot: bumps(m.repo) });
-  // `off` is polled only while tasks it filed are still open: the loop closes them once their PR is gone and files no new ones.
-  else if (m.dependabot !== "off" || tracked(m.repo)) repos.set(m.repo, { duties: "dependabot", dependabot: m.dependabot });
-}
+// The repos the loop watches, from Ship's own entries (loop.ts watchSet): no other module's list is read.
+const repos = watchSet({
+  repos: [...(env.SHIP_PRODUCT_REPO ? [env.SHIP_PRODUCT_REPO] : []), ...Object.keys((raw().repos as Record<string, unknown>) ?? {})],
+  settings: (repo) => effective(raw(), repo, scope()),
+  // Whether the loop still tracks a Dependabot task it filed on this repo (its loop.json).
+  tracked: (repo) => { try { return Object.keys(JSON.parse(readFileSync(join(dataDir, "loop.json"), "utf8"))[repo.toLowerCase()]?.dependabot ?? {}).length > 0; } catch { return false; } },
+});
 const effects = shipEffects(kernel, { codeReview: "http://code-review:8098", key: token });
 const loop = startLoop({
   repos: [...repos].map(([repo, v]) => ({ repo, ...v })), kernelUrl, get key() { return token(); }, cacheDir: dataDir, gh, log, paused,
@@ -100,7 +88,7 @@ const loop = startLoop({
 });
 // What changed on GitHub: the change feed's events (module.yaml subscribes:), with this module's token. No GitHub timer.
 followFeed(loop, { feed: (after) => kernel.call("GET", `/v1/events/log?connection=github&limit=200${after === undefined ? "" : `&after=${after}`}`), paused: () => paused() || !token(), log });
-log("ship watch loop", { repos: [...repos].map(([r, v]) => `${r}:${v.duties}:${v.dependabot ?? "all"}`) });
+log("ship watch loop", { repos: [...repos].map(([r, v]) => `${r}:${v.duties}:${v.dependabot}`) });
 
 // The quiet-PR pass (contributor.ts): its one state value in data/contributor-prs.json, checked every five minutes (at most
 // hourly reads).
@@ -110,9 +98,17 @@ const prStore = {
   setMeta(k: string, v: string) { mkdirSync(dataDir, { recursive: true }); writeFileSync(`${prFile}.tmp`, JSON.stringify({ [k]: v })); renameSync(`${prFile}.tmp`, prFile); },
 };
 const prLog = { info: (o: object, m: string) => log(m, o as Record<string, unknown>), warn: (o: object, m: string) => log(m, o as Record<string, unknown>) };
-const prs = contributorPrs({ url: env.SHIP_CONTRIBUTOR_PRS_URL ?? "http://github:8086/internal/ship/contributor-prs", token });
-const firePr = contributorPrWake(async (t) => (await kernel.raw("POST", "/v1/tasks", t)).status < 300);
-setInterval(() => { if (!paused() && token()) void prTick({ prs, firePr, store: prStore, log: prLog }).catch((e) => log("contributor PR pass failed", { err: String(e) })); }, 5 * 60_000).unref();
+const prs = contributorPrs({
+  url: env.SHIP_CONTRIBUTOR_PRS_URL ?? "http://github:8086/internal/ship/contributor-prs", token,
+  repos: () => [...new Map([...(env.SHIP_PRODUCT_REPO ? [env.SHIP_PRODUCT_REPO] : []), ...Object.keys((raw().repos as Record<string, unknown>) ?? {})].map((r) => [r.toLowerCase(), r])).values()].flatMap((repo) => { const d = effective(raw(), repo, scope())?.quiet_pr_days; return d ? [{ repo, quiet_pr_days: d }] : []; }),
+});
+const firePr = contributorPrAct({
+  comment: async (repo, n, text) => (await gh("POST", `/repos/${repo}/issues/${n}/comments`, { body: withFooter(text, "Ship") })).status < 300,
+  close: async (repo, n) => (await gh("PATCH", `/repos/${repo}/pulls/${n}`, { state: "closed" })).status < 300,
+});
+// One pass at a time: a long pass never overlaps the next look (which would act on the same state twice).
+let prPass = false;
+setInterval(() => { if (prPass || paused() || !token()) return; prPass = true; void prTick({ prs, firePr, store: prStore, log: prLog }).catch((e) => log("contributor PR pass failed", { err: String(e) })).finally(() => { prPass = false; }); }, 5 * 60_000).unref();
 
 createServer(async (req, res) => {
   if (await mcp(req, res)) return;

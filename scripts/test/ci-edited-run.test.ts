@@ -127,8 +127,8 @@ test("ci-required posts nothing for a cancelled run, and a verdict for a title/b
 
 test("a title/body edit runs only policy; a retarget and every real run plan the suites in full", () => {
   const { jobs } = workflow();
-  // `checks` plans every suite; without it packages, modules, board, image-scan and reviewer-eval skip on `needs.checks`, and
-  // post-checks on `needs.checks.result`. It is the only job an edit guards off: policy has no `needs`, so it runs for the title.
+  // `checks` plans every suite; without it packages, modules, board, image-scan and reviewer-eval skip on `needs.checks`.
+  // It is the only job an edit guards off: policy has no `needs`, so it runs for the title.
   assert.equal(runs(jobs.checks!, ctx({ action: "edited" })), false, "an edit changes no code: nothing to plan");
   assert.equal(runs(jobs.checks!, ctx({ action: "synchronize" })), true, "a push to the PR plans its suites");
   assert.equal(runs(jobs.checks!, ctx({ action: "edited", retarget: true })), true, "a retarget tests a new base, so it plans in full");

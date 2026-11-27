@@ -920,13 +920,13 @@ export class MeetingService {
         provenance: [
           { label: "Type", value: s.source_type === "google_drive" ? "Google Drive document" : "Local transcript" },
           { label: "File", value: md.filename ?? s.external_id },
-          { label: "Detected", value: `${detected.date} ${detected.time}` },
+          { label: "Detected", value: `${detected.date} ${detected.time} (${this.cfg.timezone})` },
           { label: "Source ID", value: s.id },
         ],
         reason: `The transcript could not be matched to a calendar event with confidence. ${d.explanation}`,
         suggested_action: "Choose the right event. Nothing is written to Obsidian until you do.",
         extra_sections: [
-          { heading: "Likely matches", body: lines.join("\n") || "No candidates." },
+          { heading: `Likely matches (times in ${this.cfg.timezone})`, body: lines.join("\n") || "No candidates." },
           { heading: "How to resolve", body: "Add a comment containing one line:\n\n- `pick 1` (or another number) to choose that event\n- `ignore` if this transcript should not be published\n- or say it wasn't on the calendar (\"impromptu call with …\", plus anything I should know) to publish it without an event" },
         ],
         labels: [this.cfg.paperclip.labels.needs_review],

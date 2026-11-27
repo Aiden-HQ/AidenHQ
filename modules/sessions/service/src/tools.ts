@@ -46,7 +46,7 @@ export function watchTools({ watches, kernel }: { watches: Watches; kernel: Kern
           // A watch already fired keeps its row: its stored notice is filed again on the next pass.
           if (watches.get(w.id)?.state === "fired") return { id: w.id, state: "fired" };
           watches.remove(w.id);
-          if (e instanceof KernelError && e.status === 403) throw new Error(`${resource} isn't watched: add it to maintainer_repos`);
+          if (e instanceof KernelError && e.status === 403) throw new Error(`${resource} isn't watched: the owner adds it to the Maintainer's or Ship's list`);
           throw e;
         }
       },

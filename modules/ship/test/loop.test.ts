@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { followFeed, RETRY_MS, startLoop } from "../service/src/loop.ts";
+import { followFeed, RETRY_MS, startLoop, watchSet } from "../service/src/loop.ts";
 import { adoptedPass } from "../service/src/adopted.ts";
 import { ciRecover } from "../service/src/ci-recover.ts";
 import { PRESETS } from "../service/src/settings.ts";
@@ -360,6 +360,17 @@ test("a fix_ci whose only red check is the PR title wakes the task to retitle it
   assert.match(code.woke[0].text, /Fix what this PR broke as the `ship` skill says: one commit, never weaken a check\./);
   assert.match(code.woke[0].text, /aidenhq ship push https:\/\/github\.com\/acme\/app\/pull\/7 h7 1/);
   assert.doesNotMatch(code.woke[0].text, /aidenhq ship title/);
+});
+
+test("the fix wake names the repo's protected paths, and only when it has some", async (t) => {
+  const full = await rig(t, { settings: () => PRESETS.full });
+  full.set([full.agentPr(7, titleOnlyPr(7, ["policy", "test"]))]);
+  await full.watch.tick(); await full.watch.tick();
+  assert.doesNotMatch(full.woke[0].text, /Protected paths/);
+  const some = await rig(t, { settings: () => ({ ...PRESETS.full, protected: [".github/**", "**/CODEOWNERS"] }) });
+  some.set([some.agentPr(7, titleOnlyPr(7, ["policy", "test"]))]);
+  await some.watch.tick(); await some.watch.tick();
+  assert.match(some.woke[0].text, /Protected paths: \.github\/\*\*, \*\*\/CODEOWNERS\./);
 });
 
 test("a metadata-only wake does not spend the head's CI round: a real red check at the same head still wakes the commit fix", async (t) => {
@@ -1574,4 +1585,18 @@ test("a list page that times out is retried at half the size, the size is kept, 
   full = true;
   await m.watch.tick();
   assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 12, "a quick full page doubles it once the cooldown passed");
+});
+
+test("the watch set comes from Ship's own entries: a repo ship works gets every duty; one it doesn't, only its Dependabot duty while that is on", () => {
+  const settings: Record<string, { enabled: boolean; dependabot: "off" | "failing" | "all" }> = {
+    "acme/product": { enabled: true, dependabot: "all" }, "on/repo": { enabled: true, dependabot: "off" },
+    "off/bumps": { enabled: false, dependabot: "failing" }, "off/quiet": { enabled: false, dependabot: "off" }, "off/tracked": { enabled: false, dependabot: "off" },
+  };
+  const set = Object.fromEntries(watchSet({ repos: ["acme/product", "on/repo", "On/Repo", "off/bumps", "off/quiet", "off/tracked", "no/entry"], settings: (r) => settings[r] ?? null, tracked: (r) => r === "off/tracked" }));
+  assert.deepEqual(set, {
+    "acme/product": { duties: "all", dependabot: "all" },
+    "on/repo": { duties: "all", dependabot: "off" },
+    "off/bumps": { duties: "dependabot", dependabot: "failing" },
+    "off/tracked": { duties: "dependabot", dependabot: "off" }, // polled only to close the tasks it filed
+  });
 });

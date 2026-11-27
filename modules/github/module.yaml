@@ -9,7 +9,7 @@ requires:
   - board # its sign-in and setup flow
 # The GitHub process (service `github`) is the only holder of the owner's GitHub token (its /state) and the owner of all git
 # state. Its write kinds github.{push,pr,merge,close,create_repo} go through the kernel's /v1/writes, with service/src/plan.ts as
-# their executor@1 plan. Outside the fleet org, the product repo and maintainer_repos it is PR-only (no merge; create_repo is
+# their executor@1 plan. Outside the fleet org, the product repo and the listed repos (listed_repos) it is PR-only (no merge; create_repo is
 # Tier 0 in any github_orgs org). It talks to the kernel with its own token (codehost_github_token): the module's roles below go
 # with that token alone, never with the connections' service key (kernel/src/identity.ts), so a call on the connections' key
 # holds no kernel role and can't report a write's outcome.
@@ -68,22 +68,21 @@ settings:
   release_window_minutes:
     default: 60
     pattern: '^([5-9]|[1-9][0-9]{1,2}|1[0-3][0-9]{2}|14[0-3][0-9]|1440)$'
-  # The repos the Maintainer watches, triages and fixes, each reachable by the owner's GitHub sign-in: a bare "owner/name"
+  # The repos the Maintainer watches, triages and fixes (issues only: pull requests are Ship's), each reachable by the owner's GitHub sign-in: a bare "owner/name"
   # (every default) or { repo, ... } with any of these fields (kernel/sdk/src/maintained-repos.ts parses and defaults them;
   # the Maintainer page edits them). Duties: `fixes` (default true: validate `fix_label` issues and see fixes through), `triage`
   # (off, new, new+backlog; default new), `features` (default false: label feature requests feature-request and build those
-  # a trusted collaborator labels agent-build), `dependabot` (off, failing, all; default off: the ship module files an
-  # Engineer task for the open Dependabot PRs whose checks fail, or for every one with `all`), `quiet_pr_days` (default null,
-  # off: the ship module has the Maintainer nudge a human's PR quiet that many days, then close it after as many more; drafts
-  # wait twice as long). `actions` ({ duplicate, invalid, fixed }, each comment, label or close; default label): what a verdict
+  # a trusted collaborator labels agent-build). `actions` ({ duplicate, invalid, fixed }, each comment, label or close; default label): what a verdict
   # does, always with a comment saying why; label adds the verdict's label (duplicate, invalid, fixed) and leaves the issue
   # open. `no_reply_days` (null): close an issue that many days after asking its reporter for details with no reply.
   # `inactive_issue_days` (null): one notice after that many quiet days, the close 14 days later. `fix_label` (default
   # agent-fix). `trusted`: who may vouch for a label (the owner's login is an admin): admin, maintain or write (default admin
   # and maintain; github-mcp refuses any other role); it lists every role that counts: [write] alone trusts no admin.
-  # `protected_labels` (default roadmap, wip, blocked): skipped by every automatic close. A listed repo is also where the
-  # fleet's work may merge and close, with no duty on. Read by github-mcp (maintainer.ts), which the Maintainer's tools and
-  # watcher go through, and by ship.
+  # `protected_labels` (default roadmap, wip, blocked): skipped by every automatic close. The Maintainer's own list: Ship and
+  # code review keep theirs. While the maintainer module is on, its repos are also listed repos (compile's listed_repos), where
+  # the fleet's work may merge and close. Read by github-mcp (maintainer.ts), which the Maintainer's tools and watcher go
+  # through. Dependabot and quiet contributor PRs are fields of a repo's ship entry (the ship module's `ship` setting); an
+  # entry still carrying `dependabot` or `quiet_pr_days` fails the compile, naming that new home.
   maintainer_repos:
     default: []
     entry: repo
@@ -94,8 +93,6 @@ settings:
       - { path: "*", new: true }
       - { path: "*.repo", new: true }
       - { path: "*.features", to: true, default: false }
-      - { path: "*.dependabot", to: all, default: "off" }
-      - { path: "*.quiet_pr_days", to: number, default: null }
   # Paths the churn pass ignores (service/src/churn.ts; kernel/sdk/src/churn.ts): globs, one per entry.
   churn_exclude:
     default: [ "**/package-lock.json", "**/dist/**", "**/vendor/**", "**/*.min.*" ]
@@ -119,7 +116,7 @@ connections:
     tools:
       # github_product_issue_status: a status lookup of product-bug issues (number, state, fixing commit; no issue text), so a
       # read: tagged destructive it filed a Tier 2 owner card on every check.
-      read: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_job_log, github_pr_files, github_pr_threads, github_product_issue_status, github_issue_link, github_issue_list, github_label_events, github_pr_list, github_repo_tree, github_repo_file ]
+      read: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_job_log, github_pr_files, github_pr_threads, github_product_issue_status, github_issue_link, github_issue_list, github_label_events, github_repo_tree, github_repo_file ]
       write: []
       # github_issue_link: the same report as an owner's prefilled "new issue" link, for an install where GitHub isn't connected (no
       # write, no role): named, so only the agents that report product bugs hold it.
@@ -129,11 +126,11 @@ connections:
       # The Maintainer's writes (github_issue_label, github_issue_state; github_issue_comment scrubs on the product repo and
       # the maintained repos) act on the maintained repos only (setting maintainer_repos), refuse an untrusted label and scrub outgoing text. Tagged destructive for the same
       # reason: no shorthand grants them, and the Maintainer names them when it graduates.
-      # The Maintainer's reads (github_issue_list, github_label_events, github_pr_list, github_repo_tree,
+      # The Maintainer's reads (github_issue_list, github_label_events, github_repo_tree,
       # github_repo_file) are reads tagged `named`: `read` would hand them to every agent with `github: read`, so only a
       # grant that names one reaches it. The Maintainer's module names them when it graduates. github_pr_threads (a pull request's review
       # threads, replies included: code review's reads) is named the same way.
-      named: [ github_issue_link, github_issue_list, github_label_events, github_pr_list, github_repo_tree, github_repo_file, github_pr_threads ]
+      named: [ github_issue_link, github_issue_list, github_label_events, github_repo_tree, github_repo_file, github_pr_threads ]
       # github_release_graduate: a maintained repo's stalled pre-release made a full release, only when code verifies the stall
       # wasn't the candidate's (connections/github-mcp/src/graduate.ts); the Maintainer's, by name.
       # The writes with the owner's token (a comment, an issue, its state, a review, a failed job's re-run) post as the owner:
@@ -292,9 +289,11 @@ services:
         # The module's own token: the kernel calls the executor and ops with it, and the process reports outcomes and files facts
         # with it.
         CODEHOST_KEY_FILE: ${secrets.codehost_github_token}
-        # The maintained repos (setting maintainer_repos, as JSON): the Maintainer's tools and watcher act on these only; the PR
-        # watch also covers those with dependabot on, and the fleet merges and closes there as in the fleet org (plan.ts, merges.ts).
+        # The maintained repos (setting maintainer_repos, as JSON): github-mcp's Maintainer tools act on these only.
         GITHUB_MAINTAINER_REPOS: "${settings.maintainer_repos}"
+        # The listed repos (compile derives them: the Maintainer's and Ship's lists, while each module is on; comma-separated): the
+        # code host merges and closes there as in the fleet org (plan.ts, merges.ts) and the change feed watches them.
+        GITHUB_LISTED_REPOS: "${settings.listed_repos}"
         GITHUB_RELEASE_WINDOW_MINUTES: "${settings.release_window_minutes}" # the release train's batch window
         # Shared sources (src_github): the orgs it syncs (github_orgs plus the fleet org) and its warehouse login.
         GITHUB_SYNC_ORGS: "${settings.github_sync_orgs}"

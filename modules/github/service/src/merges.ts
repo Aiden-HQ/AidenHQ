@@ -66,8 +66,8 @@ export function createMerges(d: {
   ship?: ShipAdoptions;
   /** The reviewer App on a repo (service.ts Options.reviewer): its approval of a head counts in ship's decision. */
   reviewer?: (repo: string) => Promise<{ login: string } | undefined>;
-  /** maintainer_repos ("owner/name"): merged here as in the agents org, read when each PR is polled. */
-  maintained?: string[];
+  /** The listed repos ("owner/name": the Maintainer's and Ship's lists): merged here as in the agents org, read when each PR is polled. */
+  listed?: string[];
   /** Code review's verdict for a PR head (undefined: may merge; wait: why not yet). */
   reviewGate: ReviewGate;
   /** Flow facts (flow.ts): CI done on a head, merges, and each wait with its reason. */
@@ -374,9 +374,9 @@ export function createMerges(d: {
       if (why) p.note = why;
       if (p.wait?.key !== key) p.wait = { key, since: now().toISOString() };
     };
-    // Outside the fleet org, the product repo and maintainer_repos the code host is PR-only: it merges nothing there (a repo taken
+    // Outside the fleet org, the product repo and the listed repos the code host is PR-only: it merges nothing there (a repo taken
     // off the list after its record was approved included).
-    if (!mergeable(p.repo, d.fleetOrg, platform, d.maintained ?? [])) return fail(`\`${p.repo}\` is outside the fleet org, the product repo and maintainer_repos, where the code host only opens PRs: merge it there`);
+    if (!mergeable(p.repo, d.fleetOrg, platform, d.listed ?? [])) return fail(`\`${p.repo}\` is outside the fleet org, the product repo and the listed repos (the Maintainer's and Ship's), where the code host only opens PRs: merge it there`);
     // A review reason belongs to the poll that found the PR still waiting on code review: an earlier gate taking the PR over (checks
     // rerun, a design wait, a refusal) means the review is no longer what holds it, so the reason goes before this poll decides.
     if (p.note !== undefined && !isHoldWait(p.note)) delete p.note;

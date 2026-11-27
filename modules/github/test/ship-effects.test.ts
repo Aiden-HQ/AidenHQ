@@ -19,7 +19,7 @@ const listen = (handler) => new Promise((ok) => { const s = createServer(handler
 const REPO = "acme-agents/widget";
 const SHIP = { kind: "module", module: "ship", roles: [] };
 
-async function setup(t, { generation = 2, queue = {}, asyncMerge = { put: () => ({ status: 202, body: { status: "pending", details: { uuid: "u-d" } } }), get: () => ({ status: 200, body: { status: "enqueued", details: {} } }) }, app = true, toolsDir = false, fleetOrg = "acme-agents", maintained = [], connected = () => true, reviewGate = async () => undefined, queueRead = () => undefined, signedBranches = () => false, baseAhead = false } = {}) {
+async function setup(t, { generation = 2, queue = {}, asyncMerge = { put: () => ({ status: 202, body: { status: "pending", details: { uuid: "u-d" } } }), get: () => ({ status: 200, body: { status: "enqueued", details: {} } }) }, app = true, toolsDir = false, fleetOrg = "acme-agents", listed = [], connected = () => true, reviewGate = async () => undefined, queueRead = () => undefined, signedBranches = () => false, baseAhead = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ship-effects-"));
   const origin = join(root, "github", REPO, "..", "widget.git");
   mkdirSync(origin, { recursive: true });
@@ -216,7 +216,7 @@ async function setup(t, { generation = 2, queue = {}, asyncMerge = { put: () => 
   }) };
   const handle = createService({
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), access,
-    remoteUrl: (slug) => join(root, "github", `${slug.split("/")[0]}/${slug.split("/")[1]}.git`), fleetOrg, productRepo: "acme/aidenhq", maintained,
+    remoteUrl: (slug) => join(root, "github", `${slug.split("/")[0]}/${slug.split("/")[1]}.git`), fleetOrg, productRepo: "acme/aidenhq", listed,
     reviewGate, ship, asyncPollMs: 0,
     // The App, installed on the repo: its writes are recorded like the owner's (`as` marks whose they are).
     reviewer: async () => (app ? { login: "acme-app[bot]", token: async () => "app-token", rest: async (method, path, body) => ({ ...(await gh(method, path, { ...body, as: "app" })), headers: new Headers() }) } : undefined),
@@ -1440,8 +1440,8 @@ test("a retitle held while GitHub is away resumes on reconnect as the Engineer t
 });
 
 test("a retitle outside the fleet's own repos is refused when the title names our tooling, and nothing is sent", async (t) => {
-  // The same repo, not in the agents org and not maintained: its PR's title is public text, read as a `.pr`'s is.
-  const { c1, calls, call } = await setup(t, { fleetOrg: "other-agents", maintained: [] });
+  // The same repo, not in the agents org and not listed: its PR's title is public text, read as a `.pr`'s is.
+  const { c1, calls, call } = await setup(t, { fleetOrg: "other-agents", listed: [] });
   const args = { repo: REPO, number: 7, head: c1, generation: 2, title: "fix(widget): run it from the aidenhq worktree" };
   const refused = await call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args, requester: SHIP, task: "t1" });
   assert.equal(refused.status >= 400, true, JSON.stringify(refused.json));

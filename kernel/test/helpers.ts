@@ -160,12 +160,12 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
       comments: async (id) => { const r = await owner("GET", `/api/issues/${encodeURIComponent(id)}/comments?order=desc&limit=50`); return Array.isArray(r.json) ? r.json : []; },
       agentName: async () => "Aiden", label: (m) => m.charAt(0).toUpperCase() + m.slice(1), connections: connectionsTable, grants: () => grantsTable().agents ?? {},
       // The code-host orgs still configured, as main.ts builds them (codehostRepos): github_orgs, the agents orgs, and the
-      // owners of the product, instance and maintained repos.
+      // owners of the product, instance and listed repos.
       orgs: () => {
-        const r = repos as { product?: string; instance?: string; agentsOrgs?: string[]; orgs?: string[]; maintained?: string[] };
+        const r = repos as { product?: string; instance?: string; agentsOrgs?: string[]; orgs?: string[]; listed?: string[] };
         const m = (modulesFile() as { repos?: { orgs?: string[] } }).repos;
         const owner = (slug?: string) => slug?.split("/")[0];
-        return [...(m?.orgs ?? r.orgs ?? []), ...(r.agentsOrgs ?? []), ...[r.product, r.instance, ...(r.maintained ?? [])].map(owner)].filter((o): o is string => Boolean(o));
+        return [...(m?.orgs ?? r.orgs ?? []), ...(r.agentsOrgs ?? []), ...[r.product, r.instance, ...(r.listed ?? [])].map(owner)].filter((o): o is string => Boolean(o));
       },
       boardUrl: () => "http://board.example" });
   }

@@ -1,5 +1,5 @@
 name: maintainer
-description: "Watches, triages and fixes the GitHub repos you list (setting maintainer_repos): validates each issue labelled for a fix, hands the fix to an engineer, and sees it through to a merged PR that closes the issue. Per repo you can also have it label feature requests and build the ones you mark agent-build, and nudge then close quiet contributor PRs (filed by the ship module)."
+description: "Watches, triages and fixes the GitHub repos you list (setting maintainer_repos): validates each issue labelled for a fix, hands the fix to an engineer, and sees it through to a merged PR that closes the issue. Per repo you can also have it label feature requests and build the ones you mark agent-build. Issues only: pull requests are Ship's."
 # The repo list is the github module's setting maintainer_repos (github-mcp reads it), so the Maintainer's tools need it.
 requires:
   - github
@@ -12,7 +12,7 @@ roles:
   # product-issues (the chief of staff's): the Fleet Steward's product-bug reports, filed upstream as the owner.
   requests: [ product-issues, ship-admin?, kernel.tasks, kernel.facts ] # kernel.tasks: the issue watcher files a task per labelled or new issue; kernel.facts: its issue.triaged fact
   declares:
-    - { id: maintainer, description: "Issues as the owner, labelled as AidenHQ, on the repos in settings.maintainer_repos only (github-mcp github_issue_*, github_label_events, github_pr_list, github_repo_* tools)." }
+    - { id: maintainer, description: "Issues as the owner, labelled as AidenHQ, on the repos in settings.maintainer_repos only (github-mcp github_issue_*, github_label_events, github_repo_* tools)." }
 # The change feed's issue events on the repos maintainer_repos lists (service/src/watcher.ts; kernel events.ts log, read with the
 # module's own committed cursor). The declaration is the grant: the log answers only these kinds and repos.
 subscribes:
@@ -40,7 +40,7 @@ agents:
       # `github: read` would hand every reader the product repo's issues.
       # github_product_issue: the Fleet Steward's product-bug reports on the product repo (skill report-product-bug).
       github?: [ github_issue_read, github_search_issues, github_product_issue, github_product_issue_status,
-                 github_issue_list, github_label_events, github_pr_list,
+                 github_issue_list, github_label_events,
                  github_issue_comment, github_issue_label, github_issue_state,
                  github_repo_tree, github_repo_file, github_release_graduate ]
       apps: [ app_status, app_logs, app_view, web_view ]
@@ -107,7 +107,6 @@ services:
         MAINTAINER_TOKEN_FILE: ${secrets.maintainer_token}
         MAINTAINER_SERVICE_KEY_FILE: ${secrets.maintainer_service_key}
         MAINTAINER_REPOS: "${settings.maintainer_repos}"
-        MAINTAINER_SHIP_REPOS: "${settings.ship_repos}" # the repos with a ship entry: Ship's page owns their removal (it clears all three entries)
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
 generated_secrets:
   - maintainer_token

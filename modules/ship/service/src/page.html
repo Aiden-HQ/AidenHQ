@@ -68,6 +68,17 @@
   .sf.chg .sn { color: var(--accent); font-weight: 560; }
   .sl .rs { height: auto; padding: 0; border: 0; background: none; color: var(--accent); font-size: 11.5px; }
   .sl .rs:hover { text-decoration: underline; }
+  /* Pull request upkeep: one row per setting (name and a one-line description left, the control right), as the Maintainer page lays them out. */
+  .pr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 16px; align-items: center; padding: 8px 0; border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+  .pr:first-child { border-top: 0; padding-top: 0; }
+  .pr .pn { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; font-weight: 560; }
+  .pr .pn .rs { height: auto; padding: 0; border: 0; background: none; color: var(--accent); font-size: 11.5px; font-weight: 400; }
+  .pr .pd { grid-column: 1; font-size: 12px; color: var(--soft); display: grid; gap: 6px; }
+  .pr .prc { grid-column: 2; grid-row: 1 / span 2; }
+  .pr .prc { display: flex; justify-content: flex-end; } .pr .prc .seg { flex: none; }
+  .pr .days { display: flex; align-items: center; gap: 8px; white-space: nowrap; color: inherit; }
+  .pr .days input { width: 56px; text-align: right; }
+  @media (max-width: 640px) { .pr { grid-template-columns: minmax(0, 1fr); } .pr .prc { grid-column: 1; grid-row: auto; margin-top: 4px; justify-content: flex-start; } }
   .mx .rs { height: 14px; padding: 0; border: 0; }
   .sf .warn { color: var(--color-text-danger, red); font-size: 12px; }
   .sf .checks { gap: 6px; min-height: 0; } .sf .checks label { padding: 2px 8px 2px 6px; border: 1px solid var(--line); border-radius: 5px; font-size: 12px; }
@@ -177,9 +188,11 @@
     "caps.usd": ["Spend (USD)", "The most Ship spends on one PR, in dollars. Blank is unlimited.", null],
     "caps.requeue_on_timeout": ["Requeues on timeout", "How many times a timed-out run is queued again. Blank is unlimited.", null],
     stop_label: ["Stop label", "While a PR carries this label Ship leaves it alone; removing it resumes.", null],
+    dependabot: ["Dependabot updates", "Which dependency bumps an engineer takes through to a merge.", { off: "None.", failing: "Only the ones whose checks fail.", all: "Every one, once its checks finish." }],
+    quiet_pr_days: ["Inactive contributor PRs", "A nudge, then closed after the same wait again. Drafts wait twice as long.", null],
   };
   const STAGES = { conflict: "When a PR conflicts", behind: "When a PR is behind", before_merge: "Before merge" };
-  const KIND = { rebase: "seg", fix: "checks", "generated.globs": "chips", "generated.command": "text", "generated.ci": "text", protected: "chips", stop_label: "text", ignore_authors: "chips" };
+  const KIND = { rebase: "seg", dependabot: "seg", fix: "checks", "generated.globs": "chips", "generated.command": "text", "generated.ci": "text", protected: "chips", stop_label: "text", ignore_authors: "chips" };
   const get = (o, path) => path.split(".").reduce((x, k) => x?.[k], o);
   const put = (o, path, v) => { const ks = path.split("."); const last = ks.pop(); const t = ks.reduce((x, k) => (x[k] ??= {}), o); t[last] = v; };
   const eq = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -238,6 +251,8 @@
     if (/^by_tier\..*\.approve$/.test(path)) return ["off", "observe", "on"].indexOf(b) > ["off", "observe", "on"].indexOf(a);
     if (/\.merge$/.test(path)) return b === "ready" && a !== "ready";
     if (path === "rebase") return b === "behind" && a !== "behind";
+    if (path === "dependabot") return b === "all" && a !== "all";
+    if (path === "quiet_pr_days") return b !== null && b !== undefined && (a === null || a === undefined || b < a);
     if (path === "fix" || path === "generated.globs") return (b ?? []).some((x) => !(a ?? []).includes(x));
     if (path === "protected") return (a ?? []).some((x) => !(b ?? []).includes(x));
     if (path === "ignore_authors") return (b ?? []).some((x) => !(a ?? []).some((y) => y.toLowerCase() === x.toLowerCase()));
@@ -273,9 +288,9 @@
     };
     const control = (path, extra = {}) => {
       const { stage, kind, label, options, head } = info(path), { v } = state(path);
-      const values = path === "enabled" ? ["on", "off"] : path === "preset" ? controls.preset.values : head ? controls[path].values : /^(by_tier|unwatched)\./.test(path) ? Object.keys(path.endsWith(".approve") ? APPROVE_OPTS : MERGE_OPTS) : path === "rebase" ? ["conflict", "behind"] : ["conflicts", "ci", "review"];
+      const values = path === "enabled" ? ["on", "off"] : path === "preset" ? controls.preset.values : head ? controls[path].values : /^(by_tier|unwatched)\./.test(path) ? Object.keys(path.endsWith(".approve") ? APPROVE_OPTS : MERGE_OPTS) : path === "rebase" ? ["conflict", "behind"] : path === "dependabot" ? ["off", "failing", "all"] : ["conflicts", "ci", "review"];
       const cur = path === "preset" ? presetFor(key) : show(path, v);
-      return editor({ kind, label: `${label} (${key})`, f: `${key}|${path}`, value: stage ? (v ?? []).map(showAction) : cur, values, titles: options, placeholder: kind === "num" ? "no limit" : stage ? "workflow: file.yml pr={pr}" : path === "ignore_authors" ? "login, then Enter" : kind === "chips" ? "glob, then Enter" : undefined, dups: !!stage, ...extra,
+      return editor({ kind, label: `${label} (${key})`, f: `${key}|${path}`, value: stage ? (v ?? []).map(showAction) : cur, values, titles: options, placeholder: kind === "num" ? (path === "quiet_pr_days" ? "off" : "no limit") : stage ? "workflow: file.yml pr={pr}" : path === "ignore_authors" ? "login, then Enter" : kind === "chips" ? "glob, then Enter" : undefined, dups: !!stage, ...extra,
         // A command and a CI check are one or the other: each edit replaces the generated setting whole.
         set: (x, live) => path === "generated.ci" || path === "generated.command" ? edit(key, "generated", { globs: view(key).generated?.globs ?? [], ...(path === "generated.ci" && x ? { ci: x } : { command: path === "generated.command" ? x : (target(key).settings?.generated?.command ?? "") }) }, live) : edit(key, path, stage ? x.map((t) => (v ?? []).find((a) => showAction(a) === t) ?? readAction(t)) : path === "enabled" ? x === "on" : x, live) });
     };
@@ -303,12 +318,29 @@
     const merging = section("merge", "Merging", ["enabled", "handoff"], [
       h("div", { className: "grid" }, ...(defaults ? [sf("preset")] : []), sf("enabled"), sf("handoff")), matrix], { text: "What Ship does for each risk tier code review gives a PR, and which PRs it takes on. Which PRs are in which tier is set by the tier rules on the Reviews page.", options: MATRIX_HELP });
     const repair = section("repair", "Rebase and repair", ["rebase", "fix"], [sf("rebase"), sf("fix")]);
+    // The pull-request duties of their own (owner, 2026-11-27: pull requests are Ship's, issues the Maintainer's).
+    const prRow = (path, ctl, extra) => {
+      const { label, text } = info(path), { changed } = state(path);
+      return h("div", { className: "pr" }, h("div", { className: "pn" }, h("span", { textContent: label }), changed ? rs(path) : null), h("div", { className: "pd" }, h("span", { textContent: text }), extra ?? null), h("div", { className: "prc" }, ctl));
+    };
+    // Inactive contributor PRs: Leave open or Close, and the days only while Close is picked (the Maintainer page's cleanup rows).
+    const quiet = get(s, "quiet_pr_days"), closing = quiet !== null && quiet !== undefined;
+    const quietSeg = editor({ kind: "seg", label: `Inactive contributor PRs (${key})`, f: `${key}|quiet_pr_days:mode`, value: closing ? "Close" : "Leave open", values: ["Leave open", "Close"],
+      titles: { "Leave open": "Ship leaves quiet PRs alone.", Close: "Ship nudges a PR quiet that many days, then closes it after as many more. Turning it on is the owner's call." },
+      set: (v) => edit(key, "quiet_pr_days", v === "Close" ? (get(base, "quiet_pr_days") ?? 7) : null) });
+    const days = closing ? (() => {
+      const inp = h("input", { type: "text", inputMode: "numeric", value: String(quiet), ariaLabel: `Inactive contributor PRs days (${key})`, autocomplete: "off" });
+      inp.dataset.f = `${key}|quiet_pr_days:days`;
+      inp.addEventListener("change", () => { const n = Number(inp.value.trim()); if (Number.isInteger(n) && n >= 1 && n <= 365) edit(key, "quiet_pr_days", n, true); else inp.value = String(quiet); });
+      return h("label", { className: "days" }, "after", inp, "days");
+    })() : null;
+    const prs = section("prs", "Pull request upkeep", ["dependabot", "quiet_pr_days"], [prRow("dependabot", control("dependabot")), prRow("quiet_pr_days", quietSeg, days)]);
     const set = CAPS.filter((p) => get(s, p) != null).length;
     const limits = section("limits", "Limits", CAPS, [h("div", { className: "grid" }, ...CAPS.map((p) => sf(p)))], { fold: true, summary: set ? `${set} limit${set === 1 ? "" : "s"} set` : "No limits", note: "How many times a PR is re-reviewed (and so fixed) is code review's 'Reviews per push' setting on the Reviews page. A blank limit is unlimited." });
     const advPaths = ["stop_label", "generated.globs", "generated.command", "generated.ci", "protected", "ignore_authors", ...("actions" in base ? Object.keys(STAGES).map((x) => `actions.${x}`) : [])];
     const changedN = advPaths.filter((p) => state(p).changed).length;
-    const adv = section("adv", "Advanced", advPaths, [h("div", { className: "grid" }, sf("stop_label")), ...advPaths.slice(1).map((p) => sf(p, true))], { fold: true, summary: [get(s, "generated")?.globs?.length || get(s, "generated")?.command ? "" : "No generator set", changedN ? `${changedN} changed` : ""].filter(Boolean).join(" \u00b7 ") || "Defaults", note: "Extra steps Ship takes at a stage (actions): the repo's own workflow, dispatched on the repo's default branch, as workflow: file.yml key=value; the workflow takes the PR number as an input ({pr}). Ship follows its run: a failed run moves on to the next step." });
-    return h("div", { className: "sd", id: `drawer-${key}` }, h("div", { className: "sdc" }, merging), h("div", { className: "sdc" }, repair, limits), h("div", { className: "sdc" }, adv));
+    const adv = section("adv", "Advanced", advPaths, [h("div", { className: "grid" }, sf("stop_label")), ...advPaths.slice(1).map((p) => sf(p, true))], { fold: true, summary: [get(s, "generated")?.globs?.length || get(s, "generated")?.command || get(s, "generated")?.ci ? "" : "No generator set", changedN ? `${changedN} changed` : ""].filter(Boolean).join(" \u00b7 ") || "Defaults", note: "Extra steps Ship takes at a stage (actions): the repo's own workflow, dispatched on the repo's default branch, as workflow: file.yml key=value; the workflow takes the PR number as an input ({pr}). Ship follows its run: a failed run moves on to the next step." });
+    return h("div", { className: "sd", id: `drawer-${key}` }, h("div", { className: "sdc" }, merging), h("div", { className: "sdc" }, repair, prs, limits), h("div", { className: "sdc" }, adv));
   }
   const LOOSE = new Set(["generated.globs", "ignore_authors"]);
   const open = new Set();
@@ -357,7 +389,7 @@
   }
   function draftPanel() {
     const msg = h("p", { className: "msg", role: "status" }), add = h("button", { type: "button", className: "primary", textContent: "Add repo" });
-    const check = () => { const bad = nameError(draft.name.trim()); msg.textContent = bad || (draft.name.trim() ? `Lists it for Ship and the Maintainer, then applies the settings below. Code review is separate: turn it on from the Reviews page.${Object.keys(pending.repos).length || pending.paused !== undefined ? " It replaces the edits already proposed in the bar above." : ""}` : "owner/name of the GitHub repo."); msg.className = bad ? "msg bad" : "msg"; add.disabled = !NAME.test(draft.name.trim()) || !!bad; };
+    const check = () => { const bad = nameError(draft.name.trim()); msg.textContent = bad || (draft.name.trim() ? `Adds it to Ship with the settings below. The Maintainer and code review keep their own lists: add it on their pages to use them too.${Object.keys(pending.repos).length || pending.paused !== undefined ? " It replaces the edits already proposed in the bar above." : ""}` : "owner/name of the GitHub repo."); msg.className = bad ? "msg bad" : "msg"; add.disabled = !NAME.test(draft.name.trim()) || !!bad; };
     const name = h("input", { type: "text", id: "newrepo", value: draft.name, placeholder: "owner/name", ariaLabel: "Repo to add", autocomplete: "off", spellcheck: false });
     name.addEventListener("input", () => { draft.name = name.value; check(); });
     name.addEventListener("keydown", (e) => { if (e.key === "Enter" && !add.disabled) addRepo(); else if (e.key === "Escape") closeDraft(); });
@@ -414,7 +446,7 @@
       if (confirming === raw.repo) {
         const yes = h("button", { type: "button", className: "danger", textContent: "Remove" }), no = h("button", { type: "button", textContent: "Cancel" });
         yes.addEventListener("click", () => removeRepo(raw.repo)); no.addEventListener("click", () => { confirming = null; render(); });
-        more.push(h("div", { className: "confirm", role: "alert" }, h("span", { textContent: `Remove ${r.repo} from Ship, the Maintainer and code review?` }), yes, no));
+        more.push(h("div", { className: "confirm", role: "alert" }, h("span", { textContent: `Remove ${r.repo} from Ship? The Maintainer and code review keep it if they list it.` }), yes, no));
       }
       if (isOpen) more.push(drawer(raw.repo));
       return [row, ...more];

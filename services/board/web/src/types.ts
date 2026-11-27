@@ -331,6 +331,8 @@ export interface IssueView extends Omit<Card, "scheduled" | "recurring" | "worki
   working: Working | null;
   description: string;
   bucket: Bucket | null;
+  /** Why an agent placed it in its column (first-pass triage), until the owner moves it. */
+  placed?: { by: string; reason: string } | null;
   editable: boolean;
   /** Settled out of the active lists (finished work the owner put away). */
   settled?: boolean;
@@ -884,13 +886,27 @@ export interface SessionRow {
 // Home (GET /api/home): the server's shapes, services/board/src/home.ts.
 /** A teammate as Home shows it; `face` is the roster's own value. */
 export type FaceRef = { key: string; name: string; job: string; face: RosterFace; state: "idle" | "working" | "needs" };
+/** A row's task as the detail drawer shows it (home.ts aboutTask): `project` is an id, `source` the description's Source block. */
+export type About = {
+  created: string;
+  labels: string[];
+  project: string | null;
+  parent: { identifier: string; title: string } | null;
+  holder: string | null;
+  source: { type: string | null; url: string | null; fields: [string, string][] } | null;
+  reason?: string;
+  suggested?: string;
+  body?: string;
+};
 export type NeedRow =
-  | { id: string; kind: "answer"; teammate: FaceRef; since: string; task: { identifier: string; title: string }; question: string; detail?: string; options: string[]; questions: Question[]; waitSince: string }
-  | { id: string; kind: "approval"; teammate: FaceRef; since: string; task: { identifier: string; title: string } | null; question: string; card: Approval }
-  | { id: string; kind: "open"; teammate: FaceRef; since: string; task: { identifier: string; title: string }; question: string; reply?: { person: string | null; source: "slack" | "gmail" | null } };
-export type SinceItem = { teammate: FaceRef; text: string; at: string; task: string | null; kind: "done" | "fyi" | "digest" | "closed" };
+  | { id: string; kind: "answer"; teammate: FaceRef; since: string; task: { identifier: string; title: string }; question: string; detail?: string; options: string[]; questions: Question[]; waitSince: string; about?: About }
+  | { id: string; kind: "approval"; teammate: FaceRef; since: string; task: { identifier: string; title: string } | null; question: string; card: Approval; about?: About }
+  | { id: string; kind: "open"; teammate: FaceRef; since: string; task: { identifier: string; title: string }; question: string; reply?: { person: string | null; source: "slack" | "gmail" | null }; about?: About };
+export type Waiting = { id: string; identifier: string; title: string; age_days: number; quiet_days: number; about?: About };
+/** `reopen`: an owner task its filing agent closed on evidence (skill owner-triage): the row offers one-tap Reopen. */
+export type SinceItem = { teammate: FaceRef; text: string; at: string; task: string | null; kind: "done" | "fyi" | "digest" | "closed"; reopen?: true };
 export type WorldBlock = {
-  waiting_on: { id: string; identifier: string; title: string; age_days: number; quiet_days: number }[] | null;
+  waiting_on: Waiting[] | null;
   today: { timezone: string; events: { id: string; start: string; title: string; all_day: boolean; url?: string; prep?: string }[] } | null;
 };
 export type TeamNews = { teammate: FaceRef; line: string };

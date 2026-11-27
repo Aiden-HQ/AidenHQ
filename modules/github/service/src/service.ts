@@ -78,8 +78,8 @@ export type Options = {
   app?: OpsContext["app"];
   /** github_fleet_org: where the fleet's repos live on GitHub ("" while unset). */
   fleetOrg: string; allowedOrgs?: string[]; instanceRepo?: string; productRepo?: string;
-  /** maintainer_repos ("owner/name"): where the fleet merges and closes outside the agents org and the product repo. */
-  maintained?: string[];
+  /** The listed repos ("owner/name": the Maintainer's and Ship's lists): where the fleet merges and closes outside the agents org and the product repo. */
+  listed?: string[];
   log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The release train's batch window, minutes (the instance's release_window_minutes). */
   releaseWindowMinutes?: number;
@@ -429,7 +429,7 @@ export function createService(o: Options) {
     ];
   }
   // The commits this code host pushed, each as "<repo, lowercase> <sha>": a head is the runner's own only in the repo it was
-  // pushed to, so the same commit opened as a PR in another repo (a maintained one, say) is never ours there.
+  // pushed to, so the same commit opened as a PR in another repo (a listed one, say) is never ours there.
   const pushed = join(o.cacheDir, "pushed.json");
   const pushedHeads = (): string[] => (existsSync(pushed) ? JSON.parse(readFileSync(pushed, "utf8")) : []);
   const pushedKey = (repo: string, sha: string) => `${repo.toLowerCase()} ${sha}`;
@@ -463,7 +463,7 @@ export function createService(o: Options) {
   async function stateFor(kind: string, a: any, requester?: PlanRequest["requester"], task?: string) {
     // The Platform Engineer's line: a requester holding the platform-engineer role (the kernel's record of who asked, never the
     // args); it may push to any branch, others to their own task's (plan.ts branch-namespace).
-    const base = { agentsOrg: o.fleetOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, maintained: o.maintained ?? [], requester: { platform: isPlatform(requester) }, workspace: String(a.workspace ?? ""), also: [] as string[] };
+    const base = { agentsOrg: o.fleetOrg, allowedOrgs: o.allowedOrgs, instanceRepo: o.instanceRepo, productRepo: o.productRepo, listed: o.listed ?? [], requester: { platform: isPlatform(requester) }, workspace: String(a.workspace ?? ""), also: [] as string[] };
     if (kind.endsWith(".publish_module")) {
       // The owner's preview, bound: the same files (their digest), a public repo, a folder that is this module's own, and the
       // branch still at the tip he previewed. The record's own args are the preview's evidence; nothing else is read for it.
@@ -1955,7 +1955,7 @@ export function createService(o: Options) {
     },
     asyncPolls: o.asyncPolls, asyncPollMs: o.asyncPollMs,
     dir: join(o.cacheDir, "merges"), gh: (method, path, body) => gh(method, path, body, { background: true }), connected: () => access.connected(),
-    fleetOrg: o.fleetOrg, productRepo: o.productRepo, maintained: o.maintained,
+    fleetOrg: o.fleetOrg, productRepo: o.productRepo, listed: o.listed,
     report, waiting, log, now: o.now, everyMs: o.mergeEveryMs,
     reviewGate: o.reviewGate,
   });
@@ -2077,9 +2077,9 @@ export function createService(o: Options) {
     if (rec.state !== "done" || !rec.outcome?.ok) return { status: 409, json: { error: `the setup wasn't done: write ${rec.id} ${rec.state}${rec.outcome?.text ? `: ${rec.outcome.text.slice(0, 300)}` : ""}`, write: rec.id } };
     return { status: 200, json: JSON.parse(rec.outcome.text) };
   }
-  /** The change feed's rule (managedRepos, and main.ts adds maintainer_repos): the product, instance and maintained repos, and the fleet org's non-fork, non-archived ones. */
+  /** The change feed's rule (managedRepos, and main.ts adds the listed repos): the product, instance and listed repos, and the fleet org's non-fork, non-archived ones. */
   const feedWatched = (slug: string, repo: { isFork?: boolean; isArchived?: boolean }) =>
-    same(slug, o.productRepo) || same(slug, o.instanceRepo) || (o.maintained ?? []).some((m) => same(m, slug)) || (same(slug.split("/")[0], o.fleetOrg) && !repo.isFork && !repo.isArchived);
+    same(slug, o.productRepo) || same(slug, o.instanceRepo) || (o.listed ?? []).some((m) => same(m, slug)) || (same(slug.split("/")[0], o.fleetOrg) && !repo.isFork && !repo.isArchived);
   async function ops(op: string, req: IncomingMessage, res: ServerResponse) {
     // Only the kernel calls the ops, with this service's key: POST /v1/codehost/:op brokers them under each module's grant.
     if (!keyed(req)) throw fail(401, "the kernel only");

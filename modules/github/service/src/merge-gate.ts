@@ -190,7 +190,7 @@ export function judgedCheck<T extends NamedCheck>(checks: T[], name: string): T 
 /**
  * The one readiness rule: what to do with one PR from `data` (PR_QUERY's answer, withGate applied) and its bound `head`.
  * Without `ship` it is the merge queue's for an approved record: { do: "merge" | "done" | "wait" | "fail", why }, and before a
- * "merge" merges.ts still asks code review's gate; only our own repos (agents org, product) and maintained ones reach it, so
+ * "merge" merges.ts still asks code review's gate; only our own repos (agents org, product) and listed ones reach it, so
  * the record is the review. With `ship` (an adopted PR) it never fails what a round can move: a conflict is a repair, red is a
  * fix, a missing review is a wait; it judges only the required checks, needs code review's pass where code review gates the
  * repo, and an approval on the head only where GitHub asks for one. A PR on a non-default base waits for ship, said each pass and

@@ -220,7 +220,7 @@ const repos = () => ({ ...baseRepos, agentsOrg: fleetOrg(), agentsOrgs: [fleetOr
 function codehostOrgs(): string[] {
   const r = codehostRepos();
   const owner = (slug?: string) => slug?.split("/")[0];
-  return [...(r.orgs ?? []), ...(r.agentsOrgs ?? []), ...[r.product, r.instance, ...(r.maintained ?? [])].map(owner)].filter((o): o is string => Boolean(o));
+  return [...(r.orgs ?? []), ...(r.agentsOrgs ?? []), ...[r.product, r.instance, ...(r.listed ?? [])].map(owner)].filter((o): o is string => Boolean(o));
 }
 log(baseRepos.product && baseRepos.instance ? "repositories" : "AIDENHQ_PRODUCT_REPO or AIDENHQ_INSTANCE_REPO isn't set", repos());
 // The bound reviewer module (reviewer@1): its model calls go through this gateway on a reviewer token minted per review.
@@ -494,7 +494,7 @@ const plugin = createPluginPost({ controlUrl, agentKey: (id) => secret(`papercli
 const outcomes = createOutcomes({ db: records.db, facts, agentKey, plugin, log, relay: createReplyRelay({ owner: ownerApi, queue: notify.queue, log }), delegates: (id) => delegateIds(grantsTable().agents, id, appOwners), finish: (task) => checks.finish(task), chatTask: (id) => { const t = grantsTable().agents?.[id]?.chat_task; return typeof t === "string" ? t : undefined; },
   // A reply on a closed task is not posted or relayed (outcomes.ts): one read of the task, as the owner reads it.
   task: async (id) => { const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`); if (r.status === 404) return undefined; if (r.status !== 200) throw Object.assign(new Error(`control plane GET task ${id} → ${r.status}`), { status: r.status }); return (await r.json()) as { status?: string }; } });
-const KNOWN_REPOS = ["@agents/*", "@product", "@instance", "@orgs", "@maintained"];
+const KNOWN_REPOS = ["@agents/*", "@product", "@instance", "@orgs", "@listed"];
 const localRepoExists = (repo: string) => { try { return existsSync(path.join(localCode.bare(repo), "HEAD")); } catch { return false; } };
 const wakes = createWakes({
   db: records.db, facts, owner: wakeOwner, post: outcomes.post, log,
@@ -505,7 +505,7 @@ const wakes = createWakes({
   // Teams (team-routing.ts): a task on a team record goes to a member.
   grants: () => (grantsTable().agents ?? {}) as never,
   // A repo the instance's code hosts have (codehostRepos: the agents orgs, the product, the instance, github_orgs and the
-  // maintained repos; a local/… one only once it exists). A branch, a path or a library named like owner/name is none.
+  // listed repos; a local/… one only once it exists). A branch, a path or a library named like owner/name is none.
   knownRepo: (repo) => (repo.startsWith(`${LOCAL_ORG}/`) ? localHost() && localRepoExists(repo) : covers(repo, KNOWN_REPOS, codehostRepos())),
   // No member can take it: the task that asked for it hears it as a wake notice (as asker.tell does), else the owner.
   tellBlocked: async (task, text) => {
@@ -535,8 +535,8 @@ connectionState = createConnectionState({
   label: (m) => modulesFile().modules?.[m]?.label ?? m,
   connections, grants: () => grantsTable().agents ?? {},
   // Every code-host org the instance reaches (codehostRepos: github_orgs, the agents orgs, and the owners of the product,
-  // instance and maintained repos): an sso/restricted need on any other org is stale, and tick clears it (connection-state.ts).
-  // A tool call to a maintained repo's org is a live need, not a retired sync scope, so its org must stay allowed.
+  // instance and listed repos): an sso/restricted need on any other org is stale, and tick clears it (connection-state.ts).
+  // A tool call to a listed repo's org is a live need, not a retired sync scope, so its org must stay allowed.
   orgs: () => codehostOrgs(),
   // The board's origin (declared below; read only when a need is routed, after the listeners are up).
   boardUrl: () => boardOrigins[0] ?? "http://localhost:3121",
@@ -661,11 +661,11 @@ const moduleValidate = createModuleValidate({ registry: checksRegistry, services
 const computers = watched(path.join(configDir, "computers.json"), (j) => j as { max?: unknown; checks?: unknown; connections?: Record<string, { tool_timeout_sec?: number }> }, {});
 // A job's requests for its task's next turn (`aidenhq reset|engine|cleanup`): boxes does the cleanup, admission the rest; and
 // its prechecks (`aidenhq review`, the precheck below), counted here.
-const jobTools = createJobTools({ db: records.db, secret: () => secret("gateway_job_secret"), orgs: () => repos().agentsOrgs, autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? (grantsTable().autonomy as string) : "off"), reach: (repo) => hostOf(repo) === CODEHOST && repo.toLowerCase() !== baseRepos.instance?.toLowerCase() && covers(repo, ["@agents/*", "@product", "@maintained"], codehostRepos()), engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.box === true).map(([k]) => k) });
+const jobTools = createJobTools({ db: records.db, secret: () => secret("gateway_job_secret"), orgs: () => repos().agentsOrgs, autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? (grantsTable().autonomy as string) : "off"), reach: (repo) => hostOf(repo) === CODEHOST && repo.toLowerCase() !== baseRepos.instance?.toLowerCase() && covers(repo, ["@agents/*", "@product", "@listed"], codehostRepos()), engines: () => Object.entries(readEngines(sandbox)).filter(([, e]) => e.box === true).map(([k]) => k) });
 // Each module's code host grant (its module.yaml `codehost:`), and what its @ names resolve to: the code host broker's, and
 // what an engineer job's dispatcher may clone into its task's workspace.
 const codehostGrants = (): OpsGrant[] => Object.entries(modulesFile().modules ?? {}).flatMap(([module, d]) => ((d as { codehost?: OpsGrant }).codehost ? [{ ...(d as { codehost: OpsGrant }).codehost, module }] : []));
-const codehostRepos = () => ({ instance: baseRepos.instance, product: baseRepos.product, agentsOrgs: repos().agentsOrgs, orgs: modulesFile().repos?.orgs, maintained: modulesFile().repos?.maintained });
+const codehostRepos = () => ({ instance: baseRepos.instance, product: baseRepos.product, agentsOrgs: repos().agentsOrgs, orgs: modulesFile().repos?.orgs, listed: modulesFile().repos?.listed });
 // The backplane's one address: modules and boxes reach the kernel there, and a code-mode engine's tools are listed there at launch.
 const backplaneAddr = env("AIDENHQ_KERNEL_BACKPLANE", "10.231.0.1:3130");
 boxes = createBoxes({

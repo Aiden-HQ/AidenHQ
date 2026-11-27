@@ -24,7 +24,7 @@ const boxBundle = (ws, branch) => {
 };
 const listen = (handler) => new Promise((ok) => { const s = createServer(handler); s.listen(0, "127.0.0.1", () => ok({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 
-async function setup(t, { routes = () => undefined, maintained, connected = () => true, scopes = () => ["repo"], remoteHooks = "", refuse, signed, taskStatus } = {}) {
+async function setup(t, { routes = () => undefined, listed, connected = () => true, scopes = () => ["repo"], remoteHooks = "", refuse, signed, taskStatus } = {}) {
   const root = mkdtempSync(join(tmpdir(), "codehost-svc-"));
   const marker = join(root, "RAN");
   // "GitHub": a bare repo with main.
@@ -113,7 +113,7 @@ async function setup(t, { routes = () => undefined, maintained, connected = () =
     key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), tasksDir: join(root, "tasks"), access,
     reportNeed,
     remoteUrl: (slug) => join(root, "github", `${slug}.git`), fleetOrg: "acme-agents", instanceRepo: "acme-agents/aidenhq-instance",
-    ops: serveOps, productRepo: "acme/aidenhq", allowedOrgs: ["acme-agents", "partner"], maintained, reviewGate: async () => undefined,
+    ops: serveOps, productRepo: "acme/aidenhq", allowedOrgs: ["acme-agents", "partner"], listed, reviewGate: async () => undefined,
   });
   const svc = await listen((req, res) => void handle(req, res));
   t.after(() => { kernel.s.close(); svc.s.close(); });
@@ -745,16 +745,16 @@ test("a job's branch lands from its workspace; no hook, filter or fsmonitor of t
   assert.match(readFileSync(join(root, "cache", ".reviewed-refs.jsonl"), "utf8"), /"repo":"acme-agents\/widget","ref":"refs\/ws\/TASK-1\/feature"/, "the kept head is noted for pruning");
 });
 
-test("a head is the runner's own only in the repo it was pushed to: the same commit as a PR on a maintained repo is reviewed, never Tier 0", async (t) => {
+test("a head is the runner's own only in the repo it was pushed to: the same commit as a PR on a listed repo is reviewed, never Tier 0", async (t) => {
   let pulls = {};
   const checks = { status: 200, body: { total_count: 1, check_runs: [{ status: "completed", conclusion: "success" }], statuses: [] } };
-  const { root, origin, sha, outcomes, call } = await setup(t, { maintained: ["globex/payments"], routes: (method, path) => (path in pulls ? { status: 200, body: pulls[path] } : /\/commits\/\w+\/(check-runs|status)/.test(path) ? checks : undefined) });
+  const { root, origin, sha, outcomes, call } = await setup(t, { listed: ["globex/payments"], routes: (method, path) => (path in pulls ? { status: 200, body: pulls[path] } : /\/commits\/\w+\/(check-runs|status)/.test(path) ? checks : undefined) });
   const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
   assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
   await call("/aidenhq/v1/executor/execute", { id: "k-0123456789abcdee", kind: "github.push", args, digest: "d", idempotency_key: "i" });
   for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
   assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
-  // The same commit, opened as a PR on a maintained repo outside the agents org.
+  // The same commit, opened as a PR on a listed repo outside the agents org.
   const other = join(root, "github", "globex", "payments.git");
   mkdirSync(other, { recursive: true });
   sh(other, "init", "--quiet", "--bare", "-b", "main");
@@ -768,7 +768,7 @@ test("a head is the runner's own only in the repo it was pushed to: the same com
   assert.equal(own.json.raise, undefined, "pushed to this repo: Tier 0");
   const elsewhere = await merge("globex/payments");
   assert.equal(elsewhere.status, 200, JSON.stringify(elsewhere.json));
-  assert.deepEqual([elsewhere.json.raise?.tier, elsewhere.json.raise?.rule], [1, "maintained-merge-foreign-head"]);
+  assert.deepEqual([elsewhere.json.raise?.tier, elsewhere.json.raise?.rule], [1, "listed-merge-foreign-head"]);
 });
 
 test("ops answer the kernel only; the token op is gone", async (t) => {

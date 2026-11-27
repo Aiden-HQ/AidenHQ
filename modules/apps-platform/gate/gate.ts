@@ -368,6 +368,8 @@ export function parseAccounts(text: string): AccountState {
 
 const esc = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const STYLE = `<style>body{font:16px/1.5 system-ui,sans-serif;max-width:44rem;margin:2rem auto;padding:0 1rem}a{color:inherit}table{border-collapse:collapse;width:100%}td{padding:6px 8px 6px 0;vertical-align:middle}form{display:inline}.muted{color:#777;font-size:14px}input,select,button{font:inherit;padding:4px 8px}code{word-break:break-all}.note{padding:10px;border:1px solid #ccc;border-radius:8px}</style>`;
+/** A stored UTC instant on a page with no script (the CSP): stated as UTC, the instant kept in `datetime`. */
+const utc = (at: unknown) => { const t = Date.parse(String(at)); return Number.isFinite(t) ? `<time datetime="${new Date(t).toISOString()}">${new Date(t).toISOString().slice(0, 16).replace("T", " ")} UTC</time>` : ""; };
 const html = (title: string, body: string) => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title>${STYLE}</head><body>${body}</body></html>\n`;
 /** The my-apps page: the apps this visitor may open, with their role; the apps they admin link to their Access page. */
 export function myAppsPage(email: string, apps: { host: string; app: string; role: string }[]) {
@@ -381,7 +383,7 @@ export function accessPage(p: AccessPageData) {
   const options = (pick: string, omit: string[] = []) => p.roles.filter((r) => !omit.includes(r.name)).map((r) => `<option value="${esc(r.name)}"${r.name === pick ? " selected" : ""}>${esc(r.name)}</option>`).join("");
   const form = (action: string, inner: string) => `<form method="post" action="${ACCESS_PATH}"><input type="hidden" name="action" value="${action}">${hidden}${inner}</form>`;
   const row = (a: AccessPageData["assignments"][number]) => `<tr><td>${esc(a.email)}</td><td>${form("role", `<input type="hidden" name="email" value="${esc(a.email)}"><select name="role">${options(a.role)}</select> <button>Save</button>`)}${a.declared ? "" : ` <span class="muted">${esc(a.role)}: no longer declared, so blocked</span>`}</td><td>${form("remove", `<input type="hidden" name="email" value="${esc(a.email)}"><button>Remove</button>`)}</td><td class="muted">${esc(a.set_by)}</td></tr>`;
-  const change = (l: AccessPageData["log"][number]) => `<tr><td class="muted">${esc(String(l.at).slice(0, 16).replace("T", " "))}</td><td>${esc(l.subject)}</td><td>${esc(l.before ?? "none")} → ${esc(l.after ?? "none")}</td><td class="muted">${esc(l.by)}${l.asked_by ? `, asked by ${esc(l.asked_by)}` : ""}${l.request_id ? ` (${esc(l.request_id)})` : ""}</td></tr>`;
+  const change = (l: AccessPageData["log"][number]) => `<tr><td class="muted">${utc(l.at)}</td><td>${esc(l.subject)}</td><td>${esc(l.before ?? "none")} → ${esc(l.after ?? "none")}</td><td class="muted">${esc(l.by)}${l.asked_by ? `, asked by ${esc(l.asked_by)}` : ""}${l.request_id ? ` (${esc(l.request_id)})` : ""}</td></tr>`;
   return html(`${p.app}: access`, `<p><a href="/">My apps</a> · <a href="https://${esc(p.host)}/">Open ${app}</a></p><h1>${app}: access</h1>
 <h2>Default</h2><p class="muted">What someone with no role below gets. AidenHQ admins are admins of every app.</p>${form("default", `<select name="role">${options(p.default, ["admin"])}</select> <button>Save</button>`)}
 <h2>People</h2>${form("role", `<input name="email" type="email" placeholder="Email" required> <select name="role">${options("member")}</select> <button>Set</button>`)}
@@ -391,7 +393,7 @@ export function accessPage(p: AccessPageData) {
 }
 /** The visitor's own in-app requests on this app, with the agent's reply. */
 export function requestsPage(app: string, rows: RequestRow[]) {
-  const row = (r: RequestRow) => `<tr><td class="muted">${esc(String(r.at).slice(0, 16).replace("T", " "))}</td><td>${esc(String(r.text).slice(0, 300))}</td><td>${esc(r.status)}</td><td>${esc(r.reply ?? "")}</td></tr>`;
+  const row = (r: RequestRow) => `<tr><td class="muted">${utc(r.at)}</td><td>${esc(String(r.text).slice(0, 300))}</td><td>${esc(r.status)}</td><td>${esc(r.reply ?? "")}</td></tr>`;
   return html(`${app}: your requests`, `<p><a href="/">Back to ${esc(app)}</a></p><h1>Your requests</h1>${rows.length ? `<table><tr><th>When</th><th>Request</th><th>Status</th><th>Reply</th></tr>${rows.map(row).join("")}</table>` : "<p>None yet.</p>"}`);
 }
 

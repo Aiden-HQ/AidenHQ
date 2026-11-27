@@ -250,6 +250,11 @@ function IssueBody({ issue, focus, board, busy, update, setStatus, onClose, onMo
               {PRIORITY_NAMES[issue.priority]}
             </button>
           )}
+          {issue.placed && issue.bucket && (
+            <span className="chip" title={`Placed by ${issue.placed.by}. Move it anywhere: your move replaces this.`}>
+              {BUCKET_NAMES[issue.bucket]} · {issue.placed.reason}
+            </span>
+          )}
           {issue.scheduled && (
             <button className="chip" onClick={() => setDetails(true)}>
               ↑ {BUCKET_NAMES[issue.scheduled.bucket]} {dayDate(issue.scheduled.date)}

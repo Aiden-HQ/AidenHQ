@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "A module's code host grant (module.yaml codehost:), taken literally: what it may ask the kernel's POST /v1/codehost/:op for, each acting as the owner's GitHub sign-in inside the github module. repos: owner/name, owner/* (every repo of owner), */* (anything the owner's account reaches), or @instance, @product, @orgs (every repo of the instance's github_orgs), @maintained (its maintainer_repos), @agents/<name|*> (the fleet org), which the kernel resolves from its own configuration. snapshot and clone read code; fetch (and head) fetch refs or a branch's head; read, comment, commit and setup are typed GitHub operations (commit names the exact paths it may write; setup names the paths a reviewed setup PR may add, a `*` standing for one path segment); runner names the orgs it may get a runner registration token for: org names, *, or @agents (the fleet org), @product (the product repo's org), @orgs (the instance's github_orgs).",
+  "title": "A module's code host grant (module.yaml codehost:), taken literally: what it may ask the kernel's POST /v1/codehost/:op for, each acting as the owner's GitHub sign-in inside the github module. repos: owner/name, owner/* (every repo of owner), */* (anything the owner's account reaches), or @instance, @product, @orgs (every repo of the instance's github_orgs), @listed (the repos listed for the Maintainer or Ship), @agents/<name|*> (the fleet org), which the kernel resolves from its own configuration. snapshot and clone read code; fetch (and head) fetch refs or a branch's head; read, comment, commit and setup are typed GitHub operations (commit names the exact paths it may write; setup names the paths a reviewed setup PR may add, a `*` standing for one path segment); runner names the orgs it may get a runner registration token for: org names, *, or @agents (the fleet org), @product (the product repo's org), @orgs (the instance's github_orgs).",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -16,7 +16,7 @@
           "minItems": 1,
           "items": {
             "type": "string",
-            "pattern": "^(@instance|@product|@orgs|@maintained|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
+            "pattern": "^(@instance|@product|@orgs|@listed|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
           }
         }
       }
@@ -33,7 +33,7 @@
           "minItems": 1,
           "items": {
             "type": "string",
-            "pattern": "^(@instance|@product|@orgs|@maintained|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
+            "pattern": "^(@instance|@product|@orgs|@listed|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
           }
         }
       }
@@ -50,7 +50,7 @@
           "minItems": 1,
           "items": {
             "type": "string",
-            "pattern": "^(@instance|@product|@orgs|@maintained|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
+            "pattern": "^(@instance|@product|@orgs|@listed|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
           }
         }
       }
@@ -67,7 +67,7 @@
           "minItems": 1,
           "items": {
             "type": "string",
-            "pattern": "^(@instance|@product|@orgs|@maintained|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
+            "pattern": "^(@instance|@product|@orgs|@listed|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
           }
         }
       }
@@ -84,7 +84,7 @@
           "minItems": 1,
           "items": {
             "type": "string",
-            "pattern": "^(@instance|@product|@orgs|@maintained|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
+            "pattern": "^(@instance|@product|@orgs|@listed|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
           }
         }
       }
@@ -102,7 +102,7 @@
           "minItems": 1,
           "items": {
             "type": "string",
-            "pattern": "^(@instance|@product|@orgs|@maintained|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
+            "pattern": "^(@instance|@product|@orgs|@listed|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
           }
         },
         "paths": {
@@ -128,7 +128,7 @@
           "minItems": 1,
           "items": {
             "type": "string",
-            "pattern": "^(@instance|@product|@orgs|@maintained|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
+            "pattern": "^(@instance|@product|@orgs|@listed|@agents/([\\w.-]+|\\*)|[\\w.-]+/([\\w.-]+|\\*)|\\*/\\*)$"
           }
         },
         "paths": {

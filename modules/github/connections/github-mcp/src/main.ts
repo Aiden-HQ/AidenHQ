@@ -383,15 +383,6 @@ function buildServer(caller?: Caller): McpServer {
     run("github_label_events", (a: { repo: string; number: number; label?: string }) => maintainer.labelEvents(a.repo, a.number, a.label)),
   );
   server.registerTool(
-    "github_pr_list",
-    {
-      description: `A maintained repo's open pull requests: number, author, author_kind (bot, fleet for AidenHQ's own, or human), draft, labels, review_requested (a review is asked of someone), last_author_activity (a human author's latest commit, comment or review) and waiting_on_author (a failing check, a requested change or a merge conflict, else null). No titles or bodies: they are a stranger's text. Maintained repos: ${REPOS}.`,
-      inputSchema: { repo: appRepo },
-      annotations: ro,
-    },
-    run("github_pr_list", (a: { repo: string }) => maintainer.prList(a.repo)),
-  );
-  server.registerTool(
     "github_repo_tree",
     {
       description: `A maintained repo's file list at a ref (recursive trees API), capped in entries and depth; \`truncated\` says whether the cap cut it.`,
@@ -612,13 +603,21 @@ async function serve(req: IncomingMessage, res: ServerResponse) {
     }
     return;
   }
-  // Ship's quiet-PR pass (modules/ship/service/src/contributor.ts): each repo with quiet_pr_days set, its open PRs (author
-  // kind, the author's latest activity and what waits on them). Read-only, no model call.
+  // Ship's quiet-PR pass (modules/ship/service/src/contributor.ts): the repos its entries give quiet_pr_days ({ repos: [{ repo,
+  // quiet_pr_days }] }, each a listed repo (GITHUB_LISTED_REPOS) or the product repo), their open PRs (author kind, the author's latest activity and
+  // what waits on them). Read-only, no model call.
   if (url.pathname === "/internal/ship/contributor-prs") {
     { const ok = await isModule(kernelUrl, String(req.headers.authorization ?? ""), "ship"); if (!ok) return void res.writeHead(ok === undefined ? 503 : 401).end(); }
-    if (req.method !== "GET") return void res.writeHead(405).end();
+    if (req.method !== "POST") return void res.writeHead(405).end();
     try {
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(await maintainer.prRepos()));
+      let raw = "";
+      for await (const c of req) { raw += c; if (raw.length > 100_000) return void res.writeHead(413).end(); }
+      const listed = [...(process.env.GITHUB_LISTED_REPOS ?? "").split(",").map((r) => r.trim()).filter(Boolean), ...(PRODUCT_REPO ? [PRODUCT_REPO] : [])];
+      let asked: unknown;
+      try { asked = (JSON.parse(raw || "{}") as { repos?: unknown }).repos; } catch { throw new GitHubRefused("the body is { repos }"); }
+      // The answer is read whole before the status goes out: a refusal is a 400, never a second set of headers.
+      const out = await maintainer.prRepos(asked, listed);
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(out));
     } catch (err) {
       const refused = err instanceof GitHubRefused;
       log.warn({ err: (err as Error).message.slice(0, 200) }, "contributor PRs read failed");

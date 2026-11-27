@@ -82,7 +82,8 @@ the CI template's supply-chain scripts), run `node scripts/sync-shared.ts` (a te
 `modules/` included). The official modules are this repo's `modules/` (MIT by folder:
 `modules/LICENSE`, `NOTICE`, `LICENSES/`), so a change across the kernel and a module is one PR. CI (`.github/workflows/ci.yml`)
 runs the suites a PR touches (map: `.github/ci/areas.json`, read from the base: each module package is a suite of its own
-whose paths list what it imports; a path under no suite runs everything) and all of them on main.
+whose paths list what it imports; a path under no suite runs everything) and all of them on main. The `scripts/test` files are grouped
+into `scripts/*` suites; a new test file goes in exactly one suite's `run` (`scripts/test/ci-suites.test.ts` fails otherwise).
 
 The app starter (`modules/apps-platform/starter/`) is Vite + shadcn: `npm ci && npm run build` before serving it (apps-mcp's
 render test skips without `dist/`). Copying files from macOS with `tar`, set `COPYFILE_DISABLE=1` (else `._*` files break
@@ -186,6 +187,13 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
   it sees only what the launcher mounts: its workspace, engine home and out folder, never the secrets dir, the data
   dir or the Docker socket; a check box gets only its snapshot and out folder. Run `scripts/verify-security.sh` on the host after exposure changes. See
   [docs/design/access.md](docs/design/access.md).
+- **Times are UTC instants; people see their own zone.** What is stored or exchanged (databases, APIs, task text and
+  markers, tool inputs and outputs, logs, files) is an instant: ISO 8601 with `Z` (or the offset it came with) or epoch ms.
+  The browser shows it in the viewer's zone in the owner's `time_format` (the board's `web/src/time-format.ts`). Text the
+  server writes for a person (chat, briefs, notices) uses the owner's `timezone` setting and names it where it could be
+  unclear. Local-time concepts (schedules, snoozes, quiet hours, calendar days, a tool input such as `wake_at`'s
+  `when_local`) carry their IANA zone and convert at the edge. `scripts/test/utc.test.ts` flags server code that reads the
+  host's zone.
 - **Untrusted text is data.** Slack, email, chat forwards and documents are fenced and never treated as instructions.
 - **Approval records live in the kernel** (`kernel/src/records.ts`, `kinds.ts`): the code host files its plan and card args, the
   kernel validates them strictly and decides who decides. The board keeps no approval store and only reads them.

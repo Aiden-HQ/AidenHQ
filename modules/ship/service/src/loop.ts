@@ -1,4 +1,4 @@
-// Ship's watch: the open PRs of the product repo and of every repo ship works, and of every maintained repo with Dependabot on
+// Ship's watch: the open PRs of the product repo and of every repo ship works, and of every other repo whose entry has Dependabot on
 // (those get only the Dependabot task), read with one GraphQL list read per repo (github's OPEN_PRS_QUERY) when something changed:
 // followFeed() reads the github change feed's events (the kernel's log) and passes each repo an event names.
 // - A Dependabot PR whose checks have finished becomes one task for the platform-engineer role (kernel POST /v1/tasks), closed
@@ -21,9 +21,9 @@ type Gh = (method: string, path: string, body?: unknown, o?: { background?: bool
 export type Main = { name: string; oid?: string; rollup: Json };
 export type LoopOptions = {
   /**
-   * The repos to watch, owner/name: `all` for the ones ship works, `dependabot` for a maintained repo elsewhere, where only the
+   * The repos to watch, owner/name: `all` for the ones ship works, `dependabot` for a repo ship doesn't work, where only the
    * Dependabot duty runs (no rounds, no recoveries). `dependabot`: which bumps get an Engineer task: `all` once their
-   * checks finish (the default), none (`off`), or only `failing` ones, those with a check that finished red (the repo's maintainer_repos entry).
+   * checks finish (the default), none (`off`), or only `failing` ones, those with a check that finished red (the repo's ship entry).
    */
   repos: { repo: string; duties: "all" | "dependabot"; dependabot?: "off" | "failing" | "all" }[]; kernelUrl: string; /** Ship's own token (kernel.tasks). */ key: string; cacheDir: string;
   gh: Gh; log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -204,6 +204,24 @@ export function startLoop(o: LoopOptions) {
     return (await scan(r.repo, r.duties, r.dependabot ?? "all", readJson(stateFile, {}))).next;
   }
   return { tick, pass, repos: o.repos.map((r) => r.repo) };
+}
+
+type Duty = { duties: "all" | "dependabot"; dependabot: "off" | "failing" | "all" };
+/**
+ * The repos the loop watches, from Ship's own settings only: the product repo and every repo with a ship entry. One ship works
+ * (`enabled`) gets every duty; one it doesn't still gets its Dependabot duty while `dependabot` is on, or while a task it filed
+ * is open (`off` is polled only to close those tasks once their PR is gone).
+ */
+export function watchSet(o: { repos: string[]; settings: (repo: string) => { enabled: boolean; dependabot: "off" | "failing" | "all" } | null; tracked: (repo: string) => boolean }): Map<string, Duty> {
+  const repos = new Map<string, Duty>();
+  for (const repo of o.repos) {
+    if ([...repos.keys()].some((r) => r.toLowerCase() === repo.toLowerCase())) continue;
+    const s = o.settings(repo);
+    if (!s) continue;
+    if (s.enabled) repos.set(repo, { duties: "all", dependabot: s.dependabot });
+    else if (s.dependabot !== "off" || o.tracked(repo)) repos.set(repo, { duties: "dependabot", dependabot: s.dependabot });
+  }
+  return repos;
 }
 
 /** One event of the kernel's log (kernel/src/events.ts LoggedEvent): the repo it names is what ship reads of it. */

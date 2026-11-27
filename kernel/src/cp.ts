@@ -13,7 +13,9 @@
 //   grants table names for it (review log, chat) and on the shared "Fleet issues" log task (grants `fleet_issues`). A fleet settler (role fleet-settle, the Fleet Steward) settles stuck work on any
 //   task of its company an agent made, or a routine run with a holder agent (scope `settle`): a comment, a status (done only on a
 //   task in review, through the finish gate, heard as the task's own close), and handing the task to any agent; never a task a
-//   person made (the owner's own task or chat), a routine run with no agent, and never a log task. Anything else is
+//   person made (the owner's own task or chat), a routine run with no agent, and never a log task. The evidence close (scope
+//   `evidence`): an open task an agent made and handed to the owner is closed by its maker, the maker of a part of it, or a
+//   fleet settler, with a comment (a cited link or task identifier for `done`) and at most a label. Anything else is
 //   refused, naming whom to ask. Each write carries a tag (the plugin's once-only key): on the job's own task and the tasks its
 //   grants list the job tag (wakes.ts SELF_TAG: it wakes nobody), elsewhere `aidenhq:op=`, which wakes the task's assignee as any
 //   agent's comment does.
@@ -63,7 +65,9 @@ const capped = (r: Response) => readCapped(r, MAX_ANSWER).catch((e) => { throw e
  */
 const PATCH = ["title", "description", "priority", "assigneeAgentId", "assigneeUserId", "labelIds", "blockedByIssueIds", "project"];
 const CREATE = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "parentId", "idempotencyKey", "allowDuplicate", "project"];
-type Issue = { id: string; identifier?: string; companyId?: string; projectId?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; parentId?: string | null; status?: string; originKind?: string | null };
+type Issue = { id: string; identifier?: string; companyId?: string; projectId?: string | null; assigneeAgentId?: string | null; assigneeUserId?: string | null; createdByAgentId?: string | null; createdByUserId?: string | null; parentId?: string | null; status?: string; description?: string | null; originKind?: string | null };
+/** A source marker an agent adds to an owner task it matched: `<!-- source:<marker> -->` (tasks-mcp's marker grammar). */
+const SOURCE_ADDED = /^(?:<!-- source:[A-Za-z0-9:._\/-]{3,200} -->\s*)+$/;
 /** The role that settles stuck work on another agent's task (the Fleet Steward): see `settle` above. */
 export const SETTLE = "fleet-settle";
 
@@ -75,6 +79,8 @@ export function leavesNoHolder(cur: { status?: string | null; assigneeAgentId?: 
   const user = b.assigneeUserId !== undefined ? b.assigneeUserId : cur?.assigneeUserId;
   return !agent && !user;
 }
+/** Evidence a close cites: a link, or a task identifier (a duplicate's survivor, the report that supersedes it). */
+const EVIDENCE = /https?:\/\/\S+|\b[A-Z][A-Z0-9]*-\d+\b/;
 export const NO_HOLDER = "every open task has a holder: an agent (assigneeAgentId, yourself included) or the owner (assigneeUserId)";
 
 export function createCp({ whoami, asserter, plugin, once, sawn = () => 0, agentKey, grants, fleetIssues = () => "", controlUrl, checks, appOwners, facts, observe, projects, log = () => {} }: {
@@ -267,6 +273,44 @@ export function createCp({ whoami, asserter, plugin, once, sawn = () => 0, agent
       return issueAnswer(d.child!, 201, { deduplicated: d.found });
     }
 
+    /**
+     * The evidence close: an open task an agent made and handed to the owner is closed (`done` or `cancelled`) by the agent
+     * that made it, the agent that made a part of it (the follow-up chaser on a `waiting-on` task), or a fleet settler, with
+     * a comment; `done` cites its evidence (a link or a task identifier) and still passes the finish gate. A label is the only
+     * other change (`auto-closed`, which Home's Since reads). Never a task the owner made.
+     */
+    async function evidenceClose(t: Issue, status: unknown, patch: Record<string, unknown>, comment: unknown): Promise<boolean> {
+      if (status !== "done" && status !== "cancelled") return false;
+      if (!t.assigneeUserId || t.assigneeAgentId || !t.createdByAgentId || t.createdByUserId || ["done", "cancelled"].includes(String(t.status)) || isLogTask(t, logs)) return false;
+      const may = t.createdByAgentId === agent || roles.includes(SETTLE) || (await partMaker(t));
+      if (!may) return false;
+      const beyond = Object.keys(patch).filter((k) => k !== "labelIds");
+      if (beyond.length) throw fail(403, "forbidden", `closing the owner's task on evidence changes its status, comment and labels only; not ${beyond.join(", ")}`);
+      if (typeof comment !== "string" || !comment.trim()) throw fail(400, "bad_request", `closing ${t.identifier ?? t.id} for the owner needs a comment saying why`);
+      if (status === "done" && !EVIDENCE.test(comment)) throw fail(400, "bad_request", `closing ${t.identifier ?? t.id} as done for the owner cites its evidence: a link (the reply, the delivery, the merged PR) or a task identifier`);
+      return true;
+    }
+    /** Whether this job's agent made a part (a child) of task `t`. */
+    async function partMaker(t: Issue): Promise<boolean> {
+      const co = t.companyId ?? (await viaPlugin(() => plugin.company(agent)));
+      const r = await read(`/api/companies/${encodeURIComponent(co)}/issues?${new URLSearchParams({ parentId: t.id, status: "backlog,todo,in_progress,in_review,blocked,done,cancelled", limit: "100" })}`);
+      if (r.status !== 200) return false;
+      const kids = JSON.parse(r.out.toString("utf8")) as Issue[];
+      return Array.isArray(kids) && kids.some((k) => k.parentId === t.id && k.createdByAgentId === agent && k.status !== "cancelled");
+    }
+
+    /**
+     * A source marker the filer adds to its own owner task (a duplicate ask it matched): the description may only gain
+     * `<!-- source:... -->` lines, so the incoming thread stays findable without changing anything else on the task.
+     */
+    function sourceAppend(t: Issue, patch: Record<string, unknown>): boolean {
+      if (!t.assigneeUserId || t.assigneeAgentId || t.createdByAgentId !== agent || t.createdByUserId) return false;
+      if (Object.keys(patch).length !== 1 || typeof patch.description !== "string") return false;
+      const had = String(t.description ?? "").trimEnd();
+      const next = String(patch.description);
+      return next.startsWith(had) && SOURCE_ADDED.test(next.slice(had.length).trim());
+    }
+
     // A comment, or a PATCH: on a task the job may write on.
     const ref = decodeURIComponent(/^\/api\/issues\/([^/]+)/.exec(path)![1]!);
     const t = await issue(ref);
@@ -280,7 +324,9 @@ export function createCp({ whoami, asserter, plugin, once, sawn = () => 0, agent
     if ((status !== undefined || Object.keys(patch).length) && isLogTask(t, logs)) throw fail(403, "forbidden", `${t.identifier ?? t.id} is a log task: it takes comments only`);
     // A settler acts as one on any task it may settle, its own and its delegations included.
     const settling = settleScope(t) === "settle";
-    const scope = (await scopeOf(t)) ?? (settling ? "settle" : undefined) ?? (status === undefined && !Object.keys(patch).length ? commentScope(t) : undefined) ?? refuse(t);
+    const evidence = await evidenceClose(t, status, patch, comment);
+    const source = status === undefined && !evidence && sourceAppend(t, patch);
+    const scope = evidence ? "evidence" : source ? "source" : (await scopeOf(t)) ?? (settling ? "settle" : undefined) ?? (status === undefined && !Object.keys(patch).length ? commentScope(t) : undefined) ?? refuse(t);
     // On a task it holds by settling alone, a settler changes only what settling needs: the status, who holds it (an agent; never
     // handed to a person) and its blockers (a cycle broken); never its title, brief, priority or labels.
     if (scope === "settle") {
@@ -301,7 +347,7 @@ export function createCp({ whoami, asserter, plugin, once, sawn = () => 0, agent
       // a task it may settle that waits in review (finished work nobody closed; work still in progress is cancelled or routed,
       // never closed over its agent) is finished here; the checks hear the close as the task's own.
       const own = t.id === task || t.assigneeAgentId === agent;
-      if (!own && !(settling && t.status === "in_review")) throw fail(403, "forbidden", `only this job's own task is finished here; ${t.identifier ?? t.id} is finished by its assignee${settling ? " (a settler closes another agent's task only once it waits in review)" : ""}`);
+      if (!own && !evidence && !(settling && t.status === "in_review")) throw fail(403, "forbidden", `only this job's own task is finished here; ${t.identifier ?? t.id} is finished by its assignee${settling ? " (a settler closes another agent's task only once it waits in review)" : ""}`);
       if (checks) await checks.finish(t.id);
       gated = true;
     }

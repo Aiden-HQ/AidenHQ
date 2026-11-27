@@ -1,5 +1,5 @@
 // Each lint keeps the system-specific tokens of a past incident, not whole sentences:
-// - a stale PR outside the agents org: `aidenhq close` reaches only the agents org, `maintainer_repos` and the product repo, so
+// - a stale PR outside the agents org: `aidenhq close` reaches only the agents org, the listed repos and the product repo, so
 //   the section must say where an outside-scope PR goes (the Maintainer, `outside-close-scope`); and the stale-PR nudge is a
 //   status write (`task_route`) on the task that pushed the branch, never a second task for the same PR.
 // - the product-bug step: the Maintainer's `github_product_issue` card reads the delegating task's text as the request, so the
@@ -33,7 +33,7 @@ const missingTokens = (section, tokens) => tokens.filter((token) => !token.test(
 /** Sections naming `aidenhq close` need the close scope and the outside-scope path. */
 function closeScopeProblems(text) {
   return sections(text).filter((s) => s.includes("aidenhq close")).flatMap((s) => {
-    const missing = missingTokens(s, [/maintainer_repos/, /Maintainer/, /outside-close-scope/]);
+    const missing = missingTokens(s, [/listed repos/, /Maintainer/, /outside-close-scope/]);
     return missing.length ? [{ section: s.split("\n")[0].slice(0, 60), missing }] : [];
   });
 }
@@ -128,7 +128,7 @@ const monitorMessage = (file, { missing, bans, permits }) => [
 
 const nudgeMessage = (file, p) => `${file}: the section "${p.section}" nudges an open task's agent without ${p.missing.join(" and ")}: state that work reaches an Engineer only through a status write on its own task (task_route), and that a second task is never filed for the same PR because the branch exists only in the task that pushed it`;
 
-const message = (file, p) => `${file}: the section "${p.section}" names \`aidenhq close\` without ${p.missing.join(" and ")}: state that aidenhq close reaches only the agents org, the repos listed in maintainer_repos and the product repo, and that an outside-scope PR goes to the Maintainer (no close task for an Engineer; one \`outside-close-scope\` log line)`;
+const message = (file, p) => `${file}: the section "${p.section}" names \`aidenhq close\` without ${p.missing.join(" and ")}: state that aidenhq close reaches only the agents org, the listed repos (the Maintainer's and Ship's) and the product repo, and that an outside-scope PR goes to the Maintainer (no close task for an Engineer; one \`outside-close-scope\` log line)`;
 
 test("the Steward handbook's monitor rule arms the next check and re-arms instead of parking", () => {
   const problems = monitorProblems(stewardHandbook);

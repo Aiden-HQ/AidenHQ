@@ -20,7 +20,8 @@ import { agentsView, roster, runTasks, workingOn, type RunContext, type TaskRef,
 import { type TimeFormat, timeFormatOf } from "./clock.js";
 import { ROUTINE_PREFIX, RecurringSchema, changeRecurring, recurringView } from "./recurring.js";
 import { ScheduleSchema, scheduleMove } from "./scheduled-moves.js";
-import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, isSystemNote, UpdateSchema, assignees, buildBoard, closedAt, commentView, displayText, executorOf, isWork, onMyDay, openrouterEngine, paperclipUpdate, replyTarget, toCard, workCard, type Assignee, type WorkCard } from "./board.js";
+import { moveStale, staleTasks } from "./stale.js";
+import { AddAgentSchema, BadRequest, BRIEF_LABEL, CreateSchema, HandOverSchema, PassSchema, isSystemNote, UpdateSchema, assignees, buildBoard, inColumns, closedAt, commentView, displayText, executorOf, isWork, onMyDay, openrouterEngine, paperclipUpdate, replyTarget, toCard, workCard, type Assignee, type WorkCard } from "./board.js";
 import { FOR_OTHERS, RELAY_MARKER, closedIssue, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
@@ -616,7 +617,13 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const open = await closeLeftoverParts(all, closed, ctx);
     // Agents' sub-tasks are part of their parent's card: they never get a place of their own.
     const folded = foldedChildren([...open, ...closed], ctx.assignees);
-    store.placeNew(open.filter((i) => !folded.has(i.id)).map((i) => ({ id: i.id, createdAt: i.createdAt, status: i.status })));
+    store.placeNew(open.filter((i) => !folded.has(i.id) && inColumns(i)).map((i) => ({ id: i.id, createdAt: i.createdAt, status: i.status })));
+    // Stale owner tasks the brief has mentioned go to Later once a brief after the mention is out (stale.ts).
+    const listedBriefs = [...open, ...closed].filter((i) => (i.labels ?? []).some((l) => l.name === BRIEF_LABEL));
+    // A list row cuts a long description: read the whole brief before trusting its "Moving to Later" line.
+    const briefs = await Promise.all(listedBriefs.map(async (b) => (b.descriptionTruncated ? await pc.issue(b.id).catch(() => b) : b)));
+    const moved = moveStale(open, briefs, store, ctx.me);
+    if (moved.length) log.info({ moved: moved.length }, "stale tasks moved to Later");
   }
 
   /** The account the page is signed in as: saved boards are its own. */
@@ -782,6 +789,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       state,
       description: displayText(issue.description),
       bucket: placement?.bucket ?? null,
+      placed: placement?.reason ? { by: placement.by ?? "", reason: placement.reason } : null,
       editable: assigned,
       settled: store.settledAt().has(issue.id),
       labelIds: issue.labelIds ?? (issue.labels ?? []).map((l) => l.id),
@@ -1197,11 +1205,42 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     return { merged: source.identifier, into: target.identifier, files: files.length };
   }
 
-  async function schedule(ref: string, body: unknown) {
+  async function schedule(ref: string, body: unknown, by = "") {
     const { issue } = await editableIssue(ref);
-    const result = scheduleMove(store, issue, parse(ScheduleSchema, body), opts.timezone);
+    const result = scheduleMove(store, issue, parse(ScheduleSchema, body), opts.timezone, by);
     log.info({ issue: issue.identifier, scheduled: result.scheduled, movedNow: result.movedNow }, "move scheduled");
     return { identifier: issue.identifier, ...result };
+  }
+
+  /**
+   * task_schedule: the Researcher (board-writer) moves any of the owner's tasks on their words. First-pass triage (skill
+   * owner-triage): the agent that filed an owner task, or a fleet settler, places it out of New with a reason, only while it
+   * is still in New and unscheduled, so the owner's own moves always win.
+   */
+  async function agentSchedule(ref: string, body: unknown, req: IncomingMessage) {
+    const { agent, grant } = await requireAgentToolCaller(req, "task_schedule");
+    if ((grant.roles ?? []).includes("board-writer")) return schedule(ref, body);
+    if (!REF.test(ref)) throw new HttpError(400, "bad task reference");
+    const [ctx, issue] = await Promise.all([context(), pc.issue(ref)]);
+    const filed = issue.assigneeUserId === ctx.me && !issue.assigneeAgentId && Boolean(issue.createdByAgentId) && !issue.createdByUserId;
+    if (!filed || !(issue.createdByAgentId === agent.id || (grant.roles ?? []).includes("fleet-settle"))) throw new HttpError(403, "first-pass triage places only an owner task you filed (a fleet settler: any an agent filed)");
+    const input = parse(ScheduleSchema, body);
+    if ("clear" in input || !input.reason) throw new HttpError(400, "placing an owner task takes a one-line reason");
+    // The check and the write together, after every read: an owner's move made meanwhile stands.
+    if ((store.placements().get(issue.id)?.bucket ?? "triage") !== "triage" || store.schedules().has(issue.id)) throw new HttpError(409, `${issue.identifier} is already placed: the owner's move stands`);
+    const result = scheduleMove(store, issue, input, opts.timezone, agent.name || "an agent");
+    log.info({ issue: issue.identifier, placed: input.reason }, "task placed");
+    return { identifier: issue.identifier, ...result };
+  }
+
+  /** task_stale (the daily brief): the owner's New tasks idle 14 days, recorded as mentioned (stale.ts moves them later). */
+  async function staleForBrief(req: IncomingMessage) {
+    await requireAgentTool(req, "task_stale");
+    const ctx = await context();
+    const open = mine((await pc.openListed(true)).issues, ctx);
+    const rows = staleTasks(open, store, ctx.me);
+    store.mentionStale(rows.map((r) => r.issue.id));
+    return { stale: rows.map((r) => ({ identifier: r.issue.identifier, title: r.issue.title, idle_days: r.idle_days })) };
   }
 
   async function recurringChange(ref: string, body: unknown) {
@@ -1396,7 +1435,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       },
     },
     // Board changes are the Researcher's (board-writer), through the tasks bridge with its own credential.
-    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/schedule$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_schedule", "board-writer"), schedule(dec(m[1]!), body)) },
+    { method: "POST", path: /^\/internal\/issues\/([^/]+)\/schedule$/, handle: async (m, body, _u, req) => agentSchedule(dec(m[1]!), body, req) },
+    { method: "POST", path: /^\/internal\/stale$/, handle: async (_m, _b, _u, req) => staleForBrief(req) },
     { method: "POST", path: /^\/internal\/issues\/([^/]+)\/recurring$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_recurring", "board-writer"), recurringChange(dec(m[1]!), body)) },
     { method: "POST", path: /^\/internal\/issues\/([^/]+)\/merge$/, handle: async (m, body, _u, req) => (await requireAgentTool(req, "task_merge", "board-writer"), merge(dec(m[1]!), body)) },
     {

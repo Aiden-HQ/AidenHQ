@@ -79,16 +79,16 @@ describe("plan: product merges", () => {
   });
 });
 
-describe("plan: maintained repos (maintainer_repos)", () => {
-  const m = { ...s, maintained: ["globex/payments", s.productRepo, s.instanceRepo] };
+describe("plan: listed repos (the Maintainer's and Ship's)", () => {
+  const m = { ...s, listed: ["globex/payments", s.productRepo, s.instanceRepo] };
   const rules = (action, st, p) => planParts(action, { ...st, prs: [p] })[0].map((x) => [x.rule, x.tier]);
 
-  it("merge on a maintained repo outside the agents org is planned like an agents-org merge, a Dependabot head at Tier 1", () => {
-    assert.deepEqual(rules("merge", m, pr("globex/payments")), [["maintained-merge", 0]]);
-    assert.deepEqual(rules("merge", m, pr("Globex/Payments", { checks: [{ name: "tests", pending: true }] })), [["maintained-merge-checks-running", 0]]);
-    assert.deepEqual(rules("merge", m, pr("globex/payments", { ownHead: false, dependabot: true })), [["maintained-merge-foreign-head", 1], ["maintained-merge", 0]]);
-    assert.match(planParts("merge", { ...m, prs: [pr("globex/payments", { ownHead: false })] })[0][0].reason, /the owner listed it in maintainer_repos/);
-    assert.equal(rules("merge", m, pr("globex/payments", { checks: [{ name: "tests", ok: false }] }))[0][0], "maintained-merge-checks-running", "red is the queue's: filed");
+  it("merge on a listed repo outside the agents org is planned like an agents-org merge, a Dependabot head at Tier 1", () => {
+    assert.deepEqual(rules("merge", m, pr("globex/payments")), [["listed-merge", 0]]);
+    assert.deepEqual(rules("merge", m, pr("Globex/Payments", { checks: [{ name: "tests", pending: true }] })), [["listed-merge-checks-running", 0]]);
+    assert.deepEqual(rules("merge", m, pr("globex/payments", { ownHead: false, dependabot: true })), [["listed-merge-foreign-head", 1], ["listed-merge", 0]]);
+    assert.match(planParts("merge", { ...m, prs: [pr("globex/payments", { ownHead: false })] })[0][0].reason, /the owner listed it for the Maintainer or Ship/);
+    assert.equal(rules("merge", m, pr("globex/payments", { checks: [{ name: "tests", ok: false }] }))[0][0], "listed-merge-checks-running", "red is the queue's: filed");
     assert.match(planParts("merge", { ...m, prs: [pr("globex/payments", { checks: [] })] })[0][0].reason, /none registered yet/);
     assert.equal(rules("merge", m, pr("globex/payments", { headMatches: false }))[0][0], "head-moved");
     // Listing the product or instance repo changes nothing: their own rules come first.
