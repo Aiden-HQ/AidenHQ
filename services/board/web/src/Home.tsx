@@ -107,9 +107,9 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
     io.observe(sinceEl);
     return () => io.disconnect();
   }, [sinceEl]);
-  // On a phone the pane is a full-screen sheet over Home: what is behind it hasn't been seen (a row's pane closes when the row leaves).
+  // The drawer covers Home (a sheet on a phone, a scrim and the right side elsewhere): what is behind it hasn't been seen (a row's pane closes when the row leaves).
   const sheetOpen = !!pane && (pane.kind !== "row" || rows.some((r) => r.id === pane.id));
-  const sinceReady = !data?.since || (sinceInView && !(mobile && sheetOpen));
+  const sinceReady = !data?.since || (sinceInView && !sheetOpen);
   // Only while Home is in front: a task or run drawer over it (full screen on a phone) hides the snapshot.
   useLayoutEffect(() => {
     if (!front || !data || seen.current === data.as_of || !data.since_complete || !fresh || !sinceReady) return;
@@ -407,7 +407,22 @@ function HomeDrawer({ rowId, onClose, children }: { rowId: string; onClose: () =
     const opener = document.activeElement as HTMLElement | null;
     ref.current?.focus({ preventScroll: true });
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !e.defaultPrevented && !document.querySelector("dialog[open], .palette-backdrop")) (e.preventDefault(), close.current());
+      const mine = ref.current;
+      if (!mine || e.defaultPrevented) return;
+      if (e.key === "Tab") {
+        // Focus stays in the drawer while it is open.
+        const f = [...mine.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])")];
+        const first = f[0], last = f[f.length - 1];
+        if (!first || !last) return e.preventDefault();
+        const at = document.activeElement;
+        if (e.shiftKey && (at === first || at === mine)) (e.preventDefault(), last.focus());
+        else if (!e.shiftKey && at === last) (e.preventDefault(), first.focus());
+        else if (!mine.contains(at)) (e.preventDefault(), first.focus());
+        return;
+      }
+      // Escape closes the topmost layer only: a task drawer opened from here is closed first.
+      const layers = document.querySelectorAll(".drawer-backdrop, dialog[open], .palette-backdrop");
+      if (e.key === "Escape" && layers[layers.length - 1] === mine.parentElement) (e.preventDefault(), close.current());
     };
     document.addEventListener("keydown", onKey);
     return () => {

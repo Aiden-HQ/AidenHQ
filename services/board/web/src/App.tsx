@@ -415,7 +415,7 @@ export function App() {
   useEffect(() => {
     if (!show || !board) return;
     const wait = board.labels.find((l) => l.name === "waiting-on")?.id;
-    history.replaceState(null, "", "#/tasks"); // Back returns to Home, not to this address again
+    location.replace("#/tasks"); // replaces this address, so Back returns to Home
     tb.select(null, undefined, "work");
     tb.setFilters(show === "needs" ? { state: ["needs_you"] } : { label: wait ? [wait] : [] });
   }, [show, !!board]);
