@@ -9,7 +9,10 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createService } from "../service/src/service.ts";
-import { createMerges } from "../service/src/merges.ts";
+import { withActors } from "./actors.ts";
+import { createMerges as mergesWith } from "../service/src/merges.ts";
+/** The merge queue with every merge as the owner, through the test's own fake GitHub (github-mcp's actorFor picks it in the service). */
+const createMerges = (d: any) => mergesWith({ actorFor: async () => ({ key: "owner", rest: d.gh }), actorByKey: async () => ({ rest: d.gh }), ...d });
 import { decide } from "../service/src/merge-gate.ts";
 import { createReviewGate } from "../service/src/review-gate.ts";
 
@@ -147,7 +150,7 @@ async function setup(t, { prs, connected = { on: true }, cacheDir = mkdtempSync(
     graphql: async () => ({}),
   };
   const handle = createService({
-    key: "ch-key", kernelUrl: kernel.url, cacheDir, access, fleetOrg: "acme-agents", remoteUrl,
+    key: "ch-key", kernelUrl: kernel.url, cacheDir, access: withActors(access), fleetOrg: "acme-agents", remoteUrl,
     productRepo: "acme/aidenhq", now: () => new Date(clock.t), reviewGate,
   });
   const svc = await listen((req, res) => void handle(req, res));

@@ -5,7 +5,10 @@ import { createServer } from "node:http";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { OPEN_PRS_QUERY, shipRoutes } from "../service/src/ship-routes.ts";
+import { OPEN_PRS_QUERY, shipRoutes as routesWith } from "../service/src/ship-routes.ts";
+
+/** Ship's routes with every write's actor the test's own fake GitHub (github-mcp's actorFor picks it in the service). */
+const shipRoutes = (o) => routesWith({ actorFor: async () => ({ rest: o.gh }), ...o });
 
 test("ship's GitHub calls: its token only, the loop's own calls only, on a repo the fleet works; never a merge", async (t) => {
   const cacheDir = mkdtempSync(join(tmpdir(), "ship-routes-"));

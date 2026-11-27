@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
-import { createAccess, GitHubNeed, needResult, withOwnerTrace, withWriteBudget } from "../src/client.js";
+import { createAccess, GitHubNeed, MUTATIONS, needResult, withOwnerTrace, withWriteBudget, type Actor, type AppSource, type GitHubAccess } from "../src/client.js";
+import { AppError } from "../src/github-app.js";
 import { readNeed } from "../src/vendor/needs.js";
 import type { Auth } from "../src/vendor/oauth.js";
 
@@ -13,6 +14,18 @@ const auth = (): Auth => {
     signedIn: () => true,
   };
 };
+/** A write's actor as the chooser picks it on acme/api (the owner, with no App): every write names one. */
+const own = (a: GitHubAccess) => ({ rest: async (m: string, p: string, b?: unknown, o?: Parameters<Actor["rest"]>[3]) => (await a.actorFor({ repo: "acme/api" }, "issue")).rest(m, p, b, o) });
+/** A fake App: `installs` by repo (lower case), each with its accepted permissions. */
+const fakeApp = (installs: Record<string, Record<string, string>>, over: Partial<AppSource> = {}): AppSource => ({
+  installed: async (repo) => (installs[repo.toLowerCase()] ? { id: 7, permissions: installs[repo.toLowerCase()]!, html_url: "https://github.com/settings/installations/7", account: repo.split("/")[0]! } : null),
+  installedOn: async () => null,
+  evict: () => {},
+  token: async () => "ghs_app",
+  identity: async () => ({ id: 3, slug: "acme-app", login: "acme-app[bot]", botId: 99 }),
+  wrote: () => {},
+  ...over,
+});
 const answer = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers });
 /** A timer on a fake clock: `advance` sleeps and fires whatever came due, in order of due time. */
 const fakeTime = () => {
@@ -301,9 +314,9 @@ it("content-creating writes go one at a time, a second apart; reads are not pace
     },
   });
   await Promise.all([
-    access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "a" }),
-    access.rest("POST", "/repos/acme/api/pulls/1/reviews", { body: "b" }),
-    access.graphql("mutation { x }", {}),
+    own(access).rest("POST", "/repos/acme/api/issues/1/comments", { body: "a" }),
+    own(access).rest("POST", "/repos/acme/api/pulls/1/reviews", { body: "b" }),
+    own(access).rest("POST", "/graphql", { query: MUTATIONS.DEQUEUE, variables: { id: "x" } }),
     access.rest("GET", "/repos/acme/api"),
   ]);
   const writes = sent.filter((s) => s.method === "POST");
@@ -331,7 +344,7 @@ it("a secondary-limit 403 pauses the queue (reads keep working), then retries th
     },
   });
   const start = clock;
-  const r = await access.rest("POST", "/repos/acme/api/pulls/1/reviews", { body: "x" });
+  const r = await own(access).rest("POST", "/repos/acme/api/pulls/1/reviews", { body: "x" });
   expect(r.status).toBe(200);
   const posts = sent.filter((s) => s.method === "POST");
   expect(posts).toHaveLength(3);
@@ -355,8 +368,8 @@ it("a write whose queue cannot clear in budget fails at its deadline without eve
       return answer(201, {});
     },
   });
-  const first = access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "a" });
-  const second = access.rest("POST", "/repos/acme/api/issues/2/comments", { body: "b" });
+  const first = own(access).rest("POST", "/repos/acme/api/issues/1/comments", { body: "a" });
+  const second = own(access).rest("POST", "/repos/acme/api/issues/2/comments", { body: "b" });
   await first;
   const started = clock;
   const err = await second.catch((e) => e);
@@ -381,7 +394,7 @@ it("a secondary-limit refusal past the deadline fails at once as rate_limited wi
   });
   const refusalUntil = new Date(clock + 600_000).toISOString();
   const start = clock;
-  const err = await access.rest("POST", "/repos/acme/api/issues", { title: "t" }).catch((e) => e);
+  const err = await own(access).rest("POST", "/repos/acme/api/issues", { title: "t" }).catch((e) => e);
   expect(err).toBeInstanceOf(GitHubNeed);
   expect(err.need).toEqual({ cause: "rate_limited", until: refusalUntil });
   // It neither slept towards the refusal nor sent again.
@@ -410,7 +423,7 @@ it("a read issued while a write is blocked still returns without waiting", async
       return answer(200, {});
     },
   });
-  const write = access.rest("POST", "/repos/acme/api/issues", { title: "t" });
+  const write = own(access).rest("POST", "/repos/acme/api/issues", { title: "t" });
   // The write has reached fetch and is holding the queue; only then is the read issued.
   await reached;
   await access.rest("GET", "/repos/acme/api");
@@ -480,9 +493,10 @@ it("a write still queued at its deadline fails by that deadline, not when the qu
     },
   });
   // Both writes share the queue, so the head's own deadline passes too; the test only cares about the queued entry.
-  const first = access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "a" }).catch((e) => e);
+  const owner = await access.actorFor({ repo: "acme/api" }, "issue");
+  const first = owner.rest("POST", "/repos/acme/api/issues/1/comments", { body: "a" }).catch((e) => e);
   await reached;
-  const second = access.rest("POST", "/repos/acme/api/issues/2/comments", { body: "b" }).catch((e) => e);
+  const second = owner.rest("POST", "/repos/acme/api/issues/2/comments", { body: "b" }).catch((e) => e);
   // The first write holds the queue while the clock passes the second's deadline.
   await time.sleep(241_000);
   const err = await second;
@@ -509,7 +523,7 @@ it("a background write still sleeps out the reserve instead of failing", async (
   });
   await access.rest("GET", "/repos/acme/api");
   const before = clock;
-  await access.rest("POST", "/repos/acme/api/issues", { title: "t" }, { background: true });
+  await own(access).rest("POST", "/repos/acme/api/issues", { title: "t" }, { background: true });
   const post = sent.find((s) => s.method === "POST")!;
   // Below the reserve, a background write waited for the reset rather than failing.
   expect(post.at).toBeGreaterThan(before);
@@ -529,7 +543,7 @@ it("a background write retries a limit that outlasts the tool budget instead of 
       return calls === 1 ? answer(403, { message: "secondary rate limit" }, { "retry-after": "300" }) : answer(201, {});
     },
   });
-  expect(await access.rest("POST", "/repos/acme/api/issues", { title: "t" }, { background: true })).toMatchObject({ status: 201 });
+  expect(await own(access).rest("POST", "/repos/acme/api/issues", { title: "t" }, { background: true })).toMatchObject({ status: 201 });
   expect(calls).toBe(2);
   expect(clock).toBeGreaterThanOrEqual(1_300_000);
 });
@@ -548,7 +562,7 @@ it("a write retried inside the budget that meets the budget edge fails there as 
       return answer(403, { message: "secondary rate limit" }, calls === 1 ? { "retry-after": "120" } : { "retry-after": "120" });
     },
   });
-  const err = await access.rest("POST", "/repos/acme/api/issues", { title: "t" }).catch((e) => e);
+  const err = await own(access).rest("POST", "/repos/acme/api/issues", { title: "t" }).catch((e) => e);
   expect(err).toBeInstanceOf(GitHubNeed);
   expect(err.need.cause).toBe("rate_limited");
   // Two sends, never a third: the second refusal's until is past the budget.
@@ -572,8 +586,8 @@ it("two writes in one tool invocation share one budget: the second fails fast at
   });
   const start = clock;
   const err = await withWriteBudget(async () => {
-    await access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "note" });
-    return access.rest("PATCH", "/repos/acme/api/issues/1", { state: "closed" }).catch((e) => e);
+    await own(access).rest("POST", "/repos/acme/api/issues/1/comments", { body: "note" });
+    return own(access).rest("PATCH", "/repos/acme/api/issues/1", { state: "closed" }).catch((e) => e);
   }, () => clock);
   expect(err).toBeInstanceOf(GitHubNeed);
   expect(err.need).toEqual({ cause: "write_busy" });
@@ -603,7 +617,7 @@ it("a tool invocation's budget is fixed at its entry, so its preflight reads spe
   clock = start;
   const err = await withWriteBudget(async () => {
     clock += 215_000;
-    return access.rest("POST", "/repos/acme/api/issues", { title: "t" }).catch((e) => e);
+    return own(access).rest("POST", "/repos/acme/api/issues", { title: "t" }).catch((e) => e);
   }, () => clock);
   expect(err).toBeInstanceOf(GitHubNeed);
   expect(err.need).toEqual({ cause: "write_busy" });
@@ -625,9 +639,9 @@ it("a tool invocation's later writes never start a fresh budget beyond the first
   });
   const start = clock;
   const err = await withWriteBudget(async () => {
-    await access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "a" });
-    await access.rest("PATCH", "/repos/acme/api/issues/1", { state: "closed" });
-    return access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "b" }).catch((e) => e);
+    await own(access).rest("POST", "/repos/acme/api/issues/1/comments", { body: "a" });
+    await own(access).rest("PATCH", "/repos/acme/api/issues/1", { state: "closed" });
+    return own(access).rest("POST", "/repos/acme/api/issues/1/comments", { body: "b" }).catch((e) => e);
   }, () => clock);
   expect(err).toBeInstanceOf(GitHubNeed);
   expect(err.need).toEqual({ cause: "write_busy" });
@@ -651,7 +665,7 @@ it("a write already running when the clock passes the deadline is not reported b
       return answer(201, {});
     },
   });
-  const r = await access.rest("POST", "/repos/acme/api/issues", { title: "t" });
+  const r = await own(access).rest("POST", "/repos/acme/api/issues", { title: "t" });
   // It started inside budget (it was the head of the queue, so the timer was cancelled at its turn), so its answer is kept.
   expect(r.status).toBe(201);
   expect(sent).toBe(1);
@@ -670,8 +684,8 @@ it("outside a tool invocation each write still gets its own budget", async () =>
       return answer(200, {});
     },
   });
-  await access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "a" });
-  await access.rest("POST", "/repos/acme/api/issues/2/comments", { body: "b" });
+  await own(access).rest("POST", "/repos/acme/api/issues/1/comments", { body: "a" });
+  await own(access).rest("POST", "/repos/acme/api/issues/2/comments", { body: "b" });
   expect(calls).toBe(2);
 });
 
@@ -782,10 +796,6 @@ it("reports variables.org on a GraphQL answer without errors, never one with err
   await access.graphql("query($org: String!) { organization(login: $org) { id } }", { org: "acme" });
   expect(seen, "an SSO-filtered org answer is not a clear").toEqual(["acme"]);
   partial = "";
-  // The App's answer is not the owner's.
-  body = { data: {} };
-  await access.graphql("query($org: String!) { organization(login: $org) { id } }", { org: "acme" }, { as: { key: "app:1", token: async () => "ghs_app" } });
-  expect(seen).toEqual(["acme"]);
 });
 
 it("a background write's caller deadline still leaves room for a whole attempt, and one that does not refuses before sending", async () => {
@@ -801,10 +811,10 @@ it("a background write's caller deadline still leaves room for a whole attempt, 
     },
   });
   // 35 s: five seconds of tolerated wait plus the 30 s a write's attempt may take, so the POST goes out.
-  const ok = await access.rest("POST", "/repos/acme/api/actions/jobs/1/rerun", {}, { background: true, deadline: clock + 35_000 });
+  const ok = await own(access).rest("POST", "/repos/acme/api/actions/jobs/1/rerun", {}, { background: true, deadline: clock + 35_000 });
   expect(ok.status).toBe(201);
   // 5 s cannot see an attempt through: the client refuses it before it is sent, so a caller's tight bound never sends unsent work.
-  const err = await access.rest("POST", "/repos/acme/api/actions/jobs/1/rerun", {}, { background: true, deadline: clock + 5_000 }).catch((e) => e);
+  const err = await own(access).rest("POST", "/repos/acme/api/actions/jobs/1/rerun", {}, { background: true, deadline: clock + 5_000 }).catch((e) => e);
   expect(err).toBeInstanceOf(GitHubNeed);
   expect(sent).toEqual(["/repos/acme/api/actions/jobs/1/rerun"]);
 });
@@ -834,54 +844,78 @@ it("a GET answered 304 returns the kept body, is free, and is counted as a 304",
   expect(logs.find((l) => l.msg === "github calls this hour")?.f.calls).toEqual({ "code-review owner 200": 1, "code-review owner 304": 1, "feed owner 304": 1 });
 });
 
-it("repo reads go as the App where its installation holds the permission; writes stay the owner's", async () => {
+it("repo reads go as the App where its installation holds the permission; a write goes as the actor the chooser picks", async () => {
   const sent: string[] = [];
-  const app = {
-    installed: async (repo: string) => (repo === "acme/api" ? { id: 7, permissions: { metadata: "read", pull_requests: "write", issues: "read" } } : null),
-    token: async () => "ghs_app",
-  };
   const access = createAccess({
-    auth: auth(), app,
+    auth: auth(), app: fakeApp({ "acme/api": { metadata: "read", pull_requests: "write", issues: "read" } }),
     fetchImpl: async (u, init) => {
       sent.push(`${init?.method} ${new URL(String(u)).pathname} ${new Headers(init?.headers).get("authorization")}`);
       return answer(200, {});
     },
   });
   await access.rest("GET", "/repos/acme/api/pulls/1");
-  await access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "hi" });
+  await (await access.actorFor({ repo: "acme/api" }, "issue")).rest("POST", "/repos/acme/api/issues/1/comments", { body: "hi" }); // issues is read only
+  await (await access.actorFor({ repo: "acme/api" }, "pr")).rest("POST", "/repos/acme/api/pulls/1/reviews", { body: "hi" });
   await access.rest("GET", "/repos/acme/api/actions/runs/5"); // the installation lacks actions
   await access.rest("GET", "/repos/other/repo/pulls/1"); // not installed there
   await access.rest("GET", "/orgs/acme/repos"); // not a repo read
   expect(sent).toEqual([
     "GET /repos/acme/api/pulls/1 Bearer ghs_app",
     "POST /repos/acme/api/issues/1/comments Bearer gho_owner",
+    "POST /repos/acme/api/pulls/1/reviews Bearer ghs_app",
     "GET /repos/acme/api/actions/runs/5 Bearer gho_owner",
     "GET /repos/other/repo/pulls/1 Bearer gho_owner",
     "GET /orgs/acme/repos Bearer gho_owner",
   ]);
 });
 
-it("an App read refused for a permission falls back to the owner, and that repo and permission stay the owner's", async () => {
+it("the chooser: the App only where installed with every permission the op needs, else the owner; a broken App throws", async () => {
   const sent: string[] = [];
-  const logs: string[] = [];
-  const app = { installed: async () => ({ id: 7, permissions: { checks: "read" } }), token: async () => "ghs_app" };
+  const fetchImpl = async (u: string | URL | Request, init?: RequestInit) => (sent.push(`${new URL(String(u)).pathname} ${new Headers(init?.headers).get("authorization")}`), answer(200, {}));
+  const access = createAccess({ auth: auth(), fetchImpl, app: fakeApp({ "acme/api": { contents: "write", workflows: "write", pull_requests: "read" }, "acme/web": { contents: "write" } }) });
+  const push = await access.actorFor({ repo: "acme/api" }, "push");
+  expect(push).toMatchObject({ kind: "app", key: "app:7", botId: 99 });
+  expect(await push.gitToken()).toBe("ghs_app");
+  expect((await push.identity()).login).toBe("acme-app[bot]");
+  expect((await access.actorFor({ repo: "acme/web" }, "push")).kind).toBe("owner"); // no workflows accepted there
+  expect((await access.actorFor({ repo: "acme/api" }, "pr")).kind).toBe("owner"); // pull requests at read only
+  expect((await access.actorFor({ repo: "acme/other" }, "push")).kind).toBe("owner"); // not installed
+  expect((await access.actorFor({ org: "acme" }, "create_repo")).kind).toBe("owner"); // never the App's
+  expect((await access.actorFor({ repo: "acme/api" }, "push")).key).toBe("app:7");
+  // A broken App (its key, a suspension, GitHub's outage) throws, and the owner is never asked instead.
+  const broken = createAccess({ auth: auth(), fetchImpl, app: fakeApp({}, { installed: async () => { throw new AppError("the GitHub App: couldn't look up its installation (GitHub said 401)"); } }) });
+  const err = await broken.actorFor({ repo: "acme/api" }, "issue").catch((e) => e);
+  expect(err).toBeInstanceOf(GitHubNeed);
+  expect(err.need.cause).toBe("app_broken");
+  expect(sent).toEqual([]);
+});
+
+it("a write names its actor; a mutation outside the registry is refused; a refused App call throws and evicts, never retried as the owner", async () => {
+  const sent: string[] = [];
+  const evicted: string[] = [];
   const access = createAccess({
-    auth: auth(), app, log: (msg) => void logs.push(msg),
+    auth: auth(), app: fakeApp({ "acme/api": { issues: "write", checks: "read" } }, { evict: (t) => void evicted.push(t) }),
     fetchImpl: async (_u, init) => {
-      const who = new Headers(init?.headers).get("authorization");
-      sent.push(String(who));
-      return who === "Bearer ghs_app" ? answer(403, { message: "Resource not accessible by integration" }) : answer(200, { check_runs: [] });
+      const who = String(new Headers(init?.headers).get("authorization"));
+      sent.push(who);
+      return who === "Bearer ghs_app" ? answer(403, { message: "Resource not accessible by integration" }) : answer(200, {});
     },
   });
-  const r = await access.rest("GET", "/repos/acme/api/commits/abc/check-runs");
-  expect(r).toMatchObject({ status: 200, body: { check_runs: [] } });
-  await access.rest("GET", "/repos/acme/api/commits/abc/check-runs");
-  expect(sent).toEqual(["Bearer ghs_app", "Bearer gho_owner", "Bearer gho_owner"]);
-  expect(logs.filter((m) => m === "github reads as the owner: the App's installation refused the permission")).toHaveLength(1);
+  await expect(access.rest("POST", "/repos/acme/api/issues/1/comments", { body: "hi" })).rejects.toThrow(/names no actor/);
+  await expect(access.graphql("mutation { deleteRepository }", {})).rejects.toThrow(/names no actor/);
+  const owner = await access.actorFor({ repo: "acme/other" }, "issue");
+  await expect(owner.graphql("mutation { deleteRepository }", {})).rejects.toThrow(/registered/);
+  const app = await access.actorFor({ repo: "acme/api" }, "issue");
+  const err = await app.rest("POST", "/repos/acme/api/issues/1/comments", { body: "hi" }).catch((e) => e);
+  expect(err.need).toMatchObject({ cause: "app_refused", target: "acme/api" });
+  // A read the App is refused is the same error: no owner read behind it.
+  expect((await access.rest("GET", "/repos/acme/api/commits/abc/check-runs").catch((e) => e)).need.cause).toBe("app_refused");
+  expect(sent).toEqual(["Bearer ghs_app", "Bearer ghs_app"]);
+  expect(evicted).toEqual(["acme/api", "acme/api"]);
 });
 
 it("a tool call whose reads the App served doesn't count as the owner's sign-in answering; one the owner served does", async () => {
-  const app = { installed: async () => ({ id: 7, permissions: { pull_requests: "read" } }), token: async () => "ghs_app" };
+  const app = fakeApp({ "acme/api": { pull_requests: "read" } });
   const access = createAccess({ auth: auth(), app, fetchImpl: async () => answer(200, {}) });
   expect((await withOwnerTrace(() => access.rest("GET", "/repos/acme/api/pulls/1"))).owner).toBe(false);
   expect((await withOwnerTrace(() => access.rest("GET", "/repos/acme/api/issues/1"))).owner).toBe(true);

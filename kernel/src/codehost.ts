@@ -18,7 +18,8 @@
 //                closed). Answers {pending, write} while the record waits.
 //   runner_token {org} → {token, expires_at}: an org's runner registration token, and nothing else
 //   app_token    {repo} → {token, expires_at}: the kernel's own op (appToken below, never a module's: no grant names it), the
-//                GitHub App's installation token narrowed to that repo (contents and pull requests), for a session box's git
+//                GitHub App's installation token narrowed to that repo (contents, pull requests, issues and workflows, each where
+//                the installation accepted it), for a session box's git
 // A `local/…` repo (the org codehost-local owns) is served by codehost-local (in process: its snapshot) under the same grants
 // and the same answer (its bundle: every branch), and none of the GitHub-only ops (fetch, head, read, comment, commit, runner_token); every op without
 // the github code host for other orgs is 404.
@@ -287,6 +288,26 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
       return owner.id;
     } catch { return undefined; }
   }
+  let app: { at: number; login?: string } | undefined;
+  /** The instance GitHub App's bot login from the code host (GET /aidenhq/v1/app, read from GitHub), cached 10 minutes; none without an App or a code host. */
+  async function appLogin(): Promise<string | undefined> {
+    if (app && Date.now() - app.at < 10 * 60_000) return app.login;
+    const k = kind(), key = k?.executor && secret(k.executor.auth_secret);
+    if (!k?.executor || !key) return undefined;
+    const url = new URL("/aidenhq/v1/app", k.executor.url).toString();
+    const to = await resolver.resolve(url);
+    const got = await new Promise<{ status?: number; body: string }>((ok, no) => {
+      const req = http.request({ host: to.host, port: to.port, path: to.path, method: "GET", timeout: 10_000, headers: { host: new URL(url).host, authorization: `Bearer ${key}` } }, (r) => {
+        let body = "";
+        r.on("data", (c) => (body += c)).on("end", () => ok({ status: r.statusCode, body })).on("error", no);
+      });
+      req.on("timeout", () => req.destroy(new Error("timeout"))).on("error", no).end();
+    });
+    if (got.status !== 200) throw new Error(`${CODEHOST} answered ${got.status} for the App`);
+    const login = (JSON.parse(got.body) as { login?: unknown }).login;
+    app = { at: Date.now(), ...(typeof login === "string" && login ? { login } : {}) };
+    return app.login;
+  }
   /**
    * Where a share would land (POST /aidenhq/v1/publish/tip, the code host's executor key): the branch's tip, whether the repo
    * is private, and a folder or marketplace entry there that isn't this module's (module-share.ts preview). Throws the code
@@ -329,7 +350,7 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
     return { token: j.token, expires_at: String(j.expires_at ?? "") };
   }
   return {
-    ask, identity, publishTip, appToken,
+    ask, identity, publishTip, appToken, appLogin,
     /** POST /v1/codehost/:op: the answer goes back as it came. */
     async op(module: string, op: string, b: Record<string, unknown>, res: ServerResponse): Promise<void> {
       if (op === "bundle") throw fail(404, "no codehost operation bundle");

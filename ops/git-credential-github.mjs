@@ -1,8 +1,11 @@
 #!/usr/bin/env node
-// A git credential helper for the host's checkout of the instance repo (the one ops/apply-config.sh fetches): the owner's
-// GitHub sign-in, read from the token file the GitHub module's process keeps (modules/github/token.json under the vault).
-// It reads the file directly so it works before any container starts (the apply fetches first). Set per checkout, never
-// globally (ops/apply-config-work.sh does it):
+// A git credential helper for the host's checkout of the instance repo (the one ops/apply-config.sh fetches and the updater and
+// setup push to), by the one rule (docs/design/github-identity.md): the instance's GitHub App where it is installed on the
+// instance repo and its installation has accepted the `push` op's permissions (contents and workflows write; git's `get` can't
+// tell a fetch from a push, so it always asks for those), a fresh installation token; else the owner's GitHub sign-in, read from
+// the token file the GitHub module's process keeps (modules/github/token.json under the vault). A broken App (its saved files,
+// GitHub refusing it) answers nothing and says why: never the owner instead. It reads the vault directly so it works before any
+// container starts (the apply fetches first). Set per checkout, never globally (ops/apply-config-work.sh does it):
 //   git config credential.useHttpPath true
 //   git config credential.helper '!node ~/aidenhq/ops/git-credential-github.mjs'
 // `get` answers only for https://github.com/$AIDENHQ_INSTANCE_REPO (the environment, else the product's .env); any other
@@ -12,6 +15,7 @@
 // the cause and its one fix and sends the owner that alert through the kernel (POST /v1/notify, the board's key; the same
 // dedupe key as the github module's need). Exits 1 when it named a cause, 0 when GitHub lets the token read the repo.
 // Self-contained (node built-ins only): the apply fetches with it before the official modules are put at ./modules.
+import { createSign } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -26,6 +30,32 @@ const file = join(secrets, "modules/github/token.json");
 const saved = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : undefined;
 const token = typeof saved?.access_token === "string" ? saved.access_token : "";
 
+const api = process.env.AIDENHQ_GITHUB_API ?? "https://api.github.com";
+/** The App's installation token for the instance repo where the rule picks the App; undefined: the owner's. Throws when the App is broken. */
+async function appToken(repo) {
+  const dir = join(secrets, "modules/github/github-app");
+  const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8").trim() : undefined);
+  const id = read("app_id"), key = read("key.pem");
+  if (id === undefined && key === undefined) return undefined;
+  if (!/^[0-9]{1,12}$/.test(id ?? "") || !key?.includes("PRIVATE KEY")) throw new Error("the GitHub App's saved id or key is missing or unreadable");
+  const b64 = (v) => Buffer.from(JSON.stringify(v)).toString("base64url");
+  const iat = Math.floor(Date.now() / 1000) - 60;
+  const body = `${b64({ alg: "RS256", typ: "JWT" })}.${b64({ iat, exp: iat + 540, iss: id })}`;
+  const jwt = `${body}.${createSign("RSA-SHA256").update(body).sign(key, "base64url")}`;
+  const call = async (method, path) => {
+    const r = await fetch(`${api}${path}`, { method, headers: { authorization: `Bearer ${jwt}`, accept: "application/vnd.github+json", "user-agent": "aidenhq" }, signal: AbortSignal.timeout(20_000) });
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  };
+  const inst = await call("GET", `/repos/${repo}/installation`);
+  if (inst.status === 404) return undefined;
+  if (inst.status !== 200 || !Number.isInteger(inst.body?.id)) throw new Error(`GitHub answered ${inst.status} looking up the App's installation on ${repo}`);
+  const p = inst.body.permissions ?? {};
+  if (!["contents", "workflows"].every((k) => p[k] === "write" || p[k] === "admin")) return undefined;
+  const t = await call("POST", `/app/installations/${inst.body.id}/access_tokens`);
+  if (t.status !== 201 || typeof t.body?.token !== "string") throw new Error(`GitHub answered ${t.status} for the App's installation token`);
+  return t.body.token;
+}
+
 if (mode === "get") {
   const input = Object.fromEntries(
     readFileSync(0, "utf8")
@@ -35,7 +65,9 @@ if (mode === "get") {
   );
   const m = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(input.path ?? "");
   if (input.protocol !== "https" || input.host !== "github.com" || !m || !instance || `${m[1]}/${m[2]}`.toLowerCase() !== instance.toLowerCase()) process.exit(0);
-  if (token) process.stdout.write(`username=x-access-token\npassword=${token}\n`);
+  const app = await appToken(`${m[1]}/${m[2]}`).catch((e) => { console.error(`AidenHQ's GitHub App isn't working, so git gets no credential: ${String(e?.message ?? e).slice(0, 200)}`); process.exit(1); });
+  const answer = app ?? token;
+  if (answer) process.stdout.write(`username=x-access-token\npassword=${answer}\n`);
   process.exit(0);
 }
 
@@ -44,7 +76,6 @@ const org = instance.split("/")[0];
 const need = await (async () => {
   const connections = "connect GitHub on the board (Settings, Connections)";
   if (!token) return { key: "github:not_connected", text: `GitHub isn't connected, so the apply can't fetch ${instance}: ${connections}` };
-  const api = process.env.AIDENHQ_GITHUB_API ?? "https://api.github.com";
   const res = await fetch(`${api}/repos/${instance}`, { headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "aidenhq" }, signal: AbortSignal.timeout(20_000) })
     .catch((e) => { console.error(`apply stopped: GitHub's API didn't answer (${String(e?.message ?? e).slice(0, 200)}).`); process.exit(1); });
   if (res.ok) return undefined;

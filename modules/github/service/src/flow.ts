@@ -73,6 +73,8 @@ export type FlowDeps = {
   gh?: Gh;
   /** The signed-in owner's login: without AidenHQ's record or marks, what it wrote is the owner's. */
   self?: () => Promise<string | undefined>;
+  /** The instance's GitHub App's bot login (`<slug>[bot]`, read from GitHub), or undefined without an App: what it does is AidenHQ's. */
+  bot?: () => Promise<string | undefined>;
   /** Whether a GitHub object (`github:<repo>#<n>`) is in AidenHQ's records. */
   ours?: (ref: string) => Promise<boolean>;
   /** The repo's default branch fetched into the cache clone: its git dir and branch tip. */
@@ -101,11 +103,17 @@ export function createFlow(d: FlowDeps) {
     }
     return writers.get(k)!.write;
   }
+  /** Whether `who` is our App's bot (by its live login; GraphQL names it without `[bot]`). */
+  async function isBot(who?: string | null): Promise<boolean> {
+    const bot = login(await d.bot?.().catch(() => undefined));
+    return Boolean(bot && login(who) === bot);
+  }
   /** Whether GitHub itself says `who` belongs to the repo: the owner's login, an OWNER, MEMBER or COLLABORATOR association, or write on `repo`. */
   async function isMember(who?: string | null, association?: string | null, repo?: string): Promise<boolean> {
     // A failed lookup is retried at the next author.
     if (!selfName) selfName = login(await d.self?.().catch(() => undefined));
     if (login(who) && login(who) === selfName) return true;
+    if (await isBot(who)) return true;
     if (["OWNER", "MEMBER", "COLLABORATOR"].includes(String(association ?? "").toUpperCase())) return true;
     return Boolean(repo && who && d.gh && (await canWrite(repo, String(who))));
   }
@@ -117,6 +125,7 @@ export function createFlow(d: FlowDeps) {
   async function kindOf(who?: string | null, association?: string | null, repo?: string, seen: { number?: number; body?: string; message?: string } = {}): Promise<Kind> {
     if (repo && seen.number && (await d.ours?.(`github:${repo.toLowerCase()}#${seen.number}`).catch(() => false))) return "agent";
     if (hasFooter(String(seen.body ?? "")) || hasTrailer(String(seen.message ?? ""))) return "agent";
+    if (await isBot(who)) return "agent";
     return (await isMember(who, association, repo)) ? "owner" : "outside";
   }
   /** `author` and `author_kind` for a fact's data; `association` is GitHub's author_association (REST) or authorAssociation (GraphQL). */

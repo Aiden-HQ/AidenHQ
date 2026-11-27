@@ -327,7 +327,7 @@ export function createAccess(o: {
   reserve?: number;
   /** GITHUB_FLEET_ORG and GITHUB_CI, for the status card. */
   env?: Record<string, string | undefined>;
-  /** Each content-creating write, by identity (how much of the owner's limit code review's App takes off it). */
+  /** Each content-creating write, by identity (how much of the owner's limit the App takes off it). */
   log?: (msg: string, f: Record<string, unknown>) => void;
   /** The owner's GraphQL org query answered with no errors: the org's sso/restricted need is the owner's fix made. */
   onOrgOk?: (org: string) => void;
@@ -807,14 +807,14 @@ export function createAccess(o: {
     scopes,
     actorFor,
     actorByKey,
-    rest: (method, path, body, opts = {}) => {
+    rest: async (method, path, body, opts = {}) => {
       const { actor, ...rest } = opts;
       if (actor) return actor.rest(method, path, body, rest);
       // A write names its actor (actorFor): never a silent owner write.
       if (createsContent(method.toUpperCase(), path, body)) throw new Error(`a GitHub write names no actor: ${method.toUpperCase()} ${path.split("?")[0]}`);
       return restAs(undefined, method, path, body, rest);
     },
-    graphql: (query, variables, opts = {}) => {
+    graphql: async (query, variables, opts = {}) => {
       if (opts.actor) return opts.actor.graphql(query, variables, { background: opts.background });
       if (/^\s*mutation\b/.test(query)) throw new Error("a GitHub mutation names no actor");
       return graphqlAs(undefined, query, variables, opts);

@@ -389,12 +389,12 @@ export function createAdmin(d: Deps) {
           return redirect(res, `${to}/auth/handoff?${new URLSearchParams({ code, state })}`);
         }
         case "GET /setup/github-app": case "POST /setup/github-app": {
-          // Code review's GitHub App: the owner's alone (not another admin's); replacing one only when the owner says so.
+          // AidenHQ's GitHub App: the owner's alone (not another admin's); replacing one only when the owner says so.
           const gh = d.githubApp;
           if (!gh) throw new Refusal(404, "not found");
-          if (!s.account.owner) throw new Refusal(403, "only the owner sets up code review's GitHub App");
+          if (!s.account.owner) throw new Refusal(403, "only the owner sets up AidenHQ's GitHub App");
           const page = (body: string, status = 200, extra: Record<string, string> = {}) => send(res, status, doc("GitHub App", body, s), undefined, extra);
-          const ask = (m = "", org = "") => page(`<h1>Code review's GitHub App</h1><p>Code review can post as its own GitHub App, so its reviews, comments and the <code>aidenhq/review</code> status don't share your GitHub write limit. It is optional: wherever the App isn't installed, code review posts as you, as now. Your agents' pull requests, pushes and comments stay yours either way.</p>${m}${form("/setup/github-app", `<label>Who owns the App: an organization you own, or leave it empty for your own account<input name="org" maxlength="39" value="${esc(org)}" placeholder="your account"></label>${gh.ready() ? `<p class="muted">An App is already set up. A new one replaces its key here: the old App stops posting.</p><label><input type="checkbox" name="replace" value="1" required style="width:auto"> Replace the App</label>` : ""}<button class="b">Continue</button>`, s)}${gh.ready() ? `<h2>Stop using it</h2>${form("/setup/github-app", `<input type="hidden" name="remove" value="1"><p class="muted">Code review posts as you everywhere again. Uninstall or delete the App on GitHub yourself.</p><button class="b r">Remove the App</button>`, s)}` : ""}`, m ? 400 : 200);
+          const ask = (m = "", org = "") => page(`<h1>AidenHQ's GitHub App</h1><p>Your agents can act on GitHub as AidenHQ's own App: wherever it is installed and its installation has accepted the permission a write needs, that write (a push, a pull request, a merge, a comment, a review) goes as the App, so it doesn't spend your GitHub rate limit or carry your name. Everywhere else they act as you, as now. It is optional. Creating repositories and registering CI runners always stay yours.</p>${m}${form("/setup/github-app", `<label>Who owns the App: an organization you own, or leave it empty for your own account<input name="org" maxlength="39" value="${esc(org)}" placeholder="your account"></label>${gh.ready() ? `<p class="muted">An App is already set up. A new one replaces its key here: the old App stops posting.</p><label><input type="checkbox" name="replace" value="1" required style="width:auto"> Replace the App</label>` : ""}<button class="b">Continue</button>`, s)}${gh.ready() ? `<h2>Stop using it</h2>${form("/setup/github-app", `<input type="hidden" name="remove" value="1"><p class="muted">Your agents act as you everywhere again. Uninstall or delete the App on GitHub yourself.</p><button class="b r">Remove the App</button>`, s)}` : ""}`, m ? 400 : 200);
           const finish = url.searchParams.get("finish");
           if (req.method === "GET" && finish) {
             const p = appPending.get(finish);
@@ -408,7 +408,7 @@ export function createAdmin(d: Deps) {
               appGen++;
               log("github app created", { app: app.id, slug: app.slug, owner: app.owner, by });
               const install = `https://github.com/apps/${encodeURIComponent(app.slug)}/installations/new`;
-              return page(`<h1>GitHub App created</h1><p>The App <code>${esc(app.slug)}</code> is in your vault. Last step: <a class="b" href="${esc(install)}">Install it</a> on each organization (or only the repositories) code review watches.</p><p class="muted">Code review posts as the App on the repositories it is installed on, from its next write; elsewhere it posts as you. The GitHub card on the board shows which, per organization.</p>`);
+              return page(`<h1>GitHub App created</h1><p>The App <code>${esc(app.slug)}</code> is in your vault. Last step: <a class="b" href="${esc(install)}">Install it</a> on each organization (or only the repositories) your agents work in.</p><p class="muted">From the next write, your agents act as the App on the repositories it is installed on; elsewhere as you. The GitHub card on the board lists each installation, and any that hasn't accepted the App's permissions yet.</p>`);
             } catch (e) {
               log("github app not created", { err: (e as Error).message.slice(0, 200) });
               return ask(err(`Not created: ${(e as Error).message}`));
@@ -419,7 +419,7 @@ export function createAdmin(d: Deps) {
             gh.remove();
             appGen++;
             log("github app removed", { by });
-            return page(`<h1>GitHub App removed</h1><p>Code review posts as you everywhere from its next write. Uninstall or delete the App on GitHub when you like.</p>`);
+            return page(`<h1>GitHub App removed</h1><p>Your agents act as you everywhere from the next write. Uninstall or delete the App on GitHub when you like.</p>`);
           }
           const org = (f.get("org") ?? "").trim();
           if (org && !ORG.test(org)) return ask(err("That isn't a GitHub organization name."), org);
@@ -431,7 +431,7 @@ export function createAdmin(d: Deps) {
           appPending.set(state, { org, account: s.account.id, at: Date.now(), gen: appGen });
           const m = manifest(gh.name(), `${origin}/setup/github-app/${state}`);
           const action = org ? `https://github.com/organizations/${encodeURIComponent(org)}/settings/apps/new?state=${state}` : `https://github.com/settings/apps/new?state=${state}`;
-          return page(`<h1>Create code review's GitHub App</h1><p>GitHub shows the App and its permissions: pull requests (write: reviews and their comments), commit statuses (write: <code>aidenhq/review</code>), repository contents (write: the one-hour, single-repo tokens a session box's <code>git push</code> uses), and checks, actions and issues (read: the fleet reads your repos as the App, so it doesn't spend your GitHub rate limit). An App made before a permission was asked needs it accepted on GitHub (the App's settings, Permissions, then each installation's review); until then those reads use your account. Approve it there; you come straight back here and its key goes into your vault.</p><form method="post" action="${esc(action)}"><input type="hidden" name="manifest" value="${esc(JSON.stringify(m))}"><button class="b">Create on GitHub</button></form>`, 200, {
+          return page(`<h1>Create AidenHQ's GitHub App</h1><p>GitHub shows the App and its permissions, the writes your agents make: contents and workflows (pushes, signed commits, merges, releases), pull requests, issues (comments, labels), commit statuses, actions (re-runs) and organization projects, and checks to read. It never asks for administration or self-hosted runners. An installation made before a permission was asked keeps its old set until its owner accepts the new one on GitHub; until then the writes that need it act as you there. Approve it there; you come straight back here and its key goes into your vault.</p><form method="post" action="${esc(action)}"><input type="hidden" name="manifest" value="${esc(JSON.stringify(m))}"><button class="b">Create on GitHub</button></form>`, 200, {
             // This one form posts the manifest to GitHub.
             "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://github.com; base-uri 'none'; frame-ancestors 'none'",
           });
