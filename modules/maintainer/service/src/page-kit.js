@@ -6,6 +6,8 @@ const notify = (method, params) => parent.postMessage({ jsonrpc: "2.0", method, 
 const theme = (ctx) => { for (const [k, v] of Object.entries(ctx?.styles?.variables ?? {})) if (v) document.documentElement.style.setProperty(k, v); if (ctx?.theme) document.documentElement.style.colorScheme = ctx.theme; };
 addEventListener("message", (e) => {
   if (e.source !== parent) return;
+  // The host's theme changed (the system went light or dark): restyle in place.
+  if (e.data?.method === "ui/notifications/host-context-changed") return theme(e.data.params);
   const w = waiting.get(e.data?.id);
   if (!w) return;
   waiting.delete(e.data.id);

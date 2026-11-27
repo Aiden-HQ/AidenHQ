@@ -99,6 +99,11 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
     if (!id) return;
     const answer = (req: Msg, body: { result: unknown } | { error: { code: number; message: string } }) => frame.current?.contentWindow?.postMessage({ jsonrpc: "2.0", id: req.id, ...body }, "*");
     let live = true;
+    // The frame inherits the board's color-scheme, so the view must follow a system theme change too, or the browser paints an
+    // opaque backdrop behind it (MCP Apps ui/notifications/host-context-changed).
+    const dark = matchMedia("(prefers-color-scheme: dark)");
+    const restyle = () => frame.current?.contentWindow?.postMessage({ jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: hostContext() }, "*");
+    dark.addEventListener("change", restyle);
     async function onMessage(e: MessageEvent) {
       // Only the frame this page made, never another window or frame; its origin is "null" (opaque), so the source is the check.
       if (!frame.current || e.source !== frame.current.contentWindow || loads.current > 1) return;
@@ -141,7 +146,7 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
       if (live && loads.current <= 1) answer(m, r.error ? { error: { code: r.error.code ?? -32000, message: String(r.error.message ?? "failed") } } : { result: r.result });
     }
     window.addEventListener("message", onMessage);
-    return () => (live = false, window.removeEventListener("message", onMessage));
+    return () => (live = false, window.removeEventListener("message", onMessage), dark.removeEventListener("change", restyle));
   }, [id, sub, onSignIn, attempt]);
 
   useEffect(() => {
