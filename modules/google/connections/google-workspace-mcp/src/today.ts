@@ -13,7 +13,7 @@ const httpUrl = (u?: string) => {
   }
 };
 const CALL_HOST = /(?:^|\.)(?:zoom\.us|zoomgov\.com|meet\.google\.com|teams\.microsoft\.com|teams\.live\.com|teams\.cloud\.microsoft)$/i;
-const inText = (text?: string) => (text?.match(/https?:\/\/[^\s<>"')\]]+/gi) ?? []).map((u) => u.replace(/[.,;:!?]+$/, "")).find((u) => httpUrl(u) && CALL_HOST.test(new URL(u).hostname));
+const inText = (text?: string) => (text?.match(/https?:\/\/[^\s<>"')\],;]+/gi) ?? []).map((u) => u.replace(/[.,;:!?]+$/, "")).find((u) => httpUrl(u) && CALL_HOST.test(new URL(u).hostname));
 /** Where a click on the event goes: its video call (Meet link or conference entry, else a Zoom/Meet/Teams URL in the location), else its calendar page. */
 export const eventUrl = (e: Pick<NormalizedEvent, "meet_link" | "location" | "html_link">) =>
   httpUrl(e.meet_link) ?? inText(e.location) ?? httpUrl(e.html_link);

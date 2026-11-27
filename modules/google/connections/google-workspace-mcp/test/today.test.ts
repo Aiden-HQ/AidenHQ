@@ -39,6 +39,7 @@ it("an event links to its video call, else its calendar page, http(s) only", () 
   expect(eventUrl({ location: "Room 4 or https://acme.zoom.us/j/123?pwd=x", html_link: "https://www.google.com/calendar/event?eid=1" })).toBe("https://acme.zoom.us/j/123?pwd=x");
   expect(eventUrl({ location: "https://example.com/not-a-call", html_link: "https://www.google.com/calendar/event?eid=1" })).toBe("https://www.google.com/calendar/event?eid=1");
   expect(eventUrl({ location: "Online (https://meet.google.com/abc-defg-hij?authuser=1).", html_link: "https://x.test/e" })).toBe("https://meet.google.com/abc-defg-hij?authuser=1");
+  expect(eventUrl({ location: "https://acme.zoom.us/j/123?pwd=abc;Room 4", html_link: "https://x.test/e" })).toBe("https://acme.zoom.us/j/123?pwd=abc");
   expect(eventUrl({ meet_link: "https:///", html_link: "https://x.test/e" })).toBe("https://x.test/e");
   expect(eventUrl({ meet_link: "javascript:alert(1)", html_link: "ftp://x" })).toBeUndefined();
   expect(eventUrl({})).toBeUndefined();
