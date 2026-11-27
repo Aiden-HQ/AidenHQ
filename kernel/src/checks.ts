@@ -124,7 +124,8 @@ export function createChecks({ db, registry, owner, secret, resolver, pending = 
         if (i?.status === "in_review") {
           await finish(i.id);
           const labels = await owner("GET", `/api/companies/${encodeURIComponent(i.companyId ?? "")}/labels`);
-          const grading = Array.isArray(labels.json) ? (labels.json as { id: string; name?: string }[]).find((l) => l.name === "grading")?.id : undefined;
+          if (labels.status !== 200 || !Array.isArray(labels.json)) throw new Error(`the control plane answered ${labels.status} for the company's labels`);
+          const grading = (labels.json as { id: string; name?: string }[]).find((l) => l.name === "grading")?.id;
           // Read again just before the move: a task reopened or cancelled meanwhile keeps its new state and labels.
           const now = await issue(i.id);
           const ids = now.labelIds ?? (now.labels ?? []).map((l) => l.id);

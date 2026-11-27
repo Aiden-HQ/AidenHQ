@@ -105,7 +105,7 @@ export function createChecker({ store, kernel, ask, model, log = () => {} }: { s
     }
     // Reopened (and maybe closed again) while the check ran: the close now standing is checked on the next pass instead.
     const after = await issue(row.task);
-    if (after.status !== "done" || after.completedAt !== task.completedAt) return;
+    if (after.status !== "done" || (after.completedAt ?? after.updatedAt) !== (task.completedAt ?? task.updatedAt)) return;
     if (!store.record(row.task, rubric, criteria, model)) return;
     log("rubric checked", { task: task.identifier, unmet: criteria.filter((c) => c.met === "no").map((c) => c.id) });
     if (criteria.some((c) => c.met === "no")) await notify(task, rubric, criteria);
