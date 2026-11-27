@@ -27,7 +27,7 @@ lets in. Everything else on that interface is dropped, and 80 is closed in every
 |---|---|---|
 | `public` | Caddy with a Let's Encrypt certificate for the host's public IPv4: the board on 443, the admin listener on 8446, the module door on 8447 | tcp 22, 443, 8446, 8447 |
 | `tailscale` | `tailscale serve` to 127.0.0.1:3121 | tcp 22, udp 41641 |
-| `cloudflare` | a Cloudflare tunnel that dials out (`cloudflared`, see Shared apps below): the host opens nothing inbound | tcp 22 |
+| `cloudflare` | a Cloudflare tunnel that dials out (`cloudflared`, see Shared apps below): the host opens nothing inbound. It serves shared apps and the My apps page only, so the board itself is reached over SSH (or the tailnet), not through it | tcp 22 |
 | `local` | none: an SSH tunnel to 127.0.0.1:3121 | tcp 22 |
 
 - **Admin and board listeners stay loopback** (the kernel's 3120 and 3129; the board's 3121, 3122); the front door
@@ -416,9 +416,10 @@ repo); any signed-in member's page can send a notice without submitting, which c
 
 - **Verify the identity token.** Every request carries `X-AidenHQ-Identity` ([app identity](app-identity.md)); the app
   uses the starter's `aidenhq-identity.mjs` unchanged and refuses anything without a valid token. `req.user` is
-  `{ sub, email, name, role, kind }`: `sub` is a stable opaque id (`u_...` for people, `agent:<key>` for agents) to key
-  per-user data on; `role` is `member`, `admin` or one of the app's own roles (an unknown role counts as no more than
-  `member`). Agents arrive as `kind: agent`: `admin` through `app_api` by default (for that one method and path),
+  `{ sub, email, name, role, kind }`, or `null` for an anonymous tailnet caller (a tailnet-only app with
+  `AIDENHQ_ANONYMOUS=tailnet`), so check it before reading: `sub` is a stable opaque id (`u_...` for people,
+  `agent:<key>` for agents) to key per-user data on; `role` is `member`, `admin` or one of the app's own roles (an
+  unknown role counts as no more than `member`). Agents arrive as `kind: agent`: `admin` through `app_api` by default (for that one method and path),
   `member` through `app_view`, or through `app_api` with `role: "member"` for a signed-in test-user request on a public
   route, under the same caller grant and access policy.
 

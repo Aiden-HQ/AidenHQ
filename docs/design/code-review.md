@@ -153,12 +153,13 @@ code review's service and recipe, the engineer image and the CI template (`.gith
   live read, or an author who lost member access), or `unwatched`. A head's `policy` (the response's `policy`) is a hash of its
   tier's mandatory combos, the base branch and the `ignore` globs, never the tier's name, so tiers with the same mandatory
   reviewers share one.
-- **A PR keeps its reviews.** A settings edit, a retarget or a tier change never starts reviews over: the new setting applies from
-  the PR's next push, `push_rounds` count over its whole life, and runs and coverage count whatever setting they ran under. The one
-  addition is a mandatory `on_open` combo the PR has never had an opening review from (`opening()`): it is queued alone, over the
-  whole PR, once per head, and the verdict waits on it (`not_started`); a PR with no finished opening review gets its tier's full
-  opening batch. With push rounds used up (or no mandatory `on_push`), the gate stands on the latest opening run of each
-  mandatory `on_open` combo the tier names now.
+- **A PR keeps its reviews.** A settings edit, a retarget or a tier change never starts reviews over: `push_rounds`
+  count over the PR's whole life, and runs and coverage count whatever setting they ran under. What does change at once
+  is which reviewer holds the unchanged head, because the verdict reads the tier the repo names now: a mandatory
+  reviewer that is dropped stops holding the head even mid-run (`modules/code-review/test/engine.test.ts`, "a mandatory
+  reviewer dropped while it is still running holds nothing"), and one added that the head never had is queued alone,
+  over the whole PR, once per head, with the verdict waiting on it (`not_started`). With push rounds used up (or no
+  mandatory `on_push`), the gate stands on the latest opening run of each mandatory `on_open` combo the tier names now.
 - **Verdict.** The verdict adds `requires_review`: true for a tier with a mandatory combo; false for a tier with none (`skip`,
   advice-only), which passes unless an earlier mandatory finding is open; true and `wait` ("classifying") while pending. A repo
   code review doesn't watch has no tier and `requires_review: false`. The product repo's Tier 0 merge (`productMergeEligible`)

@@ -14,8 +14,9 @@ box: one container shared by every session, each with its own folder and lease.
 - **Long-lived.** A session job has no hard deadline, and dispatch does not stop it for lack of progress. Ending a session stops
   its process group in the box (`/job/release`); the box is never restarted for it.
 - **Writes run at once.** The `session` role on the job's frozen authority makes its writes Tier 0 (`kernel/src/tier.ts`);
-  code's hard refusals and the owner's veto still apply, and every write is a kernel record. A session's merge files the
-  `github.merge` record, the one merge path.
+  code's hard refusals, the owner's veto and `autonomy: off` still apply (`tier.ts` checks autonomy before the session role,
+  so with autonomy off a session's writes wait for the owner like anyone else's), and every write is a kernel record. A
+  session's merge files the `github.merge` record, the one merge path.
 - **Wakes.** Waiting is a kernel wake (a comment, a timed wait, a watched event), never a loop in the harness; an idle session
   uses no tokens.
 - **Harness.** `engine-opencode` drives `opencode serve` over its HTTP API, with the TUI in tmux behind ttyd and opencode's own
