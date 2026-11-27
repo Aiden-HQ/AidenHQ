@@ -177,6 +177,8 @@ const slugOf = (repo: unknown) => {
 /** A PR's merge-queue state, for an enqueue and its reconcile. */
 const QUEUE_READ = `query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { id state headRefOid baseRefName authorAssociation labels(first: 100) { nodes { name } } isInMergeQueue reviewDecision latestOpinionatedReviews(first: 30) { nodes { fullDatabaseId state authorCanPushToRepository author { __typename login } commit { oid } } } } } }`;
 
+/** Whether a PR (by node id) is in its merge queue: read before a hold dequeues it. */
+const IN_QUEUE = `query($id: ID!) { node(id: $id) { ... on PullRequest { isInMergeQueue } } }`;
 /** The outcome of an accepted async merge request that is still being processed: nothing is wrong (ship asks again next round),
  * and nothing is queued yet either, so it is neither a hold nor a done. */
 const PENDING = "ship-enqueue-pending:";
@@ -750,12 +752,16 @@ export function createService(o: Options) {
     if (pr.html_url) notePrTask(o.cacheDir, pr.html_url, { task: a.workspace, branch: b.branch, held: (a.hold === true && !theirs) || (!a.hold && wasHeld) }); // the PR watch works the PR for the task that published it
     if (a.hold) {
       if (!theirs) await apiAs(await actorOn(s.slug, "issue"), "POST", `/repos/${s.slug}/issues/${Number(pr.number)}/labels`, { labels: [HOLD_LABEL] });
-      // A PR already in GitHub's native merge queue leaves it: the label alone doesn't stop a queued merge. "Not queued" is GitHub's
-      // answer for a PR that isn't in it (nothing to do); any other refusal is an error.
+      // A PR already in GitHub's native merge queue leaves it: the label alone doesn't stop a queued merge. Read first, as the
+      // dequeue's actor: a PR not in the queue has nothing to leave, and a refusal to dequeue a queued one is an error.
       if (pr.node_id) {
-        const d = await (await actorOn(s.slug, "dequeue")).mutate("DEQUEUE", { id: pr.node_id });
-        const why = String((d.body?.errors ?? []).map((e: { message?: unknown }) => String(e?.message ?? "")).join("; ") || (d.status >= 300 ? `HTTP ${d.status}` : ""));
-        if (why && !/not (?:in|on) (?:the |a )?merge queue|(?:isn't|is not|not) queued|no merge queue entry/i.test(why)) throw fail(502, `GitHub could not take ${pr.html_url} out of its merge queue: ${why.slice(0, 200)}`);
+        const dq = await actorOn(s.slug, "dequeue");
+        const q = await dq.rest("POST", "/graphql", { query: IN_QUEUE, variables: { id: pr.node_id } });
+        if (q.status >= 300 || q.body?.errors?.length) throw fail(502, `GitHub couldn't say whether ${pr.html_url} is in its merge queue: ${String(q.body?.errors?.[0]?.message ?? q.status).slice(0, 200)}`);
+        if (q.body?.data?.node?.isInMergeQueue === true) {
+          const d = await dq.mutate("DEQUEUE", { id: pr.node_id });
+          if (d.status >= 300 || d.body?.errors?.length) throw fail(502, `GitHub could not take ${pr.html_url} out of its merge queue: ${String(d.body?.errors?.[0]?.message ?? d.status).slice(0, 200)}`);
+        }
       }
     } else if (wasHeld) {
       const r = await (await actorOn(s.slug, "issue")).rest("DELETE", `/repos/${s.slug}/issues/${Number(pr.number)}/labels/${encodeURIComponent(HOLD_LABEL)}`);
@@ -999,8 +1005,8 @@ export function createService(o: Options) {
   }
 
   /**
-   * A push onto an adopted PR's branch (ship), written as commits GitHub makes and signs itself, as the code host's sign-in (the
-   * identity every ordinary task push uses), so a repository rule requiring verified signatures takes them: the PR is read again
+   * A push onto an adopted PR's branch (ship), written as commits GitHub makes and signs itself, as the branch repo's push actor (the
+   * App where installed and permitted, else the owner), so a repository rule requiring verified signatures takes them: the PR is read again
    * here (a Tier 0 push runs right after its plan, with no revalidation), and the box's commits from `expected` to the branch's
    * commit land as one commit bound to `expected` (createCommitOnBranch), or, where they merge the base, as GitHub's own merge
    * (mergeSigned). A contributor's push in between refuses it (ship-head-moved), never overwritten. The commit is not noted as
@@ -1068,9 +1074,9 @@ export function createService(o: Options) {
    * code: what it keeps is untrusted. So the merge is made here, in the cache (`git merge-tree`), and the box's files are taken
    * only on generated paths (the plan's globs) and known lockfiles, as regular files or symlinks, never under `.github/` unless
    * they are the base's own; every conflict must be on such a path. On the base repo the result is written as commits GitHub makes
-   * and signs, as the code host's sign-in (mergeSigned: GitHub's own merge of the base, then the kept files on top), so a rule
+   * and signs, as the branch repo's push actor (mergeSigned: GitHub's own merge of the base, then the kept files on top), so a rule
    * requiring verified signatures takes it; to a fork whose author allows maintainer edits it is one merge commit (parents: the
-   * head and the base's tip), a leased git push as that same sign-in (the base repo's rules don't govern a fork's branch). Leftover conflicts and a
+   * head and the base's tip), a leased git push as that same actor (the base repo's rules don't govern a fork's branch). Leftover conflicts and a
    * failed generator come back as the outcome, `leftover: <path>` lines and `ship-generator:`, for ship's next round.
    */
   async function repairPr(a: any): Promise<{ ok: boolean; text: string; objects?: string[] }> {

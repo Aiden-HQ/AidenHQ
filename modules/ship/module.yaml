@@ -33,7 +33,7 @@ subscribes:
     resources: "*"
 # The deterministic repair (recipe/repair.ts), no model and no credential: the PR's head merged with its base, generated paths
 # and conflicted lockfiles regenerated; it keeps the files that change, which github's `repair` effect (filed by ship) asks for
-# and writes as the App. base: the base branch's tip; merge_base: the head's merge base with it; base_ref: its name; plan:
+# and writes as the chosen GitHub actor (docs/design/github-identity.md). base: the base branch's tip; merge_base: the head's merge base with it; base_ref: its name; plan:
 # { globs, commands } (rounds.ts repairPlan); attempt: 1, or 2 for the one retry of a run that didn't finish (a new check).
 check_jobs:
   ship-repair:

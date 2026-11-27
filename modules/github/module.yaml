@@ -7,7 +7,7 @@ replaces: [ codehost-github, runner ]
 requires:
   - warehouse # its source schema lives in the shared warehouse
   - board # its sign-in and setup flow
-# The GitHub process (service `github`) is the only holder of the owner's GitHub token (its /state) and the owner of all git
+# The GitHub process (service `github`) is the only holder of the owner's GitHub token and the GitHub App's key (its /state; every write's identity: docs/design/github-identity.md) and the owner of all git
 # state. Its write kinds github.{push,pr,merge,close,create_repo} go through the kernel's /v1/writes, with service/src/plan.ts as
 # their executor@1 plan. Outside the fleet org, the product repo and the listed repos (listed_repos) it is PR-only (no merge; create_repo is
 # Tier 0 in any github_orgs org). It talks to the kernel with its own token (codehost_github_token): the module's roles below go
@@ -120,7 +120,7 @@ connections:
       write: []
       # github_issue_link: the same report as an owner's prefilled "new issue" link, for an install where GitHub isn't connected (no
       # write, no role): named, so only the agents that report product bugs hold it.
-      # github_product_issue: product bugs on settings.product_repo only, as the owner, and only for the product-issues role
+      # github_product_issue: product bugs on settings.product_repo only, as the chosen GitHub actor, and only for the product-issues role
       # (the Maintainer, for the Fleet Steward). Tagged destructive so neither `github: read` nor `github: write` includes it: an agent gets it only by
       # naming it.
       # The Maintainer's writes (github_issue_label, github_issue_state; github_issue_comment scrubs on the product repo and
@@ -133,7 +133,7 @@ connections:
       named: [ github_issue_link, github_issue_list, github_label_events, github_repo_tree, github_repo_file, github_pr_threads ]
       # github_release_graduate: a maintained repo's stalled pre-release made a full release, only when code verifies the stall
       # wasn't the candidate's (connections/github-mcp/src/graduate.ts); the Maintainer's, by name.
-      # The writes with the owner's token (a comment, an issue, its state, a review, a failed job's re-run) post as the owner:
+      # The writes an agent makes through the github connection (a comment, an issue, its state, a review, a failed job's re-run) post as the chosen GitHub actor (the App where installed, else the owner):
       # destructive, so only a grant naming one reaches it and every call is a record the AI reviewer decides first (floor 1),
       # except the `unreviewed` ones (an issue's labels and state, a thread reply: owner, 2026-11-23), which run at once (Tier 0)
       # after code's refusals (instance details).
@@ -240,7 +240,7 @@ check_jobs:
 # files issues and pull requests upstream from that fork, nothing more. Asked for on the first-run page (/setup); empty =
 # nothing goes upstream.
 secrets:
-  state: true # its own vault dir, read-write at /state: the sign-in's token, and code review's optional GitHub App (github-app/{app_id,key.pem}, written by the kernel's /setup/github-app)
+  state: true # its own vault dir, read-write at /state: the sign-in's token, and the instance's optional GitHub App (github-app/{app_id,key.pem}, written by the kernel's /setup/github-app; its identity is read from GitHub)
   provided:
     - name: github_bot_token
       setup:
@@ -344,7 +344,7 @@ writes:
   # the bound head and generation, filed by the PR's own task Engineer with `aidenhq ship title`. A title is a judgement, so ship's
   # loop never files one itself (only its module is named here); plan.ts refuses any PR that isn't that adoption's, at its head.
   retitle: { args: schemas/retitle.json, floor: 0, filed_by: [ ship ], card: *card }
-  # repair: ship's deterministic repair of one adopted PR (its `ship-repair` check job, no model), written as the App.
+  # repair: ship's deterministic repair of one adopted PR (its `ship-repair` check job, no model), written as the chosen GitHub actor (the App as a commit through createCommitOnBranch where installed).
   repair: { args: schemas/repair.json, floor: 0, filed_by: [ ship ], card: *card }
   # setup: the code host files this itself for another module's `setup` op (kernel/src/codehost.ts): the files to add on a new aidenhq/setup-<sha>
   # branch and its PR (an earlier setup PR is closed), which the AI reviewer reads whole (service/src/setup.ts).

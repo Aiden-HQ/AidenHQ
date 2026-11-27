@@ -100,8 +100,8 @@ Config is one authority: the board and Aiden write it through the normal setting
 is his approval (docs/design/settings-changes.md); the Reviewer Manager's change goes to the AI reviewer. What decides which merges go unattended is the owner's to
 approve, not the Reviewer Manager's alone (`code_review_configure`'s description): outside PRs or drafts reviewed
 automatically, a repo in a new org, any change to `rules`, `repo_class`, `preset` or `by_tier` (combos, `push_rounds`, a
-combo's `mandatory`) and a repo's ignore globs. Reviews post as the owner's GitHub sign-in on any repo it reaches, or, where the owner's optional
-GitHub App is installed on the PR's base repo, as that App (below). `always`, `stop` and `focus` are
+combo's `mandatory`) and a repo's ignore globs. Reviews post as the instance's GitHub App where it is installed on the PR's base repo, else as the owner's
+GitHub sign-in ([github-identity.md](github-identity.md)). `always`, `stop` and `focus` are
 PR state, not config.
 
 ## Risk tiers
@@ -376,38 +376,19 @@ An infrastructure refusal of a post is a connection problem, not a verdict. gith
 shape rather than a bare 502, and the executor records that need on the run; the run ends `failed` with its post `refused`, and
 its askers' summary names the one link (the Grant link for `restricted`, Reconnect for `expired`) that unblocks the next post.
 
-## The GitHub App as review writer
+## GitHub writes
 
-Optional and per repo, so reviews stop sharing the owner's GitHub write limit (the secondary content-creation limit blocked
-every writer). Any owner makes their own App on the kernel's admin page `/setup/github-app` (GitHub's manifest flow; `public:
-true`, so any org installs it on all or some of its repos). For each PR, code review posts as the App where it is installed on
-the PR's base repo, else as the owner's sign-in; agents' PRs, pushes, merges and comments stay the owner's. Without an App
-nothing changes.
+Code review's writes follow the general rule in [github-identity.md](github-identity.md): the instance's GitHub App where it is
+installed on the PR's base repo and has accepted the permissions, else the owner's sign-in, one actor per write attempt, and
+never the owner after a broken App. Each review write is an op: the review, its inline and file comments, replies, resolves and
+the summary are `pr`; the acknowledgement notice is `issue`; the `aidenhq/review` status is `status`. `ReviewPoster`
+(`review-post.ts`) serves them all.
 
-- **One writer.** `ReviewPoster.writer(repo)` (`review-post.ts`) serves every review write (the post, inline and file comments,
-  the summary, resolves, the status, notices and acknowledgements): a client bound to the App's installation (`gh.as`), or the
-  owner's. The owner's is picked only when no App is set up, its saved files are unreadable (the card warns), or GitHub answers
-  404 for `GET /repos/{repo}/installation`; any other failure of a working App throws (a bad key, a suspension, a rate limit), so
-  a review never moves to the owner's account because the App broke. Installation lookups are cached 10 minutes, tokens until 5
-  minutes before they expire.
-- **Pacing per identity.** github-mcp's client (`client.ts`) keeps one `Pace` per identity (the owner, or `app:<installation id>`):
-  its own rate buckets, serial write queue, secondary-limit backoff and `Retry-After`. An App answer never touches the owner's
-  sign-in state; an App 401 retries once with a fresh token.
-- **Threads.** A thread is ours when its first comment carries our marker and its author is the owner or the App, compared by kind
-  (REST `type`, GraphQL `__typename`). Threads are read as the writer, and one the writer can't resolve (`viewerCanResolve`
-  false) is skipped with a reason; the service also resolves only threads it recorded as its own. On a PR whose review or acknowledgement the owner posted earlier, the App posts its own and the
-  service records the new acknowledgement id.
-- **Setup.** The kernel writes `<vault>/modules/github/github-app/{app_id,key.pem,slug}`; the github process reads them at
-  `/state/github-app/` when needed (no restart). The manifest asks for `pull_requests`, `statuses` and `contents` write and
-  `checks`, `actions`, `issues` and `metadata` read; an install made before a permission change must accept it on GitHub. The
-  board's GitHub card shows a "Code review App" row (the bot and an Install link, or the error with Replace), what code review
-  posted as per org (`/state/review-as.json`), and where it posts as the owner a suggestion to create the App, which Dismiss
-  removes for good. The admin page also removes the App. Nothing nags, blocks or degrades without it.
-- **Reads.** A `GET /repos/{o}/{r}/…` goes as the App's installation when it is installed there and its installation holds the
-  permission the path needs (`PERMISSIONS`, `readerFor` in `client.ts`), whoever asks; every other path, GraphQL (which stays the
-  owner's: its own budget, and viewer-relative fields such as `mergeStateStatus`), org and user listings and searches stay the
-  owner's. A read refused for a permission the installation lacks is read again as the owner, and that repo and permission stay
-  the owner's for an hour (`github reads as the owner`). Every GET goes through one ETag cache per identity, so a 304 costs nothing.
+- **Threads.** A thread is ours when its first comment carries our marker and its author is the owner or the App's live bot
+  login, compared by kind (REST `type`, GraphQL `__typename`). Threads are read as the writer, and one the writer can't resolve
+  (`viewerCanResolve` false) is skipped with a reason; the service also resolves only threads it recorded as its own. On a PR whose review or
+  acknowledgement another identity posted earlier, the current actor posts its own and the service records the new
+  acknowledgement id.
 - **Measure.** Each content-creating write logs `github write` with its identity and `writes_this_hour`; every call is counted per
   hour by caller, identity, resource and status as `github calls this hour`.
 

@@ -18,7 +18,7 @@ owner is told: a task's PR wakes whoever asked for the task, a member's PR gets 
 push resumes it. Checks whose jobs never started, and check runs wedged after their job finished, are re-run for any PR. Ship
 also closes a cancelled, superseded or finished task's leftover PR, files a Dependabot PR's task on repos whose entry sets `dependabot`
 (off, failing, all), and nudges, then closes, a quiet contributor PR on repos whose entry sets `quiet_pr_days` (both in fixed
-words, as the owner, with the Ship footer; a close reads the PR again first). Both run on the product repo (which may
+words, as the chosen GitHub actor ([docs/design/github-identity.md](../../docs/design/github-identity.md)), with the Ship footer; a close reads the PR again first). Both run on the product repo (which may
 take them from Defaults) and on every repo with an entry, whether or not Ship works the repo's PRs. Pull requests are Ship's:
 the Maintainer does issues only. The pause stops all of it, merges already filed included.
 The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui://ship/page`) is where it is set: Add repo (a draft panel: the name, a start from Defaults, Cautious, Full or a copy of a listed repo, and the same settings editor; a repo that starts from Defaults follows later changes to them) and, per repo, on or off, preset, which PRs to adopt (`handoff`), Dependabot updates, inactive contributor PRs, `by_tier` (per risk tier: whether the App approves and whether ship merges), a global pause, and the holds. The module's settings are for the advanced options only.
@@ -49,7 +49,7 @@ The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui
 - **Fixes.** The task is woken for red required checks (a failure that is red on the base too is a wait), unanswered review
   findings and members' unanswered review comments (never those of the repo's `ignore_authors`, its automation accounts), one wake at a time in the same session. A model fix touching a `protected`
   path puts the PR on hold; the deterministic repair may still regenerate lockfiles.
-- **Approval and merge.** Where the target branch's rules or code review's gate require it, the App approves the exact head when
+- **Approval and merge.** Where the target branch's rules or code review's gate require it, the App approves the exact head (never on a PR the App opened: approval needs a person) when
   the head's risk tier has `approve: on`, code review's pass stands on it and checks are green (`observe` writes what it would
   do in the report); an App approval from another head or policy is dismissed. Then ship files `github.merge`, or
   `github.enqueue` where the branch has a merge queue (a queue removal maps to `fix_ci`, `repair`, one re-enqueue or a hold).
