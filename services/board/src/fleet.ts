@@ -111,6 +111,18 @@ const VERBS: Record<string, RegExp> = {
   resume: /\b(resume|restart|unpause)\b/i,
 };
 
+const NEGATION = /\b(don['’]?t|do not|never|no|not|stop|cancel|hold off on|avoid)\b/i;
+
+/** True when some match of `verb` in `q` is a request: not negated by a negation word in the 3 words before it within the same clause ("don't run", "never ever run"). */
+function asks(q: string, verb: RegExp): boolean {
+  const g = new RegExp(verb.source, "gi");
+  for (const m of q.matchAll(g)) {
+    const clause = q.slice(0, m.index).split(/[.,;:!?\n]/).pop()!;
+    if (!NEGATION.test(clause.trim().split(/\s+/).slice(-3).join(" "))) return true;
+  }
+  return false;
+}
+
 const APPS_URL = (process.env.APPS_MCP_URL ?? "http://apps-mcp:8090").replace(/\/$/, "");
 
 /** apps-mcp's internal token (the file at APPS_INTERNAL_TOKEN_FILE), shared by the board and apps-mcp only; "" when unset. */
@@ -149,7 +161,7 @@ export async function assertOwnerWords(pc: Paperclip, store: Pick<Store, "meta">
   if (q.length < 12) throw new Refused("refused: `quote` must be the owner's exact words (at least 12 characters)");
   const named = words(target);
   if (!named || !` ${words(q)} `.includes(` ${named} `)) throw new Refused(`refused: the owner's words must name the target ("${target}")`);
-  if (!VERBS[action.split("_")[0]!]!.test(q)) throw new Refused(`refused: the owner's words must ask for it (${action.split("_")[0]}...)`);
+  if (!asks(q, VERBS[action.split("_")[0]!]!)) throw new Refused(`refused: the owner's words must ask for it (${action.split("_")[0]}...)`);
   const me = await pc.me();
   if (!me) throw new Refused("refused: owner unknown");
   const task = await pc.issue(taskRef);
