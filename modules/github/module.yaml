@@ -338,7 +338,7 @@ writes:
   # the bound head and generation, filed by the PR's own task Engineer with `aidenhq ship title`. A title is a judgement, so ship's
   # loop never files one itself (only its module is named here); plan.ts refuses any PR that isn't that adoption's, at its head.
   retitle: { args: schemas/retitle.json, floor: 0, filed_by: [ ship ], card: *card }
-  # repair: ship's deterministic repair of one adopted PR (its `ship-repair` check job, no model), written as the chosen GitHub actor (the App as a commit through createCommitOnBranch where installed).
+  # repair: ship's deterministic repair of one adopted PR (its `ship-repair` check job, no model), written as the chosen GitHub actor (the App as one merge commit GitHub signs where installed).
   repair: { args: schemas/repair.json, floor: 0, filed_by: [ ship ], card: *card }
   # setup: the code host files this itself for another module's `setup` op (kernel/src/codehost.ts): the files to add on a new aidenhq/setup-<sha>
   # branch and its PR (an earlier setup PR is closed), which the AI reviewer reads whole (service/src/setup.ts).

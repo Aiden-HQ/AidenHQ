@@ -62,12 +62,16 @@ export function scriptedTd(chats: Td.chat[], history: Record<number, Td.message[
     if (!m) throw new Error("not found");
     return m;
   });
-  // As TDLib reads it: from 0 is the newest; offset 0 starts below from_message_id, a negative offset adds that many newer ones.
+  // As TDLib reads it: from 0 is the newest; offset 0 starts below from_message_id, a negative offset adds that many newer
+  // ones. Like TDLib answering from its local copy first, the first request for a chat returns only one message.
+  const asked = new Set<number>();
   td.on("getChatHistory", (r: any) => {
     const all = [...(history[r.chat_id] ?? [])].sort((a, b) => b.id - a.id);
     const below = r.from_message_id ? all.findIndex((m) => m.id < r.from_message_id) : 0;
     const start = Math.max(0, (below < 0 ? all.length : below) + (r.offset ?? 0));
-    const messages = all.slice(start, start + Math.min(r.limit, page));
+    const first = !asked.has(r.chat_id);
+    asked.add(r.chat_id);
+    const messages = all.slice(start, start + (first ? 1 : Math.min(r.limit, page)));
     return { _: "messages", total_count: messages.length, messages };
   });
   return { td, methods, addChat: (c: Td.chat) => byId.set(c.id, c) };

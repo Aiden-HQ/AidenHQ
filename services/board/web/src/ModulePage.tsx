@@ -73,7 +73,7 @@ function ModuleBody({ name, tab, go, onSignIn, can }: { name: string; tab: Modul
   return <Loaded d={d} ids={ids} tab={tab} go={go} onSignIn={onSignIn} setup={!!live && needsSetup.has(live)} pairing={!!live && needsPairing.has(live)} connect={live ? needsConnect.get(live) : undefined} can={can} advisory={advisory} />;
 }
 
-function Loaded({ d, ids, tab, go, onSignIn, setup, pairing, connect, can, advisory }: { d: ModuleDetail; ids: Map<string, string>; tab: ModuleTab; go: (hash: string) => void; onSignIn: () => void; setup: boolean; pairing: boolean; connect?: { c: Connectable; word: string }; can: Can; advisory?: Advisory }) {
+function Loaded({ d, ids, tab, onSignIn, setup, pairing, connect, can, advisory }: { d: ModuleDetail; ids: Map<string, string>; tab: ModuleTab; go: (hash: string) => void; onSignIn: () => void; setup: boolean; pairing: boolean; connect?: { c: Connectable; word: string }; can: Can; advisory?: Advisory }) {
   const m = d.module;
   const t = useModuleToggle(m);
   const [asking, setAsking] = useState(false);

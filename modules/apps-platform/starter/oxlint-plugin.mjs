@@ -1,7 +1,6 @@
-// Fast static checks for the mistakes agents repeat. Config only (ESLint's own restricted-* rules): no plugin code.
-// Each message says how to fix it. `npm run lint` runs in CI next to the tests. src/catalog is the dev-only preview.
-import babel from "@babel/eslint-parser"
-
+// Fast static checks for the mistakes agents repeat, as Oxlint JS-plugin rules (one rule per group, so a directory that owns
+// a concern can be exempt from just that group: .oxlintrc.json overrides). Each message says how to fix it.
+// `npm run lint` runs in CI next to the tests. src/catalog is the dev-only preview.
 const nav = (why) => `Use <Link href> from lib/navigation (navigate() from code); ${why}, while Link moves without a page load and keeps Back, Forward and reload working.`
 const link = "JSXOpeningElement[name.name='a'] > JSXAttribute[name.name='onClick']"
 const loc = "[left.object.name='location'], [left.object.property.name='location']"
@@ -14,7 +13,7 @@ const keyless = ":has(> JSXAttribute[name.name='onClick']):not(:has(> JSXAttribu
 const effectMsg = (what) => `Move ${what} into a hook in hooks/ or lib/ (or a block in components/blocks/) and call the hook, so pages stay declarative.`
 
 // Selector groups, so the directories that own a concern can be exempt from just that group.
-const syntax = {
+const groups = {
   nav: [
     { selector: link, message: nav("a hand-rolled <a onClick> goes around the router") },
     { selector: "CallExpression[callee.property.name=/^(pushState|replaceState)$/]", message: nav("history.pushState/replaceState goes around the router") },
@@ -47,34 +46,10 @@ const syntax = {
     { selector: "MemberExpression[object.name='window'][property.name=/^(setTimeout|setInterval|requestAnimationFrame)$/]", message: effectMsg("this timer") },
   ],
 }
-const globals = ["setTimeout", "setInterval", "requestAnimationFrame"].map((name) => ({ name, message: effectMsg("this timer") }))
-// Component tests render through Testing Library; bun test's preload (bunfig.toml, src/test/setup.ts) has the DOM ready first.
-const domTest = { group: ["jsdom", "happy-dom", "react-dom/client", "react-dom/test-utils"], message: "Render with @testing-library/react (render, screen, user-event): bunfig.toml preloads a ready DOM for every test, set up before any component loads, so Radix dialogs and selects work. src/test/dialog-form.test.tsx is the pattern." }
-const router = { patterns: [{ group: ["react-router", "react-router-dom", "wouter", "@tanstack/react-router"], message: nav("the starter has its own router") }] }
 
-// Rules for a directory that is exempt from the named groups.
-const rules = (exempt = []) => {
-  const on = (g) => !exempt.includes(g)
-  return {
-    "no-restricted-syntax": ["error", ...Object.entries(syntax).filter(([g]) => on(g)).flatMap(([, s]) => s)],
-    "no-restricted-globals": on("effect") ? ["error", ...globals] : "off", // "off", not []: a bare severity keeps the options of the config before it
-    "no-restricted-imports": ["error", router],
-  }
-}
-
-const parser = (isTSX) => ({
-  parser: babel,
-  parserOptions: { requireConfigFile: false, sourceType: "module", babelOptions: { configFile: false, babelrc: false, parserOpts: { plugins: isTSX ? ["typescript", "jsx"] : ["typescript"] } } },
+const restricted = (selectors) => ({
+  meta: { type: "problem", schema: [] },
+  create: (context) => Object.fromEntries(selectors.map(({ selector, message }) => [selector, (node) => context.report({ node, message })])),
 })
 
-export default [
-  { ignores: ["dist", "node_modules", "test", "src/catalog"] },
-  { files: ["src/**/*.ts"], languageOptions: parser(false) },
-  { files: ["src/**/*.tsx"], languageOptions: parser(true) },
-  { files: ["src/**/*.{ts,tsx}"], rules: rules() },
-  { files: ["src/hooks/**", "src/lib/**"], rules: rules(["effect"]) },
-  { files: ["src/lib/navigation*"], rules: rules(["effect", "nav"]) },
-  { files: ["src/components/blocks/**"], rules: rules(["effect", "header", "nav"]) },
-  { files: ["src/components/ui/**"], rules: rules(["effect", "header", "color", "focus"]) }, // primitives pair outline-none with a ring across strings
-  { files: ["src/**/*.test.{ts,tsx}"], rules: { "no-restricted-imports": ["error", { patterns: [...router.patterns, domTest] }] } },
-]
+export default { meta: { name: "app" }, rules: Object.fromEntries(Object.entries(groups).map(([g, s]) => [g, restricted(s)])) }

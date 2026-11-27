@@ -105,6 +105,12 @@ re-run it and any change to a listed file does. Cases run 8 at a time.
 - **TypeScript.** New code is TypeScript (`.ts`/`.tsx`), run directly by Node 24 with `.ts` import specifiers. The only JavaScript
   left is files something loads by a fixed `.js`/`.mjs` name (Paperclip's plugin entry points, a git credential helper, linter configs, the
   app starter's runtime files).
+  Typechecking is TypeScript 7 (native, pinned in every package; `tsc` runs in about a second). It ships no programmatic API: code
+  that must import `typescript` as a library needs `@typescript/typescript6` (nothing here does; the code-review reviewer's
+  language server runs on its own pinned TypeScript 6 in `modules/ci/template/.github/workflows/ci.yml`).
+- **Lint is Oxlint** (Stylelint for the board's CSS). Project rules (design-system tokens, the app starter's navigation, header,
+  colour, craft, focus, emoji and effect checks) are small JS-plugin rules in `oxlint-plugin.mjs` beside each `.oxlintrc.json`
+  (`services/board`, `modules/apps-platform/starter`); a recurring correction becomes a rule there, with the fix in its message.
 - **One way to do each thing.** Every concern has exactly one path:
   - No fallbacks, no compatibility shims, no "until X" second path.
   - A change that replaces a path deletes the old one in the same PR, or in the follow-up its body names. A half-finished

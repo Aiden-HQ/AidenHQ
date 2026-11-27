@@ -1,0 +1,12 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "jsPlugins": ["./oxlint-plugin.mjs"],
+  "rules": {
+    // The pages chain state setters with the comma operator (`setBusy(true), setError("")`) and short-circuit calls: a house style, not a bug.
+    "no-unused-expressions": "off",
+    "board/no-color-literal": "error",
+    "board/no-font-size-literal": "error",
+    "board/no-legacy-class": "error"
+  },
+  "ignorePatterns": ["dist", "node_modules"]
+}

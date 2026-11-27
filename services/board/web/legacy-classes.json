@@ -1,5 +1,5 @@
 {
-  "why": "Classes the design system replaced (docs/design/board-ui.md). ESLint flags them in className and stylelint flags a rule that brings one back. Each entry: the class, then what to use.",
+  "why": "Classes the design system replaced (docs/design/board-ui.md). Oxlint flags them in className and stylelint flags a rule that brings one back. Each entry: the class, then what to use.",
   "classes": {
     "pill": "StatusDot for a state, Tag for a fact",
     "pill-needs": "StatusDot tone=\"needs\" or Tag tone=\"needs\"",

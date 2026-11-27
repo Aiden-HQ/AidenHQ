@@ -30,7 +30,7 @@ import { QUERIES, VIEW_CHUNKS, hashPath, landsOnBoard, useQuery } from "./querie
 import { watchNeedsYou } from "./notify";
 import { HomeView } from "./Home";
 import { AskAiden, closeAsk, openAsk, toggleAsk } from "./AskAiden";
-import { CardView, GoogleBanner, PlusIcon, PoweredBy, SignInBanners, SortableCard, memberIssue } from "./components";
+import { CardView, GoogleBanner, PlusIcon, PoweredBy, SignInBanners, SortableCard } from "./components";
 import { CrewPicker, Drawer } from "./Drawer";
 import { SetupFlow } from "./SetupFlow";
 import { Onboarding } from "./Welcome";
@@ -44,7 +44,7 @@ import { BoardTabs, ConflictBanner, FilterChips, FilterSheet, SaveButton, useTas
 import { TaskFilters, TaskKeys, TasksList } from "./Tasks";
 import { delegatedCount, delegatedOf, hintOf, mineCount, mineOf, type Buckets } from "./own-tasks";
 import { applyFilters, cardMatches, isEmpty } from "./filters";
-import { Banner, Segmented } from "./ui";
+import { Banner } from "./ui";
 import { Icon } from "./ui/icons";
 import { setBoardTimezone } from "./ui/TaskState";
 import "./shell.css";

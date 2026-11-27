@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "jsPlugins": ["./oxlint-plugin.mjs"],
+  "ignorePatterns": ["dist", "node_modules", "/test", "src/catalog"],
+  "rules": {
+    "app/nav": "error",
+    "app/header": "error",
+    "app/color": "error",
+    "app/craft": "error",
+    "app/focus": "error",
+    "app/emoji": "error",
+    "app/effect": "error",
+    "no-restricted-imports": ["error", { "patterns": [{ "group": ["react-router", "react-router/*", "react-router-dom", "react-router-dom/*", "wouter", "wouter/*", "@tanstack/react-router", "@tanstack/react-router/*"], "message": "Use <Link href> from lib/navigation (navigate() from code); the starter has its own router, while Link moves without a page load and keeps Back, Forward and reload working." }] }],
+    "no-restricted-globals": ["error",
+      { "name": "setTimeout", "message": "Move this timer into a hook in hooks/ or lib/ (or a block in components/blocks/) and call the hook, so pages stay declarative." },
+      { "name": "setInterval", "message": "Move this timer into a hook in hooks/ or lib/ (or a block in components/blocks/) and call the hook, so pages stay declarative." },
+      { "name": "requestAnimationFrame", "message": "Move this timer into a hook in hooks/ or lib/ (or a block in components/blocks/) and call the hook, so pages stay declarative." }
+    ]
+  },
+  // The directories that own a concern are exempt from just that group.
+  "overrides": [
+    { "files": ["src/hooks/**", "src/lib/**"], "rules": { "app/effect": "off", "no-restricted-globals": "off" } },
+    { "files": ["src/lib/navigation*"], "rules": { "app/nav": "off" } },
+    { "files": ["src/components/blocks/**"], "rules": { "app/effect": "off", "app/header": "off", "app/nav": "off", "no-restricted-globals": "off" } },
+    // Primitives pair outline-none with a ring across strings.
+    { "files": ["src/components/ui/**"], "rules": { "app/effect": "off", "app/header": "off", "app/color": "off", "app/focus": "off", "no-restricted-globals": "off" } },
+    // Component tests render through Testing Library; bun test's preload (bunfig.toml, src/test/setup.ts) has the DOM ready first.
+    { "files": ["src/**/*.test.ts", "src/**/*.test.tsx"], "rules": { "no-restricted-imports": ["error", { "patterns": [
+      { "group": ["react-router", "react-router/*", "react-router-dom", "react-router-dom/*", "wouter", "wouter/*", "@tanstack/react-router", "@tanstack/react-router/*"], "message": "Use <Link href> from lib/navigation (navigate() from code); the starter has its own router, while Link moves without a page load and keeps Back, Forward and reload working." },
+      { "group": ["jsdom", "happy-dom", "react-dom/client", "react-dom/test-utils"], "message": "Render with @testing-library/react (render, screen, user-event): bunfig.toml preloads a ready DOM for every test, set up before any component loads, so Radix dialogs and selects work. src/test/dialog-form.test.tsx is the pattern." }
+    ] }] } }
+  ]
+}

@@ -11,14 +11,13 @@ import { ApprovalCard } from "./ApprovalCard";
 import { FeatureCostStrip } from "./FeatureCost";
 import { DelegatedList, LineageStrip, useLineage } from "./Lineage";
 import { live as streaming, useEvents } from "./events";
-import { AgentFace, CloseIcon, Plan, PlusIcon } from "./components";
+import { AgentFace, CloseIcon, Plan } from "./components";
 import { Markdown } from "./markdown";
 import { anyLive, groupTasks, settleableChat } from "./sidebar";
-import { TaskState, isActive, needsOwner, waitsForAnswer } from "./ui/TaskState";
+import { TaskState, needsOwner, waitsForAnswer } from "./ui/TaskState";
 import { foldCount, foldNoise, isNoise, seenByOwner, shortTitle, shownInChat, type Folded } from "./conversation";
 import type { Approval, Assignee, ChatDetail, ChatMessage, ChatRow, FileView, Lineage, Working } from "./types";
 import { MAX_FILE, ago, elapsed, fileSize, handleOf, clockOpts, stampOpts } from "./util";
-import { Icon } from "./ui/icons";
 
 const QUIET_MS = 2 * 60_000;
 
