@@ -5,7 +5,7 @@ requires:
   - google
 agents:
   inbox-agent:
-    skills: [ intake.triage-email, intake.triage-slack, intake.look-back, primer.primer-digest, tasks.delegate-work ]
+    skills: [ intake.triage-email, intake.triage-slack, intake.look-back, primer.primer-digest, tasks.delegate-work, tasks.owner-triage ]
     # Intake: everything that comes in for the owner (live Slack, the inbox, the Primer digest), one routine and one skill each (design §4.5).
     department: intake
     model: ~deepseek/deepseek-flash-latest
@@ -27,7 +27,8 @@ agents:
       # `Aiden` from a thread whose task is closed; the owner's own labels only, checked in code.
       google_workspace: [ gmail_inbox_new, gmail_inbox_ack, gmail_search, gmail_read_thread, gmail_label ]
       owner_channel: [ notify ]
-      paperclip_tasks: [ task_current, task_get, task_search, task_list, task_comments, task_create, task_update, task_comment, task_block, task_cancel, task_finish ]
+      # task_schedule: first-pass triage places each owner task it files (skill owner-triage; the board allows only its own, from New).
+      paperclip_tasks: [ task_current, task_get, task_search, task_list, task_comments, task_create, task_update, task_comment, task_block, task_cancel, task_finish, task_schedule ]
 routines:
   inbox-scan:
     title: Inbox scan

@@ -25,7 +25,7 @@ settings:
     type: url
 agents:
   security-watch:
-    skills: [ tasks.delegate-work ]
+    skills: [ tasks.delegate-work, tasks.owner-triage ]
     department: security
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
