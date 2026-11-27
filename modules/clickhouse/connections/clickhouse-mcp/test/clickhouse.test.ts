@@ -1,9 +1,17 @@
 import { mkdtempSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import pino from "pino";
 import { describe, expect, it } from "vitest";
+import { hooks } from "../src/hooks.js";
 import { checkCall, checkQuery, isRead, MAX_TIMEOUT_SECONDS, NEVER, normalize, QueryRefused, SCOPES, truncateResult } from "../src/policy.js";
-import { oauth } from "../src/vendor/oauth.js";
+import { oauth, staticAuth } from "../src/vendor/oauth.js";
+import { createVendorProxy } from "../src/vendor/proxy.js";
 
 const tool = (name: string, readOnlyHint: boolean) => ({ name, inputSchema: { type: "object" as const }, annotations: { readOnlyHint } });
 const tmp = () => mkdtempSync(join(tmpdir(), "clickhouse-mcp-"));
@@ -129,5 +137,32 @@ describe("sign-in", () => {
     expect(await auth.signIn!.scopes()).toEqual({ supported: ["mcp:access"], recommended: ["mcp:access"] });
     const u = new URL((await auth.signIn!.start("http://127.0.0.1:3120/clickhouse/callback")).url);
     expect(u.searchParams.get("scope")).toBe("mcp:access");
+  });
+});
+
+describe("the proxy's real call path", () => {
+  it("refuses a write query before anything is forwarded, and forwards a SELECT", async () => {
+    const sent: unknown[] = [];
+    const upstream = createServer(async (req, res) => {
+      const server = new Server({ name: "clickhouse", version: "1" }, { capabilities: { tools: {} } });
+      server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: "run_select_query", inputSchema: { type: "object" as const, properties: { query: { type: "string" } } } }] }));
+      server.setRequestHandler(CallToolRequestSchema, async (r) => { sent.push(r.params.arguments); return { content: [{ type: "text", text: "rows" }] }; });
+      const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+      res.on("close", () => void t.close());
+      await server.connect(t);
+      await t.handleRequest(req, res);
+    });
+    await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", () => r()));
+    const proxy = createVendorProxy({ name: "ClickHouse", upstream: new URL(`http://127.0.0.1:${(upstream.address() as AddressInfo).port}/mcp`), auth: staticAuth(), log: pino({ level: "silent" }), serviceKey: "svc", caller: async () => {}, instructions: "test", stateDir: tmp(), hooks });
+    try {
+      await expect(proxy.call("run_select_query", { query: "DROP TABLE events" })).rejects.toThrow(/Query refused/);
+      await expect(proxy.call("run_select_query", { query: "SELECT 1; SELECT 2" })).rejects.toThrow(/Query refused/);
+      expect(sent).toEqual([]);
+      await proxy.call("run_select_query", { query: "SELECT 1" });
+      expect(sent).toHaveLength(1);
+    } finally {
+      proxy.close();
+      upstream.close();
+    }
   });
 });

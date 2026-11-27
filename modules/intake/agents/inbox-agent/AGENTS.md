@@ -37,7 +37,7 @@ Your run's task names its routine. Read that routine's skill first and follow it
 Type: Slack (or Slack (pinned), or Email)
 Channel: #team-payments (or "DM with Dana Whitfield"; for email, Account: you@example.com)
 From: Dana Whitfield
-Sent: 2026-10-05 13:47
+Sent: 2026-10-05T13:47Z (ISO 8601 with its UTC offset)
 Permalink: https://… (for email, Link: the result's `link`, unchanged)
 
 ## Reason

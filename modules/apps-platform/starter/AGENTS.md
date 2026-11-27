@@ -77,7 +77,8 @@ these commands in the same PR, as it does `feature-map.json`.
   variant, shell and preset. It is never an app route or part of a build; leave it out of the app's repo.
 - **What always holds** (the design system's `guidelines.md`): readable contrast in both themes; a visible focus ring
   on everything interactive; details at a URL (a `Sheet` at `?item=`, say) that opens them on load and that Back
-  closes; empty, loading and error states in every data view; colours from the theme's names (`bg-background`,
+  closes; empty, loading and error states in every data view; times kept as UTC instants (ISO 8601 with `Z`) in
+  `server.mjs` and the API and shown in the viewer's zone by the browser; colours from the theme's names (`bg-background`,
   `text-muted-foreground`, `bg-primary`, `text-danger`, `bg-chart-1`…) so light and dark both work; what people could
   see and do stays when only restyling (a redesign's mockup decides what changes).
 - **A mockup is the spec.** When a change comes with a mockup (a page's `.tsx`, often a `theme.css`, and screenshots),

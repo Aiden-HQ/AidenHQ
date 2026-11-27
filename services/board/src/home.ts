@@ -13,16 +13,35 @@ import type { Comment, Issue, Paperclip } from "./paperclip.js";
 import type { Approval, Records } from "./records.js";
 import type { Compiled } from "./settings.js";
 import type { Store } from "./store.js";
+import { displayText } from "./board.js";
 import { grantsKeyOf, teammateFor, teammateKeys } from "./teammates.js";
 
 export type FaceRef = { key: string; name: string; job: string; face: RosterFace; state: "idle" | "working" | "needs" };
 type TaskRef = { identifier: string; title: string };
 /** A person waiting on the owner's reply (an open task labelled needs-response, which Intake files): who, and where they wrote. */
 export type Reply = { person: string | null; source: "slack" | "gmail" | null };
+/**
+ * A row's task as the detail drawer shows it: when it was filed, its labels, project (id) and open parent, the agent holding
+ * it, and where it came from. `source` is the description's `## Source` block (Intake's and the meeting notes' format):
+ * its `Type:`, its `Permalink:`/`Link:` address (http(s) only) and every other `Key: value` line in order. `reason` and
+ * `suggested` are its `## Reason` and `## Suggested action`; a description without a Source block gives its opening as `body`.
+ */
+export type About = {
+  created: string;
+  labels: string[];
+  project: string | null;
+  parent: TaskRef | null;
+  holder: string | null;
+  source: { type: string | null; url: string | null; fields: [string, string][] } | null;
+  reason?: string;
+  suggested?: string;
+  body?: string;
+};
 export type NeedRow =
-  | { id: string; kind: "answer"; teammate: FaceRef; since: string; task: TaskRef; question: string; detail?: string; options: string[]; questions: Question[]; waitSince: string }
-  | { id: string; kind: "approval"; teammate: FaceRef; since: string; task: TaskRef | null; question: string; card: object }
-  | { id: string; kind: "open"; teammate: FaceRef; since: string; task: TaskRef; question: string; reply?: Reply };
+  | { id: string; kind: "answer"; teammate: FaceRef; since: string; task: TaskRef; question: string; detail?: string; options: string[]; questions: Question[]; waitSince: string; about?: About }
+  | { id: string; kind: "approval"; teammate: FaceRef; since: string; task: TaskRef | null; question: string; card: object; about?: About }
+  | { id: string; kind: "open"; teammate: FaceRef; since: string; task: TaskRef; question: string; reply?: Reply; about?: About };
+export type Waiting = { id: string; identifier: string; title: string; age_days: number; quiet_days: number; about: About };
 /** `reopen`: an owner task its filing agent closed on evidence (skill owner-triage): the row offers one-tap Reopen. */
 export type SinceItem = { teammate: FaceRef; text: string; at: string; task: string | null; kind: "done" | "fyi" | "digest" | "closed"; reopen?: true };
 export type Home = {
@@ -34,7 +53,7 @@ export type Home = {
   needs: NeedRow[];
   since: { groups: { teammate: FaceRef; latest: SinceItem; count: number }[]; items: SinceItem[]; total: number } | null;
   world: {
-    waiting_on: { id: string; identifier: string; title: string; age_days: number; quiet_days: number }[] | null;
+    waiting_on: Waiting[] | null;
     today: { timezone: string; events: { id: string; start: string; title: string; all_day: boolean; url?: string; prep?: string }[] } | null;
   };
   team: { teammate: FaceRef; line: string }[];
@@ -67,6 +86,45 @@ const SINCE_KINDS = ["done", "fyi", "digest"];
 /** The most since items one response carries ("All N" says when it shows fewer than the total). */
 const SINCE_ITEMS = 200;
 type Told = { source: string; task: string | null; kind: string; at: string; cursor: string; text: string };
+
+/** How much of a description without a Source block the drawer shows (Home refetches often; the task page has the rest). */
+const BODY_CHARS = 600;
+/** A `## <name>` section of a description: its text up to the next heading. */
+const section = (text: string, name: string) => new RegExp(`^##[ \\t]+${name}[ \\t]*$([\\s\\S]*?)(?=^##[ \\t]|(?![\\s\\S]))`, "im").exec(text)?.[1]?.trim();
+const http = (v: string | undefined) => (v && /^https?:\/\/\S+$/i.test(v) ? v : null);
+
+/** A task's own text: a merge appends the merged task under `## Merged from <id>: <title>` (merge.ts), and that task's
+ * Source, Reason and Suggested action are its own, never the surviving task's (whose details they would otherwise be). */
+const ownText = (text: string) => {
+  const merged = /^##[ \t]+Merged from\b/im.exec(text);
+  return (merged ? text.slice(0, merged.index) : text).trim();
+};
+
+/** What the drawer details about a task: `holder` is its agent's name (null for a person's task). */
+export function aboutTask(i: Issue, parent: Issue | undefined, holder: string | null): About {
+  const text = ownText(displayText(i.description));
+  const block = section(text, "Source");
+  let source: About["source"] = null;
+  if (block !== undefined) {
+    const lines = block.split("\n").map((l) => /^([A-Z][A-Za-z ]{0,30}):[ \t]*(.+)$/.exec(l.trim())).filter((m): m is RegExpExecArray => !!m).map((m) => [m[1]!, m[2]!.trim()] as [string, string]);
+    const get = (k: string) => lines.find(([n]) => n.toLowerCase() === k)?.[1];
+    source = { type: get("type") ?? null, url: http(get("permalink")) ?? http(get("link")), fields: lines.filter(([n]) => !["type", "permalink", "link"].includes(n.toLowerCase())) };
+  }
+  const reason = section(text, "Reason");
+  const suggested = section(text, "Suggested action");
+  const body = !source && text ? (text.length > BODY_CHARS ? `${text.slice(0, BODY_CHARS).trimEnd()}…` : text) : undefined;
+  return {
+    created: i.createdAt,
+    labels: (i.labels ?? []).map((l) => l.name),
+    project: i.projectId ?? null,
+    parent: parent ? { identifier: parent.identifier, title: parent.title } : null,
+    holder,
+    source,
+    ...(reason ? { reason } : {}),
+    ...(suggested ? { suggested } : {}),
+    ...(body ? { body } : {}),
+  };
+}
 
 /** The text inside the ledger's ``` fence (owner-channel fences what agents wrote), first line, as one plain line. */
 export const toldLine = (t: string) => oneLine((/^(`{3,})\n([\s\S]*)\n\1$/.exec(t)?.[2] ?? t).split("\n").find((l) => l.trim()) ?? "");
@@ -131,6 +189,11 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
     const state = owners.has(key) ? "needs" : r?.state === "working" ? "working" : "idle";
     return { key, name: r?.name ?? String(d.compiled()?.agents?.[key]?.name ?? key), job: r?.teammate?.job ?? keys.get(key)?.job ?? "", face: r?.teammate?.face ?? null, state };
   };
+  // The drawer's details of a row's task (its parent only while that is open: the read Home already has).
+  const about = (i: Issue): About => {
+    const agent = keyOfAgent(i.assigneeAgentId);
+    return aboutTask(i, i.parentId ? byId.get(i.parentId) : undefined, agent ? face(agent).name : null);
+  };
 
   // Needs: every task with the owner's attention (a card on it is the card's row), every owner card.
   const snoozed = d.store.snoozed(viewer.accountId, as_of);
@@ -147,20 +210,20 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
     const card = owner.map((a) => (a.why === "card" && a.ref.startsWith("record:") ? cardRows.get(a.ref.slice(7)) : undefined)).find(Boolean);
     if (card) {
       onTask.add(card.id);
-      pending.push({ id: card.id, agentKey: keyOfAgent(card.requesterId) || agentKey, build: () => approvalRow(card, ref(i)) });
+      pending.push({ id: card.id, agentKey: keyOfAgent(card.requesterId) || agentKey, build: () => approvalRow(card, i) });
       continue;
     }
     if (waitsForAnswer(st) && st.wait_since) {
       const q = boundQuestions(askedQuestions(await d.pc.comments(i.id).catch(() => [] as Comment[]), i.assigneeAgentId), st.question ?? "");
-      pending.push({ id: i.id, snooze: `${i.id}:${st.wait_since}`, agentKey, build: () => ({ id: i.id, kind: "answer", teammate: face(agentKey), since: st.wait_since!, task: ref(i), question: st.question ?? "", ...(st.detail ? { detail: st.detail } : {}), options: q[0]?.options ?? [], questions: q, waitSince: st.wait_since! }) });
+      pending.push({ id: i.id, snooze: `${i.id}:${st.wait_since}`, agentKey, build: () => ({ id: i.id, kind: "answer", teammate: face(agentKey), since: st.wait_since!, task: ref(i), question: st.question ?? "", ...(st.detail ? { detail: st.detail } : {}), options: q[0]?.options ?? [], questions: q, waitSince: st.wait_since!, about: about(i) }) });
       continue;
     }
     const a = owner.find((x) => x.why !== "card");
-    if (a) pending.push({ id: i.id, agentKey, build: () => ({ id: i.id, kind: "open", teammate: face(agentKey), since: a.since, task: ref(i), question: st.question || st.note || i.title }) });
+    if (a) pending.push({ id: i.id, agentKey, build: () => ({ id: i.id, kind: "open", teammate: face(agentKey), since: a.since, task: ref(i), question: st.question || st.note || i.title, about: about(i) }) });
   }
-  for (const c of cards) if (!onTask.has(c.id)) pending.push({ id: c.id, agentKey: keyOfAgent(c.requesterId), build: () => approvalRow(c, byId.has(c.issueId) ? ref(byId.get(c.issueId)!) : null) });
-  function approvalRow(c: Approval, task: TaskRef | null): NeedRow {
-    return { id: c.id, kind: "approval", teammate: face(keyOfAgent(c.requesterId)), since: c.createdAt, task, question: c.sentence, card: d.shownApproval(c) };
+  for (const c of cards) if (!onTask.has(c.id)) pending.push({ id: c.id, agentKey: keyOfAgent(c.requesterId), build: () => approvalRow(c, byId.get(c.issueId)) });
+  function approvalRow(c: Approval, i: Issue | undefined): NeedRow {
+    return { id: c.id, kind: "approval", teammate: face(keyOfAgent(c.requesterId)), since: c.createdAt, task: i ? ref(i) : null, question: c.sentence, card: d.shownApproval(c), ...(i ? { about: about(i) } : {}) };
   }
   const shown = pending.filter((p) => !snoozed.has(p.snooze ?? p.id));
   for (const p of shown) owners.add(teammateFor(p.agentKey, keys));
@@ -174,12 +237,13 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
     .filter((i) => labelled(i, "needs-response") && !asked.has(i.id) && !asked.has(i.identifier) && !snoozed.has(i.id))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .map((i): NeedRow => {
-      // Intake's task format: the description opens with `Type:` (Slack, Email) and `From:`; the title is "Reply to <person>: <topic>".
-      const field = (k: string) => new RegExp(`^${k}:[ \\t]*(.+)$`, "im").exec(i.description ?? "")?.[1]?.trim();
-      const type = field("Type")?.toLowerCase() ?? "";
+      // Intake's task format: the description's Source block has `Type:` (Slack, Email) and `From:`; the title is "Reply to <person>: <topic>".
+      const a = about(i);
+      const from = a.source?.fields.find(([k]) => k.toLowerCase() === "from")?.[1];
+      const type = a.source?.type?.toLowerCase() ?? "";
       const source: Reply["source"] = type.startsWith("slack") ? "slack" : type.startsWith("email") ? "gmail" : /\bsource:(slack|gmail)\b/i.test(i.description ?? "") ? (/\bsource:slack\b/i.test(i.description ?? "") ? "slack" : "gmail") : null;
       const m = /^Reply to (.+?):\s*(.*)$/i.exec(i.title);
-      return { id: i.id, kind: "open", teammate: face(keyOfAgent(i.assigneeAgentId)), since: i.createdAt, task: ref(i), question: m?.[2] || i.title, reply: { person: field("From") ?? m?.[1] ?? null, source } };
+      return { id: i.id, kind: "open", teammate: face(keyOfAgent(i.assigneeAgentId)), since: i.createdAt, task: ref(i), question: m?.[2] || i.title, reply: { person: from ?? m?.[1] ?? null, source }, about: a };
     });
   const needs = [...asks, ...replies];
 
@@ -206,7 +270,7 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
   const since = kept.length ? { groups: [...groups.values()], items: kept.slice(0, SINCE_ITEMS), total: kept.length } : null;
 
   // World: what the owner waits on (open tasks labelled waiting-on) and his calendar today.
-  const waiting = open.filter((i) => labelled(i, "waiting-on") && !snoozed.has(i.id)).map((i) => ({ id: i.id, identifier: i.identifier, title: i.title, age_days: Math.floor((nowMs - Date.parse(i.createdAt)) / DAY), quiet_days: Math.floor((nowMs - Date.parse(i.lastActivityAt ?? i.updatedAt)) / DAY) }));
+  const waiting = open.filter((i) => labelled(i, "waiting-on") && !snoozed.has(i.id)).map((i) => ({ id: i.id, identifier: i.identifier, title: i.title, age_days: Math.floor((nowMs - Date.parse(i.createdAt)) / DAY), quiet_days: Math.floor((nowMs - Date.parse(i.lastActivityAt ?? i.updatedAt)) / DAY), about: about(i) }));
   const prepFor = (id: string) => open.find((i) => i.description?.includes(id))?.identifier;
   const world = {
     waiting_on: waiting.length ? waiting : null,

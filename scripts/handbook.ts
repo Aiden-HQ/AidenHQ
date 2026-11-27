@@ -27,8 +27,9 @@ export function readInstructions(cfg: Obj, a: Obj, { repo, instanceDir = "" }: {
   // A module read from the sources cache (a per-module pin, a third-party module) has its handbook in the fetched tree.
   const trees = join(defaultCache(), "trees");
   const mod = a.tier === "local" ? join(instanceDir, "modules", a.module, "agents") : a.handbook_fork ? join(instanceDir, "agents") : String(a.instructions).startsWith(trees + sep) ? trees : a.module && /^[a-z0-9-]+$/.test(a.module) ? join(repo, "modules", a.module, "agents") : "";
-  // Handbooks say "the owner"; one line names them.
-  const owner = cfg.owner_name ? `This AidenHQ belongs to ${cfg.owner_name}: wherever this handbook says "the owner", it means ${cfg.owner_name}. Times you write for ${cfg.owner_name} read ${cfg.settings?.time_format?.value === "24h" ? "24-hour (20:00)" : "12-hour with AM/PM (8:00 PM)"}; tool inputs and machine values stay as the tool asks.\n\n` : "";
+  // Handbooks say "the owner"; one line names them, and says how times read to them and how times are kept (UTC instants).
+  const tz = String(cfg.settings?.timezone?.value || "UTC");
+  const owner = cfg.owner_name ? `This AidenHQ belongs to ${cfg.owner_name}: wherever this handbook says "the owner", it means ${cfg.owner_name}. Times you write for ${cfg.owner_name} read ${cfg.settings?.time_format?.value === "24h" ? "24-hour (20:00)" : "12-hour with AM/PM (8:00 PM)"} in their timezone, ${tz}, named when it could be unclear. Times you store or pass on (task text, markers, logs, a tool input that takes an instant) are UTC instants in ISO 8601 with Z (2026-11-28T05:00Z), or with the offset they came with; a tool input that asks for local time or a calendar date takes exactly that.\n\n` : "";
   // Where agent-built repos live: handbooks say "the agents org", one per enabled code host (compile's agents_orgs).
   const org = orgLine(cfg.agents_orgs ?? []);
   const own = owner + org + readInside(mod, a.instructions, `agent ${a.name}: instructions`).replace(/^---\n[\s\S]*?\n---\n?/, "").trim();

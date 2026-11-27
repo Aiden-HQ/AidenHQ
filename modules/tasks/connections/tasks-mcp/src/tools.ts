@@ -85,6 +85,8 @@ export async function companyOf(agentId: string) {
 const ENGINES = ["codex-openrouter"];
 const engineOf = (a: Json) => (ENGINES.includes(a.metadata?.engine) ? a.metadata.engine : undefined);
 const MAX_SUBTASKS = 40;
+/** An ISO date-time that names its zone (Z or a UTC offset): a zone-less one would be read in the server's zone. */
+const ZONED = /T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i;
 
 /** An OpenRouter model id (provider/model) for what the user named, or "" (as the runner's intake). */
 function openrouterModel(name: Json, listed: Json) {
@@ -1022,7 +1024,7 @@ const TOOLS: Record<string, Tool> = {
         mine: { type: "boolean", description: "only tasks assigned to you (your open work and chats)" },
         ...STATE_PROPS,
         label: { type: "string", description: "only tasks with this label name" },
-        updated_since: { type: "string", description: "ISO-8601; only tasks updated after this" },
+        updated_since: { type: "string", description: "ISO 8601 with Z or an offset; only tasks updated after this" },
         limit: { type: "number", description: "default 100, max 200" },
       },
       additionalProperties: false,
@@ -1039,7 +1041,11 @@ const TOOLS: Record<string, Tool> = {
       if (me) q.set("assigneeAgentId", me);
       else q.set("excludeRoutineExecutions", "true");
       if (label) q.set("labelId", (await labelIds([String(label)]))[0]);
-      if (updated_since) q.set("updatedSince", String(updated_since));
+      if (updated_since !== undefined) {
+        const since = ZONED.test(String(updated_since)) ? Date.parse(String(updated_since)) : NaN;
+        if (!Number.isFinite(since)) throw new Error("updated_since is an ISO time with Z or an offset (2026-11-28T05:00Z)");
+        q.set("updatedSince", new Date(since).toISOString());
+      }
       // The kernel kind/attention filter runs on each page as it arrives, so a match past the first page is found; a walk
       // stops at `limit` matches, so no more than that are returned. An idle or done row may sit far behind newer rows.
       // `prepare` keeps a row, replaces it, or drops it (null) before the kernel filter reads it.
@@ -1889,12 +1895,12 @@ const TOOLS: Record<string, Tool> = {
   },
   task_wait: {
     description:
-      "Record that the task this run is working on waits on something, so it isn't left idle: why, and until when (`until`, an ISO time at most 7 days ahead) or for what (`on`, the event, e.g. \"PR #12 merged\"; then you're woken in 24 hours to check). When it waits on a judgement you can't make yourself, even with your handbook, the brief and the advisor (what the brief means, what to do about a reviewer's repeated rejection, a choice that is someone else's), set `for` to who makes it, `delegator` (whoever handed you the task) or `owner`, and `question` to the decision with what another agent needs to settle it: the context, the options and your recommendation. The owner hears it directly only on a task they are talking to you on; otherwise the Fleet Steward settles it from the owner's decisions (as it does a delegator question when nobody handed you the task). The answer comes back to this task as a comment and wakes you; the result says who got it (`to`). To ask the owner in a chat with them, use notify's form instead: it records this wait itself. You're woken by the event when it comes as a comment on the task, and otherwise at `until`. End your turn after it. Only ever touches the current run's task.",
+      "Record that the task this run is working on waits on something, so it isn't left idle: why, and until when (`until`, an ISO time with Z or an offset, at most 7 days ahead) or for what (`on`, the event, e.g. \"PR #12 merged\"; then you're woken in 24 hours to check). When it waits on a judgement you can't make yourself, even with your handbook, the brief and the advisor (what the brief means, what to do about a reviewer's repeated rejection, a choice that is someone else's), set `for` to who makes it, `delegator` (whoever handed you the task) or `owner`, and `question` to the decision with what another agent needs to settle it: the context, the options and your recommendation. The owner hears it directly only on a task they are talking to you on; otherwise the Fleet Steward settles it from the owner's decisions (as it does a delegator question when nobody handed you the task). The answer comes back to this task as a comment and wakes you; the result says who got it (`to`). To ask the owner in a chat with them, use notify's form instead: it records this wait itself. You're woken by the event when it comes as a comment on the task, and otherwise at `until`. End your turn after it. Only ever touches the current run's task.",
     inputSchema: {
       type: "object",
       properties: {
         reason: { type: "string", description: "what the task waits on and why, in one line" },
-        until: { type: "string", description: "ISO-8601 time to resume at, at most 7 days ahead" },
+        until: { type: "string", description: "ISO 8601 time to resume at, with Z or an offset (2026-11-28T05:00Z), at most 7 days ahead" },
         on: { type: "string", description: "the event it waits for" },
         for: { type: "string", enum: ["delegator", "owner"], description: "who makes the judgement it waits on: `question` goes to them, or to the Fleet Steward when the owner isn't talking to you here or nobody handed you the task" },
         question: { type: "string", description: "with `for`: the decision you need from them, with the context they need to make it" },
