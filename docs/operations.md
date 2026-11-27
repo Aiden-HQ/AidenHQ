@@ -420,10 +420,14 @@ exact email match only).
   until the owner connects Slack, src_slack gets live events only.
 - Each pass writes `src_meta.ingest_run` (source, scope, rows, error; `status` holds a non-error marker, e.g. `retired`
   for an image target absent from a batch that inventoried every running and configured image: settled against the
-  replacement scanned that pass, or, for a fleet computer image no container runs and no configured image names, with no
-  replacement). src_docs has two scopes: `drive` (code) and
-  `summaries` (OpenRouter, the root `openrouter_key`; model `DOCS_SUMMARY_MODEL`, default `~deepseek/deepseek-flash-latest`,
-  ZDR). Without the key it stores metadata only.
+  replacement scanned that pass, or, when nothing runs the reference and no configured image names it, with no
+  replacement). A batch is complete when every planned image unit has a row; two units that share one key (two containers
+  on one image index) are one row, so the marker is written when each planned key is covered, not when the row count
+  equals the unit count. When the writer does list two SBOMs under one key, the scanner reconciles them as one
+  inventory, and any image row the batch listed that did not scan cleanly leaves every absent image unverified (it may
+  be running under the name the writer chose for it), so only a pass that inventoried every image it listed may retire
+  one. src_docs has two scopes: `drive` (code) and `summaries` (OpenRouter, the root `openrouter_key`; model
+  `DOCS_SUMMARY_MODEL`, default `~deepseek/deepseek-flash-latest`, ZDR). Without the key it stores metadata only.
 - Confluence pages are `src_jira.confluence_pages` (jira-mcp; ingest_run source `jira`, scopes `confluence` and
   `confluence_summaries`, model `CONFLUENCE_SUMMARY_MODEL`, else `DOCS_SUMMARY_MODEL`). To check the Atlassian tool
   parameters it uses: `docker compose exec jira-mcp node dist/src/probe.js` (schemas), or with a tool name and JSON args
@@ -449,9 +453,11 @@ into `data/modules/security/sbom-exports` — a sibling of the mounted `sbom` di
 security-scanner has that one mounted at `/sbom` and a raw export can hold runtime data no other service should read — and
 syft scans the extracted root as a directory under the same `image:<id>` target, with `container:<id>` in the `targets.tsv`
 commit column as provenance (a scan of the container's filesystem, not proof about the missing image; two replicas of one
-gone image are one target, their files extracted into one real root, and `container:<id>,<id>` names both). Only the
-daemon's own "No such image" takes this path: a timed-out or refused inspect stays an error line so the next pass retries
-the image; an image nothing can read or fit, and a container whose export fails, is a
+gone image are one target, their files extracted into one real root, and `container:<id>,<id>` names both). The
+daemon's own "No such image" or "invalid reference format" takes this path — the latter is how it refuses a reference it
+cannot parse at all, such as a bare container id, so a container whose image record the store cannot name is still
+inventoried; a timed-out or refused inspect stays an error line so the next pass retries the image; an image nothing can
+read or fit, and a container whose export fails, is a
 `targets.tsv` line naming the id and the error, never a silent gap), the product and instance checkouts and each
 app's deployed source, into `data/modules/security/sbom/current/`. The host target scans `/` without the homes (`./home/**`,
 `./root/**`), procfs, the container stores and this instance's own checkouts: a clone, task worktree or tool cache there

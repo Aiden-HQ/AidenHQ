@@ -56,6 +56,9 @@ async function run(env = {}, {
   psFailsFrom = 0,
   inspectFails = [],
   inspectSilent = "@@none@@",
+  // References the daemon refuses to parse at all: `docker image inspect` answers "invalid reference format" for them,
+  // as it does for a bare container id where a reference is expected (and for an id whose `sha256:` prefix was stripped).
+  invalidRefs = [],
   drift = {},
   scriptPath,
 } = {}) {
@@ -72,6 +75,7 @@ async function run(env = {}, {
   const freeTakenFile = join(dir, "free-taken");
   const sizesFile = join(dir, "sizes");
   const sizeErrorsFile = join(dir, "size-errors");
+  const invalidRefsFile = join(dir, "invalid-refs");
   const sizeJunkFile = join(dir, "size-junk");
   const platformManifestsFile = join(dir, "platform-manifests");
   const platformSizesFile = join(dir, "platform-sizes");
@@ -333,6 +337,9 @@ case "$1" in
       if [ "$1" = -f ] && [ "$2" = '{{.Size}}' ]; then
         # An image's size on disk, for the room its save and unpack need.
         shift 2
+        # A reference the daemon cannot parse at all: it refuses before it looks anything up, as it does for a bare
+        # container id where a reference is expected.
+        if grep -qxF -- "$1" "$INVALID_REFS"; then echo "Error response from daemon: invalid reference format" >&2; exit 1; fi
         # A per-platform size (ref<TAB>platform<TAB>bytes) wins: one index's variants have different sizes.
         if [ -n "$plat_req" ]; then
           plat_size="$(awk -F '\\t' -v ref="$1" -v plat="$plat_req" '$1 == ref && $2 == plat { print $3; found = 1 } END { exit !found }' "$PLATFORM_SIZES")" && { printf '%s\\n' "$plat_size"; exit 0; }
@@ -363,6 +370,8 @@ case "$1" in
       tmpl=""
       if [ "$1" = -f ]; then tmpl="$2"; shift 2; fi
       if [ "$#" -eq 0 ]; then cut -f"$col" "$TAGS"; exit 0; fi
+      # A reference the daemon cannot parse at all: refused before any lookup, as a bare container id is.
+      if grep -qxF -- "$1" "$INVALID_REFS"; then echo "Error response from daemon: invalid reference format" >&2; exit 1; fi
       # FAKE_TAG_NOISE <ref>: the daemon prints a warning ahead of the id, as a daemon that logs to stdout does.
       if [ -n "\${FAKE_TAG_NOISE:-}" ] && [ "$1" = "\${FAKE_TAG_NOISE}" ] && [ "$tmpl" = '{{.Id}}' ]; then
         printf 'WARNING: deprecated image store\n'
@@ -500,6 +509,7 @@ exit 0
   if (freeTaken) writeFileSync(freeTakenFile, `${freeTaken}\n`);
   writeFileSync(sizesFile, Object.entries(sizes).map(([ref, bytes]) => `${ref}\t${bytes}`).join("\n") + "\n");
   writeFileSync(sizeErrorsFile, sizeErrors.join("\n") + "\n");
+  writeFileSync(invalidRefsFile, invalidRefs.join("\n") + "\n");
   writeFileSync(sizeJunkFile, Object.entries(sizeJunk).map(([ref, out]) => `${ref}\t${out}`).join("\n") + "\n");
   writeFileSync(containerSizesFile, Object.entries(containerSizes).map(([id, bytes]) => `${id}\t${bytes}`).join("\n") + "\n");
   writeFileSync(exportErrorsFile, Object.entries(exportErrors).map(([id, err]) => `${id}\t${err}`).join("\n") + "\n");
@@ -526,7 +536,7 @@ exit 0
         ...process.env, PATH: `${join(dir, "bin")}:/usr/bin:/bin`, CALLS: calls, AIDENHQ_DATA_DIR: data,
         AIDENHQ_INSTANCE_DIR: "", CONTAINERS: containersFile, TAGS: tagsFile, HELD: heldFile, HELD_IDS: heldIdsFile, BROKEN: brokenFile,
         INSPECT_SILENT: inspectSilent,
-        SAVE_ERRORS: saveErrorsFile, SAVE_GROW: growFile, TAKE_AFTER_SAVE: takeFile, FREE_TAKEN: freeTakenFile, SAVED: join(dir, "saved.tar"), CLEAN: join(dir, "clean"), SIZES: sizesFile, LABELLED: join(dir, "labelled"), SIZE_ERRORS: sizeErrorsFile, SIZE_JUNK: sizeJunkFile, CONTAINER_SIZES: containerSizesFile, EXPORT_ERRORS: exportErrorsFile, EXPORT_GROW: exportGrowFile, MODES: modesFile, PLATFORM_MANIFESTS: platformManifestsFile, PLATFORM_SIZES: platformSizesFile, PS_FAILS: psFails ? "1" : "", NO_DESCRIPTOR_FIELD: noDescriptorField ? "1" : "", PS_FAILS_NTH: psFailsFrom ? String(psFailsFrom) : "", INSPECT_FAILS: inspectFails.join(" "), DRIFT: join(dir, "drift"), DRIFT_COUNT: join(dir, "drift-count"), LOCKS: join(dir, "locks"), FAKE_APPLY_LOCK: join(dirname(dirname(scriptPath_)), "data/apply.lock"),
+        SAVE_ERRORS: saveErrorsFile, SAVE_GROW: growFile, TAKE_AFTER_SAVE: takeFile, FREE_TAKEN: freeTakenFile, SAVED: join(dir, "saved.tar"), CLEAN: join(dir, "clean"), SIZES: sizesFile, LABELLED: join(dir, "labelled"), SIZE_ERRORS: sizeErrorsFile, SIZE_JUNK: sizeJunkFile, INVALID_REFS: invalidRefsFile, CONTAINER_SIZES: containerSizesFile, EXPORT_ERRORS: exportErrorsFile, EXPORT_GROW: exportGrowFile, MODES: modesFile, PLATFORM_MANIFESTS: platformManifestsFile, PLATFORM_SIZES: platformSizesFile, PS_FAILS: psFails ? "1" : "", NO_DESCRIPTOR_FIELD: noDescriptorField ? "1" : "", PS_FAILS_NTH: psFailsFrom ? String(psFailsFrom) : "", INSPECT_FAILS: inspectFails.join(" "), DRIFT: join(dir, "drift"), DRIFT_COUNT: join(dir, "drift-count"), LOCKS: join(dir, "locks"), FAKE_APPLY_LOCK: join(dirname(dirname(scriptPath_)), "data/apply.lock"),
         DIR: dir, ...env,
       },
     }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}` }));
@@ -677,6 +687,57 @@ test("security-sbom: a running container whose image record is gone is inventori
   assert.ok(modes.some((m) => /^tar \S+\.tar/.test(m)), `no tar beside the extracted root: ${modes.join("\n")}`);
   // The export never appears under the /sbom mount at any moment of the pass.
   assert.ok(!modes.some((m) => /modules\/security\/sbom\/\.export/.test(m)), `an export sits inside the scanner mount: ${modes.join("\n")}`);
+});
+
+test("security-sbom: an image inspect that fails with invalid reference format is inventoried from the container root", { skip: NOT_LINUX }, async () => {
+  // A running container's image is an id, and the daemon can be handed a reference it cannot parse at all: "invalid
+  // reference format" is the daemon saying it has no image record for that reference, exactly as "No such image" is. The
+  // container is then the only copy of the filesystem, so it is inventoried from its root under its own key — a scan row
+  // with a real SBOM, not an error line that the scanner's failedAt() guard would read as an unverified image.
+  const { status, out, targets, calls, dir } = await run({}, {
+    containers: [{ id: "c1", image: "sha256:1576dd87", config: "aidenhq/board:local" }],
+    tags: { "aidenhq/board:local": "sha256:9999" },
+    held: [],
+    invalidRefs: ["sha256:1576dd87"],
+    containerSizes: { c1: 4096 },
+  });
+  assert.equal(status, 0, out);
+  const row = targets.find((t) => t[0] === "image:sha256:1576dd87");
+  assert.ok(row, `no row for the invalid-reference container image:
+${targets.map((t) => t.join("\t")).join("\n")}`);
+  assert.notEqual(row[1], "-", `it was not scanned: ${row[2]}`);
+  assert.equal(row[2], "", "the invalid-reference container scan has no error");
+  assert.equal(row[3], "container:c1", "the row names the container whose filesystem it read");
+  assert.ok(existsSync(join(dir, "data/modules/security/sbom/current", row[1]!)), `the row has no syft-json file on disk: ${row[1]}`);
+  assert.ok(calls.some((c) => /^export .* -o \S+ c1$/.test(c) || /^export .* c1$/.test(c)), `no export of c1:\n${calls.join("\n")}`);
+  const call = calls.find((c) => c.startsWith("run ") && c.includes("--source-name image:sha256:1576dd87"));
+  assert.ok(call, `no syft run for the target:\n${calls.join("\n")}`);
+  assert.match(call, / dir:\/src /, "the extracted root was scanned as a directory");
+  assert.ok(!calls.some((c) => c.startsWith("save ")), `nothing was saved:\n${calls.join("\n")}`);
+});
+
+test("security-sbom: a shared image key still marks the batch complete", { skip: NOT_LINUX }, async () => {
+  // Two units can be inventoried under one target key: two containers on one image index, whose manifests are both
+  // scanned under the index's own key. That is one row, not a missing unit. Counting rows against planned units would
+  // leave the batch short of its marker for ever, and every dead target would stay absent from the scanner's view.
+  const A = "a".repeat(64), B = "b".repeat(64);
+  const { status, out, targets, dir } = await run({}, {
+    computers: { images: { cfg: "cfg:1" } },
+    containers: [
+      { id: "c1", image: "sha256:index", config: "sha256:index", label: "-", descriptor: { digest: "sha256:" + A, platform: { os: "linux", architecture: "amd64" } } },
+      { id: "c2", image: "sha256:index", config: "sha256:index", label: "-", descriptor: { digest: "sha256:" + B, platform: { os: "linux", architecture: "amd64" } } },
+    ],
+    tags: { "cfg:1": "sha256:cccc" },
+    manifests: { "cfg:1": "sha256:cccc" },
+    platformManifests: { "sha256:index": { "linux/amd64": "sha256:" + A } },
+    sizes: { "sha256:cccc": 1024, ["sha256:" + A]: 1024, ["sha256:" + B]: 1024 },
+    held: ["sha256:index", "sha256:cccc"],
+  });
+  assert.equal(status, 0, out);
+  // Two units were planned (the index and the configured tag) but the index is one key with one row.
+  const imageKeys = targets.filter((t) => t[0].startsWith("image:")).map((t) => t[0]).sort();
+  assert.deepEqual([...new Set(imageKeys)], ["image:cfg:1", "image:sha256:index"], `unexpected image keys:\n${imageKeys.join("\n")}`);
+  assert.ok(existsSync(join(dir, "data/modules/security/sbom/current/images.complete")), `a batch with every planned key covered carries the marker:\n${targets.map((t) => t.join("\t")).join("\n")}`);
 });
 
 test("security-sbom: two containers on one gone image are both exported and scanned under its one row", { skip: NOT_LINUX }, async () => {
