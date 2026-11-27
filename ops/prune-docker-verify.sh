@@ -10,11 +10,9 @@
 #   1. the daemon answers (`docker info`);
 #   2. the build cache was under `CACHE_CEILING_GB` right after the builder prunes — the snapshot the `build-cache` step
 #      took then, not a `docker system df` taken here, which a build started since could have grown past it (that growth is
-#      not a failed prune). The ceiling is not the 20 GB the builder prune aims at: the prune's floor plus in-use cache
-#      leaves the fleet normally on the 20 GB line (29.9 GB peak in the five hours to 2026-11-22T12:45Z), so a 20 GB
-#      ceiling failed every run after an ordinary build. It is a backstop for a prune that did nothing at all — 40 GB is
-#      above that measured peak and far under the 104 GB an uncapped store held — not the disk-pressure guard, which is
-#      DiskSpaceLow/DiskNearlyFull. A displayed size carries only the precision Docker printed it with, so the size is
+#      not a failed prune). The ceiling is ops/lib/build-cache.sh's: 15% of the disk Docker uses, 20-60 GB, the same
+#      number the apply-time prune caps at. It is a backstop for a prune that did nothing at all (an uncapped store held
+#      104 GB), not the disk-pressure guard, which is DiskSpaceLow/DiskNearlyFull. A displayed size carries only the precision Docker printed it with, so the size is
 #      allowed to be up to half of its last printed digit over the ceiling and no more: `40.0GB` (one decimal) is under,
 #      `40.1GB` is over;
 #   3. no labelled one-off container is still there after having been stopped for over a day (ops/prune-docker-containers.sh
@@ -29,7 +27,8 @@
 set -uo pipefail
 
 DOCKER=${DOCKER:-docker}
-CACHE_CEILING_GB=40 # a prune that did nothing, not the 20 GB target; above the measured peak (29.9 GB), see above
+. "${BASH_SOURCE[0]%/*}/lib/build-cache.sh"
+CACHE_CEILING_GB="$(aidenhq_build_cache_ceiling_gb)" # the one ceiling the apply-time prune caps at too (15% of the disk, 20-60 GB)
 CACHE_CEILING_BYTES=$((CACHE_CEILING_GB * 1000 * 1000 * 1000)) # the tolerance is the display precision of the size, below
 STOPPED_SECS=86400
 LABEL=aidenhq.oneoff=1

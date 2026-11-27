@@ -178,7 +178,7 @@ runs, its live database is left out and its hourly dumps carry it; for a complet
 first. A Postgres volume in use (the warehouse's `pgdata`) is skipped; its nightly dump volume is copied. The secret
 vault and the notes vault are not included. The backup holds `auth.secret`, so it is mode 0700. It refuses to start
 unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a full root disk crashes Paperclip's
-Postgres). Each successful apply prunes unused images older than 48 hours and caps the build cache at 20 GB (least recently used
+Postgres). Each successful apply prunes unused images older than 48 hours and caps the build cache at 15% of the Docker disk, clamped to 20-60 GB (`ops/lib/build-cache.sh`; least recently used
 first; both the buildx `--max-used-space` and the classic builder's `--keep-storage` form are tried, since which one the CLI
 knows depends on the buildx plugin). Each prune is its own `-`-prefixed `ExecStart=`, so every one runs whatever the ones
 before it did; a last, unprefixed step (`ops/prune-docker-verify.sh`) re-reads the host — daemon answering, build cache under
@@ -198,10 +198,8 @@ systemd reaching the later steps and the verification; the apply-time steps are 
 only helps once the command exits. The verification judges the cache on a snapshot taken immediately after the two builder
 prunes and before the image and container prunes (its own prefixed step, `prune-docker-step.sh build-cache ... docker
 system df`), so a build that grows the cache while later steps run does not read as a prune that capped nothing. That
-ceiling is 40 GB, not the prune's 20 GB target: a working prune leaves the fleet's ordinary cache on the 20 GB line (it
-peaks near 30 GB), so a 20 GB judgement would fail every ordinary run;
-40 GB is above that peak and still catches a prune that did nothing (an uncapped store holds 100 GB or more), while disk pressure
-is left to `DiskSpaceLow`/`DiskNearlyFull`. In that snapshot, over the ceiling with nothing reclaimable is a build holding
+ceiling is the same number the apply-time prune caps at (15% of the disk, 20-60 GB); it still catches a prune that did
+nothing (an uncapped store holds 100 GB or more), while disk pressure is left to `DiskSpaceLow`/`DiskNearlyFull`. In that snapshot, over the ceiling with nothing reclaimable is a build holding
 that cache in use (the ceiling holds), while any reclaimable bytes at all mean the prune did nothing. The snapshot, its status and its invocation are one record, so a run
 is only ever judged on its own result, and the ceiling's only tolerance is the precision Docker printed the size with.
 

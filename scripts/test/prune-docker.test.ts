@@ -18,8 +18,10 @@ const service = readFileSync(join(repo, "ops/units/prune-docker.service"), "utf8
 const script = readFileSync(join(repo, "ops/prune-docker-containers.sh"), "utf8");
 const verify = readFileSync(join(repo, "ops/prune-docker-verify.sh"), "utf8");
 const apply = readFileSync(join(repo, "ops/apply-config-work.sh"), "utf8");
-// The verify's build-cache ceiling, read from the script so the boundary cases below are the ones it actually enforces.
-const ceilingGb = Number(/^CACHE_CEILING_GB=(\d+)/m.exec(verify)?.[1] ?? "0");
+// The verify's build-cache ceiling on the stubbed disk below (267 GB, 15% = 40 GB): the shared helper computes it, so the
+// boundary cases are the ones the script enforces.
+const ceilingGb = 40;
+const fakeDf = (kb) => `#!/usr/bin/env bash\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted\\n/dev/x ${kb} 1 1 1%% /\\n'\n`;
 // A script's commands, without the comment lines that talk about them.
 const commands = (text) => text.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
 
@@ -117,7 +119,7 @@ test("the container step removes only one-offs stopped over a day, and the verif
   assert.match(verify, /Build Cache/);
   // The ceiling is a backstop for a prune that did nothing, not the 20 GB the builder prune aims at: the fleet's normal
   // reclaimable cache sits on the 20 GB line and peaked at 29.9 GB, so judging it at 20 GB failed every ordinary run.
-  assert.ok(ceilingGb >= 30, `the build-cache ceiling must clear the measured 29.9 GB peak, got ${ceilingGb}`);
+  assert.match(verify, /build-cache\.sh/, "the ceiling comes from the shared helper");
   assert.match(verify, /State\.FinishedAt/);
   // The image prune runs once, in its `-`-prefixed step, and the verification reads the status the step wrapper recorded:
   // running the same 48 h prune a second time doubles the work on a large host.
@@ -137,8 +139,9 @@ test("the apply-time prunes are independent too, and keep the same retention", (
   // timeout's SIGTERM can be ignored by a stuck buildx child: `-k` is the hard deadline that guarantees the step ends and
   // the steps after it (and the applied marker) are still reached.
   for (const l of lines) assert.match(l, /^\s*timeout -k \S+ \d+m /, `soft-only deadline on apply-time prune: ${l}`);
-  assert.ok(lines.some((l) => /docker builder prune -f --max-used-space 20GB\b/.test(l)), lines.join("\n"));
-  assert.ok(lines.some((l) => /docker builder prune -f --keep-storage 20GB\b/.test(l)), lines.join("\n"));
+  assert.ok(lines.some((l) => /docker builder prune -f --max-used-space "\$\{cache_gb\}GB"/.test(l)), lines.join("\n"));
+  assert.ok(lines.some((l) => /docker builder prune -f --keep-storage "\$\{cache_gb\}GB"/.test(l)), lines.join("\n"));
+  assert.match(apply, /aidenhq_build_cache_ceiling_gb/, "the apply caps at the shared ceiling");
   assert.ok(lines.some((l) => /docker image prune -af --filter until=48h --filter label!=aidenhq\.keep=true\b/.test(l)), lines.join("\n"));
   assert.ok(lines.some((l) => /bash ops\/prune-docker-containers\.sh\b/.test(l)), lines.join("\n"));
   assert.doesNotMatch(apply, /^\s*docker (system|volume) prune.*--volumes/m);
@@ -170,6 +173,7 @@ seen_file="${seenFile}"
 printf '%s\\n' "$*" >> "${calls}"
 case "$1 $2" in
   # \`docker info\` has no positional operand: match it on its whole line, before "$1 $2" ("info ").
+  "info -f") echo /var/lib/docker; exit ${daemonUp ? 0 : 1} ;;
   "info ") exit ${daemonUp ? 0 : 1} ;;
   "info") exit ${daemonUp ? 0 : 1} ;;
   "ps -aq")
@@ -229,11 +233,13 @@ esac
 exit 0
 `);
   chmodSync(join(bin, "docker"), 0o755);
+  writeFileSync(join(bin, "df"), fakeDf(267_000_000));
+  chmodSync(join(bin, "df"), 0o755);
   return {
     bin,
     calls: () => readFileSync(calls, "utf8"),
     run: (script, extraEnv = {}) => {
-      const r = spawnSync("bash", [join(repo, script)], { env: { PATH: "/usr/bin:/bin", DOCKER: join(bin, "docker"), ...extraEnv }, encoding: "utf8" });
+      const r = spawnSync("bash", [join(repo, script)], { env: { PATH: "/usr/bin:/bin", DOCKER: join(bin, "docker"), DF: join(bin, "df"), ...extraEnv }, encoding: "utf8" });
       return { status: r.status, out: `${r.stdout}${r.stderr}`, calls: readFileSync(calls, "utf8") };
     },
   };
@@ -428,8 +434,24 @@ test("the build-cache ceiling clears the fleet's normal level and still fails a 
   r = d.run("ops/prune-docker-verify.sh");
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /still reclaimable after the prune/);
-  // The ceiling clears the measured peak by a real margin, so ordinary growth between builds does not re-fail the unit.
-  assert.ok(ceilingGb >= 30, `ceiling must be above the 29.9 GB peak, got ${ceilingGb}`);
+});
+
+test("the build-cache ceiling is 15% of the Docker disk, clamped to 20-60 GB, 20 when the disk cannot be read", () => {
+  const dir = mkdtempSync(join(tmpdir(), "build-cache-"));
+  const ceiling = (kb, info = "/var/lib/docker") => {
+    writeFileSync(join(dir, "df"), kb === null ? "#!/usr/bin/env bash\nexit 1\n" : fakeDf(kb));
+    writeFileSync(join(dir, "docker"), `#!/usr/bin/env bash\n[ -n "${info}" ] && echo "${info}"\n`);
+    chmodSync(join(dir, "df"), 0o755);
+    chmodSync(join(dir, "docker"), 0o755);
+    return execFileSync("bash", ["-c", `. ops/lib/build-cache.sh; aidenhq_build_cache_ceiling_gb`], {
+      cwd: repo, encoding: "utf8", env: { PATH: "/usr/bin:/bin", DOCKER: join(dir, "docker"), DF: join(dir, "df") },
+    }).trim();
+  };
+  assert.equal(ceiling(100_000_000), "20", "100 GB disk: 15 GB, raised to the floor");
+  assert.equal(ceiling(267_000_000), "40", "267 GB disk: 15% = 40 GB");
+  assert.equal(ceiling(1_000_000_000), "60", "1 TB disk: 150 GB, capped");
+  assert.equal(ceiling(null), "20", "unreadable disk: the floor");
+  assert.equal(ceiling(267_000_000, ""), "20", "no Docker root dir: the floor");
 });
 
 test("the verification reads an absent Build Cache row and a failed image prune as failures, not as clean", () => {
