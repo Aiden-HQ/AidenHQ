@@ -1,0 +1,233 @@
+<!doctype html>
+<!-- The Servers page (server-manager): an MCP Apps view (text/html;profile=mcp-app) the `server-manager` connection serves as
+     ui://server-manager/page. Its own parts only: the shared kit (services/shared/page-kit.css and .js) is inlined where the markers
+     sit (mcp.ts pageHtml). Calls server_manager_config (read; a draft comes back as the owner's one settings change) and
+     server_manager_status. Keys are typed in the board's own Sign-ins panel below the frame, never here.
+     Layout rules: modules/AGENTS.md "Settings pages"; spec §9. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/*kit:css*/
+  .wrap { width: 100%; max-width: 1360px; display: grid; gap: 14px; }
+  .mc { --ctl: 340px; }
+  .mc .top { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 14px; padding: 14px 20px; background: var(--color-background-secondary, transparent); }
+  .mc.open .top { border-bottom: 1px solid var(--line); }
+  .mc .who { display: grid; gap: 3px; min-width: 0; }
+  .mc .name { font-weight: 600; font-size: 14.5px; overflow-wrap: anywhere; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .mc .sum { color: var(--soft); font-size: 13px; }
+  .mc .acts { display: flex; gap: 8px; flex-wrap: wrap; }
+  .mc .state { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+  .sec { padding: 0 20px; }
+  .sec + .sec { border-top: 1px solid var(--line); }
+  .sech { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 14px 0 4px; }
+  .sech h3 { margin: 0; font-size: 11.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--soft); }
+  .sech small { color: var(--soft); font-size: 12px; }
+  .srow { display: grid; grid-template-columns: 200px minmax(0, 1fr) var(--ctl); gap: 6px 24px; align-items: center; padding: 10px 0; border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+  .sech + .srow { border-top: 0; }
+  .st { font-weight: 560; font-size: 13.5px; }
+  .sd { display: grid; gap: 6px; min-width: 0; color: var(--soft); font-size: 13px; line-height: 1.45; }
+  .sd code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 0 4px; border-radius: 4px; background: color-mix(in srgb, var(--line) 22%, transparent); color: var(--color-text-primary, CanvasText); }
+  .ctl { width: var(--ctl); min-width: 0; }
+  .ctl .seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); width: 100%; padding: 3px; gap: 3px; border-radius: 8px; }
+  .ctl .seg button { height: 30px; padding: 0 6px; font-size: 13px; border-radius: 6px; overflow: hidden; text-overflow: ellipsis; }
+  .ctl .seg button[aria-checked=true] { --tone: var(--accent); }
+  .ctl input[type=text], .ctl input[type=number] { height: 32px; }
+  .adv { width: 100%; height: 48px; padding: 0; display: flex; justify-content: space-between; align-items: center; border: 0; border-radius: 0; background: none; box-shadow: none; font-weight: 560; }
+  .adv:not(:disabled):hover { background: none; box-shadow: none; }
+  .adv span { color: var(--soft); font-weight: 400; font-size: 12.5px; white-space: normal; text-align: right; }
+  .sec.last { padding-bottom: 8px; }
+  .bar { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; }
+  .adder.card { max-width: 1360px; }
+  .adder .add { border-top: 0; padding: 14px 20px 6px; }
+  .adder .msg { margin: 0; padding: 0 14px 14px; min-height: 20px; color: var(--soft); font-size: 13px; }
+  .adder .msg.err { color: var(--color-text-danger, #b00020); }
+  .tkey { display: block; padding-top: 4px; }
+  @media (max-width: 1000px) { .mc { --ctl: 100%; } .srow { grid-template-columns: minmax(0, 1fr); gap: 4px; } .ctl { margin-top: 6px; } }
+  @media (max-width: 520px) { .mc .top { grid-template-columns: minmax(0, 1fr); } .sec, .mc .top { padding-left: 14px; padding-right: 14px; } .sech small { display: none; } .adv span { display: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar">
+    <p class="intro">The servers this module keeps patched. It checks and patches over SSH inside each machine's quiet window, and asks you before it reboots one you set to "ask me first".</p>
+    <button type="button" class="primary" id="addbtn" aria-expanded="false" aria-controls="adder" disabled>+ Add server</button>
+  </div>
+  <div class="card adder" id="adder" hidden></div>
+  <div id="rows"><div class="card"><div class="empty">Loading the servers…</div></div></div>
+  <div class="note" id="note" role="status"></div>
+</div>
+<script>
+/*kit:js*/
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  // cfg.machines: [{ name, set, effective, summary }]; cfg.defaults: what an entry falls back to.
+  let cfg = { machines: [], defaults: null };
+  let added = [], drafts = {}, lastGood = { drafts: {}, removing: null, added: [] }, sentRev = 0, removing = null, openName = null, drawn = false;
+  // Each machine's last readout (server_manager_status), by name: the page shows its state, last check and counts, never a key.
+  let stateOf = {};
+  const advOpen = new Set();
+  const machines = () => [...cfg.machines.map((m) => ({ name: m.name, effective: m.effective })), ...added.map((name) => ({ name, effective: { name, ...DEFAULT() } }))];
+  const DEFAULT = () => ({ address: "", user: "", key: "", port: 22, enabled: true, expected_fingerprint: "", security_minutes: 60, weekly_day: "mon", weekly_time: "03:00", reboot_policy: "auto", quiet_start: "03:00", quiet_end: "05:00" });
+  const saved = (name) => machines().find((m) => m.name === name).effective;
+  const draft = (name) => (drafts[name] ??= { ...saved(name) });
+  const dirty = (name) => name in drafts && !eq(drafts[name], saved(name));
+  // The draft, whole, as the owner's one settings change: the module checks each entry and returns the change the board's bar saves.
+  function propose(live) {
+    const list = machines().filter((m) => m.name !== removing).map((m) => { const e = drafts[m.name] ?? saved(m.name); const out = { name: m.name }; for (const k of Object.keys(e)) if (k !== "name" && e[k] !== "" && e[k] != null) out[k] = e[k]; return out; });
+    const sent = { drafts: structuredClone(drafts), removing, added: [...added] }, rev = ++sentRev;
+    inOrder(async () => {
+      try {
+        await tool("server_manager_config", { edits: { machines: list } });
+        lastGood = sent;
+        say(Object.keys(drafts).length || sent.removing || sent.added.length ? "Changes are proposed: Save in the bar above applies them." : "");
+      } catch (e) {
+        if (rev === sentRev) { drafts = structuredClone(lastGood.drafts); removing = lastGood.removing; added = [...lastGood.added]; redraw(); }
+        say(e.message, true);
+      }
+    });
+  }
+  const change = (name, patch, live) => { Object.assign(draft(name), patch); if (!live) soon(redraw); propose(live); };
+
+  const srow = (title, desc, ctl, extra) => h("div", { className: "srow" }, h("div", { className: "st", textContent: title }), h("div", { className: "sd" }, h("span", {}, ...desc), extra ?? null), h("div", { className: "ctl" }, ctl));
+  const code = (t) => h("code", { textContent: t });
+  const seg = (name, key, opts, value, set) => {
+    const byLabel = Object.fromEntries(opts.map(([v, l]) => [l, v]));
+    return editor({ kind: "seg", label: key, f: `${name}|${key}`, value: Object.fromEntries(opts)[String(value)], values: opts.map(([, l]) => l), set: (l) => set(byLabel[l]) });
+  };
+  const text = (name, key, label, value, set, more = {}) => {
+    const inp = h("input", { type: "text", value: String(value ?? ""), ariaLabel: `${label} (${name})`, autocomplete: "off", spellcheck: false, ...more });
+    inp.dataset.f = `${name}|${key}`;
+    let t;
+    inp.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => set(inp.value.trim(), true), 250); });
+    inp.addEventListener("change", () => { clearTimeout(t); set(inp.value.trim()); });
+    return inp;
+  };
+  const num = (name, key, label, value, set, min, max) => {
+    const inp = h("input", { type: "number", min: String(min), max: String(max), value: String(value ?? ""), ariaLabel: `${label} (${name})` });
+    inp.dataset.f = `${name}|${key}`;
+    let t;
+    inp.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => { const n = Number(inp.value); if (Number.isInteger(n) && n >= min && n <= max) set(n, true); }, 250); });
+    inp.addEventListener("change", () => { clearTimeout(t); const n = Number(inp.value); if (Number.isInteger(n) && n >= min && n <= max) return set(n); inp.value = String(draft(name)[key] ?? ""); say("That number is out of range.", true); });
+    return inp;
+  };
+  const time = (name, key, label, value, set) => {
+    const inp = h("input", { type: "text", inputMode: "numeric", placeholder: "HH:MM", value: String(value ?? ""), ariaLabel: `${label} (${name})` });
+    inp.dataset.f = `${name}|${key}`;
+    const ok = (v) => /^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(v);
+    let t;
+    inp.addEventListener("input", () => { clearTimeout(t); t = setTimeout(() => { if (ok(inp.value.trim())) set(inp.value.trim(), true); }, 250); });
+    inp.addEventListener("change", () => { clearTimeout(t); const v = inp.value.trim(); if (ok(v)) return set(v); inp.value = String(draft(name)[key] ?? ""); say("A time is 24-hour HH:MM, for example 03:00.", true); });
+    return inp;
+  };
+  const addrPattern = (v) => !v ? "" : !/^[A-Za-z0-9.:[\]-]{1,253}$/.test(v) ? "A host name or address: letters, digits, . : [ ] and -, never a user or a URL." : "";
+  const addrField = (name, value, set) => {
+    const inp = text(name, "address", "Address", value, set);
+    const msg = h("div", { className: "meta" });
+    inp.addEventListener("input", () => { msg.textContent = addrPattern(inp.value.trim()); });
+    return h("div", {}, inp, msg);
+  };
+
+  const onoff = [["true", "On"], ["false", "Off"]];
+  const DAYS = [["mon", "Mon"], ["tue", "Tue"], ["wed", "Wed"], ["thu", "Thu"], ["fri", "Fri"], ["sat", "Sat"], ["sun", "Sun"]];
+  const policy = [["auto", "Auto"], ["ask", "Ask me first"]];
+
+  function body(name) {
+    const d = draft(name);
+    const adv = advOpen.has(name);
+    const advBtn = h("button", { type: "button", className: "adv", ...{ "aria-expanded": String(adv) } }, h("b", { textContent: "Advanced" }), h("span", { textContent: adv ? "Hide" : "Fingerprint · disk-free guard" }));
+    advBtn.addEventListener("click", () => { adv ? advOpen.delete(name) : advOpen.add(name); redraw(); });
+    const sec = (title, hint, ...rows) => h("div", { className: "sec" }, h("div", { className: "sech" }, h("h3", { textContent: title }), hint ? h("small", { textContent: hint }) : null), ...rows);
+    const keyRow = h("div", { className: "st", textContent: "Key" });
+    const keyVal = h("span", { className: "sd" }, "Picked from the Sign-ins panel below the page, by name. Its value never enters this page: type it there, and set or replace it outside the frame.");
+    const keyName = h("strong", { textContent: d.key || "not picked" });
+    return [
+      sec("Connection", null,
+        srow("Address", ["The host name or address this module connects to, with ", code("user"), " and the port."], addrField(name, d.address, (v, live) => change(name, { address: v }, live))),
+        srow("User", ["The login it signs in as. It must allow that key and passwordless sudo for apt."], text(name, "user", "User", d.user, (v, live) => change(name, { user: v }, live))),
+        srow("Port", ["SSH port; 22 by default."], num(name, "port", "Port", d.port, (v, live) => change(name, { port: v }, live), 1, 65535)),
+        h("div", { className: "srow" }, keyRow, h("div", { className: "sd" }, keyVal, h("div", { className: "tkey" }, "Key name: ", keyName)), h("div", { className: "ctl" }, text(name, "key", "Key name", d.key, (v, live) => change(name, { key: v }, live), { placeholder: "e.g. vm-one" })))),
+      sec("Schedule", null,
+        srow("Check for updates", ["How often it looks for upgrades, in minutes (15 to 1440)."], num(name, "security_minutes", "Minutes", d.security_minutes, (v, live) => change(name, { security_minutes: v }, live), 15, 1440)),
+        srow("Weekly full pass", ["Once a week, install every upgradable package, not only security updates."], h("div", { style: "display:flex;gap:8px" }, daySeg(name, d.weekly_day), time(name, "weekly_time", "Time", d.weekly_time, (v, live) => change(name, { weekly_time: v }, live)))),
+        srow("Reboot policy", ["In its quiet window, a machine set to Auto reboots when a kernel update needs it; Ask me first files a card you approve."], seg(name, "reboot_policy", policy, d.reboot_policy, (v) => change(name, { reboot_policy: v }))),
+        srow("Quiet window", ["The hours it may install and reboot, in your timezone. A window that ends before it starts wraps midnight."], h("div", { style: "display:flex;gap:8px;align-items:center" }, time(name, "quiet_start", "Starts", d.quiet_start, (v, live) => change(name, { quiet_start: v }, live)), "to", time(name, "quiet_end", "Ends", d.quiet_end, (v, live) => change(name, { quiet_end: v }, live))))),
+      h("div", { className: "sec last" }, advBtn, ...(adv ? [
+        srow("Expected fingerprint", ["Optional: the SSH host-key fingerprint you expect, ", code("SHA256:…"), ". Empty pins whatever the host presents on the first connection, then refuses a change."], text(name, "expected_fingerprint", "Fingerprint", d.expected_fingerprint, (v, live) => change(name, { expected_fingerprint: v }, live), { placeholder: "SHA256:… (optional)" })),
+        srow("Enabled", ["Off stops every check and run on this machine; it stays listed."], seg(name, "enabled", onoff, String(d.enabled), (v) => change(name, { enabled: v === "true" }))),
+      ] : [])),
+    ];
+  }
+  // A day picked by its label (Mon) maps back to its key (mon).
+  function daySeg(name, value) {
+    const byLabel = Object.fromEntries(DAYS.map(([v, l]) => [l, v]));
+    return editor({ kind: "seg", label: "Weekday", f: `${name}|weekly_day`, value: Object.fromEntries(DAYS.map(([v, l]) => [v, l]))[value], values: DAYS.map(([, l]) => l), set: (l) => change(name, { weekly_day: byLabel[l] }) });
+  }
+
+  function card(m) {
+    const name = m.name, open = openName === name, d = draft(name), gone = removing === name, fresh = added.includes(name);
+    const tags = [fresh ? h("span", { className: "tag edit", textContent: "Added on Save" }) : dirty(name) ? h("span", { className: "tag edit", textContent: "Edited" }) : null, gone ? h("span", { className: "tag failed", textContent: "Removed on Save" }) : null];
+    const btn = (label, fn, cls = "") => { const b = h("button", { type: "button", textContent: label, className: cls }); b.addEventListener("click", fn); return b; };
+    const acts = gone ? [btn("Keep", () => { removing = null; redraw(); propose(); })]
+      : open && fresh ? [btn("Discard", () => { added = added.filter((x) => x !== name); delete drafts[name]; redraw(); propose(); })]
+      : open ? [btn("Remove", () => { removing = name; redraw(); propose(); })]
+      : [btn("Edit", () => { openName = name; redraw(); })];
+    const st = stateOf[name];
+    const stTags = st ? [
+      h("span", { className: `tag ${st.security ? "needs" : st.reboot_needed ? "needs" : "ok"}`, textContent: st.distro ?? st.state }),
+      st.security != null ? h("span", { className: `tag ${st.security ? "needs" : "ok"}`, textContent: `${st.security} security` }) : null,
+      st.pending != null ? h("span", { className: "tag", textContent: `${st.pending} pending` }) : null,
+      st.reboot_needed ? h("span", { className: "tag needs", textContent: "reboot needed" }) : null,
+      st.last_check ? h("span", { className: "tag", textContent: `checked ${ago(st.last_check)}` }) : h("span", { className: "tag", textContent: st.state }),
+    ].filter(Boolean) : [];
+    return h("div", { className: `card mc${open && !gone ? " open" : ""}${drawn ? " seen" : ""}` }, h("div", { className: "top" }, h("div", { className: "who" }, h("div", { className: "name" }, h("span", { textContent: name }), ...tags.filter(Boolean)), h("div", { className: "sum", textContent: summaryOf(d) }), stTags.length ? h("div", { className: "state" }, ...stTags) : null), h("div", { className: "acts" }, ...acts)), ...(open && !gone ? body(name) : []));
+  }
+  const summaryOf = (m) => {
+    if (!m.enabled) return "Off: no checks, no runs.";
+    const every = m.security_minutes >= 60 && m.security_minutes % 60 === 0 ? `${m.security_minutes / 60}h` : `${m.security_minutes}m`;
+    return `Checks every ${every}; weekly pass ${m.weekly_day} ${m.weekly_time}; ${m.reboot_policy === "auto" ? "reboots" : "asks first"} in its ${m.quiet_start}–${m.quiet_end} window.`;
+  };
+
+  // ---- Add server: a name field under the page's header. Adding lists it with defaults and opens it; the board's bar saves it.
+  const NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+  const nameError = (v) => !v ? "" : !NAME.test(v) ? "Use lowercase letters, digits and -, up to 32 characters." : machines().some((m) => m.name === v) ? `${v} is already listed.` : "";
+  function closeAdder() { $("adder").hidden = true; $("adder").replaceChildren(); $("addbtn").setAttribute("aria-expanded", "false"); }
+  function openAdder() {
+    if (!$("adder").hidden) return $("adder").querySelector("input").focus();
+    const input = h("input", { type: "text", placeholder: "e.g. vm-one", ariaLabel: "Server name", autocomplete: "off", spellcheck: false });
+    const msg = h("p", { className: "msg", role: "status" }), go = h("button", { type: "button", className: "primary", textContent: "Add" }), cancel = h("button", { type: "button", textContent: "Cancel" });
+    const check = () => { const v = input.value.trim(), bad = nameError(v); msg.textContent = bad ? bad : "Lists it with defaults; fill in address, user and key, then Save in the bar above."; msg.className = bad ? "msg err" : "msg"; return !bad && !!v; };
+    const submit = () => { const v = input.value.trim(); if (!v) { msg.textContent = "Type the server's name, for example vm-one."; msg.className = "msg err"; return input.focus(); } if (!check()) return input.focus(); added = [...added, v]; openName = v; closeAdder(); redraw(); propose(); };
+    input.addEventListener("input", check);
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); else if (e.key === "Escape") closeAdder(); });
+    go.addEventListener("click", submit); cancel.addEventListener("click", closeAdder);
+    $("adder").replaceChildren(h("div", { className: "add" }, input, go, cancel), msg);
+    $("adder").hidden = false; $("addbtn").setAttribute("aria-expanded", "true"); check(); input.focus();
+  }
+  $("addbtn").addEventListener("click", openAdder);
+
+  const redraw = () => keepFocus(draw);
+  function draw() {
+    closeHelp();
+    const all = machines();
+    if (!all.length) return $("rows").replaceChildren(h("div", { className: "card" }, h("div", { className: "empty" }, h("b", { textContent: "No servers yet. " }), "Choose + Add server above, then connect it here; keys are typed in the Sign-ins panel under the page.")));
+    if (!all.some((m) => m.name === openName)) openName = all[0].name;
+    $("rows").replaceChildren(h("div", { className: "wrap" }, ...all.map(card)));
+    drawn = true;
+  }
+
+  async function load() {
+    try {
+      cfg = await tool("server_manager_config", {});
+      // The last readout per machine, for the state tags under each name (empty until a machine's first check).
+      let status = { servers: [] };
+      try { status = await tool("server_manager_status", {}); } catch { /* the config still draws; a status read that fails says so below */ }
+      stateOf = Object.fromEntries((status.servers ?? []).map((s) => [s.name, s]));
+      $("addbtn").disabled = false;
+      drafts = {}; added = []; lastGood = { drafts: {}, removing: null, added: [] }; removing = null; draw();
+    } catch (e) { say(e.message, true); }
+  }
+  start("server-manager", load);
+</script>
+</body>
+</html>
