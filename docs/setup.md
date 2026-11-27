@@ -58,7 +58,7 @@ the vault still works, but its password is sealed with a key stored on the same 
 folder but not a stolen disk.
 
 Tailscale is optional. A new install without a tailnet serves the board over HTTPS on
-the server's public IP (tcp 443 and 8446 open, password and authenticator), or on loopback through an SSH tunnel
+the server's public IP (tcp 443, 8446 and 8447 open, password and authenticator), or on loopback through an SSH tunnel
 behind NAT: `--exposure public|tailscale|local` picks one, and running setup again with another switches
 ([design/access.md](design/access.md#exposure-modes)).
 
@@ -142,7 +142,7 @@ One run sets up the whole machine. It is idempotent: if it stops partway, fix th
 8. runs `ops/apply-config.sh`: compiles the modules, starts the stack, creates your Paperclip account and company,
    then turns off Paperclip sign-up;
 9. publishes the board on your tailnet (`tailscale serve --bg --https=443 http://127.0.0.1:3121`), installs the
-   model gateway, agent-computer launcher and run-pruning user units, and opens a Welcome chat with Aiden;
+   kernel (model gateway and jobs), agent-computer launcher and run-pruning user units, and opens a Welcome chat with Aiden;
 10. prints your one-time board setup link.
 
 Write `~/person.env` (it holds secrets; never commit it, and delete it at the end):
@@ -254,7 +254,7 @@ in at `http://localhost:3100` shows your company with Aiden in its org chart.
 
 Change config in one of two ways. Prefer the first:
 
-- **Ask Aiden.** "Install the slack module" or "set channels to web and telegram". The Engineer edits the
+- **Ask Aiden.** "Install the slack module" or "set my timezone to Europe/London". The Engineer edits the
   instance repo and you approve the change with one tap.
 - **By hand.** Edit `~/aidenhq-instance/instance.yaml`, then
   `git -C ~/aidenhq-instance commit -am '<why>' && git -C ~/aidenhq-instance push origin main`, then
@@ -281,20 +281,16 @@ read -rs V && printf '%s' "$V" > ~/.config/aidenhq/<name> && chmod 600 ~/.config
 
 ### Telegram (approvals, pages, and account recovery)
 
-1. [human] In Telegram, message **@BotFather**, send `/newbot` and keep the token. Then send your new bot any message.
-2. Find your chat id. Do this **before** saving the token: once AidenHQ has the token it long-polls the bot's
-   updates itself, and this call would compete with it:
-   ```sh
-   read -rs T; curl -s "https://api.telegram.org/bot$T/getUpdates" | jq '.result[].message.chat.id'; unset T
-   ```
-3. Save the token as `telegram_notify_bot_token` in the vault (snippet above), and add your chat id to `.env`:
-   `echo 'TELEGRAM_OWNER_CHAT_ID=<chat id>' >> ~/aidenhq/.env`. Only that chat is accepted.
-4. Add `telegram` to `channels:` in `instance.yaml` (see [docs/configuration.md](configuration.md)) and apply.
-5. Restart the service that holds the token: `cd ~/aidenhq && docker compose up -d --force-recreate channel-telegram-telegram`.
+On the board, open **Aiden on your phone** (`#/setup/channel-telegram`, also the welcome wizard's reach step) and follow it:
 
-**Check:** `docker compose exec channel-telegram-telegram printenv TELEGRAM_OWNER_CHAT_ID` prints your chat id, and sending the
-bot `/help` gets an immediate reply listing `/waiting`, `/status` and `/brief` (these quick commands don't wake a
-model). Any other message goes to Aiden; forward messages to the bot to give Aiden work.
+1. [human] In Telegram, message **@BotFather**, send `/newbot`, choose a name and a username ending in `bot`, and copy the
+   token it replies with.
+2. Paste the token into the board and press **Save**.
+3. [human] Scan the QR code that appears (or tap its link on your phone) and press **Start**. That chat is now yours with
+   Aiden; only it is accepted, and pairing needs no apply.
+
+**Check:** sending the bot `/help` gets an immediate reply listing `/waiting`, `/status` and `/brief` (these quick commands
+don't wake a model). Any other message goes to Aiden; forward messages to the bot to give Aiden work.
 
 ### Slack
 
@@ -316,14 +312,11 @@ Slack is one module (`slack`) with two parts, both served by one Slack app made 
 app, never shared):
 
 1. Pick **Slack with Aiden's bot** on the same page and paste an App Configuration Token: the board makes the full app,
-   adds the bot to the app it made for the sign-in, or (beside an organisation's sign-in) makes your own bot app. An app
-   made before 2026-11-23 is offered **Update your bot app** instead (its App ID, `apps.manifest.update`).
+   adds the bot to the app it made for the sign-in, or (beside an organisation's sign-in) makes your own bot app. An existing
+   bot app is offered **Update your bot app** instead (its App ID, `apps.manifest.update`).
 2. [human] Install it on the app's Install page in Slack (the setup page links it), then paste the Bot User OAuth Token
    (`xoxb-`) and an app-level token (`xapp-`, scope `connections:write`; Slack has no API that makes one).
 3. Pair: DM the bot the code the page shows. The paired account is whose words count and who gets paged.
-
-An instance that ran the old `channel-slack` module needs nothing: `replaces` keeps its `instance.yaml` working, and the
-apply moves its listener's data and restarts it under the `slack` module.
 
 **Check:** `docker compose logs --tail 20 slack-live` shows no token errors, and
 `scripts/healthcheck.sh | grep slack` shows `ok  slack read (own profile)`.
@@ -500,7 +493,7 @@ scripts/bootstrap.sh                 # secrets dir, data dirs
 # create your private instance repo (instance.yaml, apps.yaml, agents/), check it out, and set
 # AIDENHQ_INSTANCE_DIR=<checkout> in .env
 ops/apply-config.sh                  # instance -> pinned product -> compile -> compose up -> setup
-mkdir -p ~/.config/systemd/user && cp ops/units/aidenhq-{gateway,computers}.service ops/units/prune-docker.* ~/.config/systemd/user/
+mkdir -p ~/.config/systemd/user && cp ops/units/aidenhq-{kernel,computers}.service ops/units/prune-docker.* ~/.config/systemd/user/
 systemctl --user enable --now aidenhq-kernel aidenhq-computers prune-docker.service prune-docker.timer
 ```
 
@@ -561,7 +554,7 @@ Every board route, reads included, needs a signed-in admin with an authenticator
 
 Recovery: `sudo ops/setup.sh --config owner.env --reset <email>` (a config file with just `OWNER_NAME`, `OWNER_EMAIL`
 and `TIMEZONE` is enough) ends that account's sessions, lifts a lockout, clears
-an admin's authenticator and sends a new link to the owner's Telegram only. Approvals in Telegram keep working
+an admin's authenticator and prints a new one-time link on the server only. Approvals in Telegram keep working
 throughout. Five wrong passwords or codes from one address pause that address for 15 minutes; twenty through the gate
 pause the account on the gate's sign-in only, never on the board.
 

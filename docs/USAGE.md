@@ -29,7 +29,7 @@ pushes things to you. You rarely need to open anything else.
 - "What's stuck?" / "What did the agents spend this week?" / "Status of everything"
 - "Run the brief now" / "Pause the Slack scout until Monday" / "Resume it". Admin actions only run on your own
   words, never on something forwarded.
-- **Changing the fleet:** "make the brief shorter", "add a Friday check on X", "model for the scout: kimi". The CoS
+- **Changing the fleet:** "make the brief shorter", "add a Friday check on X", "use a cheaper model for the scout". The CoS
   hands it to the Engineer, which edits your instance repo (`instance.yaml`, `apps.yaml`, `agents/`) and
   shows you the diff. Nothing changes until you approve.
 - **"Install X"** means enable module X: the Engineer adds it to `modules:` in `instance.yaml` (and any settings it
@@ -57,24 +57,22 @@ pushes things to you. You rarely need to open anything else.
 ## Secrets
 
 Secrets live in the secret vault: the secrets directory on the host is an encrypted gocryptfs folder, unlocked at boot
-by the host's TPM, plaintext only while mounted. Keep the recovery key in a password manager. See
+with a password sealed to the host's TPM2 (or to a host key where there is none), plaintext only while mounted. Keep the recovery key in a password manager. See
 [ops/vault/README.md](../ops/vault/README.md).
 
 ## Connect Jira
 
-The `jira` module reads Jira (and Confluence) through Atlassian's own remote MCP server, signed in as you. The Research
-The Researcher gets reads only (JQL search, an issue, its change history, comments, projects, releases); nobody gets the
+The `jira` module reads Jira (and Confluence) through Atlassian's own remote MCP server, signed in as you. The Researcher
+gets reads only (JQL search, an issue, its change history, comments, projects, releases); nobody gets the
 write tools (comment, create issue) until you grant them. Every call is pinned to your Atlassian site.
 
-1. On the host, create the sign-in folder first, as your user and not root: `mkdir -p ~/.config/aidenhq/jira && chmod 700
-   ~/.config/aidenhq/jira`. Without it Docker creates a root-owned folder and the sign-in cannot be saved.
-2. In the instance repo, add `jira` to `modules:` in `instance.yaml` and apply.
-3. On the board, Settings, Connections, Jira: **Connect**. Give your Atlassian site's address (for example
+1. In the instance repo, add `jira` to `modules:` in `instance.yaml` and apply.
+2. On the board, Settings, Connections, Jira: **Connect**. Give your Atlassian site's address (for example
    `https://your-company.atlassian.net`), then sign in with your own Atlassian account in the tab that opens and
    approve read and search access to Jira and Confluence. Atlassian then sends that tab to `http://localhost:3121/jira/callback?...`,
    which can't load: copy its full address into the Connect dialog and press **Finish**
    ([docs/setup.md](setup.md#connecting-accounts)). The banner disappears when it works.
-4. Check: ask the CoS "what's open in Jira for project X?".
+3. Check: ask the CoS "what's open in Jira for project X?".
 
 If the sign-in says your account cannot reach the site, your Atlassian account lacks access to Atlassian's remote MCP
 server (Rovo): ask your Atlassian administrator to allow it. A service account with an API token is refused; your own

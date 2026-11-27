@@ -128,9 +128,9 @@ It is idempotent. The Engineer runs it for you after you approve a change.
   running it after every apply restarts those services a second time for nothing.
 - **After changing kernel code:** apply-config restarts `aidenhq-kernel` (SIGTERM; `KillMode=process`): the kernel stops following its jobs (offsets saved in `data/kernel/kernel.db`) and exits; the next kernel adopts every job whose shell is still that run (pid and its `.exit` file name) and reports one that died while no kernel ran as lost, which the kernel resumes in the same session.
 
-- **The model gateway** (`kernel/src/gateway`, user unit `aidenhq-kernel`): every model call goes through it, and it alone reads `openrouter_key`. apply-config installs and starts the unit before compose and setup, and restarts it only when the code it loads at startup (the closure of `kernel/src/main.ts`) or its unit changed. A host whose apply-config predates the hand-over (step 3) runs its old script for the apply that brings the hand-over in; start that one apply with the new script instead: `git fetch -q origin main && git show <product sha>:ops/apply-config.sh > ops/.apply-next.sh && bash ops/.apply-next.sh; rm -f ops/.apply-next.sh` (it checks out the product, sees the script changed and hands over to the checked-out one). A bind that fails (the backplane address before compose is up) is retried in the process while loopback serves. It listens on `127.0.0.1:8201` (Engineer jobs through their jail, the AI reviewer, and the computer launcher, which forwards its boxes' model calls with the box's run token; the gateway names that run at the launcher's `/whoami`) and `10.231.0.1:8201` (Codex in Paperclip with the run's own JWT, the source writers, the board's cost reports at `/v1/costs/<report>`), and, with the ci module on, `10.231.4.1:8201` (the CI runners' bridge: CI tokens only, see CI runners). Spend (spec §5.12): limits count real cost. A call goes ahead while the install's spend (`spend_day_usd`, a UTC day, default $50; `spend_month_usd`, a UTC calendar month, default $1000) and the task's spend (`task_usd`, default $20; a chat or routine task: per UTC day) are below their limit, so one call may take a limit past it; its output limit is bounded to what the tightest limit's room buys at the model's price on OpenRouter's own models list (`GET /api/v1/models`, held in memory and refreshed hourly, the last good list kept on a failed refresh; an id OpenRouter doesn't list is refused), never under 1,024 tokens. It settles at what OpenRouter billed for it (the answer's `usage.cost`). A call past the install's limit gets HTTP 402 `cap_reached` and the owner is told once per limit, period and value; a call past a task's gets 402 and the delegator is told once; there is no off switch and no card. Raise a limit in Settings (the owner's). Ledger: `data/kernel/kernel.db` (`calls` and `cost_rollup`, the cost reports' 15-minute rollup of it kept by triggers, both 62 days); the old `data/gateway/usage.db` is merged in at every start while it exists (idempotent) and otherwise left alone. If it is down, no model call is made (`systemctl --user status aidenhq-gateway`, `journalctl --user -u aidenhq-gateway`).
-- **Agent memory** (the `memory` module): `memory_note` writes the agent's own memory document in the kernel at once (`data/kernel/memory/agents/<key>.json`, kernel `memory.ts`); a job's handbook and the chat lane read it each time. The agent page's Handbook tab shows it (Memory). To change one agent's memory, ask that agent to remember or forget something. The apply imports each agent's legacy memory file from the instance repo once (`ops/memory-move.ts`, before the kernel restarts); a one-time script in `ops/` cancels the old inbox tasks, by hand. Turning the `memory` module off removes the tools and the section (the documents stay on the data volume).
-- **Advisor and fan-out** (`modules/tasks/connections/tasks-mcp/src/models.ts`): `advisor_ask` (every Codex agent; GPT Sol, 5 calls per run) and `fanout_map` (granted per agent; up to 25 items on DeepSeek Flash) call the gateway's `/advisor` and `/fanout` routes with the run's own credential, billed to its run. Engineer jobs consult the same advisor with `aidenhq advise "<brief>"` (on the job's own credential; 5 per job). Both send `ADVISOR_MODEL` (models.ts). Not yet in agent computers. The kill switch below drops only the agents' tools; `aidenhq advise` stays (still under the gateway's limits). Kill switch: `settings.model_tools: off`, then apply.
+- **The model gateway** (`kernel/src/gateway`, user unit `aidenhq-kernel`): every model call goes through it, and it alone reads `openrouter_key`. apply-config installs and starts the unit before compose and setup, and restarts it only when the code it loads at startup (the closure of `kernel/src/main.ts`) or its unit changed. A bind that fails (the backplane address before compose is up) is retried in the process while loopback serves. It listens on `127.0.0.1:8201` (Engineer jobs through their jail, the AI reviewer, and the computer launcher, which forwards its boxes' model calls with the box's run token; the gateway names that run at the launcher's `/whoami`) and `10.231.0.1:8201` (Codex in Paperclip with the run's own JWT, the source writers, the board's cost reports at `/v1/costs/<report>`), and, with the ci module on, `10.231.4.1:8201` (the CI runners' bridge: CI tokens only, see CI runners). Spend (spec §5.12): limits count real cost. A call goes ahead while the install's spend (`spend_day_usd`, a UTC day, default $50; `spend_month_usd`, a UTC calendar month, default $1000) and the task's spend (`task_usd`, default $20; a chat or routine task: per UTC day) are below their limit, so one call may take a limit past it; its output limit is bounded to what the tightest limit's room buys at the model's price on OpenRouter's own models list (`GET /api/v1/models`, held in memory and refreshed hourly, the last good list kept on a failed refresh; an id OpenRouter doesn't list is refused), never under 1,024 tokens. It settles at what OpenRouter billed for it (the answer's `usage.cost`). A call past the install's limit gets HTTP 402 `cap_reached` and the owner is told once per limit, period and value; a call past a task's gets 402 and the delegator is told once; there is no off switch and no card. Raise a limit in Settings (the owner's). Ledger: `data/kernel/kernel.db` (`calls` and `cost_rollup`, the cost reports' 15-minute rollup of it kept by triggers, both 62 days). If it is down, no model call is made (`systemctl --user status aidenhq-kernel`, `journalctl --user -u aidenhq-kernel`).
+- **Agent memory** (the `memory` module): `memory_note` writes the agent's own memory document in the kernel at once (`data/kernel/memory/agents/<key>.json`, kernel `memory.ts`); a job's handbook and the chat lane read it each time. The agent page's Handbook tab shows it (Memory). To change one agent's memory, ask that agent to remember or forget something. Turning the `memory` module off removes the tools and the section (the documents stay on the data volume).
+- **Advisor and fan-out** (`modules/tasks/connections/tasks-mcp/src/models.ts`): `advisor_ask` (every Codex agent; GPT Sol, 5 calls per run) and `fanout_map` (granted per agent; up to 25 items on DeepSeek Flash) call the gateway's `/advisor` and `/fanout` routes with the run's own credential, billed to its run. Engineer jobs consult the same advisor with `aidenhq advise "<brief>"` (on the job's own credential; 5 per job). Both send `ADVISOR_MODEL` (models.ts). The kill switch below drops only the agents' tools; `aidenhq advise` stays (still under the gateway's limits). Kill switch: turn the `model-tools` module off, then apply.
 
 ## Health
 
@@ -200,8 +200,8 @@ restore puts that copy over the file copy. Files are read through a container, s
 runs, its live database is left out and its hourly dumps carry it; for a complete Paperclip database, stop the stack
 first. A Postgres volume in use (the warehouse's `pgdata`) is skipped; its nightly dump volume is copied. The secret
 vault and the notes vault are not included. The backup holds `auth.secret`, so it is mode 0700. It refuses to start
-unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a full root disk crashed Paperclip's
-Postgres on 2026-11-16). Each successful apply prunes unused images older than 48 hours and caps the build cache at 20 GB (least recently used
+unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a full root disk crashes Paperclip's
+Postgres). Each successful apply prunes unused images older than 48 hours and caps the build cache at 20 GB (least recently used
 first; both the buildx `--max-used-space` and the classic builder's `--keep-storage` form are tried, since which one the CLI
 knows depends on the buildx plugin). Each prune is its own `-`-prefixed `ExecStart=`, so every one runs whatever the ones
 before it did; a last, unprefixed step (`ops/prune-docker-verify.sh`) re-reads the host — daemon answering, build cache under
@@ -221,9 +221,9 @@ systemd reaching the later steps and the verification; the apply-time steps are 
 only helps once the command exits. The verification judges the cache on a snapshot taken immediately after the two builder
 prunes and before the image and container prunes (its own prefixed step, `prune-docker-step.sh build-cache ... docker
 system df`), so a build that grows the cache while later steps run does not read as a prune that capped nothing. That
-ceiling is 40 GB, not the prune's 20 GB target: a working prune leaves the fleet's ordinary cache on the 20 GB line (a
-29.9 GB peak in the five hours to 2026-11-22T12:45Z), so a 20 GB judgement failed every ordinary run after 2026-11-22;
-40 GB is above that peak and still catches a prune that did nothing (an uncapped store held 104 GB), while disk pressure
+ceiling is 40 GB, not the prune's 20 GB target: a working prune leaves the fleet's ordinary cache on the 20 GB line (it
+peaks near 30 GB), so a 20 GB judgement would fail every ordinary run;
+40 GB is above that peak and still catches a prune that did nothing (an uncapped store holds 100 GB or more), while disk pressure
 is left to `DiskSpaceLow`/`DiskNearlyFull`. In that snapshot, over the ceiling with nothing reclaimable is a build holding
 that cache in use (the ceiling holds), while any reclaimable bytes at all mean the prune did nothing. The snapshot, its status and its invocation are one record, so a run
 is only ever judged on its own result, and the ceiling's only tolerance is the precision Docker printed the size with.
@@ -247,8 +247,8 @@ Moving a running instance to another host (drain, cold copy, tailnet names, roll
 
 Every job of a task runs in `<work_dir>/tasks/<identifier>` (default `~/aidenhq-work`), with its build-cache overlays in
 `.cache-layers/<identifier>` and its engine home (the Codex home and sessions) in `<state_dir>/<engine>/<agent>_<task>`.
-`state_dir` (default `~/.local/state/aidenhq-runner`) is the **kernel's live job state** despite its old name: never delete it
-(deleting it on 2026-11-22 failed every Engineer job with EACCES until it was restored). The kernel's disk sweep (`kernel/src/workspaces.ts`, every 15 minutes) removes each
+`state_dir` (default `~/.local/state/aidenhq-runner`) is the **kernel's live job state**, whatever its name says: never delete it
+(every Engineer job fails with EACCES until it is restored). The kernel's disk sweep (`kernel/src/workspaces.ts`, every 15 minutes) removes each
 of those folders, and check folders a dead kernel left in `checks/`, once nothing live uses it (no running job, no box not yet released) and its task has been done or
 cancelled for a day, or it has been idle for 3 days whatever the task's state (a resumed task clones again and starts a fresh
 session). When a disk is over 80% used the limits drop to a day idle and closed at all. Every job box shares one npm cache,
@@ -353,7 +353,7 @@ Design: [design/approvals.md](design/approvals.md).
 
 The instance setting `autonomy` (`off` | `tier0` | `full`; docs/configuration.md) decides who approves. Code tiers each
 write from verified state (`kernel/src/tier.ts`, `kernel/src/writes.ts`): Tier 0 runs at once with an audit row on the board, Tier 1
-goes to the AI reviewer (the `modules/ai-reviewer` module, policy `modules/ai-reviewer/service/security/policy.md`), Tier 2 to the
+goes to the AI reviewer (the `modules/ai-reviewer` module, policy `modules/ai-reviewer/service/security/policy/`), Tier 2 to the
 owner (Telegram card). Every record shows its tier, reason and `decided_by` on the board; a digest of what was decided
 without the owner reaches Telegram once a day from 21:00.
 
@@ -479,7 +479,7 @@ the first one, with the whole wave on disk and its predecessors' archives delete
 is that peak, not a sum of every workspace. Each wave's saves happen under the apply lock and its scans after the lock is
 released, before the next wave's saves, so two waves' archives are never resident together. That is what lets a set whose
 whole archive total plus its largest does not fit above the floor still be inventoried in full instead of dropping its
-largest image on every pass (2026-11-23: the set's 17 GB image was skipped every pass though each wave could hold it). A
+largest image on every pass. A
 later wave takes the lock again for its saves, within what is left of the pass's one overall export budget; a wave that
 cannot get the lock, or starts after that budget is spent, is recorded as unscanned lines rather than a gap.
 An image that cannot fit even a wave of its own — its archive held for its own scan plus its own size to unpack it — is a
@@ -517,7 +517,7 @@ an unresponsive daemon or a hung save. A pass that cannot enumerate
 the previous batch instead of publishing a short one. The lock is released before the syft scans, and the snapshot
 deadline ends with the lock so a long host scan can't make a later check look overdue. Every image's archive is exported from the reference the lock
 resolved (an immutable id, or the tag itself with a second check after the save), so a tag rebuilt in between is a line
-rather than another build's packages under the old target. On 2026-11-21 two such scan containers wrote ~142 GB in three hours and `/` reached 81%.
+rather than another build's packages under the old target.
 `AIDENHQ_SBOM_MIN_FREE_GB` can raise
 the floor for a smaller disk, never lower it: 30 GB is the least a pass runs with, and a value under it (or not a number) is
 ignored. The scanner matches a new batch within the hour (or daily anyway) and fires Security
@@ -625,8 +625,7 @@ environment holds only the CI token (never the job's GitHub tokens). It runs fro
 job writes (hooks, plugins and apps off), so nothing in the PR is loaded as codex config or instructions; a PR that adds
 `.codex/`, `codex.toml` or `AGENTS.override.md` fails the check (before any tier shortcut), and AGENTS.md is a sensitive path. Its answer must match
 an output schema: anything else is no verdict, which passes the check with a comment saying so ("Code review: no verdict on
-`abc1234` (not blocking)"; the system fails open rather than stalls, owner ruling 2026-11-21, replacing the fail-closed ruling of
-2026-11-17). A run without a verdict (a provider error, a timeout, an answer that isn't a review) gets one
+`abc1234` (not blocking)"; the system fails open rather than stalls). A run without a verdict (a provider error, a timeout, an answer that isn't a review) gets one
 retry when time is left (an incomplete review is not retried); a gateway refusal (bad token, our spend cap) isn't retried. The review target of 2,000 counted lines is
 advisory: past it, a run without a verdict says the change is large and suggests stacked PRs. Findings that did come out still
 decide (high or critical block). A run without a verdict records no baseline for the next push's delta review, so the next
@@ -689,7 +688,7 @@ runner starts the hook with an environment of its own (the github and runner con
 job-level `BASH_ENV` or `NODE_OPTIONS` does not reach it. To enable: the owner's sign-in with `admin:org` on the
 Aiden-HQ org; a runner group there limited to the two repos with *Allow public repositories* on, named in
 `settings.ci_org_runner_group`; a product at or after the hook; on the VM `systemctl --user enable --now
-aidenhq-ci-runner@Aiden-HQ-1 … aidenhq-ci-runner@Aiden-HQ-4` (four run today, owner 2026-11-22: the host was overloaded at six); then the repo variables
+aidenhq-ci-runner@Aiden-HQ-1 … aidenhq-ci-runner@Aiden-HQ-4` (four on the reference host); then the repo variables
 (Settings -> Secrets and variables -> Actions -> Variables): `CI_SELF_HOSTED` and `CI_SELF_HOSTED_RUNNERS` (the number of runners, 4). Unset it to go back to hosted only.
 To scale down, `systemctl --user disable --now` each instance above the new count (and `reset-failed` it): a unit that is
 only stopped stays enabled, so `ops/ci-runner-units.sh` restarts it and a failed one keeps alerting.
