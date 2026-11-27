@@ -81,6 +81,114 @@ const quote = (a: string) => (/^[A-Za-z0-9_@%+=:,.\/~-]+$/.test(a) ? a : `'${a}'
 
 const HOST_KEY_CHANGED = /REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed/i;
 
+/**
+ * The key a host presents right now, read *without* authenticating: ssh does its key exchange and records the host key before any
+ * user authentication, and `PreferredAuthentications=none` stops it there, so a private key is never offered to a host whose key
+ * has not been checked yet (§4, §10). No `-i` is passed at all: the scan holds no key material.
+ */
+function scanPresented(
+  t: Transport, machine: SshMachine,
+  base: (strict: "accept-new" | "yes", pinFile: string, withKey: boolean) => string[],
+  run: (args: string[], timeoutMs: number) => Promise<ExecResult>,
+): Promise<{ fingerprints: string[]; knownHosts: string }> {
+  const dir = mkdtempSync(join(t.config.tmpDir ?? tmpdir(), "sm-scan-"));
+  chmodSync(dir, 0o700);
+  const tmp = join(dir, "known_hosts");
+  const target = (() => { const a = machine.address.startsWith("[") && machine.address.endsWith("]") ? machine.address.slice(1, -1) : machine.address; return `${machine.user}@${a}`; })();
+  return (async () => {
+    try {
+      await run([...base("accept-new", tmp, false), "-o", "PreferredAuthentications=none", "-o", "PasswordAuthentication=no", target, "true"], TIMEOUTS.connect * 1000);
+      let knownHosts = "";
+      try { knownHosts = readFileSync(tmp, "utf8"); } catch { knownHosts = ""; }
+      return { fingerprints: await fingerprintsOf(t, tmp), knownHosts };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  })();
+}
+
+/** `ssh-keygen -l -E sha256` over a known_hosts file: the fingerprints it holds. */
+function fingerprintsOf(t: Transport, file: string): Promise<string[]> {
+  try { if (statSync(file).size === 0) return Promise.resolve([]); } catch { return Promise.resolve([]); }
+  return new Promise((resolve) => {
+    const child = spawn(t.config.keygenBin ?? "ssh-keygen", ["-l", "-E", "sha256", "-f", file], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env } });
+    let stdout = "";
+    child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
+    child.on("error", () => resolve([]));
+    child.on("close", () => resolve(stdout.split("\n").flatMap((l) => { const m = /\b(SHA256:[A-Za-z0-9+/]{43})\b/.exec(l); return m ? [m[1]!] : []; })));
+  });
+}
+
+/**
+ * The fingerprints a host presents right now, without authenticating (§10's re-pin reads this before it writes anything). The
+ * caller compares them with the fingerprint the owner was shown; nothing is pinned here.
+ */
+export async function presentedKey(t: Transport, machine: SshMachine): Promise<string[]> {
+  const base = (strict: "accept-new" | "yes", pinFile: string, withKey: boolean) => {
+    const args = [
+      "-o", "BatchMode=yes", "-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-o", "ClearAllForwardings=yes",
+      "-o", "RequestTTY=no", "-o", `ConnectTimeout=${TIMEOUTS.connect}`, "-o", "LogLevel=ERROR",
+      "-o", "UserKnownHostsFile=" + pinFile, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "IdentitiesOnly=yes",
+      "-o", `StrictHostKeyChecking=${strict}`, "-p", String(machine.port), "-l", machine.user,
+    ];
+    if (withKey) throw new Error("a scan takes no key");
+    return args;
+  };
+  const run = (args: string[], timeoutMs: number) => new Promise<ExecResult>((resolve, reject) => {
+    const child = spawn(t.config.sshBin ?? "ssh", args, { stdio: ["ignore", "pipe", "pipe"], env: { ...(t.config.env ?? process.env), LC_ALL: "C" } });
+    let stdout = "", stderr = "";
+    const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`timed out after ${Math.round(timeoutMs / 1000)} s`)); }, timeoutMs);
+    child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
+    child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+    child.on("error", (e) => { clearTimeout(timer); reject(new Error(String(e.message))); });
+    child.on("close", (code) => { clearTimeout(timer); resolve({ code: code ?? -1, stdout, stderr }); });
+  });
+  const seen = await scanPresented(t, machine, base, run);
+  return seen.fingerprints;
+}
+
+/**
+ * The owner's re-pin (§10): the host's key as it presents it right now, written to `<stateDir>/known_hosts/<machine>`. The expected
+ * fingerprint — the one the owner was shown — must be among the keys the host presents, or nothing is written at all (a stale click
+ * cannot pin a third key). No key material is involved: the scan holds no key.
+ */
+export async function repin(t: Transport, machine: SshMachine, expected: string): Promise<{ fingerprint: string }> {
+  const base = (strict: "accept-new" | "yes", pinFile: string) => [
+    "-o", "BatchMode=yes", "-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-o", "ClearAllForwardings=yes",
+    "-o", "RequestTTY=no", "-o", `ConnectTimeout=${TIMEOUTS.connect}`, "-o", "LogLevel=ERROR",
+    "-o", "UserKnownHostsFile=" + pinFile, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "IdentitiesOnly=yes",
+    "-o", `StrictHostKeyChecking=${strict}`, "-p", String(machine.port), "-l", machine.user,
+  ];
+  const run = (args: string[], timeoutMs: number) => new Promise<ExecResult>((resolve, reject) => {
+    const child = spawn(t.config.sshBin ?? "ssh", args, { stdio: ["ignore", "pipe", "pipe"], env: { ...(t.config.env ?? process.env), LC_ALL: "C" } });
+    let stdout = "", stderr = "";
+    const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`timed out after ${Math.round(timeoutMs / 1000)} s`)); }, timeoutMs);
+    child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
+    child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+    child.on("error", (e) => { clearTimeout(timer); reject(new Error(String(e.message))); });
+    child.on("close", (code) => { clearTimeout(timer); resolve({ code: code ?? -1, stdout, stderr }); });
+  });
+  const dir = mkdtempSync(join(t.config.tmpDir ?? tmpdir(), "sm-pin-"));
+  chmodSync(dir, 0o700);
+  const tmp = join(dir, "known_hosts");
+  try {
+    const a = machine.address.startsWith("[") && machine.address.endsWith("]") ? machine.address.slice(1, -1) : machine.address;
+    await run([...base("accept-new", tmp), "-o", "PreferredAuthentications=none", "-o", "PasswordAuthentication=no", `${machine.user}@${a}`, "true"], TIMEOUTS.connect * 1000);
+    const seen = await fingerprintsOf(t, tmp);
+    if (!seen.length) throw new Error(`${machine.name}: unreachable (the host presented no host key): nothing was re-pinned`);
+    if (!seen.includes(expected)) throw new Error(`${machine.name}: the host presents ${seen.join(", ")}, not ${expected}: nothing was re-pinned. Check the fingerprint and try again.`);
+    let knownHosts = "";
+    try { knownHosts = readFileSync(tmp, "utf8"); } catch { knownHosts = ""; }
+    if (!knownHosts.trim()) throw new Error(`${machine.name}: the host's key was read but not recorded: nothing was re-pinned`);
+    const pin = join(t.config.stateDir, "known_hosts", machine.name);
+    mkdirSync(dirname(pin), { recursive: true, mode: 0o700 });
+    writeFileSync(pin, knownHosts, { mode: 0o600 });
+    return { fingerprint: expected };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /** One connection to one machine, opened for one run and closed at the end. */
 export class Connection {
   private keyFile: string | null = null;
@@ -166,24 +274,9 @@ export class Connection {
     return this.fingerprints(this.pinFile);
   }
 
-  /**
-   * The key a host presents right now, read *without* authenticating: ssh does its key exchange and records the host key before
-   * any user authentication, and `PreferredAuthentications=none` stops it there, so the private key is never offered to a host
-   * whose key has not been checked yet (§4, §10).
-   */
-  private async presented(): Promise<{ fingerprints: string[]; knownHosts: string }> {
-    const dir = mkdtempSync(join(this.t.config.tmpDir ?? tmpdir(), "sm-scan-"));
-    chmodSync(dir, 0o700);
-    const tmp = join(dir, "known_hosts");
-    try {
-      // No `-i`: the key's file is not even written yet, so the scan cannot offer it whatever the host asks for.
-      await this.spawnRun([...this.baseArgs("accept-new", tmp, false), "-o", "PreferredAuthentications=none", "-o", "PasswordAuthentication=no", this.target(), "true"], TIMEOUTS.connect * 1000);
-      let knownHosts = "";
-      try { knownHosts = readFileSync(tmp, "utf8"); } catch { knownHosts = ""; }
-      return { fingerprints: await this.fingerprints(tmp), knownHosts };
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  /** The key the host presents right now, read without a key at all (§4, §10). */
+  private presented(): Promise<{ fingerprints: string[]; knownHosts: string }> {
+    return scanPresented(this.t, this.machine, this.baseArgs.bind(this), this.spawnRun.bind(this));
   }
 
   private spawnKeygen(args: string[]): Promise<ExecResult> {
@@ -215,8 +308,11 @@ export class Connection {
     // identity has not been checked.
     this.writeKey();
     const first = before.length === 0;
-    if (this.machine.expected_fingerprint || !first) {
-      const expected = this.machine.expected_fingerprint ? [this.machine.expected_fingerprint] : before;
+    // `expected_fingerprint` is the owner's check on the *first* connection (§4: "when it does, the first connection must match it");
+    // once a key is pinned, that pin is the authority. Otherwise a rotated key the owner re-pinned (§10) could never connect again,
+    // because the module cannot rewrite a setting only the owner writes.
+    if ((first && this.machine.expected_fingerprint) || !first) {
+      const expected = first && this.machine.expected_fingerprint ? [this.machine.expected_fingerprint] : before;
       if (!presented.some((f) => expected.includes(f))) {
         // Nothing is pinned from a host that is not the one the owner expected: the next run refuses too, until a reset.
         if (first) rmSync(this.pinFile, { force: true });

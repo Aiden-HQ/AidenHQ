@@ -70,6 +70,8 @@
   let stateOf = {};
   // A check in flight, by machine name: its button says so and is disabled until the read answers.
   const checking = new Set();
+  // A write in flight, by `<action>:<machine>`: a click files one record and the button says so until it answers.
+  const acting = new Set();
   const advOpen = new Set();
   const machines = () => [...cfg.machines.map((m) => ({ name: m.name, effective: m.effective })), ...added.map((name) => ({ name, effective: { name, ...DEFAULT() } }))];
   const DEFAULT = () => ({ address: "", user: "", key: "", port: 22, enabled: true, expected_fingerprint: "", security_minutes: 60, weekly_day: "mon", weekly_time: "03:00", reboot_policy: "auto", quiet_start: "03:00", quiet_end: "05:00" });
@@ -211,14 +213,26 @@
 
   function card(m) {
     const name = m.name, open = openName === name, d = draft(name), gone = removing.has(name), fresh = added.includes(name);
+    // The machine's last readout, if it has one: the state tags and the re-pin button are drawn from it, so it is read before both.
+    const st = stateOf[name];
     const tags = [fresh ? h("span", { className: "tag edit", textContent: "Added on Save" }) : dirty(name) ? h("span", { className: "tag edit", textContent: "Edited" }) : null, gone ? h("span", { className: "tag failed", textContent: "Removed on Save" }) : null];
     const btn = (label, fn, cls = "") => { const b = h("button", { type: "button", textContent: label, className: cls }); b.addEventListener("click", fn); return b; };
     const checkBtn = () => { const b = btn(checking.has(name) ? "Checking…" : "Check now", () => checkNow(name), "check"); b.disabled = checking.has(name); return b; };
+    // The two install buttons file the same server-manager.patch record a schedule would (§9); the reboot button files a
+    // server-manager.reboot, which an "ask me first" machine raises to the owner's own card. Every one of them is a typed kind: only a
+    // machine name, a mode and a fingerprint reach the service. A re-pin is offered only while the machine is `host-key-changed`, with the fingerprint the page shows.
+    const act = (label, fn, busyKey) => { const b = btn(acting.has(busyKey) ? `${label.replace(/ now$/, "")}…` : label, () => fn(), "act"); b.disabled = acting.has(busyKey); return b; };
+    const writeActs = () => [
+      checkBtn(),
+      act(st && st.reboot_needed ? "Reboot now" : "Reboot", () => rebootNow(name), `reboot:${name}`),
+      act("Install security now", () => patchNow(name, "security"), `security:${name}`),
+      act("Full update now", () => patchNow(name, "full"), `full:${name}`),
+      ...(st && st.state === "host-key-changed" && st.fingerprint ? [act("Re-pin the key shown", () => repinNow(name, st.fingerprint), `repin:${name}`)] : []),
+    ];
     const acts = gone ? [btn("Keep", () => { removing.delete(name); redraw(); propose(); })]
       : open && fresh ? [btn("Discard", () => { added = added.filter((x) => x !== name); delete drafts[name]; redraw(); propose(); })]
-      : open ? [btn("Remove", () => { removing.add(name); redraw(); propose(); })]
-      : [btn("Edit", () => { openName = name; redraw(); }), checkBtn()];
-    const st = stateOf[name];
+      : open ? [btn("Remove", () => { removing.add(name); redraw(); propose(); }), checkBtn()]
+      : [btn("Edit", () => { openName = name; redraw(); }), ...writeActs()];
     const stTags = st ? [
       h("span", { className: `tag ${st.security ? "needs" : st.reboot_needed ? "needs" : "ok"}`, textContent: st.distro ?? st.state }),
       st.security != null ? h("span", { className: `tag ${st.security ? "needs" : "ok"}`, textContent: `${st.security} security` }) : null,
@@ -253,6 +267,52 @@
       } catch { /* the check's own answer already said what it saw */ }
     } catch (e) { say(e.message, true); }
     finally { checking.delete(name); redraw(); }
+  }
+
+  // Install now (§9): files one server-manager.patch record for this machine, security only or full. The service reads the host
+  // and files the record with its exact list; a scheduled run files the same kind. Nothing is installed from this frame.
+  async function patchNow(name, mode) {
+    const key = `${mode}:${name}`;
+    if (acting.has(key)) return;
+    acting.add(key); redraw();
+    try {
+      const out = await tool("server_manager_patch", { machine: name, mode });
+      const f = out && out.filed;
+      say(f ? (f.tier === 0 ? `${name}: the ${mode} patch is filed and runs now; its outcome lands on the machine's records.` : `${name}: the ${mode} patch is filed and waits for its card.`) : `${name}: no record was filed.`, !f);
+      await refreshStatus();
+    } catch (e) { say(e.message, true); }
+    finally { acting.delete(key); redraw(); }
+  }
+  // Reboot now (§9): files one server-manager.reboot, bound to what the host needs at this moment.
+  async function rebootNow(name) {
+    const key = `reboot:${name}`;
+    if (acting.has(key)) return;
+    acting.add(key); redraw();
+    try {
+      const out = await tool("server_manager_reboot", { machine: name });
+      const f = out && out.filed;
+      say(f ? (f.tier === 0 ? `${name}: the reboot is filed and runs inside its quiet window.` : `${name}: the reboot waits for your card: this machine asks first.`) : `${name}: no record was filed.`, !f);
+    } catch (e) { say(e.message, true); }
+    finally { acting.delete(key); redraw(); }
+  }
+  // Re-pin (§10): only with the fingerprint the page was shown, and only after the owner's own click. The service reads the host's
+  // key again and refuses if it is not that one, so a stale click can never pin a third key.
+  async function repinNow(name, fingerprint) {
+    const key = `repin:${name}`;
+    if (acting.has(key)) return;
+    acting.add(key); redraw();
+    try {
+      const out = await tool("server_manager_host_key_reset", { machine: name, fingerprint });
+      say(`${name}: the host key is pinned again (${out.repinned}). The next check reads the host over it.`);
+      await refreshStatus();
+    } catch (e) { say(e.message, true); }
+    finally { acting.delete(key); redraw(); }
+  }
+  async function refreshStatus() {
+    try {
+      const status = await tool("server_manager_status", {});
+      stateOf = Object.fromEntries((status.servers ?? []).map((s) => [s.name, s]));
+    } catch { /* the last readout stands */ }
   }
 
   // ---- Add server: a name field under the page's header. Adding lists it with defaults and opens it; the board's bar saves it.

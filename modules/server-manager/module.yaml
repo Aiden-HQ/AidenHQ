@@ -145,6 +145,8 @@ services:
         SERVERS_TOKEN_FILE: ${secrets.server_manager_token}
         SERVERS_SERVICE_KEY_FILE: ${secrets.server_manager_service_key}
         SERVERS_MACHINES: "${settings.servers_machines}"
+        # Due times and quiet windows are the owner's wall clock (§12): a scheduled run is due in this zone, never the container's.
+        OWNER_TIMEZONE: "${settings.timezone}"
         WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_servers_password}
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
 data_version: 0 # its data dir's format (known_hosts/, the durable due-slot records): bumped by each forward-only migration

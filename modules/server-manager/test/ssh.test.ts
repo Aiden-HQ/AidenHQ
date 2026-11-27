@@ -135,6 +135,17 @@ test("a first connection whose key is not the expected fingerprint refuses, befo
   assert.equal(f.calls().length, 1, "the connection is tried once, and nothing runs on it");
 });
 
+test("§10 a re-pinned key connects even where a stale expected_fingerprint is still set: the pin is the authority", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sm-ssh-"));
+  mkdirSync(join(dir, "tmp"));
+  const { transport: t } = transport(dir);
+  // The owner re-pinned the host's current key (a pin file exists); the setting still names the old one, which only the owner can edit.
+  mkdirSync(join(dir, "state", "known_hosts"), { recursive: true });
+  writeFileSync(join(dir, "state", "known_hosts", "vm-one"), `host ssh-ed25519 ${PIN}\n`);
+  const ran = await withConnection(t, { ...machine, expected_fingerprint: OLD_PIN }, keys(), async () => "ran");
+  assert.equal(ran, "ran", "the first connection's expectation is not enforced forever");
+});
+
 test("a refused login says so in plain words and never echoes the key", async () => {
   const dir = mkdtempSync(join(tmpdir(), "sm-ssh-"));
   mkdirSync(join(dir, "tmp"));
