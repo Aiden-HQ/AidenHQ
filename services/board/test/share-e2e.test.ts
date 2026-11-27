@@ -144,6 +144,8 @@ describe("sharing a local module (V4)", () => {
       connected: () => true, scopes: () => ["repo"], status: () => ({ scopes: ["repo"], problems: [] }), token: async () => "tok",
       identity: async () => ({ login: "owner1", name: "Owner One", email: "1+owner1@users.noreply.github.com" }),
       rest: async (method: string, path: string, body?: unknown) => ({ ...(await ghRest(method, path, body)), headers: new Headers() }), graphql: async () => ({}),
+      // The chooser (github-mcp client.ts actorFor) with no App: every write is the owner's, through the same fake.
+      actorFor: async () => ({ kind: "owner", key: "owner", identity: () => access.identity(), rest: (m: string, p: string, b?: unknown) => access.rest(m, p, b), gitToken: () => access.token() }),
     };
     const handle = createService({ key: "ch-key", kernelUrl: kernel.url, cacheDir: join(root, "cache"), access: access as never, remoteUrl: gh, fleetOrg: "acme-agents", instanceRepo: "acme/acme-instance", productRepo: "acme/aidenhq", reviewGate: async () => undefined } as never);
     const svc = await listen((req, res) => void handle(req, res));
