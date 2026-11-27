@@ -9,6 +9,7 @@ import type { Readable } from "node:stream";
 import { join } from "node:path";
 import type { GitHubAccess } from "../../connections/github-mcp/src/client.ts";
 import { withFooter, withTrailer } from "./aidenhq-sdk/attribution.ts";
+import { PR_FILES_QUERY, allPrFiles } from "./merge-gate.ts";
 import { CLOSED_EVENT_SELECTION } from "./aidenhq-sdk/closed-event.ts";
 
 export type OpsContext = {
@@ -51,7 +52,7 @@ const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
     isFork isArchived
     pullRequest(number: $number) {
       number title body url state isDraft createdAt headRefOid headRefName baseRefName baseRefOid mergedAt mergeCommit { oid }
-      files(first: 100) { pageInfo { hasNextPage } nodes { path } }
+      files(first: 100) { pageInfo { hasNextPage endCursor } nodes { path changeType } }
       history: commits(last: 30) { nodes { commit { oid tree { oid } parents(first: 1) { totalCount } } } }
       commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { databaseId name status conclusion startedAt completedAt externalId checkSuite { app { slug } } } ... on StatusContext { context state createdAt } } } } } } }
       baseRef { target { oid ... on Commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { databaseId name status conclusion startedAt completedAt } ... on StatusContext { context state createdAt } } } } } } }
@@ -142,6 +143,23 @@ async function read(ctx: OpsContext, s: ReturnType<typeof slugOf>, b: Body): Pro
   };
   if (b.kind === "pr") {
     const data = await graph(PR_QUERY, "pullRequest");
+    // The PR's complete file list: a PR over 100 files is truncated by `files(first: 100)`, and a reader of every changed path
+    // must see them all. Only a cut list asks for another page; a page that fails throws (no answer), never a partial list.
+    const pr = data.repository && typeof data.repository === "object" ? data.repository.pullRequest : undefined;
+    if (pr && typeof pr === "object" && pr.files) {
+      pr.files = await allPrFiles(pr.files, async (after) => {
+        const r = await ok(ctx, "POST", "/graphql", { query: PR_FILES_QUERY, variables: { owner: s.org, repo: s.name, number: b.number, after } });
+        const errors: any[] = Array.isArray(r.body?.errors) ? r.body.errors : [];
+        const node = r.body?.data?.repository?.pullRequest;
+        const page = node?.files;
+        // A 200 carrying GraphQL errors and partial data is no answer: a page with a file missing must not read as complete.
+        if (errors.length || !page || typeof page !== "object" || !Array.isArray(page.nodes) || !page.pageInfo) throw fail(502, `GitHub has no readable ${s.slug}#${b.number} files after the first page: ${String(errors[0]?.message ?? `HTTP ${r.status}`)}`);
+        // A push between the first read and this page would mix two heads: the PR's metadata and checks describe one, this
+        // page the other. No answer about the PR as read; the caller asks again.
+        if (node.headRefOid !== pr.headRefOid || node.baseRefOid !== pr.baseRefOid) throw fail(502, `GitHub has no readable ${s.slug}#${b.number}: its head or base moved while its files were read`);
+        return page;
+      });
+    }
     // Whether the change feed watches the repo, so a consumer that waits on its events (sessions) knows they will come. A repository
     // GitHub answered null stays null (grading tells a PR that is gone from one it could not read).
     const repository = data.repository && typeof data.repository === "object" ? { ...data.repository, feedWatched: ctx.feedWatched(s.slug, data.repository) } : data.repository;

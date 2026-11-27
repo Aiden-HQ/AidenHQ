@@ -18,7 +18,7 @@ import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
 import { MEMBER_COMMENTS_QUERY, openMemberComments, readMemberComments, type OpenItem } from "./member-comments.ts";
 import { ASYNC_POLL_MS, DIRECT_POLLS, mergeDirect, requestStore } from "./async-merge.ts";
-import { HOLD_LABEL, PR_QUERY, decide, headChecks, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
+import { HOLD_LABEL, PR_FILES_QUERY, PR_QUERY, allPrFiles, decide, headChecks, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import type { ShipAdoptions } from "./service.ts";
 
@@ -154,6 +154,24 @@ export function createMerges(d: {
     }, c.since);
     return openMemberComments(pr, { since: c.since, ...(c.author ? { author: c.author } : {}), isMember: (login, association) => d.flow!.isMember(login, association, repo) });
   }
+  /**
+   * The pull request's complete file list: the pages after the first while GitHub says there are more (merge-gate.ts allPrFiles).
+   * A PR over 100 files is truncated by the read's own `files(first: 100)`, and the image-scan question is answered on every file:
+   * a read that fails throws, so the gate never answers from a partial list. Ordinary PRs cost no extra call.
+   */
+  async function allFiles(owner: string, name: string, number: number, files: any, at: { head?: string; base?: string }) {
+    return allPrFiles(files, async (after) => {
+      const p = await d.gh("POST", "/graphql", { query: PR_FILES_QUERY, variables: { owner, repo: name, number, after } });
+      const errors: any[] = Array.isArray(p.body?.errors) ? p.body.errors : [];
+      const node = p.body?.data?.repository?.pullRequest;
+      const page = node?.files;
+      if (p.status >= 300 || errors.length || !page) throw new Error(`GitHub GraphQL: the pull request's files after the first page couldn't be read (${errors.map((e) => e.message).join("; ") || `HTTP ${p.status}`})`);
+      // A head that moved between the first read and this page would put two heads' files in one list: the PR's metadata
+      // would describe one and its files the other. That is no answer about this head; the poll reads again.
+      if ((at.head && node?.headRefOid !== at.head) || (at.base && node?.baseRefOid !== at.base)) throw new Error("GitHub GraphQL: the pull request moved while its files were read");
+      return page;
+    });
+  }
   async function readPr(repo: string, number: number) {
     const [owner, name] = repo.split("/");
     const r = await d.gh("POST", "/graphql", { query: PR_QUERY, variables: { owner, repo: name, number, pullRef: `refs/pull/${number}/head` } });
@@ -194,6 +212,8 @@ export function createMerges(d: {
     // again; an explicit null is GitHub's answer that the field is empty, which the gate reads and ends or waits on with its
     // own reason rather than waiting for an answer that is already here.
     if (["state", "headRefOid", "baseRefName"].some((k) => !(k in pr))) throw new Error("GitHub GraphQL: the answer omitted the pull request's fields");
+    // No file list stays absent: skippedImageScan reads that as no evidence (the PR is read again), never as "no image".
+    if (pr.files && typeof pr.files === "object") pr.files = await allFiles(owner!, name!, number, pr.files, { head: pr.headRefOid, base: pr.baseRefOid });
     return withGate(data);
   }
   /**

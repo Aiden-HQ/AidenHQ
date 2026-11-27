@@ -58,9 +58,9 @@ export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $
     defaultBranchRef { name }
     squashMergeAllowed mergeCommitAllowed rebaseMergeAllowed
     pullRequest(number: $number) {
-      id number title body url state isDraft labels(first: 30) { nodes { name } } reviewDecision mergeStateStatus headRefOid headRefName isCrossRepository baseRefName authorAssociation
+      id number title body url state isDraft labels(first: 30) { nodes { name } } reviewDecision mergeStateStatus headRefOid headRefName baseRefOid isCrossRepository baseRefName authorAssociation
       mergedAt mergedBy { login } mergeCommit { oid message }
-      files(first: 100) { pageInfo { hasNextPage } nodes { path } }
+      files(first: 100) { pageInfo { hasNextPage endCursor } nodes { path changeType } }
       latestOpinionatedReviews(first: 30) { nodes { state authorCanPushToRepository author { __typename login } commit { oid } } }
       reviewRequests(first: 30) { nodes { asCodeOwner requestedReviewer { __typename ... on Team { combinedSlug } ... on User { login } } } }
       isInMergeQueue mergeQueueEntry { headCommit { oid } }
@@ -69,6 +69,39 @@ export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $
     }
   }
 }`;
+
+/**
+ * One page of a pull request's files past the first: `files(first: 100, after: $after)`, the cursor the first read answered
+ * (allPrFiles). Only a PR whose list GitHub cut asks for it, so an ordinary PR costs no second call.
+ */
+export const PR_FILES_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      headRefOid baseRefOid
+      files(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { path changeType } }
+    }
+  }
+}`;
+
+/**
+ * Every file of a pull request, from the page the PR read carried plus each page after it while `hasNextPage` says there are
+ * more. `page` reads one page by its cursor and throws when it can't, so a failed read throws rather than answering from a
+ * partial list. A cut page with no cursor is no answer either (asking with none would read the first page again).
+ */
+export async function allPrFiles<T extends { pageInfo?: Json; nodes?: Json[] }>(first: T, page: (after: string) => Promise<T>): Promise<{ pageInfo: { hasNextPage: false }; nodes: Json[] }> {
+  const nodes = [...(first?.nodes ?? [])];
+  let info = first?.pageInfo ?? {};
+  for (let n = 0; info.hasNextPage; n++) {
+    if (n >= 100) throw new Error("GitHub GraphQL: the pull request's file list did not end");
+    const after = info.endCursor;
+    if (!after) throw new Error("GitHub GraphQL: the pull request's file list is cut with no cursor to page from");
+    const next = await page(after);
+    if (!next || typeof next !== "object" || !Array.isArray(next.nodes) || !next.pageInfo) throw new Error("GitHub GraphQL: a page of the pull request's files is missing");
+    nodes.push(...next.nodes);
+    info = next.pageInfo;
+  }
+  return { pageInfo: { hasNextPage: false }, nodes };
+}
 
 const FAILING = new Set(["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
 
