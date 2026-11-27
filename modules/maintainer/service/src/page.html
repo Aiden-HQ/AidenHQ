@@ -49,7 +49,8 @@
   .adder .msg { margin: 0; padding: 0 20px 14px; min-height: 20px; color: var(--soft); font-size: 13px; }
   .adder .msg.err { color: var(--color-text-danger, #b00020); }
   @media (max-width: 1000px) { .mc { --ctl: 100%; } .srow { grid-template-columns: minmax(0, 1fr); gap: 4px; } .ctl { margin-top: 6px; } }
-  @media (max-width: 520px) { .sec, .mc .top { padding-left: 14px; padding-right: 14px; } .sech small { display: none; } .adv span { display: none; } }
+  @media (max-width: 520px) { .mc .top { grid-template-columns: minmax(0, 1fr); } .mc .acts { align-items: center; }
+  .sec, .mc .top { padding-left: 14px; padding-right: 14px; } .sech small { display: none; } .adv span { display: none; } }
 </style>
 </head>
 <body>
@@ -184,7 +185,7 @@
     const btn = (text, fn, cls = "") => { const b = h("button", { type: "button", textContent: text, className: cls }); b.addEventListener("click", fn); return b; };
     const acts = gone ? [btn("Keep", () => { removing = null; redraw(); propose(); })]
       : open && fresh ? [btn("Discard", () => { added = added.filter((x) => x !== repo); delete drafts[repo]; redraw(); propose(); })]
-      : open && r.ship ? [h("span", { className: "sum", textContent: "Has a Ship entry: remove it on the Ship page" })]
+      : open && r.ship ? [h("span", { className: "sum", textContent: "Remove it on the Ship page" })]
       : open ? [btn("Remove", () => { removing = repo; redraw(); propose(); })]
       : [btn("Edit", () => { openRepo = repo; redraw(); })];
     const top = h("div", { className: "top" }, h("div", { className: "who" }, h("div", { className: "name" }, h("span", { textContent: repo }), ...tags.filter(Boolean)), h("div", { className: "sum", textContent: summary(d) })), h("div", { className: "acts" }, ...acts));
