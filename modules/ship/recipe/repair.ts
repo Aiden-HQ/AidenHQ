@@ -103,8 +103,7 @@ export function repair(ws: string, out: string, spec: Record<string, string>) {
   }
   const name = (p: string) => p.slice(p.lastIndexOf("/") + 1);
   const dirOf = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ".");
-  // Covered: a generator rewrites it here, or the repo's CI regenerates it after the push (the base side stands until then).
-  const covered = (p: string) => plan.ci_regenerates === true || commands.some((c) => c.dir === "." || p.startsWith(`${c.dir.replace(/\/+$/, "")}/`));
+  const covered = (p: string) => commands.some((c) => c.dir === "." || p.startsWith(`${c.dir.replace(/\/+$/, "")}/`));
   const generated = globs.length ? g(["diff", "--name-only", "--diff-filter=U", "-z", "--", ...globs.map((x) => `:(glob)${x}`)]).split("\0").filter(Boolean) : [];
   const relock: { dir: string; cmd: string; path: string }[] = [];
   // Every path the repair decides (a conflict it resolved, a file a generator touched) is named in the result, even when it ends
@@ -112,6 +111,12 @@ export function repair(ws: string, out: string, spec: Record<string, string>) {
   const decided = new Set<string>();
   const side = (n: number, p: string) => { try { return g(["show", `:${n}:${p}`]).split("\n"); } catch { return []; } };
   for (const p of unmerged()) {
+    // The repo's CI regenerates the generated paths, lockfiles its globs name included: the base side stands, nothing runs.
+    if (plan.ci_regenerates === true && generated.includes(p)) {
+      if (ok(["checkout", "--theirs", "--", p])) g(["add", "--", p]); else g(["rm", "-q", "--", p]);
+      decided.add(p);
+      continue;
+    }
     if (name(p) === "go.sum") {
       // Every line of go.sum is a checksum that stays valid: both sides' lines together are the merge (a stale one is harmless).
       writeFileSync(join(repo, p), `${[...new Set([...side(2, p), ...side(3, p)].filter(Boolean))].sort(goSumOrder).join("\n")}\n`);

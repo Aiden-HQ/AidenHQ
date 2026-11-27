@@ -54,6 +54,9 @@ test("ship-repair: generated conflicts regenerated into the files on top of the 
   const ci = run(head, { globs: ["gen/**"], commands: [], ci_regenerates: true });
   const gen = ci.keep!.entries.find((e) => e.path === "gen/out.txt");
   assert.equal(gen?.sha, git("rev-parse", `${base}:gen/out.txt`), "the base's own blob");
+  // A lockfile its globs name takes the base side too: no package manager runs.
+  const lockCi = run(head, { globs: ["gen/**", "**/package-lock.json"], commands: [], ci_regenerates: true });
+  assert.ok("changed" in lockCi.result, JSON.stringify(lockCi.result));
   assert.deepEqual(run(clash, { globs: ["gen/**"], commands: [{ dir: ".", cmd: "cat src/*.txt > gen/out.txt" }] }).result, { leftovers: ["src/a.txt"] });
   // A failed generator stops it, with the command's own words.
   assert.match(String((run(head, { globs: ["gen/**"], commands: [{ dir: ".", cmd: "echo broken >&2; exit 3" }] }).result as any).failed), /exited 3:\nstderr:\nbroken$/);

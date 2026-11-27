@@ -11,7 +11,7 @@
 //   Discovery: discover() on the target branch's own files, once per repo, read again when those files change (their blob shas).
 import { discover, type Discovered } from "./discover.ts";
 import type { PrView } from "./handoff.ts";
-import type { ActionStep, STAGES } from "./settings.ts";
+import { stepError, type ActionStep, type STAGES } from "./settings.ts";
 
 export type Gh = (method: string, path: string, body?: unknown) => Promise<{ status: number; body: any }>;
 export type Stage = (typeof STAGES)[number];
@@ -60,6 +60,10 @@ export async function advance(gh: Gh, pr: PrView, stage: Stage, steps: ActionSte
 async function next(gh: Gh, pr: PrView, stage: Stage, steps: ActionStep[], from: number, start: () => boolean, now: number, why?: string): Promise<{ go: "started" | "failed" | "capped"; rec?: ActionRun; did?: string }> {
   for (let i = from; i < steps.length; i++) {
     const s = steps[i]!;
+    // A step saved before this shape (a comment, a workflow that doesn't name the PR) never runs: settings are read unvalidated,
+    // and a base-branch run that isn't told the PR would pass for it. The Fleet page lists the entry's problem.
+    const bad = stepError(s);
+    if (bad) { why = `a step not run: ${bad}`; continue; }
     if (!start()) return { go: "capped" };
     const at = new Date(now).toISOString();
     try {

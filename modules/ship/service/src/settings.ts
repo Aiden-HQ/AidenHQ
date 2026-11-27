@@ -127,7 +127,7 @@ const count = (errors: string[], at: string, v: unknown) => { if (v !== null && 
 // inputs, whose one placeholder is `{pr}` (the PR's number). A workflow reports its run; a comment's bot doesn't, so there are no
 // comment steps.
 const WORKFLOW = /^[\w.-]{1,100}\.ya?ml$/;
-function stepError(x: unknown): string | undefined {
+export function stepError(x: unknown): string | undefined {
   if (isMap(x) && "comment" in x) return "comment steps are gone: use the repo's workflow, { workflow: file.yml, inputs? } (an input may say {pr})";
   if (!isMap(x) || !("workflow" in x) || Object.keys(x).some((k) => !["workflow", "inputs"].includes(k))) return "{ workflow, inputs? }";
   if (typeof x.workflow !== "string" || !WORKFLOW.test(x.workflow)) return "workflow: a file name in .github/workflows, e.g. pr-rebase.yml";

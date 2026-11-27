@@ -77,6 +77,14 @@ test("a conflict dispatches the repo's workflow on the base with the PR's number
   assert.equal(w.of("POST /repos/a/b/actions/workflows/pr-rebase.yml/dispatches").length, 1, "dispatched once at this head");
 });
 
+test("a step saved before this shape (a comment, a workflow that doesn't name the PR) is never run: ship's own repair follows", async () => {
+  const w = world({ preset: "cautious", generated: { globs: ["gen/**"], command: "" }, actions: { conflict: [{ comment: "/rebase" }, { workflow: "pr-rebase.yml" }] } });
+  await w.adopt();
+  await round(w.deps, w.pr(), { do: "repair" }, { dirty: true });
+  assert.equal(w.of("POST /repos/a/b/issues/7/comments").length + w.of("POST /repos/a/b/actions/workflows/").length, 0);
+  assert.equal(w.of("POST /v1/writes")[0]!.body.kind, "github.repair");
+});
+
 test("before the merge the repo's workflow runs; ship merges once its run succeeds, and holds when it fails", async () => {
   const w = world({ preset: "cautious", actions: { before_merge: [{ workflow: "regen.yml", inputs: { pr: "{pr}" } }] } });
   await w.adopt();
