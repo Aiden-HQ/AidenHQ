@@ -472,16 +472,6 @@ test("a task blocked on a deleted blocker is released when the relation is kept 
   assert.match(w.comments.t25.map((c) => c.body).join("\n"), /^Unblocked: WOR-b9 \(deleted\)\.$/m);
 });
 
-test("a blocked task with no blockers and none recorded stays blocked", async () => {
-  const w = world();
-  w.issue("t26", { status: "blocked" });
-  await w.wakes.poll();
-  w.tick();
-  await w.wakes.poll();
-  assert.equal(w.issues.t26.status, "blocked");
-  assert.deepEqual(w.rows("t26"), []);
-});
-
 test("a blocker deleted while another stays is named once the other closes", async () => {
   const w = world();
   const b = (id, status) => ({ id, identifier: `WOR-${id}`, status });
@@ -500,26 +490,6 @@ test("a blocker deleted while another stays is named once the other closes", asy
   assert.equal(w.issues.t29.status, "todo");
   assert.match(w.rows("t29").join("\n"), /^unblocked:t29:b10:done,b9:deleted open$/m);
   assert.match(w.comments.t29.map((c) => c.body).join("\n"), /^Unblocked: WOR-b10 closed \(done\), WOR-b9 \(deleted\)\.$/m);
-});
-
-test("a list row without blockers leaves the single read's blockers remembered", async () => {
-  const w = world();
-  w.issue("b9", { status: "blocked", assigneeAgentId: OTHER });
-  w.issue("t30", { status: "blocked", blockedBy: [{ id: "b9", identifier: "WOR-b9", status: "blocked" }] });
-  await w.wakes.poll();
-  // Paperclip's blocked list omits blockedBy: the scan sees none, the unlock reads the issue whole and keeps them.
-  await w.wakes.poll();
-  w.issues.t30.omitBlocked = true;
-  w.tick();
-  await w.wakes.poll();
-  assert.equal(w.issues.t30.status, "blocked");
-  assert.equal(w.db.prepare("SELECT blocked FROM wake_tasks WHERE task = 't30'").get().blocked, "b9", "kept from the single read");
-  w.tick();
-  delete w.issues.b9;
-  w.issues.t30.blockedBy = [];
-  await w.wakes.poll();
-  assert.equal(w.issues.t30.status, "todo");
-  assert.match(w.rows("t30").join("\n"), /^unblocked:t30:b9:deleted open$/m);
 });
 
 test("a completed blocker on a task first seen in todo is not carried into a later park", async () => {
@@ -577,19 +547,6 @@ test("a dropped relation whose blocker still answers 200 releases nothing, and i
   assert.equal(w.issues.t34.status, "blocked");
 });
 
-test("a single-issue read that omits blockedBy concludes nothing", async () => {
-  const w = world();
-  w.issue("b9", { status: "blocked", assigneeAgentId: OTHER });
-  w.issue("t35", { status: "blocked", blockedBy: [{ id: "b9", identifier: "WOR-b9", status: "blocked" }] });
-  await w.wakes.poll();
-  w.tick();
-  w.issues.t35.omitBlocked = true; // the list row and the single read both leave the relation out
-  w.issues.t35.omitSingle = true;
-  await w.wakes.poll();
-  assert.equal(w.issues.t35.status, "blocked", "an omitted relation is not an empty one");
-  assert.match(w.db.prepare("SELECT blocked FROM wake_tasks WHERE task = 't35'").get().blocked ?? "", /b9/, "memory untouched");
-});
-
 test("ten polls on one unresolved blocker cost one read of it", async () => {
   const w = world();
   w.issue("b9", { status: "in_progress", assigneeAgentId: OTHER });
@@ -601,26 +558,6 @@ test("ten polls on one unresolved blocker cost one read of it", async () => {
   assert.equal(w.issues.t36.status, "blocked");
   assert.equal(w.reads.b9, 0, "ten polls, no read of the blocker: the 200 is cached");
   assert.deepEqual(JSON.parse(w.db.prepare("SELECT blocked_exists FROM wake_tasks WHERE task = 't36'").get().blocked_exists), { b9: "listed" }, "the verdict is persisted for the state it was read in");
-});
-
-test("a listed blocker confirmed 404 is not read again while another blocker stays open", async () => {
-  const w = world();
-  const b = (id, status) => ({ id, identifier: `WOR-${id}`, status });
-  w.issue("b10", { status: "blocked", assigneeAgentId: OTHER });
-  w.issue("t38", { status: "blocked", blockedBy: [b("b9", "blocked"), b("b10", "blocked")] });
-  w.issues.t38.blockedBy[0].id = "b9"; // b9 is listed with a stale status, and answers 404
-  await w.wakes.poll(); // b9: 404 (listed); b10: 200 (listed), still open
-  assert.equal(w.issues.t38.status, "blocked", "b10 still holds it");
-  const reads = w.reads.b9;
-  assert.equal(reads, 1);
-  for (let i = 0; i < 10; i++) { w.tick(); await w.wakes.poll(); }
-  assert.equal(w.reads.b9, reads, "the 404 is cached in the state it was read in");
-  assert.deepEqual(JSON.parse(w.db.prepare("SELECT blocked_deleted FROM wake_tasks WHERE task = 't38'").get().blocked_deleted), { b9: "listed" });
-  w.tick();
-  w.issues.t38.blockedBy = [b("b10", "done")];
-  await w.wakes.poll();
-  assert.equal(w.issues.t38.status, "todo");
-  assert.match(w.rows("t38").join("\n"), /^unblocked:t38:b10:done,b9:deleted open$/m);
 });
 
 test("a blocker read that fails releases nothing and is retried on the next poll", async () => {

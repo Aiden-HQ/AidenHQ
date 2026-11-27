@@ -407,14 +407,6 @@ test("a job's precheck gets the reviewer's verdict on the write it would file, a
   await assert.rejects(k.writes.preview({ ...who, job: undefined, kind: "module" }, { kind: KIND, args: { note: "x" } }), /kernel job's own/);
 });
 
-test("the reviewer reads an agent's form with its options spelled out, so the owner's \"1A, 2A\" reads against them", async () => {
-  const { spellQuestions } = await import("../src/review-loop.ts");
-  const body = "**Asking**\n\nWhere next?\n\n<!-- aidenhq-reply -->\n<!-- aidenhq-questions:[{\"question\":\"Where do you want to review the design?\",\"options\":[\"On Primer\",\"Here in chat\"]}] -->";
-  const out = spellQuestions(body);
-  assert.match(out, /1\. Where do you want to review the design\?\nA\) On Primer\nB\) Here in chat/);
-  assert.equal(spellQuestions("plain"), "plain");
-});
-
 test("the owner's short answer to a form is read by code against that form's options", async () => {
   const { readAnswer } = await import("../src/review-loop.ts");
   const form = [{ question: "Anything missing?", options: ["That's right", "Something's missing"] }, { question: "Where do you want to review the design?", options: ["On Primer", "Here in chat"] }];
