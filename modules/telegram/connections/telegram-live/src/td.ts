@@ -97,3 +97,4 @@ export function openTd(o: { apiId: number; apiHash: string; dir: string; key: st
     close: () => client.close(),
   };
 }
+
