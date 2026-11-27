@@ -123,8 +123,12 @@ const ids = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typ
 /** The reports (POST /v1/costs/<name>, the board's key): each reads the rollup on one snapshot (the gateway's), a few grouped passes. */
 export function costReports(db: DatabaseSync, snapshot: <T>(f: () => T) => T) {
   const all = (sql: string, ...args: (string | number)[]) => db.prepare(sql).all(...args) as Record<string, unknown>[];
-  /** A window's buckets (empty when it ends where it starts); a range must hold one at least. */
-  const bounds = (b: Body) => [key(b.from), key(b.to, true)] as const;
+  /** A window's buckets: none when it ends where it starts, refused when it ends before; a range must hold one at least. */
+  const bounds = (b: Body) => {
+    const from = key(b.from), d = Date.parse(String(b.to)) - Date.parse(String(b.from));
+    if (d < 0) throw new RangeError("a window ends before it starts");
+    return [from, d ? key(b.to, true) : from] as const;
+  };
   const range = (b: Body) => {
     const [from, to] = bounds(b);
     if (to <= from) throw new RangeError("to must be after from");
