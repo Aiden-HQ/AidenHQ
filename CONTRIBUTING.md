@@ -54,7 +54,7 @@ are files something loads by a fixed `.js`/`.mjs` name.
 Before you push, run `node scripts/ci-local.ts`: it runs the suites CI would run for your diff, with CI's own selection
 and commands (`--list` shows the selection only, `--base <ref>` changes the base, default `origin/main`).
 
-No live instance and no paid keys are needed. Use Node 24 and Bun 1.4.5 (`scripts/bootstrap.sh` installs it), and run `bun install --frozen-lockfile --ignore-scripts` once in each package.
+No live instance and no paid keys are needed. Use Node 24 and Bun 1.4.5. To get that Bun, run `. ops/lib/bun.sh && ensureBun` in your shell: it fetches the pinned, checksummed binary once and puts it on that shell's PATH (add `~/.local/share/aidenhq/bun-1.4.5` to your PATH to keep it). Then run `bun install --frozen-lockfile --ignore-scripts` once in each package.
 
 | Package | Commands |
 |---|---|

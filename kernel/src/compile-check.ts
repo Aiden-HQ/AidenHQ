@@ -49,8 +49,11 @@ export type CompileDeps = {
    * test so the check runs offline; production never overrides it.
    */
   install?: (o: RunInput) => Promise<void>;
-  /** The pinned Bun the apply installs (ops/lib/bun.sh's stable link); the target's deps install with it. */
-  bun?: string;
+  /**
+   * The data dir the running checkout's ops/lib/bun.sh keeps the pinned Bun in (XDG_DATA_HOME; default the host's
+   * ~/.local/share), so the check installs with the same Bun the apply put there, fetching it once if it isn't yet.
+   */
+  bunHome?: string;
   /**
    * Bun's install cache (default: the host's own, ~/.bun/install/cache). Never the vault or the host home itself: it is read for
    * the packages the last real apply downloaded, so an offline host can still check a target the apply could install.
@@ -279,7 +282,7 @@ export function run(cmd: string, args: string[], cwd: string, env: NodeJS.Proces
  * from before Bun, from its package-lock.json). A failed install is
  * operational (an offline host), so the caller retries: never a refusal of the target.
  */
-async function installCompiler(o: RunInput, bun: string, cache?: string) {
+async function installCompiler(o: RunInput, bunHome?: string, cache?: string) {
   for (const d of ["scripts", "kernel"]) {
     const name = existsSync(join(o.productDir, d, "bun.lock")) ? "bun.lock" : "package-lock.json";
     const lock = join(o.productDir, d, name);
@@ -292,7 +295,11 @@ async function installCompiler(o: RunInput, bun: string, cache?: string) {
     // The install gets installEnv() — no path to the host's checkout, config, data or vault — unlike the compiler below, which
     // the apply's own staged compile reads those with. The cache is Bun's package *cache* only (never the host home or the
     // vault), so the apply's warm cache serves here too: an offline host reuses what the last real apply already downloaded.
-    const installed = await run(bun, ["install", "--cwd", d, "--frozen-lockfile", "--ignore-scripts", "--silent"], o.productDir, installEnv(o.env, cache), left(o.until ?? Number.POSITIVE_INFINITY, 240_000));
+    // The running checkout's ensureBun (ops/lib/bun.sh) puts its pinned Bun on PATH; `bun install` reads either lockfile, so a
+    // target from before Bun (package-lock.json) installs the same way.
+    const env = { ...installEnv(o.env, cache), ...(bunHome ? { XDG_DATA_HOME: bunHome } : {}) };
+    const script = '. "$1" && ensureBun && exec bun install --cwd "$2" --frozen-lockfile --ignore-scripts --silent';
+    const installed = await run("bash", ["-c", script, "install", join(o.repo, "ops/lib/bun.sh"), d], o.productDir, env, left(o.until ?? Number.POSITIVE_INFINITY, 240_000));
     if (!installed.ok) throw new Error(`the target product's ${d} deps didn't install: ${firstDiagnostic(installed.stderr) || "bun install failed"}`);
   }
 }
@@ -394,7 +401,7 @@ export function createCompileCheck(d: CompileDeps) {
       if (old !== undefined) env.AIDENHQ_OLD_BUNDLE = old;
       mkdirSync(join(dir, "home"), { recursive: true });
       const o = { productDir, instanceDir, repo: d.repo, env, until };
-      const r = d.run ? await d.run(o) : await stagedCompile(o, d.install ?? ((x) => installCompiler(x, d.bun ?? "bun", d.cache)));
+      const r = d.run ? await d.run(o) : await stagedCompile(o, d.install ?? ((x) => installCompiler(x, d.bunHome, d.cache)));
       log("compile check", { product, instance: base, ok: r.ok, ms: Date.now() - t0 });
       return { ...r, base };
     } finally {

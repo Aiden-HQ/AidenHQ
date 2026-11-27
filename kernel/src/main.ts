@@ -762,8 +762,8 @@ const sharing = createSharing({
 const compileCheck = createCompileCheck({
   repo, main: () => checkoutMain(instanceDir)([]), tree: checkoutTree(instanceDir),
   inputs: { configDir, dataDir, secretsDir: env("AIDENHQ_SECRETS_DIR", "") },
-  // The pinned Bun the apply put in place (ops/lib/bun.sh links it here): the kernel's unit PATH doesn't carry it.
-  bun: path.join(process.env.XDG_DATA_HOME || path.join(process.env.HOME ?? "/root", ".local/share"), "aidenhq/bin/bun"),
+  // Where ops/lib/bun.sh keeps the pinned Bun (the apply's own): the kernel's unit PATH doesn't carry it.
+  bunHome: process.env.XDG_DATA_HOME || path.join(process.env.HOME ?? "/root", ".local/share"),
   // Bun's install cache, so a check on an offline host reuses what the last real apply downloaded (never the vault or home).
   cache: path.join(process.env.HOME ?? "/root", ".bun/install/cache"), log,
 });

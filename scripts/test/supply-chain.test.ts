@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { bunfigProblem, changedEntries, check, lockProblems, parseBunLock } from "../supply-chain/npm-age.ts";
+import { bunfigProblem, changedEntries, check, lockProblems, npmChangedEntries, parseBunLock } from "../supply-chain/npm-age.ts";
 
 const now = Date.parse("2026-11-13T00:00:00Z");
 const day = (n) => new Date(now - n * 86400000).toISOString();
@@ -60,4 +60,11 @@ test("lockfile and bunfig shape", () => {
   assert.match(bunfigProblem("bunfig.toml", undefined), /missing/);
   assert.match(bunfigProblem("bunfig.toml", "[install]\nexact = true\nminimumReleaseAge = 604800\n[install.scopes]\nx = \"https://evil.example/\"\n"), /only \[install\] and \[test\]/);
   assert.match(bunfigProblem("bunfig.toml", '[install]\nexact = true\nminimumReleaseAge = 604800\nregistry = "https://evil.example/"\n'), /\[install\] must be exactly/);
+});
+
+test("an npm repository's package-lock.json entries are checked the same way", async () => {
+  const npmLock = (pkgs) => ({ packages: { "": { name: "app" }, ...Object.fromEntries(Object.entries(pkgs).map(([k, v]) => [`node_modules/${k}`, { version: v, integrity: sri(`${k}${v}`.replace(/[^A-Za-z0-9]/g, "")), resolved: `https://registry.npmjs.org/${k}/-/${k}-${v}.tgz` }])) } });
+  const changes = npmChangedEntries(npmLock({ "tiny-dep": "1.0.0" }), npmLock({ "tiny-dep": "1.0.1", "old-dep": "2.0.0" }));
+  assert.deepEqual(changes.map((c) => `${c.name}@${c.version}`), ["tiny-dep@1.0.1", "old-dep@2.0.0"]);
+  assert.match((await check({ changes, getJson, now })).join(), /tiny-dep@1\.0\.1 .*3\.0 days/);
 });

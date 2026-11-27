@@ -66,7 +66,7 @@ line here. Docs say how the product works now: no history notes; history goes to
 
 ## Build and test
 
-Everything runs offline; no live instance or paid key is needed. Node 24 and Bun 1.4.5 (`scripts/bootstrap.sh` installs it). Install each package once with `bun install --frozen-lockfile --ignore-scripts`.
+Everything runs offline; no live instance or paid key is needed. Node 24 and Bun 1.4.5 (`. ops/lib/bun.sh && ensureBun` puts the pinned one on your shell's PATH). Install each package once with `bun install --frozen-lockfile --ignore-scripts`.
 Before pushing, run `node scripts/ci-local.ts`: it runs what CI would run for your diff.
 
 ```sh
