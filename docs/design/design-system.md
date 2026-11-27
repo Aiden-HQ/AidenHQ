@@ -20,7 +20,7 @@ Usage and migration live in `modules/apps-platform/design-system/README.md`; thi
 - **Where it lives:** `modules/apps-platform/design-system/` (theme, guidelines, checklist) and the starter.
   `scripts/sync-shared.ts` copies the theme into the starter and both into the agent computers' image
   (`/opt/aidenhq/design-system`, `/opt/aidenhq/app-starter`); a test fails on drift. The catalog is the starter's dev-only
-  `catalog.html` (`npm run catalog`). The plain-CSS kit (`components.css`, `kit.js`) is deprecated and kept only for apps
+  `catalog.html` (`bun run catalog`). The plain-CSS kit (`components.css`, `kit.js`) is deprecated and kept only for apps
   that still vendor it.
 
 ## Rules

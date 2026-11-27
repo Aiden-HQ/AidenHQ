@@ -44,9 +44,9 @@ Apps are **shadcn/ui + Tailwind** (Vite + React) from the app starter, themed by
 - `/opt/aidenhq/app-starter/`: blocks (`src/components/blocks/`), shadcn components with variants, shells (TopBarShell,
   SidebarShell, BareShell) and theme presets: a menu to pick from for each app. Its catalog shows them in light and dark
   (dev-only; apps leave it out):
-  `cp -r /opt/aidenhq/app-starter /workspace/starter && cd /workspace/starter && npx vite --port 8766 &`, then open
+  `cp -r /opt/aidenhq/app-starter /workspace/starter && cd /workspace/starter && bunx vite --port 8766 &`, then open
   `http://localhost:8766/catalog.html` (`?palette=crisp&mode=dark` picks the theme). Run the example app with
-  `npm run build && PORT=8765 npm start &` (the copy already has its `node_modules`).
+  `bun run build && PORT=8765 bun run start &` (the copy already has its `node_modules`).
 - `/opt/aidenhq/design-system/`: `guidelines.md` (the floors every app meets and the stack; worth one read),
   `review-checklist.md` (what a UI pull request is reviewed for), `tokens.css` and `shadcn.css` (the theme apps vendor
   as they are) and `README.md` (setup and the migration guide). Colour comes from the theme's names (`bg-primary`,
@@ -114,10 +114,10 @@ the owner. Their own answer is the pick.
    their roles, the hues for the categories people scan by, and status), and the type (the face, its scale and weights).
    For a redesign, list each function you drop, merge or add, and why: today's screen is evidence for the design.
 3. **Mockup.** Build it as a real page: for an existing app on the starter, in its own checkout (`repo-checkout`;
-   `npm ci`); otherwise in a copy of the starter (`cp -r /opt/aidenhq/app-starter /workspace/mockup`, which has its
+   `bun install --frozen-lockfile --ignore-scripts`); otherwise in a copy of the starter (`cp -r /opt/aidenhq/app-starter /workspace/mockup`, which has its
    `node_modules`). The plan's palette and type go into the app's `theme.css` (light and dark), starting from the
    default palette or the closest preset. Add a page in `src/pages/` wired into `src/App.tsx` (and the server's
-   `PAGES`), then `npm run build && npm start`. Include its empty, loading and error states.
+   `PAGES`), then `bun run build && bun run start`. Include its empty, loading and error states.
 4. **Look and improve.** Capture with `ui-review capture` (1280 light, plus dark) and `agent-browser` for interactions, open
    every screenshot, and lift each part until it looks rich, deep, well spaced and finished, in light and dark.
    With a reference, put yours beside it (`ui-review capture --baseline <dir of its screenshots, named like yours>`) and lift

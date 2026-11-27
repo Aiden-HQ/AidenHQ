@@ -1,5 +1,5 @@
 // Fast static checks for the mistakes agents repeat. Config only (ESLint's own restricted-* rules): no plugin code.
-// Each message says how to fix it. `npm run lint` runs in CI next to the tests. src/catalog is the dev-only preview.
+// Each message says how to fix it. `bun run lint` runs in CI next to the tests. src/catalog is the dev-only preview.
 import babel from "@babel/eslint-parser"
 
 const nav = (why) => `Use <Link href> from lib/navigation (navigate() from code); ${why}, while Link moves without a page load and keeps Back, Forward and reload working.`

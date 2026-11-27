@@ -37,9 +37,9 @@ Each module package is a CI suite of its own (`.github/ci/areas.json`, job `modu
 suites your diff touches. By hand, from the repository root:
 
 ```sh
-(cd kernel && npm ci) && (cd scripts && npm ci)
+(cd kernel && bun install --frozen-lockfile --ignore-scripts) && (cd scripts && bun install --frozen-lockfile --ignore-scripts)
 cd modules/<module>/<package>   # for example modules/ai-reviewer
-npm ci && npm test && npm run typecheck
+bun install --frozen-lockfile --ignore-scripts && bun run test && bun run typecheck
 ```
 
 The exact command per package is its `run` in `areas.json` (Node 24).

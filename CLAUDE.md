@@ -66,16 +66,16 @@ line here. Docs say how the product works now: no history notes; history goes to
 
 ## Build and test
 
-Everything runs offline; no live instance or paid key is needed. Node 24. Install each package once with `npm ci`.
+Everything runs offline; no live instance or paid key is needed. Node 24 and Bun 1.4.5 (`scripts/bootstrap.sh` installs it). Install each package once with `bun install --frozen-lockfile --ignore-scripts`.
 Before pushing, run `node scripts/ci-local.ts`: it runs what CI would run for your diff.
 
 ```sh
-cd scripts && npm test && npm run typecheck  # compiler, setup, sync-shared drift; types of the converted scripts and modules
+cd scripts && bun run test && bun run typecheck  # compiler, setup, sync-shared drift; types of the converted scripts and modules
 cd services/computer && node --test test/*.test.ts
-cd modules/apps-platform/gate && npm test && npm run typecheck
-cd services/board && npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run lint && npm run build
+cd modules/apps-platform/gate && bun run test && bun run typecheck
+cd services/board && bunx vitest run && bunx tsc -p tsconfig.build.json --noEmit && bun run typecheck && bun run lint && bun run build
 # kernel, modules/apps-platform/apps-mcp, modules/*/connections/*, modules/security/scanner:
-npm test && npm run typecheck
+bun run test && bun run typecheck
 ```
 
 The board's Docker build is stricter than vitest: always run `tsc -p tsconfig.build.json` for board changes. After
@@ -87,7 +87,7 @@ runs the suites a PR touches (map: `.github/ci/areas.json`, read from the base: 
 whose paths list what it imports; a path under no suite runs everything) and all of them on main. The `scripts/test` files are grouped
 into `scripts/*` suites; a new test file goes in exactly one suite's `run` (`scripts/test/ci-suites.test.ts` fails otherwise).
 
-The app starter (`modules/apps-platform/starter/`) is Vite + shadcn: `npm ci && npm run build` before serving it (apps-mcp's
+The app starter (`modules/apps-platform/starter/`) is Vite + shadcn: `bun install --frozen-lockfile --ignore-scripts && bun run build` before serving it (apps-mcp's
 render test skips without `dist/`). Copying files from macOS with `tar`, set `COPYFILE_DISABLE=1` (else `._*` files break
 the reviewer eval's case loader).
 

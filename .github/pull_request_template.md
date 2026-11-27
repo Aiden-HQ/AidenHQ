@@ -20,7 +20,7 @@
 
 ## Checklist
 
-- [ ] Tests and typecheck pass for every package touched (for the board, also `npx tsc -p tsconfig.build.json --noEmit`)
+- [ ] Tests and typecheck pass for every package touched (for the board, also `bunx tsc -p tsconfig.build.json --noEmit`)
 - [ ] Touches gate files (`kernel/`, `modules/ai-reviewer/`, `modules/github/`, `modules/apps-platform/gate/`, `ops/`, `scripts/paperclip-setup.ts`)? Say which.
 - [ ] Touches a path in `REVIEWER_CODE` (`modules/github/service/src/evalgate.ts`)? CI's `reviewer-eval` job runs it (from a fork, the maintainer pushes your branch here first).
 - [ ] Ran `node scripts/sync-shared.ts` if `services/shared/` changed

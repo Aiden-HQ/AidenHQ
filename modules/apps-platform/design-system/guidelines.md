@@ -62,5 +62,5 @@ density, depth, motion) is the designer's, made for each app's people and job. W
   component, take it from Origin UI (`originui.com`, MIT, Radix + Tailwind source through the shadcn CLI). Motion comes
   from CSS and the theme's `--duration` and `--ease`; charts from the starter's chart library.
 - A component two apps change the same way moves into the starter. Every theme change keeps all palettes and presets
-  readable in light and dark and the starter's catalog (`npm run catalog`,
+  readable in light and dark and the starter's catalog (`bun run catalog`,
   dev-only) clean in `ui-review`.

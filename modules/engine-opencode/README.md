@@ -65,7 +65,7 @@ at least 7 days old, pinned exactly. Reviewed 2026-11-25 (weekly downloads from 
 | `opencode-shell-strategy` | n/a | n/a | n/a | not an npm package (a markdown guide) | out |
 | `opencode-scheduler`, `opencode-supermemory`, `*-auth`, `opencode-notifier`, `opencode-wakatime`, `opencode-daytona`, `opencode-helicone-session`, `oh-my-opencode`, `opencode-morph-*`, `opencode-firecrawl`, `@tavily/opencode-plugin` | | | | | out: duplicate kernel waits or memory, bypass the gateway, or are desktop, third-party or paid |
 
-Supply chain: opencode is `1.19.6` (2026-11-17), both plugins are older than 7 days, and every version is exact. `package.json` and `package-lock.json` pin the plugins' whole dependency tree (synced into the image, which runs `npm ci`), so
+Supply chain: opencode is `1.19.6` (2026-11-17), both plugins are older than 7 days, and every version is exact. `package.json` and `bun.lock` pin the plugins' whole dependency tree (synced into the image, which runs `bun install --frozen-lockfile`), so
 `scripts/supply-chain/npm-age.ts` checks every transitive version too.
 
 ## Tests

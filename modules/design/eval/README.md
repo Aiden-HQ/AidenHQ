@@ -6,7 +6,7 @@ Run on request, never in CI: whenever the review prompt, a default model or the 
     node /opt/aidenhq/design-eval/run.ts degraded|fixes|references|calibrate|corrections [--model m] [--rated file] [--cases dir]
 
 From a checkout: `AIDENHQ_UI_REVIEW=<checkout>/services/computer/images/agent-base/ui-review AIDENHQ_APP_STARTER=<checkout>/modules/apps-platform/starter
-node modules/design/eval/run.ts degraded` (needs `AGENT_BROWSER_EXECUTABLE_PATH` for a Chrome, and the engine's `npm ci`).
+node modules/design/eval/run.ts degraded` (needs `AGENT_BROWSER_EXECUTABLE_PATH` for a Chrome, and the engine's `bun install --frozen-lockfile --ignore-scripts`).
 It prints one JSON line per suite (with the spend in `usd`) and exits 1 below the suite's bar. Use the capped eval key
 (`openrouter_eval_key`) by hand, or the fleet's gateway from an agent box. A full `degraded` + `fixes` run costs about $0.5.
 

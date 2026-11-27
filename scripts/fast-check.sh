@@ -12,6 +12,6 @@ for pkg in kernel services/board; do
     continue
   fi
   echo "typecheck $pkg"
-  (cd "$pkg" && npm run --silent typecheck) || status=1
+  (cd "$pkg" && bun run --silent typecheck) || status=1
 done
 exit $status

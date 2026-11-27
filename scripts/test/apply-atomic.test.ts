@@ -3,7 +3,7 @@
 // main moves, and ops/rollback.sh restoring the data an older generation needs. Each test builds a product and an instance repo
 // (local bare origins) whose product carries the real apply scripts and fakes for everything they call: compile, the
 // health check, compose, the units. `docker` (its `run` executes the container's command on the host, volumes mapped),
-// `systemctl`, `systemd-run`, `curl`, `df` and `npm` are fakes on PATH, HOME and the
+// `systemctl`, `systemd-run`, `curl`, `df` and `bun` are fakes on PATH, HOME and the
 // generations' state dir are temporary, so nothing here reaches a real host. Linux only, like the apply lock it runs under
 // (/proc, flock, stat -c): CI's runners.
 import assert from "node:assert/strict";
@@ -20,7 +20,7 @@ import YAML from "yaml";
 const NOT_LINUX = process.platform !== "linux" && "needs flock(1), absent on macOS";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/host-metrics.sh", "ops/lib/apply-lock.sh", "ops/lib/build-cache.sh", "ops/lib/ci-runner-enabled.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "scripts/compiler/data-version.ts", "scripts/imports.ts"];
+const REAL = ["ops/apply-config.sh", "ops/apply-config-work.sh", "ops/host-metrics.sh", "ops/lib/apply-lock.sh", "ops/lib/build-cache.sh", "ops/lib/bun.sh", "ops/lib/ci-runner-enabled.sh", "ops/lib/generations.sh", "ops/lib/progress.sh", "ops/rollback.sh", "scripts/compiler/data-version.ts", "scripts/imports.ts"];
 
 const exe = (file, text) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, text); chmodSync(file, 0o755); };
 /** A product tree from before this change also has no restoreRunnerTemplate: drop the function and both calls, as the real
@@ -87,7 +87,7 @@ if (!stage) fs.appendFileSync(process.env.CALLS, "compile\\n");
   // Read by the compiler when it loads (scripts/modules.ts), so the kernel's settings are startup code too, though nothing
   // imports them.
   "kernel/settings.json": `{"settings": {}}\n`,
-  // The real one imports the kernel's packages: only an installed kernel/node_modules (npm's fake below) lets it run.
+  // The real one imports the kernel's packages: only an installed kernel/node_modules (bun's fake below) lets it run.
   "kernel/src/apply.ts": `import "kernel-dep";
 import { readFileSync } from "node:fs";
 if (process.argv[2] === "product-pin") process.stdout.write(/^product:\\s*([0-9a-f]{40})\\s*$/m.exec(readFileSync(process.argv[3], "utf8"))?.[1] ?? "");
@@ -184,11 +184,11 @@ for a in "$@"; do [ "$a" = journalctl ] && j=1; done
 [ "$j" = 1 ] && [ -f "$CTRL/unkillable-timeout" ] && { trap '' TERM HUP INT; while :; do sleep 1; done; }
 exec /usr/bin/timeout "$@"
 `,
-  // npm ci --prefix <dir> installs the one package the fake kernel/src/apply.ts imports.
-  npm: `#!/usr/bin/env bash
-printf 'npm %s\\n' "$*" >> "$CALLS"
+  // bun install --cwd <dir> installs the one package the fake kernel/src/apply.ts imports.
+  bun: `#!/usr/bin/env bash
+printf 'bun %s\\n' "$*" >> "$CALLS"
 while [ $# -gt 0 ]; do
-  if [ "$1" = --prefix ]; then mkdir -p "$2/node_modules/kernel-dep"; echo '{"name":"kernel-dep","main":"index.js"}' > "$2/node_modules/kernel-dep/package.json"; : > "$2/node_modules/kernel-dep/index.js"; fi
+  if [ "$1" = --cwd ]; then mkdir -p "$2/node_modules/kernel-dep"; echo '{"name":"kernel-dep","main":"index.js"}' > "$2/node_modules/kernel-dep/package.json"; : > "$2/node_modules/kernel-dep/index.js"; fi
   shift
 done
 `,
@@ -201,6 +201,9 @@ function world() {
   for (const x of ["ctrl", "home", "state", "bin"]) mkdirSync(d(x));
   writeFileSync(d("calls"), "");
   for (const [n, t] of Object.entries(BINS)) exe(d("bin", n), t);
+  // The pinned Bun already in place (ops/lib/bun.sh ensureBun): the fake, so nothing is downloaded.
+  mkdirSync(d("home", ".local/share/aidenhq/bun-1.4.5"), { recursive: true });
+  exe(d("home", ".local/share/aidenhq/bun-1.4.5/bun"), BINS.bun);
   // The product.
   git(root, "init", "-q", "--bare", "-b", "main", "p.git");
   git(root, "clone", "-q", d("p.git"), "pw");

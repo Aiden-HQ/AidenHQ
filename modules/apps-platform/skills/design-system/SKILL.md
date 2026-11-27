@@ -32,9 +32,9 @@ mockup, build from the starter's patterns and say so in your reply.
 
 **Before you finish:**
 
-- `npm ci && npm test && npm run build` pass; `tokens.css` and `shadcn.css` are unchanged (note their `design-system version:`
+- `bun install --frozen-lockfile --ignore-scripts && bun run test && bun run build` pass; `tokens.css` and `shadcn.css` are unchanged (note their `design-system version:`
   lines in the PR).
-- Look in a browser: `SCREENS=/,/items npm run screens` (the starter's Playwright setup; an app without it copies it in)
+- Look in a browser: `SCREENS=/,/items bun run screens` (the starter's Playwright setup; an app without it copies it in)
   screenshots the pages in `feature-map.json` or `SCREENS` at 1440 and 390, light and dark, fails on page errors, CSP
   violations and horizontal overflow, runs `e2e/`, and writes to `.aidenhq/out/` (20 attached: name the pages you changed).
   Add an `e2e/` flow for your change (`e2e/flows.spec.ts` is the pattern), open every screenshot, fix what looks wrong and

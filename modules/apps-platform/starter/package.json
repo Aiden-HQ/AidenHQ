@@ -11,11 +11,11 @@
     "catalog": "vite --open /catalog.html",
     "build": "tsc -p tsconfig.json && vite build",
     "start": "node server.mjs",
-    "preview": "npm run build && HOST=127.0.0.1 PORT=${PORT:-4173} node server.mjs",
+    "preview": "bun run build && HOST=127.0.0.1 PORT=${PORT:-4173} node server.mjs",
     "test": "vitest run && node --test test/*.test.mjs",
     "screens": "playwright test",
     "lint": "eslint . --max-warnings 0",
-    "aidenhq:fast-check": "test -d node_modules || { echo skipped: run npm ci first; exit 0; }; npm run lint && tsc -p tsconfig.json --noEmit"
+    "aidenhq:fast-check": "test -d node_modules || { echo skipped: run bun install first; exit 0; }; bun run lint && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.3.0",
