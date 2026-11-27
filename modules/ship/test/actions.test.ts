@@ -140,12 +140,12 @@ test("generated.command null: the repair plan says the repo's CI regenerates, an
   assert.match(wake, /take the base side of the generated files \(`gen\/\*\*`\) and don't regenerate them: the repo's CI does/);
 });
 
-test("a repair with nothing to merge wakes nobody and isn't filed again at the same head and base; a new base tip is repaired again", async () => {
+test("a repair with no conflict to resolve wakes nobody and isn't filed again at the same head and base; a new base tip is repaired again", async () => {
   const w = world({ preset: "cautious", generated: { globs: ["gen/**"], command: "" } });
   const B1 = "b".repeat(40), B2 = "c".repeat(40);
   await w.adopt();
   await round(w.deps, w.pr({ baseOid: B1 }), { do: "repair" }, { dirty: true });
-  w.records["rec-1"] = { state: "failed", outcome: { text: `ship-noop: https://github.com/a/b/pull/7 at \`${H1.slice(0, 12)}\` already holds \`main\` at \`${B1}\`: nothing to repair, nothing was changed.` } };
+  w.records["rec-1"] = { state: "failed", outcome: { text: `ship-noop: https://github.com/a/b/pull/7 at \`${H1.slice(0, 12)}\` merges \`main\` at \`${B1}\` with no conflict: nothing to repair, nothing was changed.` } };
   for (let i = 0; i < 3; i++) assert.equal(await round(w.deps, w.pr({ baseOid: B1 }), { do: "repair" }, { dirty: true }), "nothing");
   assert.equal(w.of("POST /v1/writes").length, 1, "not filed again while GitHub still says DIRTY");
   assert.equal(w.of("POST /v1/wakes").length + w.of("POST /v1/tasks").filter((c) => !String(c.body.source).endsWith(":records")).length, 0, "no Engineer");

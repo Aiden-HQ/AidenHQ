@@ -366,7 +366,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           return "acted";
         }
         // A conflict: ship's repair check job (no model) first, as github's `repair` effect; the Engineer gets only what it leaves.
-        // `noop`: the base tip the repair found already in the head (GitHub's DIRTY outlived the push that took the base in).
+        // `noop`: the base tip the repair found the head merges with no conflict (GitHub's DIRTY was stale, as right after a push).
         let noop: string | undefined;
         if (a!.repair?.head === pr.head) {
           const r = await d.kernel.call("GET", `/v1/writes/${a!.repair.record}`);
@@ -375,9 +375,9 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           // Done (or the PR moved meanwhile): the next head is the next round's.
           if (r.state === "done" || /^ship-head-moved/.test(text)) return "nothing";
           if (r.state !== "failed") return hold(`ship's repair was ${r.state}: ${text.slice(0, 300)}`, HOLD.repair);
-          // Nothing to merge: nobody is woken, and this head and base tip are not asked again while GitHub still says DIRTY. A new
+          // Nothing to repair: nobody is woken, and this head and base tip are not asked again while GitHub still says DIRTY. A new
           // head is a new round; a new tip of the default branch (the only base this pass reads) is repaired again.
-          noop = /^ship-noop: .* already holds `[^`]*` at `([0-9a-f]{40})`/.exec(text)?.[1];
+          noop = /^ship-noop: .* merges `[^`]*` at `([0-9a-f]{40})` with no conflict/.exec(text)?.[1];
           if (noop && (!pr.baseOid || pr.baseOid === noop)) return "nothing";
           const left = text.split("\n").filter((l) => l.startsWith("leftover: ")).length;
           // The box lacks the generator's tool: the Engineer's computer is the same image, so the PR holds, and the report suggests

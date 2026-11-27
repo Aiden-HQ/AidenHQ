@@ -1108,9 +1108,11 @@ export function createService(o: Options) {
     const { dir } = await fetchRemote(s, a.head);
     await fetchRemote(s, baseSha);
     const mergeBase = await git(dir, ["merge-base", a.head, baseSha]);
-    // The head already holds the base's tip: nothing to merge (GitHub's DIRTY outlived the push that took the base in). No box runs;
-    // ship reads this, wakes nobody, and asks again only at a new head or base tip.
-    if (mergeBase === baseSha) return { ok: false, text: `ship-noop: ${url} at \`${String(a.head).slice(0, 12)}\` already holds \`${a.base}\` at \`${baseSha}\`: nothing to repair, nothing was changed.` };
+    // A repair is filed only on GitHub's DIRTY. A head that merges the base's live tip with no conflict (it already holds it, or
+    // the author's rebase settled it) shows that state was stale, typically right after a push: no box runs, nothing is written,
+    // and ship wakes nobody and asks again only at a new head or base tip. A behind branch is update-branch's, not the repair's.
+    const clean = mergeBase === baseSha || await run("git", [...SAFE_GIT_ARGS, "--git-dir", dir, "merge-tree", "--write-tree", "--no-messages", "--name-only", "-z", String(a.head), baseSha], { env: ENV, maxBuffer: 64 * 1024 * 1024 }).then(() => true, (e: { code?: number }) => { if (e.code === 1) return false; throw e; });
+    if (clean) return { ok: false, text: `ship-noop: ${url} at \`${String(a.head).slice(0, 12)}\` merges \`${a.base}\` at \`${baseSha}\` with no conflict: nothing to repair, nothing was changed.` };
     // The box's run, followed to its end: the recipe's own limit (ship's module.yaml, 30 minutes) and a free computer's wait.
     let check = await kernel("POST", "/v1/checks", { repo: s.slug, head: a.head, run: "ship-repair", spec: { base: baseSha, merge_base: mergeBase, base_ref: String(a.base), plan: JSON.stringify(a.plan ?? {}), attempt: String(a.attempt ?? 1) } });
     const until = Date.now() + REPAIR_WAIT_MS;
