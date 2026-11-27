@@ -5,7 +5,8 @@
 ARG BASE=aidenhq/computer-browser
 FROM ${BASE}
 # Bun 1.4.5, the one package manager (bun install, bun run, bunx): the image's own installs below and an agent's in its box.
-COPY --from=oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 /usr/local/bin/bun /usr/local/bin/bunx /usr/local/bin/
+COPY --from=oven/bun:1.4.5@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 /usr/local/bin/bun /usr/local/bin/bun
+RUN ln -s bun /usr/local/bin/bunx && bunx --version | grep -qx 1.4.5
 # file, binutils (strings, readelf) and sqlite3: the commands Engineer jobs reached for most and didn't find (job logs,
 # 2026-11-16: file 42 times, strings 11, sqlite3 4).
 # krb5 1.22.3-1 fixes seven high GSS-API/RPC CVEs (CVE-2026-107778, -112314, -112320, -112321, -112322, -112323, -119079).
