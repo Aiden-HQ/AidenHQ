@@ -122,6 +122,37 @@ describe("Home", () => {
     expect(sourceDate("Thursday")).toBeNull();
   });
 
+  it("keeps a completed decision when Later's snooze lands after it", async () => {
+    // A slow connection: the approval is still in flight when Later is clicked; its success lands first, the snooze second.
+    let resolveDecide!: (v: unknown) => void;
+    let resolveSnooze!: (v: unknown) => void;
+    const { el } = await mountApp("#/", (path, method) => {
+      if (method !== "POST") return undefined;
+      if (path === `/api/approvals/${card.id}/decide`) return new Promise((r) => (resolveDecide = r));
+      if (path === "/api/home/snooze") return new Promise((r) => (resolveSnooze = r));
+      return undefined;
+    });
+    await act(async () => el.querySelector<HTMLElement>(`#need-${card.id} .ui-digest-open`)!.click());
+    await settle();
+    const button = (text: string) => [...el.querySelectorAll<HTMLButtonElement>(".home-drawer button")].find((b) => b.textContent === text)!;
+    await act(async () => button("Approve").click());
+    await act(async () => button("Later").click());
+    await act(async () => {
+      resolveDecide(answer({ ok: true }));
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    await act(async () => {
+      resolveSnooze(answer({ until: "2026-11-27T08:00:00Z" }));
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    await settle();
+    const text = el.querySelector(".home-drawer")?.textContent ?? "";
+    expect(text).toContain("Approved");
+    expect(text).not.toContain("Hidden until");
+    // The snooze it could not report is not offered as an Undo the decision can't be reversed by.
+    expect(text).not.toContain("Undo");
+  });
+
   it("opens a decided card that isn't in Needs you at #/approvals/<id>", async () => {
     const id = "k-00000000000000d1";
     const { el } = await mountApp(`#/approvals/${id}`, (path) => (path === `/api/approvals/${id}` ? answer({ approval: { ...card, id, state: "rejected", decidedBy: "account:u1" } }) : undefined));

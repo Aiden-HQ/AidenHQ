@@ -92,9 +92,16 @@ const BODY_CHARS = 600;
 const section = (text: string, name: string) => new RegExp(`^##[ \\t]+${name}[ \\t]*$([\\s\\S]*?)(?=^##[ \\t]|(?![\\s\\S]))`, "im").exec(text)?.[1]?.trim();
 const http = (v: string | undefined) => (v && /^https?:\/\/\S+$/i.test(v) ? v : null);
 
+/** A task's own text: a merge appends the merged task under `## Merged from <id>: <title>` (merge.ts), and that task's
+ * Source, Reason and Suggested action are its own, never the surviving task's (whose details they would otherwise be). */
+const ownText = (text: string) => {
+  const merged = /^##[ \t]+Merged from\b/im.exec(text);
+  return (merged ? text.slice(0, merged.index) : text).trim();
+};
+
 /** What the drawer details about a task: `holder` is its agent's name (null for a person's task). */
 export function aboutTask(i: Issue, parent: Issue | undefined, holder: string | null): About {
-  const text = displayText(i.description);
+  const text = ownText(displayText(i.description));
   const block = section(text, "Source");
   let source: About["source"] = null;
   if (block !== undefined) {
