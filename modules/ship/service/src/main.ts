@@ -124,7 +124,7 @@ createServer(async (req, res) => {
     const q = new URL(req.url, "http://x").searchParams;
     const repo = q.get("repo") ?? "", n = Number(q.get("pr")), what = q.get("do");
     let gen = generationOf(state, paused() || !settingsOf(repo), repo, n, q.get("at") ?? undefined);
-    // The final tier check before an approve, a merge or an enqueue (risk tiers §7), with github's live head, base and author: this
+    // The final tier check before an approve, a merge or an enqueue (docs/design/code-review.md, Risk tiers), with github's live head, base and author: this
     // adoption's tier says whether the write may go; a verdict that can't be read, or a head not classified, is a no.
     let refused: { why: string; retry: boolean } | undefined;
     const s = settingsOf(repo);

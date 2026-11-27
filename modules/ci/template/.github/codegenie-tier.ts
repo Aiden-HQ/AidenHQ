@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The `code-review` check's risk tier (docs/superpowers/specs/2026-11-24-risk-tiers-design.md §8): the whole PR (merge base to
+// The `code-review` check's risk tier (docs/design/code-review.md, "Risk tiers"): the whole PR (merge base to
 // head) classified by the shared rules in tiers.ts, the same function code review runs, so no label or model call decides it.
 //   node codegenie-tier.ts  ->  one JSON line: { tier, rule, why, effort, lines }
 // Env: BASE_SHA, HEAD_SHA, BASE_REF (the PR's base branch), PR_AUTHOR and PR_ASSOCIATION (GitHub's own record of who opened it),

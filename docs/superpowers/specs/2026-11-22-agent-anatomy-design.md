@@ -2,7 +2,8 @@
 
 Status: design, approved by the owner 2026-11-22 ("this makes sense ... choose the simplest design to keep code
 maintainable while still getting the job done"). Revised 2026-11-23 with the owner's trust decisions (below). It ships as
-one product PR plus one instance-repo change: `docs/superpowers/plans/2026-11-23-agent-anatomy.md`.
+one product PR plus one instance-repo change. The plan it was built from is archived with the rest of this work in the
+instance repo's `docs/product-history/`.
 
 ## Why
 

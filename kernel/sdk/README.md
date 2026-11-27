@@ -2,8 +2,8 @@
 
 The code AidenHQ modules share, one copy on npm. MIT. Entry points: `types`, `engine-io`, `kit`, `progress` (engines),
 `caller` and `fence` (every module server: the kernel's caller assertion and the untrusted-text fence), `executor` (write
-kinds), `reviewer` (reviewer@1), `source-store` (source writers; `pg` is a peer dependency) and `vendor/proxy`,
-`vendor/oauth` (vendor connections; the MCP SDK, zod and pino are peer dependencies).
+kinds), `reviewer` (reviewer@1), `judge` (the judges' model call), `paperclip` (the Paperclip HTTP client), `source-store` (source writers; `pg` is a peer
+dependency) and `vendor/proxy`, `vendor/oauth`, `vendor/needs` (vendor connections; the MCP SDK, zod and pino are peer dependencies).
 
 The official modules in this repo hold synced copies of these files instead (`scripts/sync-shared.ts`), so what they run
 is gated source. A third-party module depends on an exact version (`"@aidenhq/sdk": "X.Y.Z"`). Our own scope is exempt from the 7-day rule, so a module

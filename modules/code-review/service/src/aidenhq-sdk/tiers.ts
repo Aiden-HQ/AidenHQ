@@ -1,4 +1,4 @@
-// Risk tiers (docs/superpowers/specs/2026-11-24-risk-tiers-design.md): one tier per PR head from cheap facts about its own change,
+// Risk tiers (docs/design/code-review.md, "Risk tiers"): one tier per PR head from cheap facts about its own change,
 // by a repo's ordered rules (the first whose conditions all hold names it). No model call, no labels. Code review owns the rules and
 // serves the tier through its verdict; the CI template classifies a PR itself with this same file. Dependency-free (node:path only):
 // scripts/sync-shared.ts copies it into code review's service and recipe, the engineer image and the CI template.

@@ -1,1 +1,0 @@
-Design references for the home and teammates plans, read as source. Each `.dc.html` is a design-canvas export: its runtime (`support.js`) is not in the repo, so it doesn't open in a browser on its own; the rendered screenshots go to builders as files attached to each task.

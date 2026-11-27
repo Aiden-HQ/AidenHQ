@@ -24,4 +24,4 @@ Researcher keeps the reads, `meeting_note_correct` and the voice-note tools.
 ## New installs
 
 In the default bundle. The `meeting-scan` routine (every 15 minutes, weekdays 08:00 to 20:00, or by webhook) and the
-`meeting-actions` routine (every 30 minutes) start paused under quiet start.
+`meeting-actions` routine (every 30 minutes, 08:00 to 20:00) start paused under quiet start.

@@ -20,4 +20,4 @@ file the row, so that task is graded too. An `issue` deliverable is read from Gi
 
 ## New installs
 
-Always installed (core requires it). Nothing is graded until a graded task finishes.
+In the default bundle. Nothing is graded until a graded task finishes.

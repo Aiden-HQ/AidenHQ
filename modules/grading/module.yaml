@@ -1,5 +1,5 @@
 name: grading
-description: "Graded done: a delegated task's rubric and grade, the finish check every move to done passes (held for the grader until its rubric is met), and the routes the board reads. Always installed (core requires it)."
+description: "Graded done: a delegated task's rubric and grade, the finish check every move to done passes (held for the grader until its rubric is met), and the routes the board reads. In the default bundle."
 license: MIT
 # A task.finish check (P5, spec §3.5): the kernel asks POST /check/finish on every move to done (kernel/src/checks.ts); a held
 # task goes to review with the `grading` label, which this module releases (POST /v1/checks/:task) once a verdict is in. The

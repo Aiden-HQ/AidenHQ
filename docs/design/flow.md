@@ -15,8 +15,7 @@ Rules that bind (owner):
 
 ## 1. The fact log (kernel)
 
-The `facts` table in `kernel/src/facts.ts` (`kernel.db`) is the log; it replaced the old `events` table (migrated once at
-open). Kernel writers insert a fact in the same transaction as the state change (`noteFact` never fails the change);
+The `facts` table in `kernel/src/facts.ts` (`kernel.db`) is the log. Kernel writers insert a fact in the same transaction as the state change (`noteFact` never fails the change);
 `/v1/flow` reads on its own read-only connection. Facts are pruned after 400 days (the kernel's daily sweep).
 
 | column | meaning |

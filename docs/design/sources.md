@@ -23,6 +23,7 @@ SELECT on its views to `agents_open`. The roles, schemas and shared `src_meta` t
 | `src_docs` | google-workspace-mcp | Drive file metadata for the primary account (30-day baseline, then every change). A separate pass stores a short summary of Docs and Slides. |
 | `src_meetings` | ops-mcp | Every published meeting note, read from ops-mcp's own records (full note, capped, with a tombstone if it disappears). |
 | `src_security` | security scanner | Findings in what the instance runs, by target. A finding reviewed as not affected is excluded from the `findings` view. |
+| `src_tasks` | warehouse search service | The task search index ([task-search.md](task-search.md)); not readable by `agents_open`. |
 | `src_meta` | apps-mcp and sources.sql | Shared tables, below. |
 
 Slack is stored in full, including DMs and private channels, and is readable by every agent with warehouse read.

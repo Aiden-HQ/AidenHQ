@@ -14,7 +14,7 @@ one place per thing. Code: `services/board/web/src` (`AgentPage.tsx`, `AgentSett
 - **Every edit is an exact commit with no model in it,** filed as a kernel record: saved in the owner's signed-in board
   session it is his own approval, otherwise tiered by the existing rules (`kernel/src/apply-tier.ts`); see
   [settings-changes.md](settings-changes.md). Module install, update, remove and adding
-  a marketplace follow the lean-core rules: AI review always first, an owner tap when the change adds authority.
+  a marketplace: AI review always first, an owner tap when the change adds authority (the authority diff).
 - Board routes need a signed-in admin. Reuse the board's kit ([board-ui.md](board-ui.md)): no new visual language.
 - One pending change per field: while one is in flight its editor shows the stage and offers Cancel; the live value stays
   visible until the change is live.
@@ -81,8 +81,7 @@ defaults. **Changes:** pending and past changes, with reviewed revert.
   the module's file at the pin differs from the fork's base, "module has a newer version" with a diff.
 - **What it reads:** the compiled handbook as the agent gets it. **History:** commits touching its handbook files and
   module bumps that changed it, each with a diff; instance commits get a reviewed **Revert**.
-- Tiering: Tier 1. A fork or its edit is `role-handbook` when the agent holds a role, else `module-handbook`
-  (`kernel/src/apply-tier.ts`); a handbook grants no authority.
+- Tiering: Tier 1 (`kernel/src/apply-tier.ts`); a handbook grants no authority.
 
 ## Typed changes
 
@@ -101,8 +100,8 @@ account. The board shows the stage from the record. The Tier column is what a ch
 | rules / handbook / unfork | `agents/<key>.md`, `agents/<key>/AGENTS.md` + `handbook_fork`, or a local agent's `modules/<name>/agents/<key>/AGENTS.md` | 1 |
 | grants | `overrides.agents.<key>.connections.<id>` (merged per connection over the module's grants before grant resolution) | 1 for read; 2 when it adds write or destructive tools |
 | setting | `settings.<key>` | 2 |
-| module, pin | `modules` | per the lean-core module rules |
-| marketplace | `marketplaces` | add 2; update and remove per the lean-core rules |
+| module, pin | `modules` | 1; 2 when the authority diff widens authority |
+| marketplace | `marketplaces` | add 2; update and remove as a module change |
 
 Anything that widens authority tiers as 2 through the authority diff, which compares compiled, effective grants, never a
 special case.

@@ -1,12 +1,11 @@
 # Task search (hybrid keyword + meaning, over the warehouse)
 
-Status: building (owner-approved, 2026-11-23). Replaces the board's substring text filter.
+Search over every task, in the warehouse, instead of a substring filter in the board.
 
 ## Why
 
-The Tasks page's text box matches substrings of title, identifier and label names, over the open tasks and the last 48 hours
-of Done. The owner searches by what a task was about ("review module" for the code-review work), by a file it touched, or for
-something finished weeks ago. None of that works today.
+The owner searches by what a task was about ("review module" for the code-review work), by a file it touched, or for
+something finished weeks ago, and a substring filter over open tasks and the last 48 hours of Done finds none of those.
 
 ## Shape
 
@@ -109,9 +108,9 @@ status, routine runs included), with three separate rules:
 
 - The text box sends the query to the board's `GET /api/search?q=` (signed-in session) 250 ms after the last keystroke; the
   board forwards it to the module through the kernel. Without the warehouse module the kernel answers 404 and the board
-  says search is unavailable. Saved boards keep `text` as today.
+  says search is unavailable. Saved boards keep `text`.
 - A card matches the text when the search hit it (identifiers are matched by the prefix search). Chips AND with it
-  as today (`cardMatches` takes the hit set). Lanes keep their order and counts.
+  (`cardMatches` takes the hit set). Lanes keep their order and counts.
 - While a query runs the field shows a small working mark; the cards stay as they were until the answer lands (no flash).
 - Done also lists matching tasks closed before the 48-hour window: newest first, drawn by the board's own card projection
   (`workCard`, the brief, settings and log tasks left out; their crew, the agents on their subtasks, from the rows' parent
@@ -143,17 +142,7 @@ the task text fenced as data (reasoning off and room for the JSON: a cut-off ans
   (or run `ops/warehouse-sources.sh`). Until then search answers 503 (the board says so and the text hides nothing), and the
   service's queue and reconcile wait and resume on their own.
 - The role's password is the warehouse module's generated secret `warehouse_src_tasks_password`; the service reaches Postgres
-  on the `sources` network, like every source writer (the closed legacy link list until 3g).
-
-## Tests
-
-PGlite (Postgres in WASM, with pgvector) runs the real SQL offline in the module's suite (`modules/warehouse/search`): rebuild idempotency and stale-gen
-rejection, tombstone safety (a partial listing deletes nothing; a late write can't resurrect), cursor paging of old closes, keyword + meaning union with
-summaries off, the query-time embed failure falling back to keyword hits, live changes ahead of the backfill and an
-edit pulling a backed-off retry forward, an edit found among the recently updated tasks, older closed hits carrying
-their crew, each side's cut at `PER_SIDE` (older closes outranking the hits take none of their room), an identifier query (its own task first, no meaning hits), a term's words as a
-phrase and a compound (half-typed, or its words spaced). The kernel suite covers the seams: `GET /v1/facts` behind its role, and a task's work read naming its PRs, paths
-and last final.
+  on the `sources` network, like every source writer.
 
 ## New installs
 
@@ -183,47 +172,9 @@ follows its findings: the head line weighted A (a task's own id ranked fourth be
 1.00), the label words every document carries deleted, path segments and the bare id number as keyword-only terms.
 A reranker was measured in part and left out (owner): a backlog issue.
 
-### Precision (2026-11-23, live index: 10,977 tasks, summaries on)
+### Precision
 
-The first release matched far too much: "slack reactions" 4,582 tasks, "code review recheck" 2,064, "review module" 1,378,
-"WOR-10957" 92. The board shows every match, so a search that matches 40% of tasks doesn't filter. Causes, measured:
-
-- **Meaning (most of it).** Gemini's cosines sit in a narrow band (a query's median 0.46–0.60, its best 0.60–0.75) and the
-  band moves per query, so a fixed floor of 0.63 admits a handful for one query and thousands for another ("slack
-  reactions": 15 keyword matches, 4,567 meaning ones; the Slack triage routine runs all sit at 0.66). The floor was
-  calibrated only on queries that should match nothing, and still does that job (0/12). Summaries didn't cause it: the
-  eval's index without them admitted as many or more at 0.63 ("slack" 5,068 then, 2,434 now).
-- **Keyword words that are really in the text.** "review module" is 1,342 keyword matches: 1,056 tasks hold both words
-  exactly (comments, PR titles, paths), the prefix `module:*` adds 286, summaries and tags 62, the keyword-only terms 2.
-  Only the ranking can tell the ones about it.
-- **A term's lexemes were ANDed, not a phrase**: `task_wait` matched 2,274 tasks with `task` and `wait` anywhere (113 as a phrase).
-- **An identifier's meaning counted**: `WOR-10957` has one keyword match and 91 meaning neighbours; and a short id's own
-  task ranked behind longer ids it prefixes (`WOR-109` put WOR-10915 first).
-
-A relative cut on meaning (cosine z-score ≥ 3 against the query's own distribution) was measured and rejected: it can't
-fire on a corpus under about ten tasks (a new install) and dropped every meaning hit for "slack reactions". A cap per side
-is size-independent, one number, and keeps the fused ranking's top intact.
-
-Before and after on the 45 scored queries (graded relevance sets; precision counts a returned task relevant when its
-duplicate group is) and the 12 negatives, the after column from the shipped SQL read-only on the live index:
-
-| Set | Matches, mean (max) | Precision@all | Recall at the result count | R@10 | nDCG@10 |
-| --- | --- | --- | --- | --- | --- |
-| All 45 | 636 (5,948) → 46 (100) | 0.439 → 0.598 | 0.713 → 0.405 | 0.725 → 0.723 | 0.680 → 0.707 |
-| Paraphrase (16) | 255 → 43 | 0.244 → 0.315 | 0.491 → 0.335 | 0.362 → 0.356 | 0.342 → 0.337 |
-| Identifier, path (13) | 335 → 34 | 0.471 → 0.534 | 0.819 → 0.703 | 0.850 → 0.857 | 0.809 → 0.860 |
-| Area word (10) | 1,236 → 64 | 0.673 → 0.920 | 0.764 → 0.175 | 0.990 → 0.970 | 0.942 → 0.941 |
-| Half-typed (6) | 1,308 → 51 | 0.497 → 0.951 | 0.989 → 0.326 | 0.983 → 1.000 | 0.870 → 0.972 |
-
-Negatives with any match: 0/12 → 0/12. The owner's queries: "review module" 1,378 → 75, "slack reactions" 4,582 → 63,
-"code review recheck" 2,063 → 66, "approval card on the board" 475 → 89, "task search" 628 → 98, "kernel spend cap" 16 →
-16, "warehouse pgvector" 13 → 13, "telegram bot" 46 → 46, "WOR-10957" 92 → 1 (itself). Recall at the result count falls by
-construction where the relevant set is in the hundreds (an area word): those are the matches past the best 50 on each side.
-The baseline here is below the encoder table's (0.725 against 0.763 R@10): it runs on the live index with summaries, and
-tasks created since the queries were labelled count as not relevant. Relevance is a predicate over task text, so precision
-on area and half-typed queries leans lexical. Per side 30 scored 0.727 / 0.707 with at most 60 matches, 20 lost recall
-(0.722); 50 keeps every quality metric within 0.01 or better. SQL: about 130–150 ms on the host.
-
-Latency (typing to rendered results): 250 ms debounce, the query embedding above, the SQL (exact cosine over 11k 3072-d rows,
-the worst case where every row matches: 115 / 331 ms p50 / p95 on a laptop's Docker), the board, kernel and service hops and the
-render: about 0.7 s p50 and 1.6 s p95, estimated from those parts; the deployed end-to-end figure is measured after it ships.
+Each side of the union brings at most its best `PER_SIDE` (50) matches: Gemini's cosines sit in a narrow band that moves per
+query, so a fixed floor alone matched thousands of tasks for a broad query, and a relative cut can't fire on a corpus under
+about ten tasks (a new install). The cap is size-independent, one number, and keeps the fused ranking's top intact. A term
+is matched as a phrase, not as its words anywhere, and an identifier query returns its own task first with no meaning hits.

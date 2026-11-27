@@ -1,4 +1,4 @@
-// Sessions (docs/superpowers/specs/2026-11-25-sessions-design.md): long-lived harness sessions are ordinary tasks held by the
+// Sessions (docs/design/sessions.md): long-lived harness sessions are ordinary tasks held by the
 // `session` agent. The board lists them, opens a session's terminal (ttyd + tmux) through
 // the computer launcher, and lets only the task's creator account in.
 //   GET  /api/sessions              the session tasks: live state, last activity, creator and spend

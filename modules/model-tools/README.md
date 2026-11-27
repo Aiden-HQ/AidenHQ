@@ -13,7 +13,7 @@ Nothing to connect. The calls go through the model gateway.
 
 Prompts only, each shown to agents granted the tool: `advisor` (for `paperclip_tasks.advisor_ask`) and `fanout` (for
 `paperclip_tasks.fanout_map`). The tools themselves come from `tasks` (read
-tags, billed to the caller's run), and `advisor_ask` is granted to crew agents by default when this module is on.
+tools, billed to the caller's run), and `advisor_ask` is granted to crew agents by default when this module is on.
 
 ## New installs
 

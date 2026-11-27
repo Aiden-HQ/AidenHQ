@@ -21,7 +21,7 @@ purpose: each line links the rule's home, and [CLAUDE.md](../CLAUDE.md) "Convent
 - **Everything the owner configures is declared in `module.yaml`:** settings (typed, with `values` and a comment that
   explains them), `board.signins`, `board.setup_flows` and its module page under Team (below). The board draws them with its kit and theme
   ([board-ui.md](../docs/design/board-ui.md)). The owner's MCP reads and sets the same declarations
-  ([design](../docs/superpowers/specs/2026-11-20-owner-mcp-design.md)), so a module adds no owner-facing code of its own.
+  ([board-ui.md](../docs/design/board-ui.md) "In the owner's Claude"), so a module adds no owner-facing code of its own.
 - **Secrets go through a board field, never chat.** Declare each with `setup:`. The board stores it in the vault and the
   module reads it as a file.
 - **A module's page (under Team) is a module view:** [board-ui.md](../docs/design/board-ui.md) "Modules".

@@ -1,4 +1,4 @@
-// The one MCP client a job's computer has (code mode: docs/superpowers/specs/2026-11-25-session-code-mode-design.md). A
+// The one MCP client a job's computer has (code mode: docs/design/sessions.md, "Code mode"). A
 // session's generated tool files (<state>/aidenhq-tools/) and the in-box `aidenhq` CLI call connections through it, as the job:
 // POST $AIDENHQ_GATEWAY_URL/c/<connection>/mcp with X-Agent-Key: $AIDENHQ_RUN_TOKEN, which the launcher checks and passes on to
 // the kernel's tool proxy. The proxy decides every call (grants, fencing, tiers, write records); nothing is decided here.

@@ -11,7 +11,7 @@ Nothing to connect.
 
 ## What agents get
 
-The `paperclip_tasks` connection (17 read, 21 write).
+The `paperclip_tasks` connection (22 read, 23 write).
 
 - Read: `task_current`, `task_get`, `task_search`, `task_list`, `task_team`, `task_comments`, `task_files`,
   `task_approvals`, `fleet_status`, `fleet_costs`, `fleet_catalog`, `handbook_read`, `advisor_ask`, `fanout_map`,
@@ -22,4 +22,4 @@ The `paperclip_tasks` connection (17 read, 21 write).
 
 ## New installs
 
-In the default bundle (core requires it). Nothing runs on its own.
+In the default bundle. Nothing runs on its own.

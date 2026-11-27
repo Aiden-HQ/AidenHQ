@@ -58,7 +58,7 @@ the vault still works, but its password is sealed with a key stored on the same 
 folder but not a stolen disk.
 
 Tailscale is optional. A new install without a tailnet serves the board over HTTPS on
-the server's public IP (tcp 443 and 8446 open, password and authenticator), or on loopback through an SSH tunnel
+the server's public IP (tcp 443, 8446 and 8447 open, password and authenticator), or on loopback through an SSH tunnel
 behind NAT: `--exposure public|tailscale|local` picks one, and running setup again with another switches
 ([design/access.md](design/access.md#exposure-modes)).
 
@@ -142,7 +142,7 @@ One run sets up the whole machine. It is idempotent: if it stops partway, fix th
 8. runs `ops/apply-config.sh`: compiles the modules, starts the stack, creates your Paperclip account and company,
    then turns off Paperclip sign-up;
 9. publishes the board on your tailnet (`tailscale serve --bg --https=443 http://127.0.0.1:3121`), installs the
-   model gateway, agent-computer launcher and run-pruning user units, and opens a Welcome chat with Aiden;
+   kernel (model gateway and jobs), agent-computer launcher and run-pruning user units, and opens a Welcome chat with Aiden;
 10. prints your one-time board setup link.
 
 Write `~/person.env` (it holds secrets; never commit it, and delete it at the end):
@@ -254,7 +254,7 @@ in at `http://localhost:3100` shows your company with Aiden in its org chart.
 
 Change config in one of two ways. Prefer the first:
 
-- **Ask Aiden.** "Install the slack module" or "set channels to web and telegram". The Engineer edits the
+- **Ask Aiden.** "Install the slack module" or "set my timezone to Europe/London". The Engineer edits the
   instance repo and you approve the change with one tap.
 - **By hand.** Edit `~/aidenhq-instance/instance.yaml`, then
   `git -C ~/aidenhq-instance commit -am '<why>' && git -C ~/aidenhq-instance push origin main`, then
@@ -281,20 +281,16 @@ read -rs V && printf '%s' "$V" > ~/.config/aidenhq/<name> && chmod 600 ~/.config
 
 ### Telegram (approvals, pages, and account recovery)
 
-1. [human] In Telegram, message **@BotFather**, send `/newbot` and keep the token. Then send your new bot any message.
-2. Find your chat id. Do this **before** saving the token: once AidenHQ has the token it long-polls the bot's
-   updates itself, and this call would compete with it:
-   ```sh
-   read -rs T; curl -s "https://api.telegram.org/bot$T/getUpdates" | jq '.result[].message.chat.id'; unset T
-   ```
-3. Save the token as `telegram_notify_bot_token` in the vault (snippet above), and add your chat id to `.env`:
-   `echo 'TELEGRAM_OWNER_CHAT_ID=<chat id>' >> ~/aidenhq/.env`. Only that chat is accepted.
-4. Add `telegram` to `channels:` in `instance.yaml` (see [docs/configuration.md](configuration.md)) and apply.
-5. Restart the service that holds the token: `cd ~/aidenhq && docker compose up -d --force-recreate channel-telegram-telegram`.
+On the board, open **Aiden on your phone** (`#/setup/channel-telegram`, also the welcome wizard's reach step) and follow it:
 
-**Check:** `docker compose exec channel-telegram-telegram printenv TELEGRAM_OWNER_CHAT_ID` prints your chat id, and sending the
-bot `/help` gets an immediate reply listing `/waiting`, `/status` and `/brief` (these quick commands don't wake a
-model). Any other message goes to Aiden; forward messages to the bot to give Aiden work.
+1. [human] In Telegram, message **@BotFather**, send `/newbot`, choose a name and a username ending in `bot`, and copy the
+   token it replies with.
+2. Paste the token into the board and press **Save**.
+3. [human] Scan the QR code that appears (or tap its link on your phone) and press **Start**. That chat is now yours with
+   Aiden; only it is accepted, and pairing needs no apply.
+
+**Check:** sending the bot `/help` gets an immediate reply listing `/waiting`, `/status` and `/brief` (these quick commands
+don't wake a model). Any other message goes to Aiden; forward messages to the bot to give Aiden work.
 
 ### Slack
 
@@ -316,14 +312,11 @@ Slack is one module (`slack`) with two parts, both served by one Slack app made 
 app, never shared):
 
 1. Pick **Slack with Aiden's bot** on the same page and paste an App Configuration Token: the board makes the full app,
-   adds the bot to the app it made for the sign-in, or (beside an organisation's sign-in) makes your own bot app. An app
-   made before 2026-11-23 is offered **Update your bot app** instead (its App ID, `apps.manifest.update`).
+   adds the bot to the app it made for the sign-in, or (beside an organisation's sign-in) makes your own bot app. An existing
+   bot app is offered **Update your bot app** instead (its App ID, `apps.manifest.update`).
 2. [human] Install it on the app's Install page in Slack (the setup page links it), then paste the Bot User OAuth Token
    (`xoxb-`) and an app-level token (`xapp-`, scope `connections:write`; Slack has no API that makes one).
 3. Pair: DM the bot the code the page shows. The paired account is whose words count and who gets paged.
-
-An instance that ran the old `channel-slack` module needs nothing: `replaces` keeps its `instance.yaml` working, and the
-apply moves its listener's data and restarts it under the `slack` module.
 
 **Check:** `docker compose logs --tail 20 slack-live` shows no token errors, and
 `scripts/healthcheck.sh | grep slack` shows `ok  slack read (own profile)`.
@@ -500,7 +493,7 @@ scripts/bootstrap.sh                 # secrets dir, data dirs
 # create your private instance repo (instance.yaml, apps.yaml, agents/), check it out, and set
 # AIDENHQ_INSTANCE_DIR=<checkout> in .env
 ops/apply-config.sh                  # instance -> pinned product -> compile -> compose up -> setup
-mkdir -p ~/.config/systemd/user && cp ops/units/aidenhq-{gateway,computers}.service ops/units/prune-docker.* ~/.config/systemd/user/
+mkdir -p ~/.config/systemd/user && cp ops/units/aidenhq-{kernel,computers}.service ops/units/prune-docker.* ~/.config/systemd/user/
 systemctl --user enable --now aidenhq-kernel aidenhq-computers prune-docker.service prune-docker.timer
 ```
 
@@ -561,7 +554,7 @@ Every board route, reads included, needs a signed-in admin with an authenticator
 
 Recovery: `sudo ops/setup.sh --config owner.env --reset <email>` (a config file with just `OWNER_NAME`, `OWNER_EMAIL`
 and `TIMEZONE` is enough) ends that account's sessions, lifts a lockout, clears
-an admin's authenticator and sends a new link to the owner's Telegram only. Approvals in Telegram keep working
+an admin's authenticator and prints a new one-time link on the server only. Approvals in Telegram keep working
 throughout. Five wrong passwords or codes from one address pause that address for 15 minutes; twenty through the gate
 pause the account on the gate's sign-in only, never on the board.
 
@@ -643,48 +636,7 @@ lives there.
 
 ### What a shared app must do
 
-Every request carries `X-AidenHQ-Identity`, a 5-minute Ed25519 token for this app ([app identity](design/app-identity.md)):
-the gate signs it for people, apps-mcp for agents. The app verifies it with the shared middleware, the product's
-`modules/apps-platform/starter/aidenhq-identity.mjs` copied unchanged, which reads the public keys the platform mounts
-(`/run/secrets/AIDENHQ_IDENTITY_KEYS`) and the app's name (`AIDENHQ_APP`), and refuses anything without a valid token.
-`req.user` is `{ sub, email, name, role, kind }`: `sub` is a stable opaque id (`u_…` for people, `agent:<key>` for
-agents); `role` is `member`, `admin` or one of the app's own roles. The gate refuses only `blocked` people and requires
-same-origin writes; the app decides everything else per role (a `member` can write unless the app says no), keys per-user
-data on `sub`, and treats a role it doesn't know as no more than `member`. Agents arrive as `kind: agent` (`admin` through
-`app_api` by default, for that one method and path; `member` through `app_view`, or through `app_api` with
-`role: "member"` for a signed-in test-user request on a public route, under the same caller grant and access policy).
-
-- **Custom roles:** `aidenhq-app.yaml` at the app's path declares them (`roles: [{ name, meaning }]`, at most 10, and an
-  optional `default_role`). apps-mcp checks it on deploy (an invalid one refuses the deploy) and the board reads it at
-  the running commit. A role the manifest drops makes its holders `blocked` until an admin picks another.
-- **Post-deploy checks:** every deploy (and `app_rollback`, and `app_check` on demand) runs light probes after health:
-  `render` loads a web app's `/` in a headless browser and fails on a CSP block, a failed stylesheet or script, a console
-  error or no stylesheet applied; `agent` GETs `<first api path>/schema` on an app with `api:` and expects 200 with JSON.
-  A failure rolls the deploy back. `checks: { render: [/, /audit], agent: [/api/agent/x/schema] }` in `aidenhq-app.yaml`
-  sets the paths (declared paths are strict; `[]` turns a kind off).
-- **Post-deploy watch:** a healthy auto-deploy that starts failing within 30 minutes, with app-side evidence (a container
-  exited or restarting, or health answering an HTTP error; a probe with no answer never counts) on 3 consecutive probes
-  over at least 5 minutes, is rolled back to the previous good deploy (once; code only, as `app_rollback`) and raised as a
-  `rolled_back` incident saying why. It stays open until a healthy deploy (the fix); the next commit on the branch deploys
-  as usual, and `app_deploy` redeploys the rolled-back one. Stateful apps, and a commit whose message carries a
-  `No-Auto-Rollback: <reason>` trailer (a security fix), are only raised. Data apps stay safe to roll back
-  because their migrations only add (expand now, contract in a later release).
-- **Admin screens:** link to `/.aidenhq/access` (the app's Access page). Settings the app has are its own screen, shown
-  to `admin`.
-- **Requests to the app's agent:** `fetch("/.aidenhq/request", { method: "POST", headers: { "content-type":
-  "application/json" }, body: JSON.stringify({ text, context }) })` from the app's own page (`text` up to 4000
-  characters, `context` up to 500). The gate adds who is asking; `/.aidenhq/requests` shows the person their requests and
-  the replies.
-
-In Node:
-
-```js
-import { createServer } from "node:http";
-import { createIdentity } from "./aidenhq-identity.mjs";
-const { protect } = createIdentity();
-const server = createServer(protect((req, res) => { /* req.user: { sub, email, name, role, kind } */ }, { health: "/api/health" }));
-server.on("upgrade", protect((req, socket, head) => { /* WebSocket, checked once here */ }, { health: "/api/health" }));
-```
+The app verifies the signed identity token and decides per role: [design/access.md](design/access.md#what-a-shared-app-must-do).
 
 ### Verify
 

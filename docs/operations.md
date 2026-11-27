@@ -128,9 +128,9 @@ It is idempotent. The Engineer runs it for you after you approve a change.
   running it after every apply restarts those services a second time for nothing.
 - **After changing kernel code:** apply-config restarts `aidenhq-kernel` (SIGTERM; `KillMode=process`): the kernel stops following its jobs (offsets saved in `data/kernel/kernel.db`) and exits; the next kernel adopts every job whose shell is still that run (pid and its `.exit` file name) and reports one that died while no kernel ran as lost, which the kernel resumes in the same session.
 
-- **The model gateway** (`kernel/src/gateway`, user unit `aidenhq-kernel`): every model call goes through it, and it alone reads `openrouter_key`. apply-config installs and starts the unit before compose and setup, and restarts it only when the code it loads at startup (the closure of `kernel/src/main.ts`) or its unit changed. A host whose apply-config predates the hand-over (step 3) runs its old script for the apply that brings the hand-over in; start that one apply with the new script instead: `git fetch -q origin main && git show <product sha>:ops/apply-config.sh > ops/.apply-next.sh && bash ops/.apply-next.sh; rm -f ops/.apply-next.sh` (it checks out the product, sees the script changed and hands over to the checked-out one). A bind that fails (the backplane address before compose is up) is retried in the process while loopback serves. It listens on `127.0.0.1:8201` (Engineer jobs through their jail, the AI reviewer, and the computer launcher, which forwards its boxes' model calls with the box's run token; the gateway names that run at the launcher's `/whoami`) and `10.231.0.1:8201` (Codex in Paperclip with the run's own JWT, the source writers, the board's cost reports at `/v1/costs/<report>`), and, with the ci module on, `10.231.4.1:8201` (the CI runners' bridge: CI tokens only, see CI runners). Spend (spec §5.12): limits count real cost. A call goes ahead while the install's spend (`spend_day_usd`, a UTC day, default $50; `spend_month_usd`, a UTC calendar month, default $1000) and the task's spend (`task_usd`, default $20; a chat or routine task: per UTC day) are below their limit, so one call may take a limit past it; its output limit is bounded to what the tightest limit's room buys at the model's price on OpenRouter's own models list (`GET /api/v1/models`, held in memory and refreshed hourly, the last good list kept on a failed refresh; an id OpenRouter doesn't list is refused), never under 1,024 tokens. It settles at what OpenRouter billed for it (the answer's `usage.cost`). A call past the install's limit gets HTTP 402 `cap_reached` and the owner is told once per limit, period and value; a call past a task's gets 402 and the delegator is told once; there is no off switch and no card. Raise a limit in Settings (the owner's). Ledger: `data/kernel/kernel.db` (`calls` and `cost_rollup`, the cost reports' 15-minute rollup of it kept by triggers, both 62 days); the old `data/gateway/usage.db` is merged in at every start while it exists (idempotent) and otherwise left alone. If it is down, no model call is made (`systemctl --user status aidenhq-gateway`, `journalctl --user -u aidenhq-gateway`).
-- **Agent memory** (the `memory` module): `memory_note` writes the agent's own memory document in the kernel at once (`data/kernel/memory/agents/<key>.json`, kernel `memory.ts`); a job's handbook and the chat lane read it each time. The agent page's Handbook tab shows it (Memory). To change one agent's memory, ask that agent to remember or forget something. The apply imports each agent's legacy memory file from the instance repo once (`ops/memory-move.ts`, before the kernel restarts); a one-time script in `ops/` cancels the old inbox tasks, by hand. Turning the `memory` module off removes the tools and the section (the documents stay on the data volume).
-- **Advisor and fan-out** (`modules/tasks/connections/tasks-mcp/src/models.ts`): `advisor_ask` (every Codex agent; GPT Sol, 5 calls per run) and `fanout_map` (granted per agent; up to 25 items on DeepSeek Flash) call the gateway's `/advisor` and `/fanout` routes with the run's own credential, billed to its run. Engineer jobs consult the same advisor with `aidenhq advise "<brief>"` (on the job's own credential; 5 per job). Both send `ADVISOR_MODEL` (models.ts). Not yet in agent computers. The kill switch below drops only the agents' tools; `aidenhq advise` stays (still under the gateway's limits). Kill switch: `settings.model_tools: off`, then apply.
+- **The model gateway** (`kernel/src/gateway`, user unit `aidenhq-kernel`): every model call goes through it, and it alone reads `openrouter_key`. apply-config installs and starts the unit before compose and setup, and restarts it only when the code it loads at startup (the closure of `kernel/src/main.ts`) or its unit changed. A bind that fails (the backplane address before compose is up) is retried in the process while loopback serves. It listens on `127.0.0.1:8201` (Engineer jobs through their jail, the AI reviewer, and the computer launcher, which forwards its boxes' model calls with the box's run token; the gateway names that run at the launcher's `/whoami`) and `10.231.0.1:8201` (Codex in Paperclip with the run's own JWT, the source writers, the board's cost reports at `/v1/costs/<report>`), and, with the ci module on, `10.231.4.1:8201` (the CI runners' bridge: CI tokens only, see [modules/ci](../modules/ci/README.md#how-it-runs)). Spend (spec §5.12): limits count real cost. A call goes ahead while the install's spend (`spend_day_usd`, a UTC day, default $50; `spend_month_usd`, a UTC calendar month, default $1000) and the task's spend (`task_usd`, default $20; a chat or routine task: per UTC day) are below their limit, so one call may take a limit past it; its output limit is bounded to what the tightest limit's room buys at the model's price on OpenRouter's own models list (`GET /api/v1/models`, held in memory and refreshed hourly, the last good list kept on a failed refresh; an id OpenRouter doesn't list is refused), never under 1,024 tokens. It settles at what OpenRouter billed for it (the answer's `usage.cost`). A call past the install's limit gets HTTP 402 `cap_reached` and the owner is told once per limit, period and value; a call past a task's gets 402 and the delegator is told once; there is no off switch and no card. Raise a limit in Settings (the owner's). Ledger: `data/kernel/kernel.db` (`calls` and `cost_rollup`, the cost reports' 15-minute rollup of it kept by triggers, both 62 days). If it is down, no model call is made (`systemctl --user status aidenhq-kernel`, `journalctl --user -u aidenhq-kernel`).
+- **Agent memory** (the `memory` module): `memory_note` writes the agent's own memory document in the kernel at once (`data/kernel/memory/agents/<key>.json`, kernel `memory.ts`); a job's handbook and the chat lane read it each time. The agent page's Handbook tab shows it (Memory). To change one agent's memory, ask that agent to remember or forget something. Turning the `memory` module off removes the tools and the section (the documents stay on the data volume).
+- **Advisor and fan-out** (`modules/tasks/connections/tasks-mcp/src/models.ts`): `advisor_ask` (every Codex agent; GPT Sol, 5 calls per run) and `fanout_map` (granted per agent; up to 25 items on DeepSeek Flash) call the gateway's `/advisor` and `/fanout` routes with the run's own credential, billed to its run. Engineer jobs consult the same advisor with `aidenhq advise "<brief>"` (on the job's own credential; 5 per job). Both send `ADVISOR_MODEL` (models.ts). Turning the `model-tools` module off drops its prompts and the default `advisor_ask` grant (so no agent gets the advisor that way), but it is not a fan-out kill switch: `fanout_map` is granted explicitly in `modules/chief-of-staff` and `modules/fleet-steward` and survives, and `aidenhq advise` stays (still under the gateway's limits). To stop an existing explicit fan-out grant, remove it from that agent's definition.
 
 ## Health
 
@@ -141,24 +141,7 @@ It is idempotent. The Engineer runs it for you after you approve a change.
   exposure). Run with the stack up.
 - The board's Apps tab lists each app's health; the DevOps Engineer owns an unhealthy app and pages the owner only when
   it cannot fix it.
-- The Fleet Steward (module `fleet-steward`): its service (`modules/fleet-steward/service/src`) runs the detector every
-  `fleet_ops_interval_minutes`: from the kernel's job ledger (`/v1/work`) a run stuck past twice its timeout, an agent's last 3
-  runs failed, or 3 runs in a day with no steps and no output; a task held for grading over a day; from apps-mcp (a module token
-  holding `apps.read`) an app incident open over 15 minutes (or apps-mcp not answering for 15 minutes), a source with no good
-  pass in an hour or failing for 15 minutes, an app's failing quality check and an agents-org pull request open over an hour
-  without merging; and Alertmanager's alerts (one incident per firing alert, posted to `POST /alerts` and reconciled against its
-  list each tick). It files one "Fleet Ops: check" task for the Steward (`POST /v1/tasks`, kernel.tasks; fixed text, never an
-  incident's words) once per new incident and once on recovery, at most every 30 minutes unless one is critical. State is in
-  `data/modules/fleet-steward/state.json`; the Steward reads it with `fleet_detector` (the proxy fences the answer, an alert's
-  label text carries a second fence) and logs on the "Fleet issues" task (`log ·` lines). The same service serves the Coach's
-  `coach_due` and `coach_evidence` and `fleet_generation_status` (the kernel's `/v1/work?generations=1`), and `/metrics`
-  (`aidenhq_steward_incidents_open`, `aidenhq_steward_alerts_firing`). A routine whose last three kernel jobs all
-  hard-failed (`failed` or `timeout`, counted from the jobs' `routine` in `GET /v1/work?agent=`) is an incident: the Steward
-  decides whether to pause it (`fleet_operate`, the kernel's `kernel.fleet_op`, AI-reviewed) and fixes its cause. A pause the
-  Steward made stays an incident (`routine:paused:<target>`, from `GET /v1/work?pauses=1`) until the Steward resumes it; it resumes
-  only its own pauses, and a resume starts a fresh count. Setup keeps a paused routine paused across applies. The `missed` group raises an active routine whose next schedule fire (`nextRunAt`, read with
-  kernel.cp-read) is over 15 minutes overdue: Paperclip's scheduler has stopped.
-
+- The Fleet Steward detects stuck runs, failing apps and sources, and firing alerts and files its "Fleet Ops: check" tasks: [modules/fleet-steward](../modules/fleet-steward/README.md#the-detector).
 - The Maintainer (the maintainer module's `maintainer-watcher` service, `modules/maintainer/service/src/watcher.ts`): it has no GitHub
   timer. The github module's change feed posts each issue event to the kernel, and every few seconds the watcher reads the kernel's
   log of the `issues.opened`, `issues.labeled`, `issues.closed` and `github.resync` events on the repos in the github setting
@@ -182,13 +165,7 @@ It is idempotent. The Engineer runs it for you after you approve a change.
   Those runs read a stranger's text before a trusted label, so they are capped a day per issue author on invalid issues (5, a product constant in `kernel/sdk/src/maintained-repos.ts`; an issue carrying the fix label or `feature-request`, the latter labelled by a trusted labeler, is valid and
   uncounted); past it, the issue is held and triaged the look a slot frees (the daily run has it after a day). A fix that a label leads to still passes the Engineer's gates, the AI reviewer and the merge checks.
 
-- Monitoring (module `monitoring`, [docs/design/monitoring.md](design/monitoring.md)): Prometheus, node-exporter, cAdvisor,
-  Alertmanager and Grafana. Every alert becomes a detector incident (group `alert`), so Fleet Ops works it; `CoreServiceDown`
-  and `ApplyFailed` also send the chief of staff one line. Grafana is on `127.0.0.1:3131`; one-time on the host:
-  `tailscale serve --bg --https=8444 http://127.0.0.1:3131` (no sudo: the user is tailscaled's operator) and set
-  `grafana_root_url`. Sign in as `admin` with the vault's `grafana_admin_password`. Unit and container states come from the
-  user timer `aidenhq-host-metrics` (`ops/host-metrics.sh`; apply installs it while the module is on), the gateway's from
-  `data/monitoring/textfile/gateway.prom`. No sudo step.
+- Monitoring (module `monitoring`): Prometheus, Alertmanager and Grafana; every alert becomes a Fleet Ops incident. Setup, alerts and access: [docs/design/monitoring.md](design/monitoring.md).
 
 ## Backups
 
@@ -200,8 +177,8 @@ restore puts that copy over the file copy. Files are read through a container, s
 runs, its live database is left out and its hourly dumps carry it; for a complete Paperclip database, stop the stack
 first. A Postgres volume in use (the warehouse's `pgdata`) is skipped; its nightly dump volume is copied. The secret
 vault and the notes vault are not included. The backup holds `auth.secret`, so it is mode 0700. It refuses to start
-unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a full root disk crashed Paperclip's
-Postgres on 2026-11-16). Each successful apply prunes unused images older than 48 hours and caps the build cache at 20 GB (least recently used
+unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a full root disk crashes Paperclip's
+Postgres). Each successful apply prunes unused images older than 48 hours and caps the build cache at 20 GB (least recently used
 first; both the buildx `--max-used-space` and the classic builder's `--keep-storage` form are tried, since which one the CLI
 knows depends on the buildx plugin). Each prune is its own `-`-prefixed `ExecStart=`, so every one runs whatever the ones
 before it did; a last, unprefixed step (`ops/prune-docker-verify.sh`) re-reads the host — daemon answering, build cache under
@@ -221,9 +198,9 @@ systemd reaching the later steps and the verification; the apply-time steps are 
 only helps once the command exits. The verification judges the cache on a snapshot taken immediately after the two builder
 prunes and before the image and container prunes (its own prefixed step, `prune-docker-step.sh build-cache ... docker
 system df`), so a build that grows the cache while later steps run does not read as a prune that capped nothing. That
-ceiling is 40 GB, not the prune's 20 GB target: a working prune leaves the fleet's ordinary cache on the 20 GB line (a
-29.9 GB peak in the five hours to 2026-11-22T12:45Z), so a 20 GB judgement failed every ordinary run after 2026-11-22;
-40 GB is above that peak and still catches a prune that did nothing (an uncapped store held 104 GB), while disk pressure
+ceiling is 40 GB, not the prune's 20 GB target: a working prune leaves the fleet's ordinary cache on the 20 GB line (it
+peaks near 30 GB), so a 20 GB judgement would fail every ordinary run;
+40 GB is above that peak and still catches a prune that did nothing (an uncapped store holds 100 GB or more), while disk pressure
 is left to `DiskSpaceLow`/`DiskNearlyFull`. In that snapshot, over the ceiling with nothing reclaimable is a build holding
 that cache in use (the ceiling holds), while any reclaimable bytes at all mean the prune did nothing. The snapshot, its status and its invocation are one record, so a run
 is only ever judged on its own result, and the ceiling's only tolerance is the precision Docker printed the size with.
@@ -247,8 +224,8 @@ Moving a running instance to another host (drain, cold copy, tailnet names, roll
 
 Every job of a task runs in `<work_dir>/tasks/<identifier>` (default `~/aidenhq-work`), with its build-cache overlays in
 `.cache-layers/<identifier>` and its engine home (the Codex home and sessions) in `<state_dir>/<engine>/<agent>_<task>`.
-`state_dir` (default `~/.local/state/aidenhq-runner`) is the **kernel's live job state** despite its old name: never delete it
-(deleting it on 2026-11-22 failed every Engineer job with EACCES until it was restored). The kernel's disk sweep (`kernel/src/workspaces.ts`, every 15 minutes) removes each
+`state_dir` (default `~/.local/state/aidenhq-runner`) is the **kernel's live job state**, whatever its name says: never delete it
+(every Engineer job fails with EACCES until it is restored). The kernel's disk sweep (`kernel/src/workspaces.ts`, every 15 minutes) removes each
 of those folders, and check folders a dead kernel left in `checks/`, once nothing live uses it (no running job, no box not yet released) and its task has been done or
 cancelled for a day, or it has been idle for 3 days whatever the task's state (a resumed task clones again and starts a fresh
 session). When a disk is over 80% used the limits drop to a day idle and closed at all. Every job box shares one npm cache,
@@ -353,7 +330,7 @@ Design: [design/approvals.md](design/approvals.md).
 
 The instance setting `autonomy` (`off` | `tier0` | `full`; docs/configuration.md) decides who approves. Code tiers each
 write from verified state (`kernel/src/tier.ts`, `kernel/src/writes.ts`): Tier 0 runs at once with an audit row on the board, Tier 1
-goes to the AI reviewer (the `modules/ai-reviewer` module, policy `modules/ai-reviewer/service/security/policy.md`), Tier 2 to the
+goes to the AI reviewer (the `modules/ai-reviewer` module, policy `modules/ai-reviewer/service/security/policy/`), Tier 2 to the
 owner (Telegram card). Every record shows its tier, reason and `decided_by` on the board; a digest of what was decided
 without the owner reaches Telegram once a day from 21:00.
 
@@ -435,113 +412,7 @@ exact email match only).
 
 ## Security module
 
-`modules/security`: Security Watch (`security-watch`) and the Red Teamer (`red-teamer`), plus `security-scanner`, the
-`src_security` writer (grype, no LLM). The inventory is made on the host, because it needs the Docker socket and the root
-filesystem, which the scanner never gets: `ops/security-sbom.sh` (user timer `aidenhq-security-sbom.timer`, daily 03:30)
-runs pinned syft over the host packages, every running image variant (two containers on one multi-platform index — an
-amd64 service and an emulated arm64 one — are two targets; the key is a function of the variant alone, never of which
-other variants run: the variant on the daemon's own platform always keeps the plain tag key and a variant on any other
-platform is always suffixed `@<platform>`, so a target's name does not move when a variant comes or goes and its findings
-are not filed under another's; each image is read from a `docker save` archive, never
-through a mutable tag: the archive is exported on the platform the container itself runs — its `ImageManifestDescriptor`,
-which on the containerd store names the platform manifest the container was created from, not the variant the daemon's own
-platform resolves — from an immutable id that holds that manifest, or from the tag itself only while it still names that
-manifest, rechecked after the save; keyed by the container's own id, or by its tag while the tag still names what runs, so
-findings already held under that id reconcile; a running container whose image record the daemon no longer holds as an
-image (untagged and collected while the container kept running) is inventoried from the container itself: `docker export`
-into `data/modules/security/sbom-exports` — a sibling of the mounted `sbom` directory, never inside it, because the
-security-scanner has that one mounted at `/sbom` and a raw export can hold runtime data no other service should read — and
-syft scans the extracted root as a directory under the same `image:<id>` target, with `container:<id>` in the `targets.tsv`
-commit column as provenance (a scan of the container's filesystem, not proof about the missing image; two replicas of one
-gone image are one target, their files extracted into one real root, and `container:<id>,<id>` names both). The
-daemon's own "No such image" or "invalid reference format" takes this path — the latter is how it refuses a reference it
-cannot parse at all, such as a bare container id, so a container whose image record the store cannot name is still
-inventoried; a timed-out or refused inspect stays an error line so the next pass retries the image; an image nothing can
-read or fit, and a container whose export fails, is a
-`targets.tsv` line naming the id and the error, never a silent gap), the product and instance checkouts and each
-app's deployed source, into `data/modules/security/sbom/current/`. The host target scans `/` without the homes (`./home/**`,
-`./root/**`), procfs, the container stores and this instance's own checkouts: a clone, task worktree or tool cache there
-belongs to another project's dependency tree, and no apt upgrade or `ops/vm/pins.json` clears it, so it would be permanent
-noise beside the packages the operator can fix; `/usr`, `/opt`, `/etc` and `/var/lib/dpkg` stay in it. `targets.tsv`
-records the checkout's git HEAD for `repo:product` and `repo:instance` (and `container:<id>` for a container-root scan),
-and the scanner copies it to each target's `src_meta.ingest_run` row. The pass writes into `data/modules/security/sbom/.work` on `/`,
-keeps each target's archive in `data/modules/security/sbom/.archives` until its scan, and keeps a container export and its extracted root in
-`data/modules/security/sbom-exports` (mode 700, because it can hold runtime data) only for the scan: each unit's tar and
-extracted root are removed together as soon as its scan ends, and anything left goes with the pass, so nothing of them
-stays under `data/`. Every image is saved under the lock, from a reference
-resolved there on the container's own platform (an immutable id that holds its platform manifest, else the tag itself),
-sized as that same reference and platform (an index reports the whole index while a platform save writes one manifest),
-and the plan sizes every image before writing anything, then cuts the set into waves smallest first, admitting an image
-only while that wave's archives plus the largest one's own size again (the workspace its scan unpacks into while every
-archive is still on disk) fit above the floor. Exports run smallest first and scans largest first: the snapshot deadline
-is spent on exports, so a large save that runs it out still leaves the smaller archives written, while the peak scan is
-the first one, with the whole wave on disk and its predecessors' archives deleted after each scan — the accounting above
-is that peak, not a sum of every workspace. Each wave's saves happen under the apply lock and its scans after the lock is
-released, before the next wave's saves, so two waves' archives are never resident together. That is what lets a set whose
-whole archive total plus its largest does not fit above the floor still be inventoried in full instead of dropping its
-largest image on every pass (2026-11-23: the set's 17 GB image was skipped every pass though each wave could hold it). A
-later wave takes the lock again for its saves, within what is left of the pass's one overall export budget; a wave that
-cannot get the lock, or starts after that budget is spent, is recorded as unscanned lines rather than a gap.
-An image that cannot fit even a wave of its own — its archive held for its own scan plus its own size to unpack it — is a
-line stating the admitted total, its size, the largest archive, the room above the floor and the shortfall, and no bytes
-are written for it. Free space is checked again before each save and again before each scan, and an export is written under a file-size
-ceiling set to the room left above the floor, so a save larger than the daemon's estimate is stopped while it is written
-rather than after it has taken the reserve; the export is watched while it runs, so if free space reaches the floor on the
-archive's filesystem or on Docker's root (the daemon staging its own copy, say) it is stopped too; that image is deferred to a wave of its own, and a save blocked when
-nothing of its wave is written is retried once before it is a line, since another writer's pressure may be temporary. A target that loses its room between waves is
-deferred, not dropped: its numbers are printed, it gets a wave of its own after the planned ones, and it is saved and
-scanned once the pass's own archives are freed. If a wave's archives turn out larger than the sizes the plan saw, its
-scans run in rounds, the smallest remaining archive taken out when a round can scan none, and that image comes back in a
-later wave the same way — so the images the disk can hold are scanned rather than the wave, or the image, being skipped on
-every pass. Deferral is bounded: once the pass has spent one extra wave per surveyed image, an image that still does not
-fit is a line with the numbers instead of another wave. It empties the work dir after every target, keeps 30 GB free (an
-image whose size the daemon won't report is recorded and not scanned: an unknown demand can't be judged to fit). A container that reports no platform descriptor (an
-older daemon, or a single-platform
-store) is read on the Docker server platform, and the pass says on stderr how many it did that for; a Docker API older
-than 1.48 (which has no `image save --platform`) uses a plain save, sized as the whole reference because that is what the
-save writes, and then reads the archive back under the same deadline: an `index.json` must name exactly one manifest, a
-descriptor that is itself an index is resolved into the blob it names (one platform manifest), and that manifest must be
-the platform manifest the container runs (or, on the classic image store, whose image id is the config digest, the sole
-manifest's `config.digest`); an archive with no `index.json` must have a `manifest.json` with exactly one image, whose
-`Config` digest is that same pin; an archive that cannot be read is a line. So the scan is always of the running variant, never of another platform or build
-under its target, and the fallback is also said on stderr.
-Its descriptor is the authority on what a container runs: the tag is a target only while it names that manifest, and the
-Compose label or the container's own id only answer for a daemon that reports none. A second pass started
-while one holds `.lock` skips rather than running two at once.
-
-The container enumeration, the image target list and every `docker save` are taken under the host's apply lock
-(`data/apply.lock`), each Docker call bounded by a timeout and the whole phase — from `docker version` before the first
-inspect to the last save — by an overall deadline, so an apply neither runs against a half-applied snapshot nor waits on
-an unresponsive daemon or a hung save. A pass that cannot enumerate
-(a failing `ps`, an inspect that fails for a still-running container, or a re-list that fails after such an inspect) keeps
-the previous batch instead of publishing a short one. The lock is released before the syft scans, and the snapshot
-deadline ends with the lock so a long host scan can't make a later check look overdue. Every image's archive is exported from the reference the lock
-resolved (an immutable id, or the tag itself with a second check after the save), so a tag rebuilt in between is a line
-rather than another build's packages under the old target. On 2026-11-21 two such scan containers wrote ~142 GB in three hours and `/` reached 81%.
-`AIDENHQ_SBOM_MIN_FREE_GB` can raise
-the floor for a smaller disk, never lower it: 30 GB is the least a pass runs with, and a value under it (or not a number) is
-ignored. The scanner matches a new batch within the hour (or daily anyway) and fires Security
-Watch's webhook when anything changed. On demand:
-`ops/security-sbom.sh`, then `docker compose exec security-scanner node dist/src/main.js once`.
-
-The apply installs and enables the timer while the module is on, and its `AIDENHQ_DIR` follows the checkout the apply applied
-(`~/.config/aidenhq-security-sbom.env`, written every apply), so a batch never runs an older checkout that
-`~/.config/aidenhq-checkout.env` names. `scripts/healthcheck.sh` fails an apply whose SBOM unit would run another checkout's
-`ops/security-sbom.sh`. To run the first batch once the module is on:
-
-```sh
-systemctl --user start aidenhq-security-sbom   # first batch; also creates data/modules/security/sbom as you (not root)
-```
-
-After the apply, `ops/warehouse-sources.sh` creates `src_security` (apply runs it). A stale batch shows as an
-`ingest_run` error on scope `sbom-batch`.
-
-App Auditor (optional): set `app_auditor_url` (the security module's setting) to your App Auditor MCP server and put
-a Cloudflare Access service token for it in the vault
-(`app_auditor_cf_client_id`, `app_auditor_cf_client_secret`), the scanner starts a vibe audit of each registry app when
-it is new and weekly after (one start per pass), and writes the findings to `src_security` (tool `app-auditor`). The token
-can read every team's audits, so it stays in the scanner. Empty files: off, and Security Watch asks the owner to run
-the audit by hand instead.
+Security Watch, the Red Teamer and the scanner: [modules/security](../modules/security/README.md#how-it-runs). The host inventory timer is `aidenhq-security-sbom.timer` (`ops/security-sbom.sh`).
 
 ## Vault
 
@@ -559,155 +430,6 @@ applies from the next acquire) and
 `aidenhq-transcripts.path` (meeting transcript watcher). Enable user units to survive logout with
 `loginctl enable-linger <user>`.
 
-## CI runners (modules/ci)
+## CI runners
 
-App repos' CI (`modules/ci/template`: jobs `tests` and `code-review`; `code-review` skips the review and passes on a
-change under 20 added plus deleted lines with no sensitive path; `package-lock.json`, which the supply-chain job validates, is not counted, but a change that adds a package, changes a version or source, or adds an install script is sensitive, while other lockfiles are counted and always sensitive; an agent's screenshots under `.aidenhq/out/` are not counted, its json and txt reports are; a head whose patch is unchanged since a green review of the same branch and base ref, on a base that only moved forward, reuses that verdict) runs on our own GitHub Actions runners,
-`runs-on: [self-hosted, aidenhq]`, registered to the fleet org (`github_fleet_org`). The product repo's CI
-(`.github/workflows/`) runs on the same kind of runner, registered to the product repo's org (below). Each
-`aidenhq-ci-runner@<n>` user unit (fleet org) or `aidenhq-ci-runner@<org>-<n>` unit (another org) runs
-`ops/ci-runner.sh`: it asks the kernel for a one-hour registration token (`ops/ci-runner-token.ts [org]`: `POST
-/v1/codehost/runner_token` with the ci module's `ci_token`; the code host mints it as the owner, whose sign-in needs
-`admin:org`, and answers only that token), then
-`docker compose run --rm ci-runner`: a new container that registers ephemerally, takes one job, exits and is removed;
-the unit then starts the next, at once (`Restart=always`, `RestartSec=1`). A refused token (the sign-in missing
-`admin:org`, GitHub unreachable) backs off instead: `ops/ci-runner.sh` writes that unit's delay (1 second, doubling to a
-minute) and exits, and the unit's `ExecStartPre` (`ops/ci-runner-backoff.sh`) waits it out before the next attempt. The
-minute is a hard cap: a longer `ExecStartPre` wait would outlast systemd's 90-second timeout. The next token that mints
-clears the delay, and a marker more than 15 minutes old (a drain, an outage) is dropped rather than served, so a
-persistent refusal retries slowly rather than hot-looping while a clean job exit still starts the next runner
-immediately. Because the wait runs before `ExecStart`, a unit backing off is `activating` rather than `active`. The
-marker sits under the host's data dir, which `ops/lib/data-dir.sh` resolves from the unit environment alone -- the apply
-writes each unit's `EnvironmentFile=` (`~/.config/aidenhq-ci-runner.env`, `~/.config/aidenhq-host-metrics.env`) from the
-host's own `.env`, so the runner and the exporter never read a settings file themselves. A relative value is the
-checkout's and a leading `~` is the home directory, with a trailing slash dropped but a lone `/` kept, so the marker is
-the same file `ops/host-metrics.sh` exports its backoff series from. The marker is written beside itself and renamed
-into place, so the exporter never reads a half-written file, and the exporter only reports a marker for a runner unit
-systemd still has enabled or still has running: a runner retired at the cap (disabled and stopped) does not keep the alert
-pending, while one disabled with `systemctl --user disable` but left running still retries under its restart policy and
-keeps its series. The missing permission also
-reaches the owner: a codehost op's `needs_owner` answer is recorded
-as connection state, so it lands in the owner's digest (the GitHub card's own row comes from the sign-in's granted
-scopes), a 2xx op clears a full cause, and two warnings in `modules/monitoring/prometheus/rules.yml` cover the loop:
-`CiRunnerRestartLooping` on a unit that keeps restarting, and `CiRunnerBackoff` on a unit whose persisted wait has sat
-at the one-minute cap for ten minutes, which the host-metrics timer writes as `aidenhq_unit_backoff` from the runner's
-own marker (the wait itself, so a scrape that misses the brief active intervals between backoffs still alerts; the rule
-holds while the wait is at the cap and its `for` is the ten minutes, so a wait that has since cleared raises nothing).
-
-Nothing carries between jobs. The container has no host mounts, no docker socket and none of the instance's secrets; it
-sits on `aidenhq-ci` (system unit `aidenhq-ci-net`: the public Internet and, on the host, only the model gateway's CI
-listener `10.231.4.1:8201`; no LAN, tailnet, other host ports or other containers). Limits per runner: 4 CPUs, 8 GB.
-
-**Code review spend (the model gateway).** The template's `code-review` job needs no model key: on our runners
-(`AIDENHQ_GATEWAY_URL`, set on the runner container) it asks GitHub for its OIDC token (`id-token: write`, that job only)
-and trades it at the gateway's `POST /ci/token` for an opaque CI token that lives 2 hours. The gateway
-(`kernel/src/gateway/ci.ts`) checks GitHub's signature and that the job is a `pull_request` run of the repo's own
-`.github/workflows/ci.yml` for that PR, on a self-hosted runner in the fleet org; each run attempt trades its token
-once. The repo and PR come from that signed token, and the answer names the review model and effort
-(`settings.ci_review_model`) and the repo's risk tier rules (its `code_review` entry's `rules` and `repo_class`, or none: the template's
-default rules) with the instance App's bot login, so the job classifies the PR as code review does (below). The CI token works only on the CI listener, only for `responses` (and `chat/completions`
-for repos on the older template) with `settings.ci_review_model` or `settings.ci_review_models`, no fallbacks, plugins,
-server tools or stored responses, zero data retention forced, under the install's spend limit (a refusal fails the review, no retry). Each call goes out while the limit is not used up
-and settles at what was billed (a Responses stream at its `response.completed`); a cut stream keeps its input estimate.
-Every call lands in the ledger as kind `ci-code-review` with `<owner>/<repo>#<pr>` and the head the job sent (advisory):
-the Costs tab's "App CI code review" line. Revoke: removing the `ci` module refuses every CI token at once.
-The reviewer is codex with codex review's guidelines (`.github/code-review.ts`, pinned `@openai/codex`), at the effort the PR's risk tier
-chooses: the job classifies the whole PR first (`.github/tiers.ts`, `.github/codegenie-tier.ts`: the same classifier and rules as code
-review, no labels), `skip` and `trivial` PRs are not reviewed (a delta still runs), `standard` at the model's effort, `sensitive` one higher
-(xhigh at high); text addressed to a reviewer also runs one higher. A green review carries to a later head (reuse or delta) only at the same tier
-and model and an effort at least as high; its commit status records them. codex runs with its shell off: the
-runner container can't give it its sandbox (bubblewrap needs user namespaces, which Docker and the host's AppArmor refuse
-there), so its only tools are `.github/review-tools.ts`, a stdio MCP server that reads the PR's tree and git history
-(diff, log, show, blame, read a file, list files, search; for TypeScript and JavaScript definition, references and
-diagnostics from a pinned typescript-language-server, with no dependencies installed and type acquisition off) and
-nothing else: nothing of the PR runs, writes or connects, and its
-environment holds only the CI token (never the job's GitHub tokens). It runs from an empty directory with a config the
-job writes (hooks, plugins and apps off), so nothing in the PR is loaded as codex config or instructions; a PR that adds
-`.codex/`, `codex.toml` or `AGENTS.override.md` fails the check (before any tier shortcut), and AGENTS.md is a sensitive path. Its answer must match
-an output schema: anything else is no verdict, which passes the check with a comment saying so ("Code review: no verdict on
-`abc1234` (not blocking)"; the system fails open rather than stalls, owner ruling 2026-11-21, replacing the fail-closed ruling of
-2026-11-17). A run without a verdict (a provider error, a timeout, an answer that isn't a review) gets one
-retry when time is left (an incomplete review is not retried); a gateway refusal (bad token, our spend cap) isn't retried. The review target of 2,000 counted lines is
-advisory: past it, a run without a verdict says the change is large and suggests stacked PRs. Findings that did come out still
-decide (high or critical block). A run without a verdict records no baseline for the next push's delta review, so the next
-push reviews the whole PR. Any lockfile change is a sensitive path (a bot's manifest-and-lockfile-only PR is standard), and the reviewer gets a summary of a
-package-lock.json change. Its scripts and the house rules (the repo's `REVIEW.md`) come
-from the base commit. Its brief: the house rules, the PR's tier and its AGENTS.md (base commit), and the PR's
-title and description fenced as data, so it judges scope. P0 and P1 findings block (critical, high); P2 and P3 are listed.
-A same-repo PR can edit the workflow and spend up to the install's spend limit on the allowed models: the limit and scope are the
-boundary, not the job name. Instances without the gateway (no `AIDENHQ_GATEWAY_URL`) use the repo secret
-`OPENROUTER_API_KEY` instead; where the gateway is on, delete that secret from the app repos (an edited workflow could
-read it).
-
-**Register (once).**
-1. GitHub: with `ci` in `modules:` (step 3), the GitHub card on the board asks for `admin:org`: press **Reconnect** and
-   allow it. You must be an owner of each org the runners register in.
-2. Fleet org → Settings → Actions → Runner groups → Default: allow private repositories (and public if any). No model
-   secret: code review spends through the gateway (above), whose `settings.ci_review_model` (default
-   `~deepseek/deepseek-flash-latest:high`) picks the model and effort. Off the gateway: the variable `CI_REVIEW_MODEL`.
-3. Instance repo: add `ci` to `modules:` in `instance.yaml`; deploy (`aidenhq-apply --wait`).
-4. On the VM (sudo, once): `sudo install -m0755 ops/vm/computer-net.sh /usr/local/sbin/aidenhq-computer-net && sudo install
-   -m0644 ops/units/aidenhq-ci-net.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable
-   --now aidenhq-ci-net` (`ops/vm/setup.sh` does this on new hosts).
-5. A run of `ops/setup.sh` with `CI_RUNNERS=2` (its config or the environment) starts that many; or by hand:
-   `cp ops/units/aidenhq-ci-runner@.service ~/.config/systemd/user/ && systemctl --user daemon-reload &&
-   systemctl --user enable --now aidenhq-ci-runner@1 aidenhq-ci-runner@2`. Check: the org's Settings → Actions →
-   Runners lists `aidenhq-<container id>` idle; `journalctl --user -u aidenhq-ci-runner@1`.
-
-CI health on demand (queue time, red rate, slow and failing jobs, merged-PR flakes, both repos): `node scripts/ci-report.ts [--hours 24]`.
-
-**The product repo's org.** The product workflows' heavy jobs can overflow to `[self-hosted, aidenhq]` (below).
-`image-scan` builds nothing (a build would run a PR's RUN steps on our runner, and the runner has no Docker): the grype
-baked into the runner image scans each changed image's directory (lock files) and the digest-pinned base images its
-Dockerfile names (`scripts/supply-chain/image-scan.ts` reads the Dockerfile as text), so packages RUN steps install are
-not covered there; the security module's scans of deployed images cover them. A base image's files a Dockerfile replaces
-or never copies out (node's bundled npm, the Alpine packages of a stage only partly copied) are owner-approved entries in
-`.github/image-scan-exceptions.yaml`, read from the base commit. A PR from a fork is routed to `ubuntu-latest` instead of
-our runners (where image-scan fails: no grype). That routing lives in the workflow file the PR itself carries, so it is
-not the boundary: the org's runner group is. To serve the product org:
-1. You are an owner of that org, and AidenHQ's sign-in is allowed there (an org that restricts OAuth apps shows it on the
-   GitHub card).
-2. The org → Settings → Actions → Runner groups: a group limited to the repos the runners serve (the `ci_runner_repos`
-   setting), named in the instance's `settings.ci_org_runner_group`. Another org's units register only into that group
-   and refuse to start without the setting, so they never land in the org's Default group (all repositories). Allow
-   public repositories on it only for repos that require approval for all outside collaborators (below).
-3. On the VM: `systemctl --user enable --now aidenhq-ci-runner@<org>-1 aidenhq-ci-runner@<org>-2` (the org's login as
-   in its URL, e.g. `aidenhq-ci-runner@acme-1`). Check: the group's runners list them idle.
-
-**The public Aiden-HQ repos (AidenHQ, aidenhq-distro).** Their CI runs on GitHub-hosted runners first.
-In the product's ci.yml the first job (`checks`) counts the hosted jobs this repo's other runs hold (queued or running) and
-sends the heavy jobs (the packages shards and board) to `[self-hosted, aidenhq]` only when that count is 12 or
-more (the free plan runs ~20 at once), the repository variable `CI_SELF_HOSTED` is `true`, and the run is a push to main or
-a same-repo PR (never a merge train: it holds PRs that may come from forks); any API error keeps them hosted. That routing
-lives in the workflow file the run carries, so it is no boundary. The boundaries are: *Require approval for all outside
-collaborators* (a fork's workflow runs only after a maintainer approves it), the org runner group (only these repos), and
-the runner's job-started hook (modules/ci/runner/job-started.*, baked into the image read-only, run under `env -i`): it
-fails any job, before checkout, whose repository is not in the fleet org or the `ci_runner_repos` setting, or whose event
-is not a push or workflow_dispatch on the default branch, a schedule, or a pull_request from the same repository (no fork
-PRs, merge trains, merge_group, pull_request_target, issue_comment, workflow_run, release or repository_dispatch). The
-runner starts the hook with an environment of its own (the github and runner contexts), never the job's `env:`, so a
-job-level `BASH_ENV` or `NODE_OPTIONS` does not reach it. To enable: the owner's sign-in with `admin:org` on the
-Aiden-HQ org; a runner group there limited to the two repos with *Allow public repositories* on, named in
-`settings.ci_org_runner_group`; a product at or after the hook; on the VM `systemctl --user enable --now
-aidenhq-ci-runner@Aiden-HQ-1 … aidenhq-ci-runner@Aiden-HQ-4` (four run today, owner 2026-11-22: the host was overloaded at six); then the repo variables
-(Settings -> Secrets and variables -> Actions -> Variables): `CI_SELF_HOSTED` and `CI_SELF_HOSTED_RUNNERS` (the number of runners, 4). Unset it to go back to hosted only.
-To scale down, `systemctl --user disable --now` each instance above the new count (and `reset-failed` it): a unit that is
-only stopped stays enabled, so `ops/ci-runner-units.sh` restarts it and a failed one keeps alerting.
-aidenhq-distro can adopt the same routing in its ci.yml later.
-
-A push runs about 21 jobs (the test matrix is 18), each in a fresh container that installs Node and its packages: roughly
-10 minutes on two runners. Jobs for one org never take another org's runners.
-
-**Rotate.** Nothing long-lived on the runner: each job's registration token is minted fresh by the code host (revoking
-the GitHub sign-in stops new ones; Reconnect restores them). Upgrade the runner by bumping the base image in `modules/ci/runner/Dockerfile`; GitHub stops accepting
-runners some weeks after a newer release, so bump when the org's runners page warns.
-
-**Scale.** One unit per concurrent job: `systemctl --user enable --now aidenhq-ci-runner@3`, or `disable --now` one to
-shrink. Every unit is up to 4 CPUs and 8 GB while it runs a job, whichever org it serves: keep the total at 2-4 on a VM of
-the size docs/setup.md suggests (e.g. 2 for the product org, 1-2 for the fleet org). The enabled instances are what the config
-declares runs, and an apply starts every declared one that systemd reports failed: `Restart=always` alone reaches systemd's
-start limit and leaves a unit failed with nothing to clear it, so `ops/ci-runner-units.sh` resets and starts those (and the
-ones a drain record names) after everything else. A drain (`node scripts/fleet-pause.ts pause`) stops them without
-cancelling a job under it, and its resume -- or an apply, or `ops/ci-runner-units.sh` on its own -- clears each unit's
-start limit before starting it, so a stopped unit never stays start-limited and failed. Stop all: `systemctl --user stop 'aidenhq-ci-runner@*'` (a running job
-is cancelled; GitHub retries nothing, so re-run it).
+Self-hosted GitHub Actions runners for app repos: setup, registration, rotation and scaling are in [modules/ci](../modules/ci/README.md#how-it-runs).

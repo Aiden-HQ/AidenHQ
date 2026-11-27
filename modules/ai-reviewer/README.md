@@ -18,6 +18,10 @@ Nothing to connect. It calls models through the gateway, so it needs the OpenRou
 
 No tools. Agents never call it: the kernel asks it (provider `reviewer`) for each record in review.
 
+Setting `ai_review_code` (owner only) picks which code-host pushes and PRs it reviews: `all` (default), `none`, or
+`unless_code_review_mandatory` (none on a repo code review gates). Merges, closes, `create_repo`, sends, settings, deploys
+and tool calls are always reviewed.
+
 ## New installs
 
 In the default bundle and idle until a Tier 1 request arrives. Its calls count against the install-wide daily spend cap.

@@ -43,7 +43,7 @@ export function teammateFor(key: string, keys: Map<string, Teammate>): string {
 
 // ---------------------------------------------------------------------------------------------------------------- hiring
 // The hiring list, a teammate's setup (its routines resumed, its module's trial run once) and each account's set-up-next
-// queue (docs/superpowers/plans/2026-11-26-home-teammates-phase-3.md Task 6). Read from the compiled catalog
+// queue. Read from the compiled catalog
 // (config/modules.json `teammates`, browse rows included) and config; a selection is always a `ref`, `<id>:<key>`.
 
 /** A teammate's face as the roster draws it: a shipped file, a kit spec, or null (features hashed from the key). */

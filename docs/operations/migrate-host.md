@@ -35,7 +35,7 @@ Commands run as `<you>` on the host named in the step, unless a step says `sudo`
 | Product checkout, with `.env`, `compose.override.yaml`, `config/` and `data/` | `~/aidenhq` | rsync: pre-seed live, then a cold final pass |
 | Paperclip (embedded Postgres, codex homes, workspaces) | `data/paperclip/` | Same rsync. The `db/` folder counts only from the cold pass. |
 | Board (data) and accounts (auth secret) | `data/board/` (`board.sqlite`), `data/kernel/auth/` (`auth.db`, `auth.secret`) | Same rsync, cold |
-| Gateway ledger, apps-mcp, ops-mcp, slack-live, apps-edge node state | `data/gateway/`, `data/apps-mcp/`, `data/ops-mcp/`, `data/slack-live/`, `data/apps-edge/` | Same rsync, cold |
+| Kernel (jobs, tasks, writes, ledger, memory), modules' data, apps-mcp, apps-edge node state | `data/kernel/`, `data/modules/`, `data/apps-mcp/`, `data/apps-edge/` | Same rsync, cold |
 | App data (the warehouse and other stateful apps) | Docker volumes `app-<name>_<vol>` | Streamed with tar, cold, before the app's first deploy on the new host |
 | Secrets | The vault view `~/.config/aidenhq` | Plaintext over SSH into the new host's mounted view, which encrypts it under the new vault |
 | Job state and Engineer work dirs | `~/.local/state/aidenhq-runner`, `~/.local/state/aidenhq-computers`, `~/aidenhq-work` | rsync, cold final pass |
@@ -176,11 +176,6 @@ its remote console.
    groups. Log out and back in, then run `sudo systemctl restart user@$(id -u <you>)`; step 2's reboot also covers
    it. Check: `docker ps` works as `<you>`.
 
-   Then install the Codex CLI (the runner's short model calls), at the version `ops/setup.sh` pins:
-
-   ```sh
-   sudo npm install -g @openai/codex@<pin>
-   ```
 3. **Tailscale.**
    - Run `sudo tailscale up --hostname=aidenhq-new`, then `sudo tailscale set --operator=<you>`.
    - In the admin console, disable key expiry for this node, or tag it. An expired key leaves only the public SSH
@@ -295,8 +290,8 @@ This:
 - waits until three counts reach zero: Paperclip's live runs, the kernel's running jobs and agent computers.
 
 It exits 1 after an hour if work is still running; run it again to keep waiting (everything stays paused). An event
-wake (Slack, the board's wake-ups) can start a new run while it waits; let it finish. Don't skip the wait for runner
-jobs. A `running` row copied to the new host has no live process there, so the new runner marks it interrupted and
+wake (Slack, the board's wake-ups) can start a new run while it waits; let it finish. Don't skip the wait for running
+jobs. A `running` row copied to the new host has no live process there, so the new kernel marks it interrupted and
 resumes that task the moment it starts.
 
 A routine paused this way stays paused through applies (`scripts/paperclip-setup.ts` resumes only the ones it paused
@@ -421,7 +416,7 @@ task links and the app links people have.
    This:
    - checks out the pinned product;
    - compiles;
-   - installs and starts the gateway;
+   - installs and starts the kernel (the model gateway and jobs);
    - runs `docker compose up -d --build`, against the restored data;
    - runs `paperclip-setup.ts`;
    - runs `ops/warehouse-sources.sh`, which skips while the warehouse is down.
@@ -573,9 +568,3 @@ an agent computer's run time and an app's response time against systrap. Keep it
 Measured on a dedicated host (computer-engineer image, 4 CPUs, 3 runs each): box start 330 to 270 ms, an `agent-browser`
 screenshot 1.9 to 1.3 s, a headless Chrome screenshot 1.1 to 0.65 s, `tsc` -22%, `git add` of 300 files -30%, a Vite
 build -10%; copying a large tree was 35% slower. Overall about 13% faster on a build-and-screenshot pass.
-
-## Gaps in the product scripts (as of this runbook)
-
-| Gap | Effect on a move | Smallest fix |
-|---|---|---|
-| No vault unlock other than TPM or host key | Hosts that must not keep the key on disk have no supported path | Only if wanted: `ops/vault/unlock.sh`, reading the passphrase on stdin over SSH and starting `aidenhq-vault` with it |

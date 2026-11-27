@@ -19,7 +19,7 @@ cannot declare `share`, and changing it is a Tier 2 approval.
 
 ## Exposure modes
 
-How admins reach the board is one core setting, `settings.exposure` in `instance.yaml` (unset: `tailscale`). It also
+How admins reach the board is one kernel setting, `settings.exposure` in `instance.yaml` (unset: `tailscale`). It also
 decides what the host firewall (`ops/vm/public-fw.sh`, our own nft table on the public interface, input and forward)
 lets in. Everything else on that interface is dropped, and 80 is closed in every mode.
 
@@ -27,6 +27,7 @@ lets in. Everything else on that interface is dropped, and 80 is closed in every
 |---|---|---|
 | `public` | Caddy with a Let's Encrypt certificate for the host's public IPv4: the board on 443, the admin listener on 8446, the module door on 8447 | tcp 22, 443, 8446, 8447 |
 | `tailscale` | `tailscale serve` to 127.0.0.1:3121 | tcp 22, udp 41641 |
+| `cloudflare` | a Cloudflare tunnel that dials out (`cloudflared`, see Shared apps below): the host opens nothing inbound. It serves shared apps and the My apps page only, so the board itself is reached over SSH (or the tailnet), not through it | tcp 22 |
 | `local` | none: an SSH tunnel to 127.0.0.1:3121 | tcp 22 |
 
 - **Admin and board listeners stay loopback** (the kernel's 3120 and 3129; the board's 3121, 3122); the front door
@@ -35,7 +36,7 @@ lets in. Everything else on that interface is dropped, and 80 is closed in every
 - **443 and 8446 open only once a Caddy front door is compiled** (a `caddy` service in `compose.modules.yaml`). Until
   then `public` keeps the firewall at `local`, and setup says so. An active ufw gets `allow 443/tcp` and `8446/tcp` only
   then.
-- **Choosing a mode.** `ops/setup.sh` (and the installer) take `--exposure public|tailscale|local`. Without it, a new
+- **Choosing a mode.** `ops/setup.sh` (and the installer) take `--exposure public|tailscale|local` (`cloudflare` is set as `settings.exposure: cloudflare` in `instance.yaml`; `ops/vm/setup.sh` then renders its firewall). Without it, a new
   install takes `tailscale` on a tailnet (or with `TS_AUTHKEY`), else `public`, else (no public IPv4 of its own: behind
   NAT, a Mac's VM) `local`; a rerun keeps the mode it has.
 - **Switching is a rerun:** `sudo ops/setup.sh --unattended --exposure <mode>` over SSH, which stays open in every mode,
@@ -54,15 +55,14 @@ lets in. Everything else on that interface is dropped, and 80 is closed in every
   and fails on a wildcard 443 listener outside public mode. In public mode it also checks the door as the Internet meets
   it: a publicly trusted certificate on both sites, and exactly 401 from `https://<ip>/api/board` without a session.
 
-Switching modes: [minimal-core-install.md](minimal-core-install.md).
-
 ### The public front door (Caddy)
 
 `scripts/front-door.ts`, compiled only with `exposure: public`, for the IPv4 in `.env` (`AIDENHQ_PUBLIC_IP`; never
 `instance.yaml`, which agents can change through an apply):
 
-- **Two sites on one name:** `https://<ip>` to the board (3121) and `https://<ip>:8446` to the kernel's admin listener
-  (3120), which needs its own origin for its forms. `.env` holds both URLs (`BOARD_LAN_URL`, `AIDENHQ_ADMIN_URL`), which
+- **Sites on one name:** `https://<ip>` to the board (3121), `https://<ip>:8446` to the kernel's admin listener
+  (3120), which needs its own origin for its forms, `https://<ip>:8447` to the gate as the module door, and an
+  app door's `<app>.<ip-with-dashes>.sslip.io` hosts ([app-doors.md](app-doors.md)). `.env` holds both URLs (`BOARD_LAN_URL`, `AIDENHQ_ADMIN_URL`), which
   the kernel reads for its hosts, origins and the board's handoff origin; compile refuses a `.env` that disagrees with the IP.
 - **Certificate.** Let's Encrypt, the `shortlived` profile (160 hours), over TLS-ALPN-01 on 443: no listener on 80, no
   HTTP/3, no admin API. Each site names its ACME issuer, so Caddy's local CA is never served; `default_sni` names the IP
@@ -125,13 +125,12 @@ setup link and resets with the operator key).
   cookie, which reaches the board's origin too, is never read there. Account administration on the board goes to the
   kernel as that admin's session (`/v1/accounts/*`).
 - **The admin listener** is the kernel's, on `127.0.0.1:3120`, behind its own front door (8446 or the SSH tunnel). It
-  serves sign-in, TOTP enrolment, link claims, the approval list and card pages, batch decide, the owner's confirmation
-  page and the owner message frame, server-rendered with no script. Every page sends `frame-ancestors 'none'` except
+  serves sign-in, TOTP enrolment, link claims, the owner's confirmation page and the owner message frame, server-rendered
+  with no script; its old approval addresses redirect to the board. Every page sends `frame-ancestors 'none'` except
   `/owner/message`, which the board's origins may frame. Every form carries this listener's own Origin exactly (cookies
-  ignore ports, so the board's origin on the same host is refused) and, signed in, a token bound to the session. The
-  board links each card to its kernel page; it decides nothing.
-- **Two kinds of account.** An admin signs in on the admin listener with email, password and TOTP and can approve cards
-  there. A user never gets the board or the kernel pages; the account only opens shared apps.
+  ignore ports, so the board's origin on the same host is refused) and, signed in, a token bound to the session.
+- **Two kinds of account.** An admin signs in on the admin listener with email, password and TOTP and approves cards
+  on the board. A user never gets the board or the kernel pages; the account only opens shared apps.
 - **Credentials.** Passwords are argon2id with a 12-character minimum. An admin session is refused unless TOTP is
   enrolled (except on the enrolment routes). Sessions last 30 days, sliding.
 - **Invites and resets.** An admin invites an account by email and passes on a one-time link (72 hours, 24 on public
@@ -412,6 +411,42 @@ app and without giving app users' words a privileged agent.
 An app can wake only the agent its own registry entry names (the app comes from the host, the agent from the instance
 repo); any signed-in member's page can send a notice without submitting, which costs at most one empty run per app per
 10 minutes.
+
+## What a shared app must do
+
+- **Verify the identity token.** Every request carries `X-AidenHQ-Identity` ([app identity](app-identity.md)); the app
+  uses the starter's `aidenhq-identity.mjs` unchanged and refuses anything without a valid token. `req.user` is
+  `{ sub, email, name, role, kind }`, or `null` for an anonymous tailnet caller (a tailnet-only app with
+  `AIDENHQ_ANONYMOUS=tailnet`), so check it before reading: `sub` is a stable opaque id (`u_...` for people,
+  `agent:<key>` for agents) to key per-user data on; `role` is `member`, `admin` or one of the app's own roles (an
+  unknown role counts as no more than `member`). Agents arrive as `kind: agent`: `admin` through `app_api` by default (for that one method and path),
+  `member` through `app_view`, or through `app_api` with `role: "member"` for a signed-in test-user request on a public
+  route, under the same caller grant and access policy.
+
+  ```js
+  import { createServer } from "node:http";
+  import { createIdentity } from "./aidenhq-identity.mjs";
+  const { protect } = createIdentity();
+  const server = createServer(protect((req, res) => { /* req.user */ }, { health: "/api/health" }));
+  server.on("upgrade", protect((req, socket, head) => { /* WebSocket, checked once here */ }, { health: "/api/health" }));
+  ```
+
+- **Admin screens:** link to `/.aidenhq/access` (the app's Access page); the app's own settings are its own screen,
+  shown to `admin`.
+- **Requests to the app's agent:** `fetch("/.aidenhq/request", { method: "POST", headers: { "content-type":
+  "application/json" }, body: JSON.stringify({ text, context }) })` from the app's own page (`text` up to 4000
+  characters, `context` up to 500); the flow is in [In-app requests and roles](#in-app-requests-and-roles).
+- **Post-deploy checks:** every deploy (and `app_rollback`, and `app_check` on demand) runs light probes after health:
+  `render` loads a web app's `/` in a headless browser and fails on a CSP block, a failed stylesheet or script, a console
+  error or no stylesheet applied; `agent` GETs `<first api path>/schema` on an app with `api:` and expects 200 with JSON.
+  A failure rolls the deploy back. `checks: { render: [/, /audit], agent: [/api/agent/x/schema] }` in `aidenhq-app.yaml`
+  sets the paths (declared paths are strict; `[]` turns a kind off).
+- **Post-deploy watch:** a healthy auto-deploy that starts failing within 30 minutes, with app-side evidence (a container
+  exited or restarting, or health answering an HTTP error; a probe with no answer never counts) on 3 consecutive probes
+  over at least 5 minutes, is rolled back once to the previous good deploy (code only, as `app_rollback`) and raised as a
+  `rolled_back` incident that stays open until a healthy deploy. Stateful apps, and a commit whose message carries a
+  `No-Auto-Rollback: <reason>` trailer (a security fix), are only raised. Data apps stay safe to roll back because their
+  migrations only add (expand now, contract in a later release).
 
 ## Security notes
 

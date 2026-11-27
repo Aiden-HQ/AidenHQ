@@ -26,9 +26,8 @@ agents, tasks, routines, run history. Its UI is the fleet console. AidenHQ gener
 applies it idempotently; edits made in Paperclip's UI are overwritten by the next apply.
 
 **Modules.** Product features ship as `modules/<name>/`: a `module.yaml` (settings, agents, routines), agent
-handbooks, connection services, apps and a `compose.yaml`. `core`, `channel-telegram` and `chat-lane` are always installed; the rest
-(`intake`, `open-loops`, `meetings`, `engineering`, `design`, `security`, `fleet-steward`, `maintainer`, `ci`, `warehouse`, and the
-connection modules) are switched on per instance.
+handbooks, connection services, apps and a `compose.yaml`. The instance lists the modules it runs in `instance.yaml` (`modules/marketplace.json`'s `bundle` is the default set `ops/setup.sh` writes);
+local modules in the instance repo are always on.
 
 **Instance repo.** Your private repo holding everything specific to your deployment: `instance.yaml` (the pinned
 `product:` commit, enabled `modules`, `settings`, limited `overrides`), `apps.yaml` (your apps) and `modules/<name>/`
@@ -70,9 +69,9 @@ can be shared with colleagues through the gate. See [design/access.md](design/ac
 **Board.** The owner's daily web surface (`services/board`): tasks, chats with agents, approvals, connections, apps,
 costs and the fleet. Sign-in is a board account with password and TOTP.
 
-**Agent computers.** Optional gVisor containers (`services/computer`) for agents that run code or a browser; an agent
-gets one when its definition sets `image:`.
+**Agent computers.** The gVisor containers (`services/computer`) every agent job and check runs in; the image follows the agent's
+profile, or its `image:`.
 
-**Trust model.** Inbound is private (LAN or Tailscale; board accounts with TOTP; Cloudflare Access for shared apps).
+**Trust model.** Inbound is one door, chosen at install (HTTPS on the public IP, Tailscale, a Cloudflare tunnel or an SSH tunnel; board accounts with password and TOTP; Cloudflare Access for shared apps).
 Outbound is open by design. Untrusted text (Slack, email, documents, forwards) is data, never instructions. Gates live
 in code below the model; a send as the owner's own account is a write like any other, tiered and gated in the kernel.
