@@ -55,13 +55,15 @@ async function api(t, v, { validate } = {}) {
   return (op, body, token = "ready") => s.post(`/v1/accounts/${op}`, { token, ...body }, { authorization: `Bearer ${s.boardKey}` });
 }
 
-/** The real module-validate.ts in front of a fake module hook at `url` (an IP, so the resolver uses it as it is): what it was asked, and its answer. */
+/** The real module-validate.ts in front of a fake module hook at `url` (an IP, so the resolver uses it as it is): what it was asked, and its answer.
+ * `answer: null` is a hook that can't answer (it drops the request, as a down service does). */
 async function validator(t, fields = FIELDS, answer = { ok: true }) {
   const asked: unknown[] = [];
   const hook = await serve(async (req, res) => {
     let text = "";
     for await (const c of req) text += c;
     asked.push(JSON.parse(text));
+    if (!answer) return void res.destroy();
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer));
   });
   t.after(() => hook.s.close());
@@ -190,6 +192,27 @@ test("a clear is offered to the module's check, and its no refuses it", async (t
   assert.match(r.body, /alpha still names this key/);
   assert.deepEqual(asked, [{ secret: { name: "design_keys" }, key: "alpha" }], "the hook sees the key, with no value");
   assert.deepEqual(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")), { alpha: { label: "a", private_key: "k" } }, "the entry is still there");
+});
+
+test("a clear fails closed: a hook that can't be asked refuses it and the entry survives", async (t) => {
+  const v = vault();
+  writeFileSync(join(v.dir, "design_keys"), JSON.stringify({ alpha: { label: "a", private_key: "k" } }));
+  const { validate } = await validator(t, FIELDS, null);
+  const post = await api(t, v, { validate });
+  const r = await post("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: "" });
+  assert.equal(r.status, 400, r.body);
+  assert.match(r.body, /couldn't check whether this is still in use.*nothing was cleared/);
+  assert.deepEqual(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")), { alpha: { label: "a", private_key: "k" } }, "the entry is still there");
+  // A written value is not fail closed: the same hook lets it through, unchecked, as every other save does.
+  const w = await post("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: ENTRY({ private_key: "k2" }) });
+  assert.equal(w.status, 200, w.body);
+  assert.match(w.json.unchecked, /couldn't check this/);
+  assert.equal(JSON.parse(readFileSync(join(v.dir, "design_keys"), "utf8")).alpha.private_key, "k2");
+  // A module with no validate hook still clears.
+  const plain = vault();
+  writeFileSync(join(plain.dir, "design_keys"), JSON.stringify({ alpha: { label: "a", private_key: "k" } }));
+  assert.equal((await (await api(t, plain))("save_secret", { module: "design", secret: "design_keys", key: "alpha", value: "" })).status, 200);
+  assert.deepEqual(JSON.parse(readFileSync(join(plain.dir, "design_keys"), "utf8")), {});
 });
 
 test("a set still asks the hook with its top-level value, the shape modules already read", async (t) => {

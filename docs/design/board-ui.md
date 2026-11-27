@@ -247,8 +247,9 @@ contributes:
   A `key` field is a multi-line textarea shown as typed (an SSH private key a hidden input would make impossible to check by eye):
   its whitespace, a key's trailing newline included, is kept exactly, and its value is capped by its own `maxLength` (any field that
   declares none is capped at 300). A **clear** goes to the module's `validate` hook too, as `{ secret: { name }, key }` with no
-  `value`, so a module can refuse removing an entry something still uses; a module with no hook, or one that doesn't answer, clears
-  as before.
+  `value`, so a module can refuse removing an entry something still uses. A clear is **fail closed**: a module whose hook answers
+  `{ ok: false }` refuses it, and so does a hook that can't be reached or doesn't answer, since a cleared key can't be read back
+  (a written value is still saved unchecked when a hook can't be asked). A module with no `validate:` hook clears as before.
 
 - **Compile** checks it (the connection is the module's, the view is `ui://<module>/…`, no destructive tool and none a write kind routes, tool names
   `<module>_…`) and puts each view with its tools on its connection in the kernel's `connections.json` (`views`).

@@ -290,8 +290,9 @@ module):
 3. **The check runs on a clear too.** `saveKey` calls `check` with the key and a null entry when an entry is being
    removed; `auth-api.ts` passes that through as `{ secret: { name }, key }` with no value; and
    `kernel/src/module-validate.ts` gains an optional `key` on `ValidateInput` and forwards it, since today it forwards
-   only `secret.name` and `value`. A module that answers `{ ok: false }` refuses the clear; a module with no hook, or one
-   that does not answer, clears as it does today.
+   only `secret.name` and `value`. A module that answers `{ ok: false }` refuses the clear; so does one whose hook cannot be
+   asked (unreachable, timed out, or answering nonsense), because a cleared key cannot be read back — a clear fails closed.
+   A module with no hook clears as it does today; a written value still goes ahead unchecked when its hook cannot be asked.
 4. **The hook's answer is not a new branch.** `server-manager.validate` answers for `servers_keys`: a clear of a key a
    machine still names is refused with a message naming the machines; a replace is allowed, because that is how a key is
    rotated. The rule stays with the thing that knows what "in use" means, which is the module.
