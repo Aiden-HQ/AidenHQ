@@ -39,7 +39,7 @@
       "properties": {
         "ci_regenerates": {
           "type": "boolean",
-          "description": "The repo's own CI regenerates the generated paths (ship's generated.ci): the repair takes their base side, runs no generator for them, and says how many it took."
+          "description": "The repo's own CI regenerates the generated paths (ship's generated.ci workflow): the repair takes their base side, runs no generator for them, and says how many it took."
         },
         "globs": {
           "type": "array",

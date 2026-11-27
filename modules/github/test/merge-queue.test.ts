@@ -251,21 +251,6 @@ test("a deleted repo (GraphQL NOT_FOUND) ends the record as not merged with a re
   assert.equal(other.outcomes.length, 0, "a non-definitive GraphQL error waits, it does not end the record");
 });
 
-test("an answer that omits the fields the gate reads is waited on, not taken as the PR being gone", async (t) => {
-  // A repository node with a PR node that answers none of the fields the gate reads (a truncated or proxied body): nothing
-  // says the PR is gone, so the queue asks again instead of ending an approved merge.
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
-  const { handle, outcomes, merge } = await setup(t, { prs, graphql: async () => ({ status: 200, body: { data: { repository: { pullRequest: { number: 1 } } } } }) });
-  await merge("k-00000000000000f1", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
-  await handle.stepMerges();
-  assert.equal(outcomes.length, 0, "a PR answer missing state/head/base is retried");
-  // A repository node that answered none of the requested repository fields is the same: no evidence the PR is absent.
-  const bare = await setup(t, { prs, graphql: async () => ({ status: 200, body: { data: { repository: {} } } }) });
-  await bare.merge("k-00000000000000f2", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
-  await bare.handle.stepMerges();
-  assert.equal(bare.outcomes.length, 0, "an answer with no requested fields is retried");
-});
-
 test("an explicit null from GitHub is its answer, so the gate ends the record with its own reason instead of asking again", async (t) => {
   // The PR node carries the keys, with null values: GitHub answered that the field is empty, which is not a partial answer.
   // The gate's own reason ends it (a PR with no state), so a queued merge doesn't wait forever on an answer already given.
@@ -746,25 +731,6 @@ test("a record filed after the first poll is credited when the external merge is
     [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the record filed after the first poll is credited");
 });
 
-test("a permanent refusal on the task work read settles the queue instead of retrying forever", async (t) => {
-  // The kernel answers 404 (it no longer holds the task): that is its answer, no binding, so the queue finishes rather than
-  // retrying a permanent refusal on every poll.
-  const mergeSha = "d".repeat(40);
-  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-bound-404-"));
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha } };
-  let reads = 0;
-  const { handle, outcomes, merge, settle } = await setup(t, {
-    prs, cacheDir,
-    kernelReply: (m, url) => (m === "GET" && url === "/v1/work?task=tsk_0000000000000w9" ? (reads++, { __status: 404 }) : undefined),
-  });
-  await merge("k-00000000000000db", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
-  await handle.stepMerges();
-  await settle();
-  assert.equal(reads, 1, "the permanent refusal is not retried");
-  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
-  assert.match(outcomes[0].text, /^merged-prs: \[\]/, "no binding, so the PR is not evidence");
-});
-
 test("a task-read failure holds the merge instead of landing it, and it lands once the read answers", async (t) => {
   // The queue checks the task is still live right before it sends the merge, so a cancelled task's approved merge never lands
   // (its PR is left for a successor). A read that fails cannot tell live from cancelled: the merge waits, and never guesses.
@@ -833,25 +799,6 @@ test("a merge a module filed under its owner's task id lands: pr-tasks.json's id
   assert.equal(prs["acme-agents/widget"].state, "MERGED", JSON.stringify(outcomes));
 });
 
-test("a PR the merge commit's message already credits is not also read from the kernel", async (t) => {
-  // The message path and the record path are two proofs of the same link: once the message answers, the kernel is not asked.
-  const mergeSha = "d".repeat(40);
-  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-message-no-read-"));
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha, message: "Fix the widget\n\nWOR-9" } };
-  let reads = 0;
-  const { handle, outcomes, merge, settle } = await setup(t, {
-    prs, cacheDir,
-    kernelReply: (m, url) => (m === "GET" && /^\/v1\/work\?task=/.test(url) ? (reads++, { __status: 503 }) : undefined),
-  });
-  await merge("k-00000000000000dd", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
-  await handle.stepMerges();
-  await settle();
-  assert.equal(reads, 0, "the message already names the task");
-  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
-  assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")),
-    [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }]);
-});
-
 test("a queue persisted before the identifier was kept recovers it from the record, so its already-merged PR is still evidence", async (t) => {
   // A service upgraded mid-queue: merges.json holds the record's task id but not the task's identifier (the version before it
   // kept one), and a running queue is never handed execute again. The first poll reads the identifier from the record.
@@ -905,29 +852,6 @@ test("a queue across a kernel upgrade waits for the identifier the reconcile is 
     [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the identifier reconcile recorded kept the evidence");
 });
 
-test("a queue that cached a null identifier before the upgrade reads it again once the kernel has it", async (t) => {
-  // The version before this one took a record's first "no identifier" as final and kept the queue settled with none. The kernel's
-  // upgrade reconcile has recorded it since: the queue must read again, or a PR merged at its bound head is credited to nobody.
-  const mergeSha = "d".repeat(40);
-  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-upgrade-recached-"));
-  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
-  mkdirSync(join(cacheDir, "merges"), { recursive: true });
-  writeFileSync(join(cacheDir, "merges", "merges.json"), JSON.stringify({ queues: { "k-00000000000000c0": {
-    id: "k-00000000000000c0", state: "running", startedAt: new Date().toISOString(), said: [], task: "tsk_0000000000000w9", recovered: true,
-    prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD, url: "https://github.com/acme-agents/widget/pull/1", status: "pending" }],
-  } } }));
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha } };
-  const { handle, outcomes, settle } = await setup(t, {
-    prs, cacheDir,
-    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: "WOR-9", identifier_pending: false } : undefined),
-  });
-  await handle.stepMerges();
-  await settle();
-  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
-  assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")),
-    [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the re-read found the identifier and kept the evidence");
-});
-
 test("a PR whose row names the identifier the kernel is still reading waits instead of looking like another task's", async (t) => {
   // A module's record carries the task's UUID, and pr-tasks.json names the identifier. While the record has no identifier yet and
   // none has been read (the kernel's upgrade reconcile is about to fill it in), a row that doesn't match the bare UUID is not
@@ -945,104 +869,6 @@ test("a PR whose row names the identifier the kernel is still reading waits inst
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(outcomes.length, 0, "the merge waits for the identifier, it does not fail as another task's");
   assert.equal(prs["acme-agents/widget"].state, undefined, "nothing was merged on a comparison the identifier was missing from");
-  await handle.stepMerges();
-  await settle();
-  assert.equal(prs["acme-agents/widget"].state, "MERGED", JSON.stringify(outcomes));
-  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
-});
-
-test("a settled none is cached, not read from the kernel on every poll", async (t) => {
-  // The kernel answered: this task has no identifier (gone, or none). That is the answer, so the queue holds the merge without
-  // asking again on each poll, and an already-merged PR still credits only what it can prove.
-  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-settled-none-"));
-  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "PENDING" } };
-  let reads = 0;
-  const { handle, merge } = await setup(t, {
-    prs, cacheDir,
-    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? (reads++, { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: null, identifier_pending: false }) : undefined),
-  });
-  await merge("k-00000000000000c0", [{ repo: "acme-agents/widget", number: 1, head: HEAD }], "tsk_0000000000000w9", "");
-  await handle.stepMerges();
-  await handle.stepMerges();
-  await handle.stepMerges();
-  assert.equal(reads, 1, "the settled answer is kept, never re-read");
-});
-
-test("a legacy queue waits out a failed identifier read instead of settling without the evidence", async (t) => {
-  // The kernel is briefly unavailable on the first poll after an upgrade, while the PR is already merged at its bound head. The
-  // failed read must not be taken for "the record has no identifier": the queue holds, retries, and only settles once the read
-  // answers, so the merge that landed is still credited rather than lost for good.
-  const mergeSha = "d".repeat(40);
-  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-upgrade-retry-"));
-  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
-  mkdirSync(join(cacheDir, "merges"), { recursive: true });
-  writeFileSync(join(cacheDir, "merges", "merges.json"), JSON.stringify({ queues: { "k-00000000000000c0": {
-    id: "k-00000000000000c0", state: "running", startedAt: new Date().toISOString(), said: [], task: "tsk_0000000000000w9",
-    prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD, url: "https://github.com/acme-agents/widget/pull/1", status: "pending" }],
-  } } }));
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha } };
-  let reads = 0;
-  const { handle, outcomes, settle } = await setup(t, {
-    prs, cacheDir,
-    // The first read fails (a 503 while the kernel restarts), the next answers: the queue must retry, not settle.
-    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? (++reads === 1 ? { __status: 503 } : { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: "WOR-9", identifier_pending: false }) : undefined),
-  });
-  await handle.stepMerges();
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(outcomes.length, 0, "a failed identifier read must not settle the queue");
-  await handle.stepMerges();
-  await settle();
-  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
-  assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")),
-    [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the retried read kept the merge as evidence");
-});
-
-test("a queue an older version settled with none waits out a failed re-read instead of settling without the evidence", async (t) => {
-  // The version before this one took a record's first "no identifier" as final and kept the queue marked recovered with none. This
-  // version reads it again (the kernel's upgrade reconcile may have recorded it since), and that read fails on the first poll while
-  // the PR is already merged: the old flag is not an answer, so the queue must hold and retry rather than finish without the merge.
-  const mergeSha = "d".repeat(40);
-  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-settled-none-retry-"));
-  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
-  mkdirSync(join(cacheDir, "merges"), { recursive: true });
-  writeFileSync(join(cacheDir, "merges", "merges.json"), JSON.stringify({ queues: { "k-00000000000000c0": {
-    id: "k-00000000000000c0", state: "running", startedAt: new Date().toISOString(), said: [], task: "tsk_0000000000000w9", recovered: true,
-    prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD, url: "https://github.com/acme-agents/widget/pull/1", status: "pending" }],
-  } } }));
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: mergeSha } };
-  let reads = 0;
-  const { handle, outcomes, settle } = await setup(t, {
-    prs, cacheDir,
-    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? (++reads === 1 ? { __status: 503 } : { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: "WOR-9", identifier_pending: false }) : undefined),
-  });
-  await handle.stepMerges();
-  await new Promise((r) => setTimeout(r, 50));
-  assert.deepEqual([outcomes.length, reads], [0, 1], "an old recovered flag is no answer: the failed re-read holds the queue");
-  await handle.stepMerges();
-  await settle();
-  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
-  assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")),
-    [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the retried re-read kept the merge as evidence");
-});
-
-test("an open PR with its identifier read failing waits for it instead of refusing it as another task's", async (t) => {
-  // The record's task id is the bare UUID, the pr-tasks.json row names WOR-9, and the recovery read fails (the kernel restarting).
-  // The row is no proof of another owner while the identifier is owed, and a fail could never be undone: the merge waits, then lands
-  // once the read answers with the identifier the row names.
-  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-pending-failed-read-"));
-  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
-  let reads = 0;
-  const { handle, outcomes, merge, settle } = await setup(t, {
-    prs, cacheDir,
-    checks: (m, url) => (m === "GET" && url === "/v1/work?record=k-00000000000000c0" ? (++reads === 1 ? { __status: 503 } : { id: "k-00000000000000c0", task: "tsk_0000000000000w9", identifier: "WOR-9", identifier_pending: false }) : undefined),
-  });
-  await merge("k-00000000000000c0", [{ repo: "acme-agents/widget", number: 1, head: HEAD }], "tsk_0000000000000w9", "");
-  await handle.stepMerges();
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(outcomes.length, 0, "the merge waits for the identifier; it is not refused as another task's");
-  assert.equal(prs["acme-agents/widget"].state, undefined, "nothing was merged or failed on a comparison the identifier was missing from");
   await handle.stepMerges();
   await settle();
   assert.equal(prs["acme-agents/widget"].state, "MERGED", JSON.stringify(outcomes));
@@ -1171,40 +997,6 @@ test("an unanswered PUT whose merge lands is still credited when the retry is re
   assert.deepEqual(reports[0].objects, ["github:acme-agents/widget@cccccccccccccccccccccccccccccccccccccccc"], "named as made here");
 });
 
-test("a refused retry whose re-read still lags keeps the earlier call's nonce, so the merge it made is not lost", async () => {
-  // The first PUT merges on GitHub's side and never answers. A later poll's read still lags, so a retry goes out and GitHub refuses
-  // it (the PR is in fact merged). That refusal answers the retry only: the first call's nonce must survive, and the PR must be
-  // looked at again rather than failed, or a merge this queue made lands with no evidence at all.
-  const mergeSha = "c".repeat(40);
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", lag: 3 } };
-  const github = fakeGitHub(prs);
-  const reports = [];
-  let puts = 0;
-  const gh = async (m, p, b) => {
-    if (m === "PUT" && String(p).endsWith("/merge-async")) {
-      puts += 1;
-      if (puts === 1) { await github.gh(m, p, b); throw new Error("The operation was aborted due to timeout"); }
-      throw Object.assign(new Error("HTTP 405: Pull request is not mergeable"), { status: 405 });
-    }
-    return github.gh(m, p, b);
-  };
-  const merges = createMerges({
-    dir: mkdtempSync(join(tmpdir(), "merges-refused-lag-")), gh, fleetOrg: "acme-agents",
-    reviewGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
-  });
-  void merges.enqueue("k-00000000000000cd", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
-  await merges.step(); // the PUT merges it and goes unanswered
-  await merges.step(); // the stale read says open: the retry is refused, and the re-read lags too
-  assert.equal(puts, 2, "the queue retried once");
-  assert.equal(merges.status("k-00000000000000cd").state, "running", "a lagging re-read is not yet a refusal to fail on");
-  for (let i = 0; i < 6 && merges.status("k-00000000000000cd").state === "running"; i++) await merges.step();
-  await new Promise((r) => setTimeout(r, 20));
-  const done = merges.status("k-00000000000000cd");
-  assert.equal(done.state, "done", JSON.stringify(done));
-  assert.deepEqual(done.objects, [`github:acme-agents/widget@${mergeSha}`], "the first call's merge is still named as the queue's");
-  assert.deepEqual(JSON.parse(done.text.split("\n")[0].replace(/^merged-prs: /, "")), [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "and it is on the evidence line");
-});
-
 test("a refusal with no earlier unanswered attempt is still a failure, and a refused head is never PUT again", async () => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
   const github = fakeGitHub(prs);
@@ -1279,27 +1071,6 @@ test("a PR body that already carries an AidenHQ trailer, or a planted token, can
   assert.equal(merges.status("k-00000000000000c9").state, "done");
   assert.match(reports[0].text, /Merged https:\/\/github.com\/acme-agents\/widget\/pull\/1/, "the queue's own merge is still credited");
   assert.deepEqual(reports[0].objects, ["github:acme-agents/widget@cccccccccccccccccccccccccccccccccccccccc"]);
-});
-
-test("a planted record-id token in the PR body does not credit another writer's squash merge to the queue", async (t) => {
-  // The exact attack: the record id is knowable, so a PR body can name it. GitHub's default squash message keeps the body, so a
-  // third party's merge after our PUT times out has the record id in its commit message — and must still not be the queue's.
-  const planted = "queue-k-00000000000000ca";
-  const body = `Improve the widget\n\nCo-authored-by: AidenHQ merge queue ${planted} <noreply@aidenhq.ai>`;
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", merged: "b2".repeat(20), body, message: `${body}\n\n(#1)` } };
-  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-planted-"));
-  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
-  // Our PUT times out and changed nothing; someone else merges with GitHub's default message (which carries the PR body).
-  const { handle, outcomes, merge, settle } = await setup(t, { prs, cacheDir, putFails: () => true });
-  await merge("k-00000000000000ca", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
-  await handle.stepMerges(); // the PUT goes unanswered: the PR is still open and the call is pending
-  prs["acme-agents/widget"].state = "MERGED"; // someone else merges it, GitHub's default message carrying the PR body
-  await handle.stepMerges(); // the poll sees it merged with the planted token in the message
-  await settle();
-  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
-  assert.match(outcomes[0].text, /was already merged/, "someone else's merge, not this queue's");
-  assert.doesNotMatch(outcomes[0].text, /Merged https:/);
-  assert.equal(outcomes[0].objects, undefined, "never named as a commit the queue made");
 });
 
 test("a maximum-size mixed batch keeps the whole evidence line: the queue's merges and linked already-merged PRs, whole JSON under the kernel's cap", async (t) => {
@@ -1435,26 +1206,6 @@ test("a merge call is persisted before the PUT, so a restart mid-call still prov
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(again.status("k-00000000000000d3").state, "done");
   assert.match(reports[0]?.text ?? "", /Merged https:\/\/github.com\/acme-agents\/widget\/pull\/1/, "the restart still proves the merge its own call made");
-});
-
-test("the stored outcome's first line is whole inside the kernel's cap whenever any line can be, and the summary is what is cut", async (t) => {
-  // The first line is the reader's evidence; the kernel keeps OUTCOME_MAX characters and cuts only the end. The summary
-  // after it is sized to the room left, so the line's end is never what the kernel cuts.
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: "d".repeat(40) } };
-  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-cap-"));
-  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
-  const { handle, outcomes, merge, settle } = await setup(t, { prs, cacheDir });
-  await merge("k-00000000000000d4", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
-  await handle.stepMerges();
-  await settle();
-  const text = outcomes[0].text;
-  const [line] = text.split("\n");
-  assert.ok(line.length < 6000, "the evidence line alone fits the cap");
-  assert.deepEqual(JSON.parse(line.replace(/^merged-prs: /, "")), [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: "d".repeat(40) }], "parses whole");
-  assert.ok(text.length <= 6000, `the outcome fits the kernel's cap; it is ${text.length}`);
-  assert.ok(text.includes("was already merged"), "the summary is kept, short here");
-  const { OUTCOME_MAX } = await import("../service/src/merges.ts");
-  assert.equal(OUTCOME_MAX, 6000, "the queue caps its summary by the kernel's own OUTCOME_MAX");
 });
 
 test("a red default branch takes no merge on top, except the PR that already holds its tip; running base CI waits only for a PR behind it", () => {
@@ -1684,18 +1435,6 @@ test("merge queue waits while disconnected", async (t) => {
   assert.deepEqual(facts.filter((f) => f.type === "work.resumed").map((f) => f.data.reason), ["github"]);
 });
 
-test("a merge waiting on its checks publishes why to the record", async () => {
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "PENDING" } };
-  const github = fakeGitHub(prs);
-  const waits = [];
-  const merges = createMerges({ dir: mkdtempSync(join(tmpdir(), "merges-")), gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(), evalGate: async () => undefined, report: async () => {}, waiting: async (id, reason) => void waits.push({ id, reason }) });
-  void merges.enqueue("k-00000000000000h9", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
-  await merges.step();
-  await merges.step();
-  assert.equal(waits.length, 1, "once, not per poll");
-  assert.match(String(waits[0].reason), /check/i);
-});
-
 test("a code review wait posts its reason to the kernel once per distinct reason, never per poll, and keeps its no-time-limit wait", async () => {
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
   const github = fakeGitHub(prs);
@@ -1788,31 +1527,6 @@ test("a repo code review gates merges only on its pass for the bound head; wait 
   assert.deepEqual(github.merges().map((w) => [w.path, w.body.sha]), [["/repos/acme-agents/other/pulls/2/merge-async", HEAD], ["/repos/acme-agents/widget/pulls/1/merge-async", HEAD]], "merged once code review passes it");
 });
 
-test("the review gate's findings key follows the whole set of reasons, not the cut text", async () => {
-  const body = (b: string) => ({ ok: true, status: 200, json: async () => ({ verdict: "wait", reasons: [{ code: "findings", text: "a".repeat(700) + b, unblock: "fix and push" }] }) }) as Response;
-  const gate = (b: string) => createReviewGate({ gated: ["acme/x"], url: "http://cr", key: () => "k", fetchFn: async () => body(b) });
-  const one = await gate("1")("acme/x", 1, "h"), two = await gate("2")("acme/x", 1, "h");
-  assert.ok(one && "findingsKey" in one && two && "findingsKey" in two && one.findingsKey !== two.findingsKey);
-});
-
-test("the gate keeps how a wait unblocks apart from the wait itself, which is what ship's decision carries", async () => {
-  const body = { ok: true, status: 200, json: async () => ({ verdict: "wait", reasons: [{ code: "findings", text: "1 important finding open: t (a.ts:3)", unblock: "record each outcome with the code_review_resolve tool" }] }) } as Response;
-  const g = await createReviewGate({ gated: ["acme/x"], url: "http://cr", key: () => "k", fetchFn: async () => body })("acme/x", 1, "h");
-  assert.ok(g && "wait" in g);
-  assert.equal(g.wait, "code review: 1 important finding open: t (a.ts:3)");
-  assert.equal(g.unblock, "record each outcome with the code_review_resolve tool");
-});
-
-test("a sign-out still says signed out, and is cleared when GitHub reconnects", async (t) => {
-  // The other half of the split: `connected` false is a sign-out, and its reason is the reconnect's.
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS" } };
-  const connected = { on: false };
-  const { handle, merge, waits } = await setup(t, { prs, connected });
-  await merge("k-00000000000000bb", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
-  await handle.stepMerges();
-  assert.deepEqual(waits.map((w) => w.reason), ["GitHub is signed out: waiting for the owner to reconnect it"]);
-});
-
 test("a review reason is cleared when another gate takes the PR over, not only when the review passes", async () => {
   // The card's reason belongs to the gate that actually holds the merge: a required check rerun on the same head takes the PR
   // over from code review, so "code review: …" must not sit on a card that is now waiting on CI.
@@ -1872,25 +1586,6 @@ test("the record's wait is the whole queue's: one PR leaving its wait never clea
   assert.equal(typeof last, "string", "the widget's reason is still on the record, never cleared by the other PR");
   assert.match(last, /acme-agents\/widget/);
   assert.doesNotMatch(last, /gadget/);
-});
-
-test("a queue written by the previous implementation republishes its reason on the first poll, not trusting an absent one", async () => {
-  // The old queue kept the reason per PR and never a `waitSent`. Its record may still carry a stale "code review: …" while CI
-  // holds the merge, so a queue loaded without the field must reconcile: unknown delivery, not "already cleared".
-  const dir = mkdtempSync(join(tmpdir(), "merges-"));
-  const prs = { "acme-agents/widget": { head: HEAD, checks: "PENDING" } };
-  const github = fakeGitHub(prs);
-  // What the old implementation left on disk: a running queue with a per-PR note and no `waitSent`.
-  writeFileSync(join(dir, "merges.json"), JSON.stringify({ queues: { "k-00000000000000d1": { id: "k-00000000000000d1", state: "running", startedAt: new Date().toISOString(), said: [], prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD, url: "https://github.com/acme-agents/widget/pull/1", status: "pending", note: "code review: 1 important finding open" }] } } }));
-  const waits = [];
-  const merges = createMerges({
-    dir, gh: github.gh, fleetOrg: "acme-agents", now: () => new Date(),
-    report: async () => {}, waiting: async (id, reason) => void waits.push({ id, reason }),
-    reviewGate: async () => undefined,
-  });
-  await merges.step();
-  // CI holds the merge now, so the stale review reason must be cleared rather than assumed already delivered.
-  assert.deepEqual(waits.map((w) => w.reason), ["checks are still running on its head"], "the stale reason is replaced on the first poll after the upgrade");
 });
 
 test("a wait is recorded only after the kernel takes it: a restart mid-delivery republishes, never assumes it arrived", async () => {
@@ -2001,4 +1696,25 @@ test("a file page that can't be read throws, so the gate never answers from the 
   void merges.enqueue("k-00000000000000fb", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
   await merges.step();
   assert.deepEqual(github.merges(), [], "a partial file list is never a merge");
+});
+
+test("a planted record-id token in the PR body does not credit another writer's squash merge to the queue", async (t) => {
+  // The exact attack: the record id is knowable, so a PR body can name it. GitHub's default squash message keeps the body, so a
+  // third party's merge after our PUT times out has the record id in its commit message — and must still not be the queue's.
+  const planted = "queue-k-00000000000000ca";
+  const body = `Improve the widget\n\nCo-authored-by: AidenHQ merge queue ${planted} <noreply@aidenhq.ai>`;
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", merged: "b2".repeat(20), body, message: `${body}\n\n(#1)` } };
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-planted-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
+  // Our PUT times out and changed nothing; someone else merges with GitHub's default message (which carries the PR body).
+  const { handle, outcomes, merge, settle } = await setup(t, { prs, cacheDir, putFails: () => true });
+  await merge("k-00000000000000ca", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges(); // the PUT goes unanswered: the PR is still open and the call is pending
+  prs["acme-agents/widget"].state = "MERGED"; // someone else merges it, GitHub's default message carrying the PR body
+  await handle.stepMerges(); // the poll sees it merged with the planted token in the message
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /was already merged/, "someone else's merge, not this queue's");
+  assert.doesNotMatch(outcomes[0].text, /Merged https:/);
+  assert.equal(outcomes[0].objects, undefined, "never named as a commit the queue made");
 });

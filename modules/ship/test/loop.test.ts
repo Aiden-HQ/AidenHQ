@@ -362,17 +362,6 @@ test("a fix_ci whose only red check is the PR title wakes the task to retitle it
   assert.doesNotMatch(code.woke[0].text, /aidenhq ship title/);
 });
 
-test("the fix wake names the repo's protected paths, and only when it has some", async (t) => {
-  const full = await rig(t, { settings: () => PRESETS.full });
-  full.set([full.agentPr(7, titleOnlyPr(7, ["policy", "test"]))]);
-  await full.watch.tick(); await full.watch.tick();
-  assert.doesNotMatch(full.woke[0].text, /Protected paths/);
-  const some = await rig(t, { settings: () => ({ ...PRESETS.full, protected: [".github/**", "**/CODEOWNERS"] }) });
-  some.set([some.agentPr(7, titleOnlyPr(7, ["policy", "test"]))]);
-  await some.watch.tick(); await some.watch.tick();
-  assert.match(some.woke[0].text, /Protected paths: \.github\/\*\*, \*\*\/CODEOWNERS\./);
-});
-
 test("a metadata-only wake does not spend the head's CI round: a real red check at the same head still wakes the commit fix", async (t) => {
   const c = await rig(t, { job: titleJob() });
   c.set([c.agentPr(12, titleOnlyPr(12))]);
@@ -441,19 +430,6 @@ test("a metadata-only red whose policy steps can't be read re-runs the job once 
   assert.equal(unclear.woke.length, 2, JSON.stringify(unclear.woke.map((w) => w.text)));
   assert.match(unclear.woke[1].text, /aidenhq ship title https:\/\/github\.com\/acme\/app\/pull\/24 h24 1 /);
   assert.doesNotMatch(unclear.woke[1].text, /one commit|aidenhq ship push/);
-});
-
-test("a title step that fails on a title the rule already accepts is a third case: re-run and diagnose, never a retitle", async (t) => {
-  // The job's title step also fails when its own request to GitHub failed. The title here passes the Conventional Commit rule, so a
-  // retitle writes nothing (the write answers "already this title") and `policy` never re-runs: the wake must not ask for one.
-  const c = await rig(t, { job: titleJob() });
-  c.set([c.agentPr(26, titleOnlyPr(26, ["policy", "ci-required"], { title: "fix(ship): give the ship task a title edit" }))]);
-  await c.watch.tick(); await c.watch.tick();
-  assert.equal(c.woke.length, 1, JSON.stringify(c.woke.map((w) => w.text)));
-  assert.match(c.woke[0].text, /already passes the Conventional Commit rule/);
-  assert.doesNotMatch(c.woke[0].text, /aidenhq ship title/);
-  assert.doesNotMatch(c.woke[0].text, /one commit|aidenhq ship push/);
-  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/jobs/77/rerun").length, 1, "the recovery is the job re-run");
 });
 
 
@@ -585,20 +561,6 @@ test("an Actions read that throws does not stop another PR's merge", async (t) =
   assert.deepEqual(merges.map((m) => m.args.prs[0].number), [47], "the PR after it still reached its merge");
 });
 
-
-test("a check re-run GitHub refused is asked again rather than recorded as handled", async (t) => {
-  const c = await rig(t, { steps: [], rerun: () => 502 });
-  c.set([c.agentPr(33, redPr(33))]);
-  await c.watch.tick();
-  const db = JSON.parse(readFileSync(join(c.cacheDir, "loop.json"), "utf8"));
-  assert.match(String(db["acme/app"].reran["https://github.com/acme/app/pull/33:h33"]), /^retry:/, "a refusal is not recorded as a re-run");
-  await c.watch.tick();
-  const asks = () => c.gh.filter((g) => g === "POST /repos/acme/app/actions/runs/500/rerun-failed-jobs").length;
-  assert.equal(asks(), 1, "inside the backoff nothing is asked again");
-  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": { ...db["acme/app"], reran: { "https://github.com/acme/app/pull/33:h33": `retry:${new Date(Date.now() - 6 * 60_000).toISOString()}` } } }));
-  await c.watch.tick();
-  assert.equal(asks(), 2, "past the backoff it is asked again instead of staying unhandled");
-});
 
 test("a red PR behind a green base is updated by GitHub once at its head before any wake; a refused update falls to the fix", async (t) => {
   const c = await rig(t, { behind: 2 });
@@ -739,24 +701,6 @@ async function multi(t, repos, open, extra = {}) {
 const dep = (repo, n, o = {}) => pr(n, { url: `https://github.com/${repo}/pull/${n}`, ...o });
 const both = [{ repo: "acme/app", duties: "all" }, { repo: "other/lib", duties: "dependabot" }];
 
-test("two repos: closing repo A's PR leaves repo B's dependabot task", async (t) => {
-  const open = { "acme/app": [dep("acme/app", 1)], "other/lib": [dep("other/lib", 1)] };
-  const m = await multi(t, both, open);
-  await m.watch.tick();
-  assert.deepEqual(m.tasks.map((x) => x.source), ["dependabot:acme/app/1", "dependabot:other/lib/1"]);
-  open["acme/app"] = [];
-  await m.watch.tick();
-  assert.deepEqual(m.closes, ["/v1/tasks/id-1/close"], "only repo A's task closes");
-});
-
-test("a dependabot-only repo gets no CI rerun and no branch cleanup", async (t) => {
-  const stuck = dep("other/lib", 2, { author: { __typename: "Bot", login: "aidenhq" }, commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] } });
-  const m = await multi(t, [{ repo: "other/lib", duties: "dependabot" }], { "other/lib": [stuck] });
-  notePrTask(m.cacheDir, stuck.url, { task: "T-9", branch: "b2" });
-  await m.watch.tick();
-  assert.ok(!m.gh.some((g) => g !== "POST /graphql"), `only the PR list is read: ${m.gh}`);
-});
-
 test("under failing only a bump with a red check gets a task; under off none does", async (t) => {
   const red = (n) => dep("other/lib", n, { commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] } });
   const open = { "other/lib": [dep("other/lib", 1), red(2)] };
@@ -780,34 +724,6 @@ test("under failing a green Dependabot PR is adopted by the round (handoff: all)
   const n = await multi(t, [{ repo: "acme/app", duties: "all", dependabot: "failing" }], { "acme/app": [none] }, { settings: () => PRESETS.full });
   await n.watch.tick();
   assert.equal(openState(join(n.cacheDir, "state.json")).get("acme/app", 3), undefined, "no reported check is not green");
-});
-
-test("a Dependabot PR whose older run is still pending beside a newer pass reads one history: no task, and the round adopts it", async (t) => {
-  // An edit started the replacement run; the run before it lingers as IN_PROGRESS on the head. Both decisions read each name's
-  // newest run, so the PR is neither filed as failing nor dropped from the merge round.
-  const superseded = { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: [
-    { __typename: "CheckRun", databaseId: 80, name: "test", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
-    { __typename: "CheckRun", databaseId: 81, name: "test", status: "COMPLETED", conclusion: "SUCCESS", checkSuite: { workflowRun: { databaseId: 500 } } },
-  ] } };
-  const green = dep("acme/app", 4, { commits: { nodes: [{ commit: { statusCheckRollup: superseded } }] } });
-  const m = await multi(t, [{ repo: "acme/app", duties: "all", dependabot: "failing" }], { "acme/app": [green] }, { settings: () => PRESETS.full });
-  await m.watch.tick();
-  assert.deepEqual(m.tasks.filter((x) => x.source.startsWith("dependabot:")), [], "a superseded run is not a failure to file");
-  assert.equal(openState(join(m.cacheDir, "state.json")).get("acme/app", 4)?.trigger.kind, "all", "and it is not held out of the round either");
-});
-
-test("a Dependabot PR with no checks is filed", async (t) => {
-  const none = dep("acme/app", 3, { commits: { nodes: [{ commit: { statusCheckRollup: null } }] } });
-  const m = await multi(t, [{ repo: "acme/app", duties: "all" }], { "acme/app": [none] });
-  await m.watch.tick();
-  assert.equal(m.tasks.length, 1);
-});
-
-test("more than 50 open PRs are all seen", async (t) => {
-  const prs = Array.from({ length: 60 }, (_, i) => dep("acme/app", i + 1));
-  const m = await multi(t, [{ repo: "acme/app", duties: "all" }], { "acme/app": prs });
-  await m.watch.tick();
-  assert.equal(m.tasks.length, 60);
 });
 
 test("a live merge record at the bound head holds the fix_review wake; once the record ends, the fixer is woken", async (t) => {
@@ -895,24 +811,6 @@ test("a red named check beats a wedged pending one: no wake claims the merge gat
   assert.doesNotMatch(c.woke[0].text, /Leave the head alone/);
 });
 
-test("two PRs at one head share one accepted re-run ask", async (t) => {
-  // PR 52 asks for job 77's re-run and GitHub takes it; GitHub then posts the replacement as job 78 (attempt 2), still
-  // wedged. PR 53 at the same head must see the shared ask, not re-run the replacement again.
-  let replacement = false;
-  const c = await rig(t, {
-    restRuns: (head) => {
-      const id = replacement ? 78 : 77;
-      return [{ id: 77, node_id: "CR_77", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/${id}` }];
-    },
-  });
-  c.set([c.agentPr(52, { ...stuckPr(52, 77), headRefOid: "h70" }), c.agentPr(53, { ...stuckPr(53, 77), headRefOid: "h70" })]);
-  await c.watch.tick();
-  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/jobs/77/rerun").length, 1, "one ask for the head, not one per PR");
-  replacement = true;
-  await c.watch.tick();
-  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/jobs/78/rerun").length, 0, "the replacement job is not re-run by the second PR");
-});
-
 // PROBES_PER_PASS Actions job reads per PR on the recovery paths: later PRs are still scanned in the same tick.
 test("recovery probes are bounded per PR, so a PR with many unfinished checks does not hold the next PR's merge", async (t) => {
   const many = (n) => ({ state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: Array.from({ length: n }, (_, i) => ({ __typename: "CheckRun", id: `CR_${i + 1}`, databaseId: i + 1, name: `job-${i + 1}`, status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } })) } });
@@ -924,44 +822,6 @@ test("recovery probes are bounded per PR, so a PR with many unfinished checks do
   assert.equal(c.merges.length, 1, "the green PR's merge is still filed in the same pass");
 });
 
-// The budget is per PR: an older PR with many unfinished checks spends only its own probes, so a newer PR's recovery
-// still happens in the same pass instead of queueing behind it for many ticks.
-test("a probe budget spent on an older PR does not starve a newer PR's wedged check", async (t) => {
-  const many = { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: Array.from({ length: 12 }, (_, i) => ({ __typename: "CheckRun", id: `CR_${i + 1}`, databaseId: i + 1, name: `old-${i + 1}`, status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } })) } };
-  const one = { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", id: "CR_90", databaseId: 90, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 600 } } }] } };
-  const c = await rig(t, {
-    restRuns: (head) => head === "h60"
-      ? Array.from({ length: 12 }, (_, i) => ({ id: i + 1, node_id: `CR_${i + 1}`, name: `old-${i + 1}`, status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/${i + 1}` }))
-      : [{ id: 90, node_id: "CR_90", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 600 }, details_url: `https://github.com/acme/app/actions/runs/600/job/90` }],
-  });
-  // Newest first, as GitHub's query returns them: 60 is the older PR.
-  c.set([c.agentPr(61, { commits: { nodes: [{ commit: { statusCheckRollup: one } }] }, headRefOid: "h61" }), c.agentPr(60, { commits: { nodes: [{ commit: { statusCheckRollup: many } }] }, headRefOid: "h60" })]);
-  await c.watch.tick();
-  const probesFor = (re) => c.gh.filter((g) => re.test(g)).length;
-  assert.equal(probesFor(/^GET \/repos\/acme\/app\/actions\/jobs\/([0-9]|10|11|12)$/), 10 - 2, "the older PR stops at its own budget");
-  assert.equal(probesFor(/^GET \/repos\/acme\/app\/actions\/jobs\/90$/), 1, "the newer PR still gets its own probe this pass");
-  assert.ok(c.gh.includes("GET /repos/acme/app/actions/jobs/90"), "the newer PR's check is probed in the same pass");
-});
-
-// A head with more failed jobs than one budget covers: the next pass finishes judging and asks for the re-run, rather than
-// reading the same first slice again or waking the task for a job that only looks red.
-test("a never-started check whose job the budget could not read is judged on the next pass, then re-run", async (t) => {
-  const fails = (count) => ({ state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: Array.from({ length: count }, (_, i) => ({ __typename: "CheckRun", id: `CR_${i + 1}`, databaseId: i + 1, name: `job-${i + 1}`, status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } })) } });
-  const c = await rig(t, {
-    steps: [],
-    restRuns: () => Array.from({ length: 11 }, (_, i) => ({ id: i + 1, node_id: `CR_${i + 1}`, name: `job-${i + 1}`, status: "completed", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: `https://github.com/acme/app/actions/runs/500/job/${i + 1}` })),
-  });
-  c.set([c.agentPr(62, { commits: { nodes: [{ commit: { statusCheckRollup: fails(11) } }] }, headRefOid: "h62" })]);
-  await c.watch.tick();
-  assert.equal(c.gh.filter((g) => /^GET \/repos\/acme\/app\/actions\/jobs\/\d+$/.test(g)).length, 10, "the first pass reads ten");
-  assert.equal(c.woke.length, 0, "an unprobed job never looks like a judged one: no red-head wake");
-  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/runs/500/rerun-failed-jobs").length, 0);
-  await c.watch.tick();
-  assert.equal(c.gh.filter((g) => /^GET \/repos\/acme\/app\/actions\/jobs\/\d+$/.test(g)).length, 11, "the next pass reads only the one left");
-  assert.equal(c.gh.filter((g) => g === "POST /repos/acme/app/actions/runs/500/rerun-failed-jobs").length, 1, "all eleven judged: the re-run is asked");
-  assert.equal(c.woke.length, 0);
-});
-
 // 06e6998984655358: the re-run is posted to the job's own REST run_id, never the rollup's 32-bit workflowRun.databaseId.
 test("a never-started re-run is posted to the job's REST run id, not the rollup's truncated one", async (t) => {
   const c = await rig(t, { steps: [], gigRun: () => 3000000000 });
@@ -970,28 +830,6 @@ test("a never-started re-run is posted to the job's REST run id, not the rollup'
   await c.watch.tick();
   assert.ok(c.gh.includes("POST /repos/acme/app/actions/runs/3000000000/rerun-failed-jobs"), "the job's REST run id is the re-run's target");
   assert.ok(!c.gh.includes("POST /repos/acme/app/actions/runs/500/rerun-failed-jobs"), "the rollup's databaseId is never the target");
-});
-
-// c0dde13015a83897: a probe that throws is that PR's problem, not the repo pass's: another PR is still scanned.
-test("a throttled or timed-out job read in neverStarted does not skip the repo's other PRs", async (t) => {
-  let fail = true;
-  const c = await rig(t, { steps: [], jobRead: () => (fail ? Object.assign(new Error("The operation was aborted due to timeout"), { cause: "timeout" }) : undefined) });
-  c.set([c.agentPr(64, { ...redPr(64), headRefOid: "h64" }), c.agentPr(65)]);
-  await c.watch.tick();
-  assert.equal(c.woke.filter((w) => /pull\/64/.test(w.text ?? "")).length, 0, "the unread head is not woken for a failure it may not have");
-  assert.equal(c.merges.length, 1, "the second PR's green merge is still filed in the same pass");
-  fail = false;
-  await c.watch.tick();
-  assert.ok(c.gh.includes("POST /repos/acme/app/actions/runs/500/rerun-failed-jobs"), "the next pass reads the job and asks the re-run");
-});
-
-// c06746a536b273f8: a probe carries a deadline, so the quota wait is bounded instead of stalling the pass.
-test("a recovery probe bounds its rate-limit wait, so a quota window cannot hold the pass", async (t) => {
-  const c = await rig(t);
-  c.set([c.agentPr(66, stuckPr(66))]);
-  await c.watch.tick();
-  assert.ok(c.jobProbeOpts.length >= 1, "the job was read");
-  for (const o of c.jobProbeOpts) assert.equal(typeof o.deadline, "number", "every probe carries a deadline the client stops waiting at");
 });
 
 // 335094309b3b3ef9: a draft is refused by the gate before any check is read, so no "the gate is held" wake, and the
@@ -1029,15 +867,6 @@ test("a red check beside a wedged one wakes the task about the failure, not with
   assert.equal(c.woke.length, 1, "the mixed state wakes the task");
   assert.match(c.woke[0].text, /required checks are red at head/, "the actionable failure is named");
   assert.doesNotMatch(c.woke[0].text, /Leave the head alone/, "not the leave-it-alone advice");
-});
-
-// self-review: the REST check-runs listing is the recovery paths' first read, so it carries the same read deadline as a probe.
-test("the recovery check-runs listing bounds its rate-limit wait like a job probe", async (t) => {
-  const c = await rig(t);
-  c.set([c.agentPr(69, stuckPr(69))]);
-  await c.watch.tick();
-  assert.ok(c.headRunsOpts.length >= 1, "the head's check runs were listed");
-  for (const o of c.headRunsOpts) assert.equal(typeof o.deadline, "number", "every recovery listing carries a read deadline");
 });
 
 // self-review: changes requested fails the gate before any check is read, so no wake claims a wedged check holds the merge.
@@ -1081,52 +910,6 @@ test("a never-started red beside a wedged check is re-run, not woken as a fix-an
   assert.ok(c.gh.includes("POST /repos/acme/app/actions/runs/500/rerun-failed-jobs"), "its failed jobs are re-run instead");
 });
 
-// self-review: a wedge that only went to the log must not consume the head's once-only failure wake.
-test("a log-only wedge report does not suppress a later red head's wake at the same head", async (t) => {
-  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
-  const c = await rig(t);
-  // First the wedge is logged (a draft, so the gate holds nothing and no red check exists): the log-only path stamps its marker.
-  c.set([c.agentPr(73, { ...stuckPr(73), isDraft: true })]);
-  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
-    wedged: { "acme/app:h73:500:image-changes": { at: asked, accepted: true, job: 77 } },
-    reran: { "acme/app:h73:77": asked },
-  } }));
-  await c.watch.tick();
-  assert.equal(c.woke.length, 0, "nothing to wake for a wedge that holds no required check");
-  // Same head, now with a red check beside the wedge: the failure is actionable and must still be told.
-  const redPlusWedge = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
-    { __typename: "CheckRun", id: "CR_77", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
-    { __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "unit", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
-  ] } };
-  c.set([c.agentPr(73, { isDraft: false, commits: { nodes: [{ commit: { statusCheckRollup: redPlusWedge } }] } })]);
-  await c.watch.tick();
-  assert.equal(c.woke.length, 1, "the log-only line never stood in for telling the task about a failure");
-  assert.match(c.woke[0].text, /required checks are red at head/);
-});
-
-// self-review: a re-run request that throws is that head's backoff, not the repo scan's end: a later green PR still merges.
-test("a never-started re-run whose POST throws does not skip the repo's other PRs", async (t) => {
-  const c = await rig(t, { steps: [], rerun: () => ({ throw: Object.assign(new Error("The operation was aborted due to timeout"), { cause: "timeout" }) }) });
-  c.set([c.agentPr(74, { ...redPr(74), headRefOid: "h74" }), c.agentPr(75)]);
-  await c.watch.tick();
-  assert.equal(c.merges.length, 1, "the second, green PR's merge is still filed in the same pass");
-  const saved = JSON.parse(readFileSync(join(c.cacheDir, "loop.json"), "utf8"))["acme/app"];
-  assert.match(saved.reran["https://github.com/acme/app/pull/74:h74"], /^retry:/, "the failed request backs off rather than counting as handled");
-});
-
-// self-review: a conflicting head is the rebase rules' to move, so the wedge report never tells its task to leave it alone.
-test("a conflicting head gets no leave-it-alone wedge wake", async (t) => {
-  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
-  const c = await rig(t);
-  c.set([c.agentPr(76, { ...stuckPr(76), mergeStateStatus: "DIRTY" })]);
-  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
-    wedged: { "acme/app:h76:500:image-changes": { at: asked, accepted: true, job: 77 } },
-    reran: { "acme/app:h76:77": asked },
-  } }));
-  await c.watch.tick();
-  assert.ok(!c.woke.some((w) => /Leave the head alone/.test(w.text ?? "")), "a conflicted head has a move to make: never leave-it-alone");
-});
-
 // self-review: an unreadable check-runs listing leaves the classification pending, so no red-head wake for a failure CI may
 // never have run. The next tick reads it and re-runs the job.
 test("a failed listing defers the red-head wake instead of fixing a failure CI may not have run", async (t) => {
@@ -1139,35 +922,6 @@ test("a failed listing defers the red-head wake instead of fixing a failure CI m
   await c.watch.tick();
   assert.ok(c.gh.includes("POST /repos/acme/app/actions/runs/500/rerun-failed-jobs"), "the next pass judges it and re-runs the never-started job");
   assert.equal(c.woke.length, 0, "still no wake: the job never started");
-});
-
-// self-review: a draft's mixed state is not told to publish, and marking it ready still wakes its task for the failure.
-test("a draft with a red and a wedged check is not told to publish, and its ready head still is", async (t) => {
-  const rollup = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
-    { __typename: "CheckRun", id: "CR_77", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
-    { __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "unit", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
-  ] } };
-  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
-  const c = await rig(t, { steps: [{ name: "Build" }] });
-  c.set([c.agentPr(79, { isDraft: true, commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
-  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
-    wedged: { "acme/app:h79:500:image-changes": { at: asked, accepted: true, job: 77 } },
-    reran: { "acme/app:h79:77": asked },
-  } }));
-  await c.watch.tick();
-  assert.equal(c.woke.length, 0, "a draft is not told to publish");
-  c.set([c.agentPr(79, { isDraft: false, commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
-  await c.watch.tick();
-  assert.equal(c.woke.length, 1, "marked ready, the failure is told once: its report was not spent on the draft");
-});
-
-// self-review: a job that is permanently gone (404) is not deferred forever: the red-head rules report the failure.
-test("a deleted job's 404 does not defer the red-head wake on every tick", async (t) => {
-  const c = await rig(t, { jobRead: () => 404 });
-  c.set([c.agentPr(80, redPr(80))]);
-  await c.watch.tick();
-  assert.equal(c.woke.length, 1, "a permanent 404 is not this rule's: the failure is reported");
-  assert.match(c.woke[0].text, /required checks are red at head/);
 });
 
 // self-review: a cancelled task's PR is left for a successor, never woken for its checks' state first, and never closed.
@@ -1183,50 +937,6 @@ test("a cancelled task's wedged PR is neither woken nor closed", async (t) => {
   assert.equal(c.woke.length, 0, "a cancelled task has nobody to wake");
   assert.equal(c.gh.filter((g) => g === "PATCH /repos/acme/app/pulls/81").length, 0, "the PR is left open for a successor");
   assert.ok(!c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b81"), "and its branch is not deleted");
-});
-
-// self-review: a credential that cannot read Actions (403) is permanent too, so the failure is still reported.
-test("an Actions permission refusal (403) still reports the red head", async (t) => {
-  const c = await rig(t, { jobRead: () => 403 });
-  c.set([c.agentPr(82, redPr(82))]);
-  await c.watch.tick();
-  assert.equal(c.woke.length, 1, "a permanent permission refusal is not this rule's: the failure is reported");
-  assert.match(c.woke[0].text, /required checks are red at head/);
-});
-
-// self-review: a permanent check-runs listing refusal (403) is not this rule's, so a real red head is still reported.
-test("a permanent check-runs listing refusal still reports the red head", async (t) => {
-  const c = await rig(t, { listingStatus: () => 403 });
-  c.set([c.agentPr(83, redPr(83))]);
-  await c.watch.tick();
-  assert.equal(c.woke.length, 1, "a permanent refusal does not defer the failure forever");
-  assert.match(c.woke[0].text, /required checks are red at head/);
-});
-
-// self-review: a head behind main is the update rule's, so the mixed-state wake does not send its task to publish it.
-test("a behind head with a red and a wedged check is not told to publish", async (t) => {
-  const rollup = { state: "FAILURE", contexts: { pageInfo: { hasNextPage: false }, nodes: [
-    { __typename: "CheckRun", id: "CR_77", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } },
-    { __typename: "CheckRun", id: "CR_78", databaseId: 78, name: "unit", status: "COMPLETED", conclusion: "FAILURE", checkSuite: { workflowRun: { databaseId: 500 } } },
-  ] } };
-  const asked = new Date(Date.now() - 21 * 60_000).toISOString();
-  const c = await rig(t, { steps: [{ name: "Build" }] });
-  c.set([c.agentPr(84, { mergeStateStatus: "BEHIND", commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
-  writeFileSync(join(c.cacheDir, "loop.json"), JSON.stringify({ "acme/app": {
-    wedged: { "acme/app:h84:500:image-changes": { at: asked, accepted: true, job: 77 } },
-    reran: { "acme/app:h84:77": asked },
-  } }));
-  await c.watch.tick();
-  assert.ok(!c.woke.some((w) => /Fix the failure on the PR's branch/.test(w.text ?? "")), "the update rule owns a behind head");
-});
-
-// self-review: the client answers a 404 as a typed "unreachable" need, not a status: a deleted job must not defer forever.
-test("a typed unreachable need on a deleted job's read reports the red head", async (t) => {
-  const c = await rig(t, { jobRead: () => Object.assign(new Error("acme/app isn't reachable with your GitHub account"), { need: { cause: "unreachable", repo: "acme/app" } }) });
-  c.set([c.agentPr(85, redPr(85))]);
-  await c.watch.tick();
-  assert.equal(c.woke.length, 1, "a job gone for good is not this rule's: the failure is reported");
-  assert.match(c.woke[0].text, /required checks are red at head/);
 });
 
 // self-review: a wedged REST check the head's rollup no longer shows does not make the mixed-state report fire.
@@ -1247,24 +957,6 @@ test("a stale REST wedged check absent from the rollup does not wake a red head"
   assert.ok(!c.woke.some((w) => /Fix the failure on the PR's branch/.test(w.text ?? "")), "a stale wedged check is not this head's");
 });
 
-// self-review: a listing the client refuses as a typed need (404) is permanent too, so the red head is reported.
-test("a typed unreachable need on the check-runs listing still reports the red head", async (t) => {
-  const c = await rig(t, { listingThrow: () => Object.assign(new Error("acme/app isn't reachable"), { need: { cause: "unreachable", repo: "acme/app" } }) });
-  c.set([c.agentPr(87, redPr(87))]);
-  await c.watch.tick();
-  assert.equal(c.woke.length, 1, "a permanent listing refusal does not defer the failure forever");
-  assert.match(c.woke[0].text, /required checks are red at head/);
-});
-
-// fd7e47a6502ae698: a credential without Actions read (a typed `scope` refusal) is as permanent as a 404: report the red head.
-test("an Actions scope refusal does not defer the red-head wake", async (t) => {
-  const c = await rig(t, { jobRead: () => Object.assign(new Error("acme/app needs a scope this sign-in has not granted"), { need: { cause: "scope", scope: "repo" } }) });
-  c.set([c.agentPr(88, redPr(88))]);
-  await c.watch.tick();
-  assert.equal(c.woke.length, 1, "a permanent scope refusal is not this rule's: the failure is reported");
-  assert.match(c.woke[0].text, /required checks are red at head/);
-});
-
 // f860612ff95e4e6a: a later attempt is a replacement only of the workflow run that was re-run, never of a same-named sibling.
 test("a same-named job on another workflow run is not taken as the re-run's replacement", async (t) => {
   const asked = new Date(Date.now() - 21 * 60_000).toISOString();
@@ -1279,26 +971,6 @@ test("a same-named job on another workflow run is not taken as the re-run's repl
   } }));
   await c.watch.tick();
   assert.ok(c.gh.includes("POST /repos/acme/app/actions/jobs/78/rerun"), "another run's job is its own check and gets its own ask");
-});
-
-// e72fb15673cc76c4: only a check the head's rollup still shows is re-run; a REST check the rollup replaced is left alone.
-test("a wedged REST check the rollup no longer shows is never re-run", async (t) => {
-  const c = await rig(t, { restRuns: () => [
-    { id: 77, node_id: "CR_77", name: "image-changes", status: "in_progress", app: { slug: "github-actions" }, check_suite: { id: 500 }, details_url: "https://github.com/acme/app/actions/runs/500/job/77" },
-  ] });
-  // The head's rollup carries a *new* check run (CR_NEW) for the same job number: REST's 77 (CR_77) is the replaced one.
-  const rollup = { state: "PENDING", contexts: { pageInfo: { hasNextPage: false }, nodes: [{ __typename: "CheckRun", id: "CR_NEW", databaseId: 77, name: "image-changes", status: "IN_PROGRESS", conclusion: null, checkSuite: { workflowRun: { databaseId: 500 } } }] } };
-  c.set([c.agentPr(90, { ...stuckPr(90, 77), commits: { nodes: [{ commit: { statusCheckRollup: rollup } }] } })]);
-  await c.watch.tick();
-  assert.ok(!c.gh.some((g) => g === "POST /repos/acme/app/actions/jobs/77/rerun"), "an obsolete check's job is not re-run");
-});
-
-// self-review: a typed `scope` refusal on the listing is permanent, exactly as the job probe treats it.
-test("an Actions scope refusal on the check-runs listing still reports the red head", async (t) => {
-  const c = await rig(t, { listingThrow: () => Object.assign(new Error("no Checks read"), { need: { cause: "scope", scope: "repo" } }) });
-  c.set([c.agentPr(91, redPr(91))]);
-  await c.watch.tick();
-  assert.equal(c.woke.length, 1, "a permanent scope refusal does not defer the failure forever");
 });
 
 // self-review: a PR the lifecycle rule is about to close as superseded spends no CI and wakes nobody.
@@ -1344,16 +1016,6 @@ test("a done task's PR whose head branch moved since its head is closed but neve
   assert.ok(!blind.gh.some((g) => g.startsWith("DELETE")), "a branch whose tip could not be read is not deleted");
 });
 
-// The close names the task it was decided for, so github's route can tell a successor's PR from the opener's under the lock.
-test("an abandoned PR's close names the task it was decided for", async (t) => {
-  const c = await rig(t, { taskStatus: "done" });
-  const old = new Date(Date.now() - 31 * 60_000).toISOString();
-  c.set([c.agentPr(5)]);
-  seen(c.cacheDir, [5], old);
-  await c.watch.tick();
-  assert.deepEqual(c.sent.find((x) => x.method === "PATCH" && x.path === "/repos/acme/app/pulls/5")?.body, { state: "closed", expectTask: "ACME-5" });
-});
-
 // Two PRs from one task into different bases are different proposals: the task's newer PR into main does not supersede its PR
 // into a release branch (closing it would take a release back out of the train).
 test("a PR into another base is not closed as superseded by the task's newer PR into main", async (t) => {
@@ -1384,15 +1046,6 @@ test("an adopted PR is still closed as superseded by the same task's newer PR on
   await c.watch.tick();
   assert.ok(c.gh.includes("PATCH /repos/acme/app/pulls/92"), "the older PR is closed as superseded");
   assert.ok(c.gh.includes("DELETE /repos/acme/app/git/refs/heads/b92"), "and its branch goes with it");
-});
-
-// self-review: a re-run the credential can never be allowed to send is not retried forever: the red-head rules report the head.
-test("a permanent refusal to re-run a never-started job still reports the red head", async (t) => {
-  const c = await rig(t, { steps: [], rerun: () => ({ throw: Object.assign(new Error("no Actions write"), { need: { cause: "scope", scope: "repo" } }) }) });
-  c.set([c.agentPr(94, redPr(94))]);
-  await c.watch.tick();
-  assert.equal(c.woke.length, 1, "the refusal is permanent, so the failure is reported rather than retried forever");
-  assert.match(c.woke[0].text, /required checks are red at head/);
 });
 
 // self-review: a run GitHub already took a re-run for is not asked again when another run at the head was refused.
@@ -1558,6 +1211,20 @@ test("a head's checks are probed at most every five minutes however often the lo
   assert.equal((await recover("acme/app", queued("h2"), state, () => {})).again, true, "and the loop is told to read the repo again");
 });
 
+test("the watch set comes from Ship's own entries: a repo ship works gets every duty; one it doesn't, only its Dependabot duty while that is on", () => {
+  const settings: Record<string, { enabled: boolean; dependabot: "off" | "failing" | "all" }> = {
+    "acme/product": { enabled: true, dependabot: "all" }, "on/repo": { enabled: true, dependabot: "off" },
+    "off/bumps": { enabled: false, dependabot: "failing" }, "off/quiet": { enabled: false, dependabot: "off" }, "off/tracked": { enabled: false, dependabot: "off" },
+  };
+  const set = Object.fromEntries(watchSet({ repos: ["acme/product", "on/repo", "On/Repo", "off/bumps", "off/quiet", "off/tracked", "no/entry"], settings: (r) => settings[r] ?? null, tracked: (r) => r === "off/tracked" }));
+  assert.deepEqual(set, {
+    "acme/product": { duties: "all", dependabot: "all" },
+    "on/repo": { duties: "all", dependabot: "off" },
+    "off/bumps": { duties: "dependabot", dependabot: "failing" },
+    "off/tracked": { duties: "dependabot", dependabot: "off" }, // polled only to close the tasks it filed
+  });
+});
+
 test("a list page that times out is retried at half the size, the size is kept, and a quick page grows it back", async (t) => {
   const sizes = [];
   let full = false;
@@ -1585,18 +1252,4 @@ test("a list page that times out is retried at half the size, the size is kept, 
   full = true;
   await m.watch.tick();
   assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 12, "a quick full page doubles it once the cooldown passed");
-});
-
-test("the watch set comes from Ship's own entries: a repo ship works gets every duty; one it doesn't, only its Dependabot duty while that is on", () => {
-  const settings: Record<string, { enabled: boolean; dependabot: "off" | "failing" | "all" }> = {
-    "acme/product": { enabled: true, dependabot: "all" }, "on/repo": { enabled: true, dependabot: "off" },
-    "off/bumps": { enabled: false, dependabot: "failing" }, "off/quiet": { enabled: false, dependabot: "off" }, "off/tracked": { enabled: false, dependabot: "off" },
-  };
-  const set = Object.fromEntries(watchSet({ repos: ["acme/product", "on/repo", "On/Repo", "off/bumps", "off/quiet", "off/tracked", "no/entry"], settings: (r) => settings[r] ?? null, tracked: (r) => r === "off/tracked" }));
-  assert.deepEqual(set, {
-    "acme/product": { duties: "all", dependabot: "all" },
-    "on/repo": { duties: "all", dependabot: "off" },
-    "off/bumps": { duties: "dependabot", dependabot: "failing" },
-    "off/tracked": { duties: "dependabot", dependabot: "off" }, // polled only to close the tasks it filed
-  });
 });

@@ -113,7 +113,11 @@ const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(":
 const STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 
 /** A secret a module asks for on /setup (its provided secret's `setup:`, compiled into config/kernel/modules.json `setup`). */
-export type SetupField = { module: string; secret: string; label: string; pattern: string; help?: string; required?: boolean };
+export type SetupField = {
+  module: string; secret: string; label: string; pattern: string; help?: string; required?: boolean;
+  /** For a JSON-map secret a module page declares (board.pages secret_maps): each field's kind and own cap (300 when it declares none). */
+  fields?: { name: string; kind: string; maxLength?: number }[];
+};
 const CREDITS = "https://openrouter.ai/settings/credits";
 const esc = (v: unknown) => String(v ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 class Refusal extends Error {

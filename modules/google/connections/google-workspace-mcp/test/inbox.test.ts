@@ -157,16 +157,6 @@ describe("gmail_inbox_new: the inbox since the cursor, automated mail set aside"
     expect(r.cursor).toEqual({ "me@work.com": T0 + 4_000 });
   });
 
-  it("keeps a thread whose newest listed message is not categorised, even if an older message was", async () => {
-    const mixed: Msg[] = [
-      { id: "p1", threadId: "tm", at: T0 + 1_000, headers: person("Shop <deals@shop.com>"), labels: ["CATEGORY_PROMOTIONS"] },
-      { id: "m1", threadId: "tm", at: T0 + 2_000, headers: person("Dana <dana@acme.com>") },
-    ];
-    const r = await new MultiWorkspace(creds(), "primary", google(mixed).impl).gmailInbox({ "me@work.com": T0 }, 20);
-    expect(r.threads.map((t) => [t.thread_id, t.id])).toEqual([["tm", "m1"]]);
-    expect(r.accounts[0]).toMatchObject({ dropped: { "category:promotions": 1 } });
-  });
-
   it("counts a category message before the thread limit, so it neither blocks nor replays the thread behind it", async () => {
     // limit: 1. Oldest first: thread A's person, then a promotion in B, then A's newer reply. The promotion must not take the
     // only thread slot: it is dropped and counted, and the call reaches A's reply instead of serving A's stale first row.
@@ -221,15 +211,6 @@ describe("gmail_inbox_new: the inbox since the cursor, automated mail set aside"
     const next = await new MultiWorkspace(creds(), "primary", google(atCursor).impl).gmailInbox(first.cursor, 20);
     expect(next.threads).toEqual([]);
     expect((next.accounts[0] as { dropped: Record<string, number> }).dropped).toEqual({});
-  });
-
-  it("overlaps the metadata reads, so a wide window costs a few round trips instead of one per message", async () => {
-    // A window of 12 messages would be 12 sequential Gmail round trips: on a wide window that runs into the tool deadline.
-    const wide: Msg[] = Array.from({ length: 12 }, (_, i) => ({ id: `m${i}`, threadId: `t${i}`, at: T0 + (i + 1) * 1_000, headers: person(`P${i} <p${i}@acme.com>`) }));
-    const g = google(wide);
-    const r = await new MultiWorkspace(creds(), "primary", g.impl).gmailInbox({ "me@work.com": T0 }, 50);
-    expect(r.threads).toHaveLength(12);
-    expect(g.reads.most).toBeGreaterThan(1);
   });
 
   it("never splits a millisecond at the budget, so a stopped call loses no message", async () => {

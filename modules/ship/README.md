@@ -42,8 +42,9 @@ The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui
   Then GitHub's update-branch, then on a conflict the `ship-repair` check job: a credential-free box merges the base's live tip in
   (none when the head already holds it), takes the base side of generated paths and lockfiles, runs the discovered generator
   (`.gitattributes` `linguist-generated`, known lockfiles, generated-file headers; the `generated` setting overrides; with
-  `generated.ci: <check>` a check in the repo's own CI regenerates them: the box takes their base side and runs nothing, and ship
-  merges a head its repair made that way only once that check passed on it, holding the PR after 30 minutes without it) and returns the files, which github commits
+  `generated.ci: <workflow file>` a workflow in the repo's own CI (e.g. `schema-generate.yml`) regenerates them: the box takes their
+  base side and runs nothing, and ship merges a head its repair made that way only once that workflow's newest run on it succeeded,
+  holding the PR after 30 minutes without it, including when the workflow never ran on that head) and returns the files, which github commits
   as the App. A leftover conflict or a failed generator wakes the
   Engineer once per head. A stacked PR waits on the PR it stands on, then github's `retarget` moves it to the default branch.
 - **Fixes.** The task is woken for red required checks (a failure that is red on the base too is a wait), unanswered review

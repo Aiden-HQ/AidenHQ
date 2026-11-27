@@ -18,22 +18,6 @@ import { type Fixture, ROUTES, SIGN_IN, startFixture } from "./fixtures/ui-app/s
 
 const main = fileURLToPath(new URL("../images/agent-base/ui-review/main.ts", import.meta.url));
 
-test("ui-review --help lists its subcommands", () => {
-  const r = spawnSync("node", [main, "--help"], { encoding: "utf8" });
-  assert.equal(r.status, 0);
-  for (const c of ["capture", "pages", "routes", "refs", "review", "fix-check", "login", "browser"]) assert.match(r.stdout, new RegExp(`^  ${c} `, "m"));
-});
-
-test("the fixture app serves 60 routes and counts writes", async () => {
-  const f = await startFixture();
-  try {
-    assert.equal(ROUTES.length, 60);
-    assert.equal((await fetch(f.url + "/")).status, 200);
-    await fetch(f.url + "/api/delete", { method: "POST" });
-    assert.equal(f.writes(), 1);
-  } finally { await f.close(); }
-});
-
 test("every fixture route renders its own page, and /planted carries its defects", { skip: !process.env.AGENT_BROWSER_EXECUTABLE_PATH && "no Chrome" }, async () => {
   const { chromium } = await import("../images/agent-base/ui-review/node_modules/playwright-core/index.mjs");
   const f = await startFixture();

@@ -54,9 +54,15 @@ agents:
       code_review?: [ code_review_findings, code_review_resolve ]
       # A ship task's generate command, proposed when discovery couldn't settle it (ship skill; role ship-admin), when ship is on.
       ship?: [ ship_configure ]
-      # Its own task only, never another's text: a `file` deliverable's file goes on it, task_approvals reads this task's
-      # approval cards (the merge card `publish` checks before waiting), and task_finish closes it once its work has landed; task_wait records what it waits on.
-      paperclip_tasks: [ task_file_upload, task_finish, task_wait, task_approvals ]
+      # Its own task only, never another's text, and the kernel enforces that: every tasks-mcp write goes through the
+      # kernel's write lane, where a comment's scope is `scopeOf` (kernel/src/task-scope.ts) — a task assigned to the
+      # job's agent, one it created, or a child of one it assigned. So `task_comment` is safe now: a brief can ask for a
+      # plan as a comment on the task and the ordering check has a real timestamp to read. Reading stays `task_get` and
+      # `task_search` (modules/tasks/module.yaml), and the job's own task and its comments come to it in its prompt; a
+      # `file` deliverable's file goes on the task with task_file_upload, task_approvals reads this task's approval cards
+      # (the merge card `publish` checks before waiting), task_finish closes it once its work has landed, and task_wait
+      # records what it waits on.
+      paperclip_tasks: [ task_file_upload, task_finish, task_wait, task_approvals, task_comment ]
     # Primer reads (optional: only with the primer module); in its computer through the kernel's proxy with its run token.
     jobcaps: [ primer-read? ]
 labels:

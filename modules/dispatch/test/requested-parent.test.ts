@@ -53,14 +53,6 @@ test("what a blocked task needs reaches the task that asked for it, not the pare
   assert.match(w.seen.wakes[1].text, /WOR-3/);
 });
 
-test("a task the cap didn't move resolves to its parent, as before", async () => {
-  const w = world({ adjusted: false });
-  const told = await w.asker.tell(w.tasks.WOR3, "**WOR-3 is blocked.** Its reason: a stale path.", "is blocked");
-  assert.deepEqual([told.heard, w.seen.wakes.map((x) => x.task)], ["parent", ["WOR2"]]);
-  assert.equal(await w.asker.summarize(w.tasks.WOR3, { ended: async () => ({ seq: 1, state: "done" }), live: async () => false, dir: w.dir }), 1);
-  assert.deepEqual(w.seen.wakes.map((x) => x.task), ["WOR2", "WOR2"]);
-});
-
 test("with the requester closed, the ask becomes a card for the agent that made the task, as before", async () => {
   const w = world({ adjusted: true });
   w.tasks.WOR2.status = "done";

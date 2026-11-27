@@ -117,6 +117,14 @@
       "source": "./orphan"
     },
     {
+      "name": "mapdup",
+      "source": "./mapdup"
+    },
+    {
+      "name": "mapok",
+      "source": "./mapok"
+    },
+    {
       "name": "pageok",
       "source": "./pageok"
     },

@@ -47,7 +47,7 @@ test("ship's GitHub calls: its token only, the loop's own calls only, on a repo 
   const B = "a".repeat(40);
   for (const [method, path, body] of [["GET", "/repos/acme/app/git/trees/main?recursive=1"], ["GET", `/repos/acme/app/git/blobs/${B}`],
     ["POST", "/repos/acme/app/actions/workflows/pr-rebase.yml/dispatches", { ref: "main", inputs: { pr: "1" }, return_run_details: true }],
-    ["GET", "/repos/acme/app/actions/runs/42"], ["GET", `/repos/acme/app/commits/${B}/check-runs?check_name=regenerate%20files&per_page=100`]])
+    ["GET", "/repos/acme/app/actions/runs/42"], ["GET", `/repos/acme/app/actions/workflows/schema-generate.yml/runs?head_sha=${B}&per_page=20`]])
     assert.equal((await gh({ method, path, body })).status, 200, path);
   // A GET goes out with no body (fetch refuses a GET with one).
   assert.equal(sent[called.indexOf("GET /repos/acme/app/git/trees/main?recursive=1")], undefined, "a GET sends no body");

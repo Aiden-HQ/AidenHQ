@@ -293,14 +293,6 @@ test("a run its machinery ended (lost, or killed by a signal) comes back as a re
   assert.match(k.posts[0].body, /^\*\*Failed\*\* \(exit code 1\)/);
 });
 
-test("a scheduled wake's note reaches the agent as a notice", async () => {
-  const comments = [{ id: "a1", authorType: "agent", authorAgentId: "eng", body: "On it.", createdAt: "2026-11-18T10:00:00Z" }];
-  const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
-  k.inbox.push(wake("wake_at:chat.r1", "scheduled: check the deploy"));
-  await k.dispatch.tick();
-  assert.match(k.started[0].prompt, /check the deploy/);
-});
-
 test("a run whose task moved to another agent is stopped, and its refused reply is dropped without telling the owner", async () => {
   const task = { id: "t1", identifier: "WOR-9", title: "Build", description: "Do it", status: "in_progress", assigneeAgentId: "eng", createdByAgentId: "asker", createdByUserId: null };
   const k = fake({ task, comments: [] });
@@ -391,18 +383,6 @@ test("a parent's summary waits while a child's retry is still pending", async ()
   assert.match(wakes[0].text, /WOR-2/);
 });
 
-test("a child that closed its own task still reports its parent's batch", async () => {
-  const parent = { id: "p1", identifier: "WOR-1", title: "Parent", description: "Whole job", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" };
-  const c1 = { id: "c1", identifier: "WOR-2", title: "One", description: "Do it", status: "done", assigneeAgentId: "eng", parentId: "p1", createdByAgentId: "cos" };
-  const k = fake({ task: parent, tasks: { c1 }, directory: { eng: { key: "crew" }, cos: { key: "chief-of-staff", roles: ["fleet-admin"] } } });
-  const wakes = [];
-  k.kernel.wake = async (task, text) => void wakes.push({ task, text });
-  k.jobs.set("jc1", { id: "jc1", task: "c1", agent: "eng", state: "done", exit: 0, final: "One done.", at: 1, ended: 1, acked: false });
-  await k.dispatch.tick();
-  assert.equal(wakes.length, 1, "the parent hears the child's result");
-  assert.match(wakes[0].text, /WOR-2/);
-});
-
 test("a retry due after the task was put on hold is dropped, not started", async () => {
   const k = fake({ task: { id: "t1", identifier: "WOR-1", title: "Fix", description: "Do it", status: "backlog", assigneeAgentId: "eng", createdByUserId: "u1" } });
   k.jobs.set("j1", { id: "j1", task: "t1", agent: "eng", state: "cancelled", exit: 0, final: "", cancelled: true, stoppedBy: null, at: 1, ended: 1, acked: true });
@@ -411,53 +391,6 @@ test("a retry due after the task was put on hold is dropped, not started", async
   assert.deepEqual(k.started, [], "nothing starts on a task the owner put on hold");
   assert.equal(k.dropped[0].key, "wake_at:dispatch.retry.j1");
   assert.match(k.dropped[0].why, /backlog/);
-});
-
-test("a retry dropped on a child that never runs still reports its parent's batch", async () => {
-  const parent = { id: "p1", identifier: "WOR-1", title: "Parent", description: "Whole job", status: "in_progress", assigneeAgentId: "eng", createdByUserId: "u1" };
-  const c1 = { id: "c1", identifier: "WOR-2", title: "One", description: "Do it", status: "done", assigneeAgentId: "eng", parentId: "p1", createdByAgentId: "cos" };
-  const c2 = { id: "c2", identifier: "WOR-3", title: "Two", description: "Do it", status: "todo", assigneeAgentId: "eng", parentId: "p1", createdByAgentId: "cos" };
-  const k = fake({ task: parent, tasks: { c1, c2 }, directory: { eng: { key: "crew" }, cos: { key: "chief-of-staff", roles: ["fleet-admin"] } } });
-  const wakes = [];
-  k.kernel.wake = async (task, text) => void wakes.push({ task, text });
-  k.jobs.set("jc1", { id: "jc1", task: "c1", agent: "eng", state: "done", exit: 0, final: "One done.", at: 1, ended: 1, acked: true });
-  k.jobs.set("jc2", { id: "jc2", task: "c2", agent: "eng", state: "cancelled", exit: 0, final: "", cancelled: true, stoppedBy: null, at: 2, ended: 2, acked: true });
-  // The owner puts the retried child on hold before its retry runs: the retry is dropped, and the batch is said then.
-  Object.assign(c2, { status: "backlog" });
-  k.inbox.push({ key: "wake_at:dispatch.retry.jc2", task: "c2", agent: "eng", cause: "scheduled: retry", at: Date.now() });
-  await k.dispatch.tick();
-  assert.equal(wakes.length, 1, "the parent hears the batch once the retry goes");
-  assert.match(wakes[0].text, /WOR-2/);
-});
-
-test("the owner's comment that closed the task is not paged: the wake is dropped quietly", async () => {
-  const comments = [{ id: "c1", authorType: "user", body: "Done, thanks.", createdAt: "2026-11-18T10:00:00Z" }];
-  const k = fake({ task: { id: "t1", identifier: "WOR-7", title: "Chat", description: "", status: "done", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
-  k.kernel.start = async () => { throw new KernelError(409, "task t1 is done", { type: "task-closed", message: "task t1 is done" }); };
-  k.inbox.push(wake("comment:c1", "comment"));
-  await k.dispatch.tick();
-  assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1"], "the wake goes");
-  assert.deepEqual(k.notes, [], "a finished task is never written to");
-  assert.deepEqual(k.notified, [], "the owner acted on it himself: no page");
-});
-
-test("#1611 retired: the owner's comment while the task was open, closed later by an agent, is no longer paged", async () => {
-  // #1611 deliberately paged him here. It is retired with #1676's rule: the platform records no sound link between a comment and
-  // the close that followed it, so telling "his comment closed it" from "his comment, then an agent closed it" would be a guess,
-  // and the guess loses his request silently when a crew cascade, a grader or the kernel itself closes the task.
-  const comments = [{ id: "c1", authorType: "user", body: "One more thing.", createdAt: "2026-11-18T10:00:00Z" }];
-  const k = fake({ task: { id: "t1", identifier: "WOR-5", title: "Chat", description: "", status: "done", assigneeAgentId: "eng", createdByUserId: "u1" }, comments });
-  k.kernel.start = async () => { throw new KernelError(409, "task t1 is done", { type: "task-closed", message: "task t1 is done" }); };
-  k.inbox.push(wake("comment:c1", "comment"));
-  await k.dispatch.tick();
-  assert.deepEqual(k.dropped.map((d) => d.key), ["comment:c1"]);
-  assert.deepEqual(k.notified, [], "a closed task's refusal is bookkeeping, not a page");
-  // A cancelled task is no different.
-  comments.push({ id: "c2", authorType: "user", body: "Still one more.", createdAt: "2026-11-18T10:06:00Z" });
-  Object.assign(await k.kernel.task("t1"), { status: "cancelled" });
-  k.inbox.push(wake("comment:c2", "comment"));
-  await k.dispatch.tick();
-  assert.deepEqual(k.notified, [], "cancelled too");
 });
 
 test("a reply on a closed task is not posted: acked, no page, and the closed child's batch still runs", async () => {

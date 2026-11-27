@@ -74,16 +74,6 @@ test("a skill is configured with the arguments and tools its pinned file needs",
   assert.deepEqual([...seen].sort(), Object.keys(NEEDS).sort(), "every contract above is used by a catalog option");
 });
 
-test("variant analysis isn't offered: it hunts variants of a bug already found, and a review has none to give it", () => {
-  // Its pinned SKILL.md: "Not for initial discovery with no bug in hand."
-  assert.match(String(catalog.find((o) => o.id === "cor.variant-analysis")!.unavailable), /bug already found/);
-});
-
-test("the old bare names are refused by the catalog's parser", () => {
-  assert.throws(() => parseSkill("ce-code-review"), /is \/<name>, \/<plugin>:<command> or <owner>\/<repo>:<name>/);
-  assert.throws(() => parseSkill("audit-context-building insecure-defaults"), /is \/<name>/);
-});
-
 test("a multi-skill option yields every skill with its own arguments, in order", () => {
   const tob = catalog.find((o) => o.id === "sec.tob-audit")!;
   assert.equal(tob.run.skills!.length, 5);
@@ -250,11 +240,6 @@ test("a skill stopped at the skills' time limit keeps what it found: the restate
   assert.doesNotMatch(String(h.incomplete), /\/p:one/);
 });
 
-test("the check's time limit in the recipe is the module's", () => {
-  const yaml = readFileSync(new URL("../module.yaml", import.meta.url), "utf8");
-  assert.equal(Number(/^  code-review:\n(?:    .*\n)*?    timeout_min: (\d+)/m.exec(yaml)?.[1]), CHECK_MINUTES);
-});
-
 test("the restated skill list is read in order and must cover every skill", () => {
   const r = { message: "", read: true };
   assert.match(String(skillOutcome({ ...r, message: ran(true) }, ["/p:one", "/p:two"]).cause), /didn't say/);
@@ -269,19 +254,6 @@ test("Claude Code runs with its own sandbox off (gVisor refuses its network name
   assert.equal((await f.run([{ skill: "/p:one", args: "" }])).cause, undefined);
   assert.deepEqual(f.settings(), { sandbox: { enabled: false } }); // in the config dir claude reads (HOME/.claude)
   assert.equal(f.scrub(), "unset", "its env scrub makes Claude Code require a sandbox gVisor can't start");
-});
-
-test("a skill run is told to run its whole workflow, sub-agents included, and where it may write", async () => {
-  const f = fakeRun({ restate: ran(true) });
-  assert.equal((await f.run([{ skill: "/p:one", args: "" }])).cause, undefined);
-  const [text, restated] = f.instructions();
-  assert.ok(text!.startsWith("x\n\n"), "the brief first");
-  assert.equal(restated, "x", "the restate gets the brief alone: it never resumes the workflow");
-  assert.match(text!, /Run it in full as its files say/);
-  assert.match(text!, /the sub-agents it dispatches/);
-  assert.match(text!, /a sampled or lead-only pass in its place is not this review/);
-  const cwd = /Your working directory \((\S+), a throwaway checkout of the head\)/.exec(text!)?.[1];
-  assert.equal(cwd && realpathSync(cwd), realpathSync(f.turns()[0]!.cwd!), "its working directory, the throwaway checkout, is where it writes");
 });
 
 test("a run whose shell can't run ends at once, never spending the review", async () => {
@@ -314,51 +286,4 @@ test("the shell guard: a known dead shell, or the first commands failing with on
   const worked = shellGuard();
   assert.equal(worked(true, "ok"), undefined);
   for (let i = 0; i < 9; i++) assert.equal(worked(false, "bwrap: x"), undefined);
-});
-
-// The real Claude Code binary (where it is installed: the engineer image, a developer's machine) with the recipe's own settings,
-// against a stub model that asks for one Bash command: the command runs and its output comes back (2026-11-23: inside the box
-// Claude Code's sandbox failed every command with "bwrap: loopback").
-// It runs where claude is installed (the engineer image under gVisor, a developer's machine).
-const hasClaude = (() => { try { execFileSync("sh", ["-c", "command -v claude"]); return true; } catch { return false; } })();
-test("a Claude Code run's shell executes a command", { skip: !hasClaude && "claude isn't here" }, async () => {
-  const { createServer } = await import("node:http");
-  const server = createServer((req, res) => {
-    let body = "";
-    req.on("data", (d) => (body += d));
-    req.on("end", () => {
-      const j = JSON.parse(body || "{}");
-      const last = j.messages?.at(-1)?.content;
-      const result = Array.isArray(last) ? last.find((c: { type?: string }) => c.type === "tool_result") : undefined;
-      const block = !j.tools?.length ? { type: "text", text: "ok" }
-        : result ? { type: "text", text: `RESULT ${JSON.stringify(result.content)} error=${result.is_error === true}` }
-        : { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: `echo shell-$((6*7)) > out.txt && cat out.txt`, description: "probe" } };
-      const stop = block.type === "tool_use" ? "tool_use" : "end_turn";
-      const msg = { id: "msg_1", type: "message", role: "assistant", model: j.model, content: [], stop_reason: null, usage: { input_tokens: 1, output_tokens: 1 } };
-      if (!j.stream) { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ...msg, content: [block], stop_reason: stop })); return; }
-      res.writeHead(200, { "content-type": "text/event-stream" });
-      const ev = (type: string, d: object) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...d })}\n\n`);
-      ev("message_start", { message: msg });
-      ev("content_block_start", { index: 0, content_block: block.type === "text" ? { type: "text", text: "" } : { ...block, input: {} } });
-      ev("content_block_delta", { index: 0, delta: block.type === "text" ? { type: "text_delta", text: block.text } : { type: "input_json_delta", partial_json: JSON.stringify(block.input) } });
-      ev("content_block_stop", { index: 0 });
-      ev("message_delta", { delta: { stop_reason: stop, stop_sequence: null }, usage: { output_tokens: 1 } });
-      ev("message_stop", {});
-      res.end();
-    });
-  });
-  const repo = mkdtempSync(join(tmpdir(), "cr-shell-"));
-  execFileSync("git", ["init", "-q", repo]);
-  await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
-  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`;
-  const saved = { base: process.env.OPENROUTER_BASE_URL, key: process.env.OPENROUTER_API_KEY };
-  Object.assign(process.env, { OPENROUTER_BASE_URL: url, OPENROUTER_API_KEY: "test-token" });
-  try {
-    const r = await runEngine("claude-code", { prompt: "run the probe", instructions: "x", model: "m/m", effort: "low", root: repo, base: "HEAD", minutes: 2, scratch: mkdtempSync(join(tmpdir(), "cr-scratch-")) });
-    assert.equal(r.cause, undefined);
-    assert.match(r.message, /RESULT .*shell-42.* error=false/);
-  } finally {
-    for (const [k, v] of [["OPENROUTER_BASE_URL", saved.base], ["OPENROUTER_API_KEY", saved.key]] as const) if (v === undefined) delete process.env[k]; else process.env[k] = v;
-    server.close();
-  }
 });

@@ -25,7 +25,7 @@ import { AddAgentSchema, BadRequest, BRIEF_LABEL, CreateSchema, HandOverSchema, 
 import { FOR_OTHERS, RELAY_MARKER, closedIssue, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
-import { ControlSchema, CostsSchema, RelaySchema, OpenChatSchema, Refused, holdsRole, agentIdByKey, requireAgentCaller, setRoutinePaused, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
+import { ControlSchema, CostsSchema, RelaySchema, OpenChatSchema, Refused, holdsRole, agentIdByKey, requireAgentCaller, setRoutinePaused, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, recordedOpening, CHAT_OPENING, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
 import { metricsText } from "./monitoring.js";
 import { isLive, kernelRecords, shownWait, type Approval, type Records, type SettingsCredential } from "./records.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
@@ -68,7 +68,6 @@ import { AsideSchema, askGateway, asideMessages, lineageTotal, modelOf, stillSet
 
 /** One module sign-in (board.signins), with its proxy client. */
 /** The board's record of a chat's opening message (store meta key prefix + the chat's id). */
-const CHAT_OPENING = "chat-opening:";
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 export interface SignIn { id: string; label: string; connect: string; callback: string; mode?: "redirect" | "device"; httpsOnly?: boolean; missing: string; stopped: string; fields: SetupField[]; auth: McpAuth }
 
@@ -630,7 +629,12 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   const viewer = () => perRequest.getStore()?.session?.accountId ?? "operator";
   /** The big pages' last good responses (swr.ts), per account; anything the board or Paperclip changes makes the next read look again. */
   const swr = new Swr();
-  store.events.listen((name) => name !== "progress" && swr.touch());
+  store.events.listen((name) => {
+    if (name === "progress") return;
+    // The board's own placement changed (possibly through another app on this store): a read under way would still show the old one.
+    if (name === "board") swr.forget("board:");
+    swr.touch();
+  });
   /** Runs a route; a write (or anything that failed halfway) makes the pages read again, whichever way the route was reached. */
   const handled = async (route: { handle: (m: RegExpMatchArray, body: unknown, url: URL, req: IncomingMessage) => Promise<unknown> }, method: string | undefined, m: RegExpMatchArray, body: unknown, url: URL, req: IncomingMessage) => {
     try {
@@ -990,15 +994,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     log.info({ issue: issue.identifier, agent: agent.name }, "chat started");
     return { identifier: issue.identifier, id: issue.id, message: `${issue.id}:opening` };
   }
-  /** A board chat's opening message, as the board recorded it when the owner started the chat: a comment of his, id = the chat's id. */
-  const openingOf = (chat: Issue, me: string): Comment | undefined => {
-    const raw = store.meta(`${CHAT_OPENING}${chat.id}`);
-    if (!raw) return undefined;
-    const { sha, length, createdAt } = JSON.parse(raw) as { sha: string; length: number; createdAt: string };
-    const description = String(chat.description ?? "");
-    if (sha256(description) !== sha) throw new Refused("refused: the chat's opening message was edited since the owner wrote it; ask the owner again");
-    return { id: chat.id, body: description.slice(0, length), authorType: "user", authorUserId: me, createdAt } as Comment;
-  };
+  const openingOf = (chat: Issue, me: string) => recordedOpening(store, chat, me);
   /** A message of the owner's on one of the chief of staff's open `chat` tasks: the chat's own id names its opening, any other id a comment on it. */
   async function chiefChatMessage(cosId: string, commentId: string, me: string): Promise<{ chat: Issue; comment: Comment }> {
     const chats = (await pc.openIssues()).filter((i) => i.assigneeAgentId === cosId && (i.labels ?? []).some((l) => l.name === "chat"));
@@ -1209,6 +1205,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const { issue } = await editableIssue(ref);
     const result = scheduleMove(store, issue, parse(ScheduleSchema, body), opts.timezone, by);
     log.info({ issue: issue.identifier, scheduled: result.scheduled, movedNow: result.movedNow }, "move scheduled");
+    store.events.emit("board");
+    store.events.emit("tasks", issue.id);
     return { identifier: issue.identifier, ...result };
   }
 
@@ -1230,6 +1228,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     if ((store.placements().get(issue.id)?.bucket ?? "triage") !== "triage" || store.schedules().has(issue.id)) throw new HttpError(409, `${issue.identifier} is already placed: the owner's move stands`);
     const result = scheduleMove(store, issue, input, opts.timezone, agent.name || "an agent");
     log.info({ issue: issue.identifier, placed: input.reason }, "task placed");
+    store.events.emit("board");
+    store.events.emit("tasks", issue.id);
     return { identifier: issue.identifier, ...result };
   }
 
@@ -2722,7 +2722,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     sources: () => { const s = readSources(settingsFiles()); return { compiled: s.compiled, catalog: s.catalog as HireCatalogRow[], grants: s.grants as HireGrants }; },
     flowStates: async () => (await setupFlows?.states()) ?? [],
   });
-  const accountRoutes: { method: string; path: RegExp; handle: (m: RegExpMatchArray, body: unknown, who: AccountSession, host: string) => Promise<unknown> }[] = [
+  const accountRoutes: { method: string; path: RegExp; maxBody?: number; handle: (m: RegExpMatchArray, body: unknown, who: AccountSession, host: string) => Promise<unknown> }[] = [
     { method: "GET", path: /^\/api\/accounts$/, handle: async (_m, _b, who) => opts.accounts!.call("list", who) },
     // Your own signed-in browsers.
     { method: "GET", path: /^\/api\/accounts\/sessions$/, handle: async (_m, _b, who) => opts.accounts!.call("sessions", who) },
@@ -2788,17 +2788,25 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     {
       method: "POST",
       path: /^\/api\/pages\/([a-z][a-z0-9-]{0,30})\/secrets\/([a-z][a-z0-9_]{1,63})\/([a-z0-9][a-z0-9_-]{0,62})$/,
+      // An entry may hold up to 8 fields (pages.json), each at its declared ceiling of 65536; the body has to fit every one of them
+      // JSON-escaped (two characters each, so twice the fields' total), plus the entry's own keys.
+      maxBody: 2 * 1024 * 1024,
       handle: async (m, body, who) => {
         if (!who.ready || who.account.role !== "admin") throw new HttpError(403, "totp");
         const page = await viewCall(async () => opts.views!.page(m[1]!));
         const sm = (page.secret_maps ?? []).find((x) => x.secret === m[2]);
         if (!sm) throw new HttpError(404, "this page keeps no such sign-ins");
-        const { values } = parse(z.object({ values: z.record(z.string(), z.string().max(300)).nullable() }).strict(), body);
+        // Each value is capped by the field's own maxLength (300 when it declares none), checked here before the kernel is called.
+        const capOf = (name: string) => sm.fields.find((f) => f.name === name)?.maxLength ?? 300;
+        const valuesSchema = z.object({ values: z.record(z.string(), z.string()).nullable() }).strict().superRefine((v, ctx) => {
+          for (const [k, text] of Object.entries(v.values ?? {})) if (text.length > capOf(k)) ctx.addIssue({ code: "custom", message: `${k} is longer than ${capOf(k)} characters` });
+        });
+        const { values } = parse(valuesSchema, body);
         let value = "";
         if (values) {
           // Only the declared fields, blank ones dropped: Set and Replace write the whole entry.
-          // A password keeps its spaces exactly as typed; any other field is trimmed.
-          const entry = Object.fromEntries(sm.fields.flatMap((f) => { const v = f.kind === "password" ? values[f.name] : values[f.name]?.trim(); return v ? [[f.name, v]] : []; }));
+          // A password and a key keep their whitespace exactly as typed (a key's trailing newline is part of the file); any other field is trimmed.
+          const entry = Object.fromEntries(sm.fields.flatMap((f) => { const v = f.kind === "password" || f.kind === "key" ? values[f.name] : values[f.name]?.trim(); return v ? [[f.name, v]] : []; }));
           if (Object.keys(values).some((k) => !sm.fields.some((f) => f.name === k))) throw new HttpError(400, "not one of this page's fields");
           if (sm.fields.some((f) => f.kind !== "totp" && !entry[f.name])) throw new HttpError(400, "fill in every field (a TOTP seed is optional)");
           // A new entry only for a key the setting names; Clear works for any stored one.
@@ -2842,7 +2850,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     if (!who) throw new HttpError(401, "sign in");
     const a = accountRoutes.find((r) => r.method === req.method && r.path.test(path));
     if (a) {
-      const body = req.method === "GET" ? undefined : await readJson(req);
+      const body = req.method === "GET" ? undefined : await readJson(req, a.maxBody);
       // Under the request's context, as routeApi's routes run: a setup flow's settings change carries this board session.
       const out = await perRequest.run({ session: accountSession(who), req }, () => a.handle(path.match(a.path)!, body, who, String(req.headers.host ?? "").toLowerCase()));
       send(res, 200, JSON.stringify(out), "application/json");
