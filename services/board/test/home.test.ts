@@ -109,6 +109,26 @@ describe("home", () => {
     expect(first.team.map((t: { line: string }) => t.line)).toEqual(["Done: Chase the vendor", "Triaged 4 emails"]);
   });
 
+  it("details: a merged task's Source, Reason and Suggested action stay that task's, never the survivor's", async () => {
+    const { aboutTask } = await import("../src/home.js");
+    const { mergedDescription } = await import("../src/merge.js");
+    const target = issue(210, { title: "Review the plan", description: "Please review the plan." });
+    const mergedSource = issue(211, { description: "## Source\n\nType: Slack\nPermalink: https://acme.slack.com/archives/C1/p1800\nFrom: Sam\n\n## Reason\n\nSam asks.\n\n## Suggested action\n\nApprove it." });
+    const merge = (own: string) => mergedDescription({ description: own }, { identifier: "WOR-211", title: "Plan", description: mergedSource.description });
+    // A plain-text survivor keeps its own opening: the merged task's Source does not become its own and hide it.
+    const plain = aboutTask({ ...target, description: merge(target.description!) }, undefined, null);
+    expect(plain.source).toBeNull();
+    expect(plain.reason).toBeUndefined();
+    expect(plain.suggested).toBeUndefined();
+    expect(plain.body).toContain("Please review the plan.");
+    // A survivor with its own Source block shows that one, not the merged task's link or lines.
+    const own = "## Source\n\nType: Gmail\nPermalink: https://mail.google.com/mail/u/0/#inbox/abc\nFrom: Priya\n\n## Reason\n\nShe needs a sign-off.";
+    const withOwn = aboutTask({ ...target, description: merge(own) }, undefined, null);
+    expect(withOwn.source).toEqual({ type: "Gmail", url: "https://mail.google.com/mail/u/0/#inbox/abc", fields: [["From", "Priya"]] });
+    expect(withOwn.reason).toBe("She needs a sign-off.");
+    expect(withOwn.body).toBeUndefined();
+  });
+
   it("world: a failed calendar read and no waiting-on label are null, and the page still answers", () => {
     expect(first.world).toEqual({ waiting_on: null, today: null });
   });

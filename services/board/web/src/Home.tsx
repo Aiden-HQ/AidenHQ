@@ -73,7 +73,9 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   useEffect(() => void (fresh && !homeFrom.value && (homeFrom.value = data.since_from)), [data, fresh]);
   // Answered and decided rows keep their receipt for this visit, even when a refetch still lists them.
   const [receipts, setReceipts] = useState<Map<string, Receipt>>(() => new Map());
-  const receipt = useCallback((row: NeedRow, r: Omit<Receipt, "row"> | null) => setReceipts((m) => { const n = new Map(m); if (r) n.set(rkey(row), { ...r, row }); else n.delete(rkey(row)); return n; }), []);
+  // A row's first outcome stands for the visit: Later (its own request in flight) can't replace a decision that just landed,
+  // and its Undo can't claim to reverse one. Clearing a receipt (Undo) is still allowed.
+  const receipt = useCallback((row: NeedRow, r: Omit<Receipt, "row"> | null) => setReceipts((m) => { const k = rkey(row); if (r && m.has(k)) return m; const n = new Map(m); if (r) n.set(k, { ...r, row }); else n.delete(k); return n; }), []);
   const [selecting, setSelecting] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   const [batching, setBatching] = useState<"approve" | "reject" | null>(null);
