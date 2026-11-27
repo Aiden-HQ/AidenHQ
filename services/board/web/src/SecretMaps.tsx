@@ -54,7 +54,13 @@ export function SecretMaps({ page, reload, onSignIn }: { page: string; /** Chang
                     <form className="mv-signin-form" autoComplete="off" onSubmit={(e) => (e.preventDefault(), void send(m, k, values))}>
                       {m.fields.map((f) => (
                         <Field key={f.name} label={f.label}>
-                          {(id) => <Input id={id} name={f.name} type={f.kind === "text" ? "text" : "password"} autoComplete="off" spellCheck={false} value={values[f.name] ?? ""} onChange={(e) => setValues((x) => ({ ...x, [f.name]: e.target.value }))} />}
+                          {(id) =>
+                            f.kind === "key" ? (
+                              <textarea id={id} name={f.name} rows={6} spellCheck={false} autoComplete="off" className="ui-input" value={values[f.name] ?? ""} onChange={(e) => setValues((x) => ({ ...x, [f.name]: e.target.value }))} />
+                            ) : (
+                              <Input id={id} name={f.name} type={f.kind === "text" ? "text" : "password"} autoComplete="off" spellCheck={false} value={values[f.name] ?? ""} onChange={(e) => setValues((x) => ({ ...x, [f.name]: e.target.value }))} />
+                            )
+                          }
                         </Field>
                       ))}
                       <div className="mv-signin-buttons">

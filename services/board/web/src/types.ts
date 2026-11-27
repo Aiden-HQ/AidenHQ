@@ -445,7 +445,7 @@ export interface PageRow {
 /** GET /api/pages/<id>/secrets: a page's secret maps (board.pages secret_maps): which keys are set, never a value. */
 export interface SecretMapView {
   secret: string;
-  fields: { name: string; label: string; kind: "text" | "password" | "totp" }[];
+  fields: { name: string; label: string; kind: "text" | "password" | "key" | "totp"; maxLength?: number }[];
   /** `listed`: the page's setting still names the key; a stored key it no longer names can only be cleared. */
   keys: { key: string; set: boolean; listed: boolean }[];
 }

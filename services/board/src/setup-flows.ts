@@ -139,7 +139,7 @@ export interface SetupFlowDeps {
   fetchImpl?: typeof fetch;
 }
 
-export type SetupRoute = { method: string; path: RegExp; handle: (m: RegExpMatchArray, body: unknown, who: AccountSession, host: string) => Promise<unknown> };
+export type SetupRoute = { method: string; path: RegExp; /** The request body's cap (readJson's), for a route that takes a larger one than the default. */ maxBody?: number; handle: (m: RegExpMatchArray, body: unknown, who: AccountSession, host: string) => Promise<unknown> };
 
 const DISMISSED = "setup_dismissed";
 

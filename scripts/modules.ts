@@ -1486,6 +1486,22 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   if (dangling.length) fail(`refusing: ${dangling.map((d) => `${d.owner} (${d.binding}) names ${d.missing}, which no enabled module provides`).join("; ")}`);
   const reviewer = reviewerSlot(enabledDefs, instance.reviewer);
   const setup = setupSecrets(enabledDefs, generatedSecrets);
+  // The kernel sees a secret only as a SetupField, so each map secret's declared fields (board.pages secret_maps) go onto it:
+  // its per-field cap (300 when a field declares none) applies to saveKey and a whole-map paste (kernel/src/module-secrets.ts).
+  const mapFields = new Map<string, { name: string; kind: string; maxLength?: number }[]>();
+  for (const p of points.board?.pages ?? [])
+    for (const m of p.secret_maps ?? []) {
+      // The kernel takes one field table per secret, so two pages of a module that declare the same secret must declare the
+      // same fields: one authority, not whichever page last set the cap.
+      const id = `${p.module}.${m.secret}`, fields = m.fields.map((f: Obj) => ({ name: f.name, kind: f.kind, ...(f.maxLength != null ? { maxLength: f.maxLength } : {}) }));
+      const seen = mapFields.get(id);
+      if (seen && JSON.stringify(seen) !== JSON.stringify(fields)) fail(`module ${p.module}: board.pages ${p.id}: secret_maps ${m.secret} is declared again with other fields; one secret has one field table across a module's pages`);
+      mapFields.set(id, fields);
+    }
+  for (const f of setup) {
+    const fields = mapFields.get(`${f.module}.${f.secret}`);
+    if (fields) f.fields = fields;
+  }
   // Every enabled module's own compose services (their keys): what the kernel recreates when the owner saves one of its
   // `setup:` secrets from the board (kernel/src/module-secrets.ts); a module not listed here is off.
   const services = Object.fromEntries(enabled.map((m) => [m, Object.keys(serviceModule).filter((k) => serviceModule[k].module === m).sort()]));

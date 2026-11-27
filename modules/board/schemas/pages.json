@@ -27,7 +27,8 @@
               "properties": {
                 "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,31}$"},
                 "label": {"type": "string", "minLength": 1, "maxLength": 40},
-                "kind": {"enum": ["text", "password", "totp"], "description": "password and totp are typed hidden; none is ever shown back. Every field but a totp one is required: Set and Replace write the whole entry"}
+                "kind": {"enum": ["text", "password", "key", "totp"], "description": "password and totp are typed hidden; key is multi-line, shown as typed (an SSH private key a bad paste would hide); none is ever shown back. Every field but a totp one is required: Set and Replace write the whole entry"},
+                "maxLength": {"type": "integer", "minimum": 1, "maximum": 65536, "description": "the field's own cap on its value; a field that declares none keeps 300. A save's body makes room for a value at 65536 with its JSON escaping"}
               }
             }
           }
