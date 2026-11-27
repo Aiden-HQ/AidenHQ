@@ -23,11 +23,21 @@ export function ownerOnly(who: { kind?: string }): void {
   if (who.kind !== "owner") throw new Error("this action is the owner's: it is taken from the Servers page, and no agent may file it");
 }
 
+/** What a page tool needs to file a record, which the board's view may only do through this service (§3, §6, §9). */
+export interface Filing {
+  /** Files one of the module's kinds for a machine and returns its id, tier and state. */
+  file: (kind: "server-manager.patch" | "server-manager.reboot", args: Record<string, unknown>, machine: string) => Promise<{ id: string; tier: number; state: string }>;
+}
+
 export function configTools(d: {
   machines: () => string; status: StatusStore; keys?: () => Keys; transport?: Transport;
   log?: (msg: string, f?: Record<string, unknown>) => void;
   /** The warehouse publish, overridable so a test can hold it open and see the check answer regardless. */
   publishRows?: typeof publish;
+  /** The record filing (the kernel, with the module's token) and the host-key re-pin: absent in a build with no write path. */
+  filing?: Filing;
+  /** §10's re-pin: read the host's key and write the pin, only when it is the fingerprint the owner was shown. */
+  repinKey?: (machine: SshMachine, expected: string) => Promise<{ fingerprint: string }>;
 }): Tool[] {
   const log = d.log ?? (() => undefined);
   const publishRows = d.publishRows ?? publish;
@@ -133,20 +143,59 @@ export function configTools(d: {
         return { checked: results };
       },
     },
-    // The three writes arrive with the executor (slice 3). They are registered now so every name the page lists resolves to a tool
-    // that says plainly where it is — and each already carries the caller rule it will keep: these are the owner's own actions,
-    // taken from the page's signed-in session, never an agent's assertion (§9). An agent's call is refused before anything else.
-    ...(["server_manager_patch", "server_manager_reboot", "server_manager_host_key_reset"] as const).map(
-      (name): Tool => ({
-        name,
-        description: "Not available in this build yet: the write path lands in the next change.",
-        inputSchema: { type: "object", properties: {}, additionalProperties: false },
-        run: async (_a, who) => {
-          ownerOnly(who);
-          throw new Error(`${name} isn't available in this build yet: the write path is in the next change`);
-        },
-      }),
-    ),
+    // The page's three write actions (§9). Each is the owner's own: an agent's call is refused first, whoever it names, because a
+    // patch, a reboot and a re-pin are taken from the signed-in session on the page and never an agent's assertion. The service files
+    // the record itself, as its own kind, so the same record, tier and executor serve a click, a schedule and the agent's read.
+    {
+      name: "server_manager_patch",
+      description:
+        "Installs the server's updates now: `mode` security (only the candidates from a security suite) or full (every upgradable package). The owner's own action from the Servers page. The service reads the host over SSH and files one `server-manager.patch` record with the exact `name=version` list and its hash; at execution the list is re-derived and the run stops if it changed. Nothing is installed by this call itself.",
+      inputSchema: { type: "object", properties: { machine: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }, mode: { enum: ["security", "full"] } }, required: ["machine", "mode"], additionalProperties: false },
+      run: async (a, who) => {
+        ownerOnly(who);
+        const filing = d.filing;
+        if (!filing) throw new Error("the write path isn't configured in this build");
+        const m = readMachines(d.machines()).machines.find((x) => x.name === a.machine);
+        if (!m) throw new Error(`no enabled machine called ${String(a.machine)}`);
+        if (!m.enabled) throw new Error(`${m.name} is off: turn it on before patching it`);
+        const mode = a.mode === "full" ? "full" : a.mode === "security" ? "security" : undefined;
+        if (!mode) throw new Error("mode is security or full");
+        // The record is filed with what the page named; the executor's plan reads the host and derives the exact list and its hash.
+        const r = await filing.file("server-manager.patch", { machine: m.name, mode }, m.name);
+        return { filed: { id: r.id, tier: r.tier, state: r.state }, machine: m.name, mode, note: r.tier === 0 ? "It runs now; its outcome lands on the machine's records." : "It waits for its card to be approved." };
+      },
+    },
+    {
+      name: "server_manager_reboot",
+      description:
+        "Reboots one server inside its quiet window. The owner's own action from the Servers page. Files one `server-manager.reboot` record bound to a pending id over the boot ID, the kernel and the package set; a machine set to \"ask me first\" raises it to the owner's own card, and the reboot is done only when its boot ID changes within 900 s.",
+      inputSchema: { type: "object", properties: { machine: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{0,31}$" } }, required: ["machine"], additionalProperties: false },
+      run: async (a, who) => {
+        ownerOnly(who);
+        const filing = d.filing;
+        if (!filing) throw new Error("the write path isn't configured in this build");
+        const m = readMachines(d.machines()).machines.find((x) => x.name === a.machine);
+        if (!m) throw new Error(`no enabled machine called ${String(a.machine)}`);
+        if (!m.enabled) throw new Error(`${m.name} is off: turn it on before rebooting it`);
+        const r = await filing.file("server-manager.reboot", { machine: m.name }, m.name);
+        return { filed: { id: r.id, tier: r.tier, state: r.state }, machine: m.name, note: r.tier === 0 ? "It runs now, if the quiet window is open." : "It waits for its card; the owner decides this one." };
+      },
+    },
+    {
+      name: "server_manager_host_key_reset",
+      description:
+        "Re-pins a machine's changed SSH host key: reads the key the host presents right now and writes it as the pin, but only when it is the fingerprint the owner was shown (`fingerprint`, the one §10's wake gave). A different key is refused, so a stale click can never pin a third one. The owner's own action; no agent holds it.",
+      inputSchema: { type: "object", properties: { machine: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{0,31}$" }, fingerprint: { type: "string", pattern: "^SHA256:[A-Za-z0-9+/]{43}$" } }, required: ["machine", "fingerprint"], additionalProperties: false },
+      run: async (a, who) => {
+        ownerOnly(who);
+        const m = readMachines(d.machines()).machines.find((x) => x.name === a.machine);
+        if (!m) throw new Error(`no enabled machine called ${String(a.machine)}`);
+        if (!d.repinKey) throw new Error("the re-pin isn't configured in this build");
+        const r = await d.repinKey(target(m), String(a.fingerprint));
+        d.status.put({ ...(d.status.get(m.name) ?? { name: m.name, distro: null, state: "ok", pending: null, security: null, security_known: null, reboot_needed: null, disk: null, updated_at: null }), state: "ok", updated_at: new Date().toISOString() });
+        return { machine: m.name, repinned: r.fingerprint, note: "The next check reads the host over this pin." };
+      },
+    },
     {
       name: "server_manager_status",
       description:
