@@ -890,11 +890,10 @@ export type NeedRow =
   | { id: string; kind: "open"; teammate: FaceRef; since: string; task: { identifier: string; title: string }; question: string; reply?: { person: string | null; source: "slack" | "gmail" | null } };
 export type SinceItem = { teammate: FaceRef; text: string; at: string; task: string | null; kind: "done" | "fyi" | "digest" | "closed" };
 export type WorldBlock = {
-  waiting_on: { identifier: string; title: string; age_days: number; quiet_days: number }[] | null;
+  waiting_on: { id: string; identifier: string; title: string; age_days: number; quiet_days: number }[] | null;
   today: { timezone: string; events: { id: string; start: string; title: string; all_day: boolean; prep?: string }[] } | null;
 };
 export type TeamNews = { teammate: FaceRef; line: string };
-export type IdeaRow = { identifier: string; teammate: FaceRef; question: string; options: string[]; waitSince: string };
 export type Home = {
   as_of: string;
   since_from: string;
@@ -905,7 +904,6 @@ export type Home = {
   since: { groups: { teammate: FaceRef; latest: SinceItem; count: number }[]; items: SinceItem[]; total: number } | null;
   world: WorldBlock;
   team: TeamNews[];
-  idea: IdeaRow | null;
   /** Day one (the owner only): his next queued teammate and more the team can do (services/board/src/teammates.ts homeStart). */
   start?: HomeStart;
 };

@@ -12,7 +12,7 @@ roles:
   requests: [ ship-admin? ]
 agents:
   chief-of-staff:
-    skills: [ chief-of-staff.ideas, tasks.delegate-work ]
+    skills: [ tasks.delegate-work ]
     department: leadership
     # The owner's message must not queue behind a long wake on another task: on 2026-11-14 a Telegram question waited
     # 5m48s for two runs on the chief of staff's notice chat (WOR-2275). Paperclip still runs one at a time per task.
@@ -40,7 +40,7 @@ agents:
       # The live product pin and the last applies, and the owner's stale todos for the brief (the fleet-steward module's connection, when it is on).
       fleet_steward?: [ fleet_generation_status, fleet_stale_followups, fleet_followup_snooze, flow_report ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_create, task_update, task_comment, task_handoff, task_block, task_cancel, task_finish, task_team, task_delegate, fleet_status, fleet_costs, fleet_control, fleet_catalog, task_relay_owner_words, chat_open, app_request_from_owner ]
-    # Woken every heartbeat_hours to check the work it waits on (modules/chief-of-staff/heartbeat.md); events wake it sooner (board wake.ts).
+    # Woken every heartbeat_hours to check the work it waits on (modules/chief-of-staff/prompts/heartbeat.md); events wake it sooner (the kernel wake inbox, kernel/src/wakes.ts).
     heartbeat: true
     # fleet-admin: the board's fleet tools and relaying the owner's words (services/board/src/fleet.ts).
     # product-issues: product bugs upstream as the owner (github-mcp).
@@ -86,7 +86,7 @@ routines:
     description: |
       Today is {{date}}. Prepare today's daily brief following your instructions: gather open tasks and
       today's calendar, create or update today's "Daily Brief" task, close yesterday's,
-      then follow your ideas skill, then close this task with a one-line summary.
+      then close this task with a one-line summary.
     concurrency: skip_if_active
     schedules:
       - { cron: "30 8 * * 1-5", timezone: "${settings.timezone}", label: "weekday morning" }
@@ -121,5 +121,3 @@ settings:
 # The "Fleet issues" task heartbeat runs note missed wake-ups on.
 labels:
   - { name: system-error, color: "#dc2626" }
-  # One next step offered to the owner at a time (skill ideas): Home shows the open one with its two answers.
-  - { name: idea, color: "#0891b2" }

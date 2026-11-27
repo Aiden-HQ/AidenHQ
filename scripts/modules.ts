@@ -888,7 +888,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   settings.code_review_gated = reviewGated.watched.join(",");
   // Derived: whether the ship module is on, for the github module's adopted-PR writes (absent: every write naming an adoption is refused).
   settings.ship_enabled = enabled.includes("ship") ? "1" : "";
-  // An old per-repo shape (approve, merge or safe) fails the compile before anything is written, never half-read (risk tiers §11).
+  // An old per-repo shape (approve, merge or safe) fails the compile before anything is written, never half-read (docs/design/code-review.md, Risk tiers).
   if (enabled.includes("ship") && oldShape(settings.ship).length) fail(`settings.ship: ${oldShape(settings.ship).join(", ")}: approve and merge are per tier now: by_tier.<tier>.approve / merge; safe is gone: code review's tier rules say what is small and safe`);
 
   // What the board's Settings shows (services/board/src/settings.ts): every setting an enabled module declares or the instance
@@ -1392,7 +1392,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   if (enabledSkills.length) paperclip.skills = Object.fromEntries(enabledSkills.map((s) => [s.id, { dir: dirname(s.file), description: s.summary }]));
   const skillCatalog = Object.fromEntries(skills.map((s) => [s.id, s.enabled]));
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
-    const ids = effectiveSkills(key, a, instance.overrides?.agents?.[key]?.skills, skillCatalog);
+    const ids = effectiveSkills(key, a, instance.overrides?.agents?.[key]?.skills, skillCatalog, (m) => warnings.push(m));
     const from: Obj = {};
     for (const id of ids) {
       const [module, name] = [id.slice(0, id.indexOf(".")), id.slice(id.indexOf(".") + 1)];
@@ -2190,20 +2190,32 @@ export function skillEntries(name: string, root: string, check = true): { id: st
   });
 }
 /**
+ * Skills an earlier release dropped with no successor. A saved override that names one is migrated by dropping it (the skill
+ * is gone, so adding or removing it changes nothing), never failing an upgrade on configuration the release retired.
+ */
+const RETIRED_SKILLS = new Set(["chief-of-staff.ideas"]);
+
+/**
  * An agent's skills, the one rule: (its `skills:` ∪ override.add) − override.remove, sorted. `override` is instance.yaml
  * overrides.agents.<key>.skills ({ add?, remove? }); `catalog` maps every available module's skill id to whether its module
- * is enabled. A skill of an available but disabled module is dropped; an id no available module has fails.
+ * is enabled. A skill of an available but disabled module is dropped; an id no available module has fails. A retired skill in
+ * an override is dropped, with `warn` naming it, so an upgrade never asks the owner to repair it by hand.
  */
-export function effectiveSkills(key: string, def: Obj, override: Obj | undefined, catalog: Record<string, boolean>): string[] {
-  const list = (v: unknown, where: string): string[] => {
+export function effectiveSkills(key: string, def: Obj, override: Obj | undefined, catalog: Record<string, boolean>, warn: (msg: string) => void = () => {}): string[] {
+  /** `saved`: an override the owner wrote earlier, where a skill this release retired is dropped rather than failing the upgrade. */
+  const list = (v: unknown, where: string, saved = false): string[] => {
     if (v == null) return [];
     if (!Array.isArray(v) || v.some((id) => typeof id !== "string")) fail(`agents.${key}.${where}: a list of skill ids (<module>.<name>)`);
-    for (const id of v as string[]) if (!Object.hasOwn(catalog, id)) fail(`agents.${key}.skills: unknown skill ${id}`);
-    return v as string[];
+    for (const id of v as string[]) if (!Object.hasOwn(catalog, id) && !(saved && RETIRED_SKILLS.has(id))) fail(`agents.${key}.skills: unknown skill ${id}`);
+    return (v as string[]).filter((id) => {
+      if (!saved || !RETIRED_SKILLS.has(id)) return true;
+      warn(`overrides.agents.${key}.${where}: ${id} was retired in this release: dropped; remove it from instance.yaml`);
+      return false;
+    });
   };
   if (override != null && (typeof override !== "object" || Array.isArray(override) || Object.keys(override).some((k) => k !== "add" && k !== "remove"))) fail(`overrides.agents.${key}.skills: { add?: [ids], remove?: [ids] }`);
-  const remove = new Set(list(override?.remove, "skills.remove"));
-  return [...new Set([...list(def.skills, "skills"), ...list(override?.add, "skills.add")])].filter((id) => !remove.has(id) && catalog[id]).sort();
+  const remove = new Set(list(override?.remove, "skills.remove", true));
+  return [...new Set([...list(def.skills, "skills"), ...list(override?.add, "skills.add", true)])].filter((id) => !remove.has(id) && catalog[id]).sort();
 }
 /** Handbook order: first, normal, last; then module; then id. */
 export const promptOrder = (a: Obj, b: Obj) => PROMPT.order.indexOf(a.order) - PROMPT.order.indexOf(b.order) || a.module.localeCompare(b.module) || a.id.localeCompare(b.id);
@@ -2279,6 +2291,21 @@ async function ensureLogTasks({ api, companyId, keys, holders, step, kind, title
     return made.id;
   });
   return Object.fromEntries(keys.map((key: string, i: number) => [key, ids[i]]));
+}
+
+/**
+ * The `idea` feature (chief-of-staff's ideas skill, its label, Home's Idea card) is gone. An idea task that still waits on the
+ * owner's answer is retired here: its handling skill no longer exists, so answering it would do nothing. Home would otherwise
+ * show it in Needs you (it no longer excludes the label). Cancelled, so every apply finds nothing left to do.
+ */
+export async function retireIdeaTasks({ api, companyId, step }: Obj) {
+  const { json: labels } = await api("GET", `/api/companies/${companyId}/labels`);
+  const idea = labels.find((l: Obj) => l.name === "idea");
+  if (!idea) return;
+  const q = new URLSearchParams({ labelId: idea.id, status: "backlog,todo,in_progress,in_review,blocked", limit: "200", excludeRoutineExecutions: "true" });
+  const { json: open } = await api("GET", `/api/companies/${companyId}/issues?${q}`);
+  for (const i of open) await api("PATCH", `/api/issues/${i.id}`, { status: "cancelled" });
+  if (open.length) step(`Retired ${open.length} open idea task${open.length === 1 ? "" : "s"} (the ideas skill is gone)`);
 }
 
 /**

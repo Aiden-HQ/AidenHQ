@@ -1,4 +1,4 @@
-// The AidenHQ MCP for the owner's own Claude (docs/superpowers/specs/2026-11-20-owner-mcp-design.md): fifteen tools, each a thin
+// The AidenHQ MCP for the owner's own Claude (docs/architecture.md, AidenHQ MCP): fifteen tools, each a thin
 // adapter over the board's own route handlers, called in process (`call`, never HTTP) under the signed-in account's session with
 // `via: "mcp"`, so a tool does exactly what the board's tap does and the two never drift. Stateless Streamable HTTP, as every server
 // in the repo. Text an agent or a person wrote comes back fenced as data.
@@ -506,7 +506,7 @@ export function createMcp(d: McpDeps) {
 
     tool(
       "finish_onboarding",
-      "Finish the owner's onboarding, as the board's last step does: Home stops showing it, and Aiden gets one task to offer his first idea. Call it once the owner has a teammate set up and chose where the team reaches them (change_settings `notify_transports`, then notify_test).",
+      "Finish the owner's onboarding, as the board's last step does: Home stops showing it. Call it once the owner has a teammate set up and chose where the team reaches them (change_settings `notify_transports`, then notify_test).",
       {},
       { ok: z.boolean() },
       "write",

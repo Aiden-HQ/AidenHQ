@@ -28,7 +28,7 @@ history. Its UI is the fleet console. It runs nothing: the kernel runs every age
 specialist agents woken by schedules (Paperclip routines) or events (routine webhooks); the wake inbox turns each into a kernel job. Every agent is a
 `module.yaml` entry plus an `AGENTS.md` handbook, so new behaviour is configuration and prose, not core code. A
 `heartbeat: true` agent is also woken when work it waits on changes (a sub-task, an approval card, a PR: the
-board's `wake.ts`) and, as a backstop, by a "Heartbeat: <key>" routine every `heartbeat_hours` (default 4). This is not
+kernel wake inbox (`kernel/src/wakes.ts`)) and, as a backstop, by a "Heartbeat: <key>" routine every `heartbeat_hours` (default 4). This is not
 Paperclip's own heartbeat: Paperclip calls every agent run a "heartbeat run" and has a per-agent heartbeat timer, which
 AidenHQ keeps off.
 
@@ -40,9 +40,9 @@ module and agent definitions; the check lives in `kernel/src/proxy.ts`. Roles ga
 (for example the board's fleet tools, or changing any app with an open incident).
 
 **Engineers.** The kernel runs each Engineer turn as a job in the Engineer's agent computer (a gVisor box from the computer
-launcher, with the task's workspace mounted) and exposes a small `aidenhq` CLI to it ([design](design/conversational-engineers.md)). There is one engine, `codex-openrouter`: the Codex CLI
+launcher, with the task's workspace mounted) and exposes a small `aidenhq` CLI to it ([design](design/conversational-engineers.md)). The default engine is `codex-openrouter` (the `engine-codex` module): the Codex CLI
 on OpenRouter models through the box's gateway with the box's run token (ZDR only), a kernel-built Codex home per task with
-the product's skills, effort low to max (max: DeepSeek). No repo code runs on the host: a repo's checks and the
+the product's skills, effort low to max (max: DeepSeek). Long-lived sessions run on opencode (the `engine-opencode` module). No repo code runs on the host: a repo's checks and the
 reviewer eval run as check jobs in credential-free boxes.
 
 Every job gets Primer read-only, and every read its agent is granted (Grafana, Slack, Glean, ClickHouse, other tasks);
@@ -70,9 +70,22 @@ the gate, with the app's own Access audience and roles, once `settings.edge.prev
 **Warehouse.** A shared Postgres app (`modules/warehouse`) that sources and apps ingest into, with a read-only role for
 consumers.
 
-**AidenHQ MCP.** The board's `/mcp` lets the owner's own Claude or Codex manage the instance with the same typed
-actions as the board. The kernel is its OAuth authorization server (`/oauth2/*` on the admin origin); every call
-carries a signed-in admin's token, and writes still go through the tiered write gates.
+**AidenHQ MCP.** The board's `/mcp` (stateless Streamable HTTP, bearer-only, never cookies) lets an admin's own Claude or Codex
+manage the instance with the same typed actions as the board ([setup](setup.md#manage-aidenhq-from-your-claude); the token
+type, open OAuth routes and decide rule are in [access](design/access.md#the-aidenhq-mcp)).
+
+- **Tools** (`services/board/src/mcp-tools.ts`): few, named for outcomes, each a thin adapter over the board's own route handlers,
+  called in process inside the board's request context with the signed-in account and `via: mcp`, so the board and the MCP never
+  drift. Reads: `status` (start here: what needs the owner now), `tasks`, `get_task`, `approvals`, `fleet`, `modules`, `connect`
+  (the board link that signs a service in; secrets and vendor OAuth never pass through the model), `apps`, `costs`, `teammates`.
+  Writes: `ask` (message Aiden or an agent; waits up to `wait_seconds`, 20 by default, 50 at most, then says to read it later with
+  `get_task`), `create_task`, `update_task`, `decide` (cards by id plus the digest read), `change_settings` (every typed settings
+  change; returns at once with the record id, tier and state), `update`, plus the onboarding tools. Each module page adds an
+  opener tool and the page's own tools (MCP Apps).
+- **Results** are short text plus `structuredContent` with an `outputSchema`; agent-authored and external text is fenced as data.
+  Read tools carry `readOnlyHint`; writes keep their tiers, and `WRITE_TOOLS` re-checks the bearer with the kernel on every write.
+- **Clients per exposure mode:** Claude Code and Codex CLI work in every mode; Claude Desktop and claude.ai connectors call from
+  Anthropic's cloud and need `public` ([table](setup.md#manage-aidenhq-from-your-claude)).
 
 **Board.** The owner's daily surface (`services/board`): today's tasks, chats with agents, the Approvals page,
 connections, apps and the fleet. Approvals are kernel records that the board only reads and shows: the exact request, one tap by a signed-in admin or from
@@ -88,11 +101,12 @@ single-use decision tokens that the kernel mints (bound to the card's digest) at
 kernel holds the Paperclip board key. The board reaches Paperclip only through the kernel too: its reads at `/v1/cp/read/*`,
 the owner's writes at `/v1/cp/owner/*`, each on the board's own path list, with the admin the write is for.
 
-**Agent computers (`services/computer`).** Optional per-agent isolated containers for runs, started by a launcher that
-issues each run a token. Off unless an agent definition sets `image:`.
+**Agent computers (`services/computer`).** Every agent job and every check runs in its own isolated gVisor container, started by a launcher
+that issues each run a token. The image follows the agent's profile (`crew`: `agent-base`, `engineer` and `check`: `engineer`, `session`: `session`);
+`image:` on an agent picks another.
 
-**Secret vault.** The secrets directory is an encrypted gocryptfs view, unlocked at boot with a TPM-sealed password
-([ops/vault/README.md](../ops/vault/README.md)).
+**Secret vault.** The secrets directory is an encrypted gocryptfs view, unlocked at boot with a password sealed to the
+host's TPM2 (or to a host key on hosts without one) ([ops/vault/README.md](../ops/vault/README.md)).
 
 ## Configuration flow
 

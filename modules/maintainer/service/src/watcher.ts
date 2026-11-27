@@ -1,6 +1,6 @@
 /**
- * The Maintainer's issue wake-up, driven by the github module's change feed (docs/superpowers/specs/2026-11-24-github-change-feed-design.md,
- * lane 2). The feed reader posts each issue event to the kernel, and this service reads the kernel's log of the `issues.*` events on
+ * The Maintainer's issue wake-up, driven by the github module's change feed (modules/github/README.md, "The change feed").
+ * The feed reader posts each issue event to the kernel, and this service reads the kernel's log of the `issues.*` events on
  * the maintained repos (module.yaml `subscribes:`) every few seconds, with its own committed cursor, and files a task for the
  * Maintainer once per issue. No GitHub timer runs here.
  *

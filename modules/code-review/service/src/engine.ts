@@ -20,7 +20,7 @@
 // verdict; the merge queue still asks verdict() itself.
 // A skip is a run too (status skipped, why), acknowledged once per PR and reason, never silent.
 //
-// Risk tiers (docs/superpowers/specs/2026-11-24-risk-tiers-design.md): each open PR head is classified before anything is queued for it
+// Risk tiers (docs/design/code-review.md, "Risk tiers"): each open PR head is classified before anything is queued for it
 // (classifyPr: one consistent read of its files, the repo's rules, stored on its row with the inputs it came from); a head without a
 // current classification is pending and gets nothing. What runs is its tier's (tierCfg). A PR keeps the reviews it has had across a
 // tier change, a settings edit and a retarget: a new setting applies from its next push, its push rounds keep counting, and the only

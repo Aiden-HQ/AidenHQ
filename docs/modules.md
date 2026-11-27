@@ -71,18 +71,19 @@ adopts its own task instead of opening a second one.
 Grant: `kernel.tasks` (the same role as filing; no extra role is needed).
 
 ```http
-GET /v1/tasks?source=release:instance:
+GET /v1/tasks?source=<module>:
 ```
 
-**Accepts** a module token and only the `release:instance:` family: `release:instance:<40-hex sha>` (the release
-train's stamp) and the runner-era `release:instance:<ms stamp>`. Only open tasks are returned, and only to
-`github`, the module that owns the release train (its code host part). The answer is `{ tasks: [{ id, identifier, status, createdAt, source }] }`.
+**Accepts** a module token and a `source` that starts with the caller's own module name (`<module>:…`, for example the
+design module's `design:pass:`), or, for `github` alone (the module that owns the release train, its code host part),
+`release:instance:`. Only open tasks are returned. A `<module>:` row is the one the kernel's filing record says this module
+filed under that family; a release row is one whose description carries `<!-- source:release:instance:<40-hex sha> -->`. The
+answer is `{ tasks: [{ id, identifier, status, createdAt, source }] }`.
 
-**Refuses** with 400 any other `source:` family and any other caller. A row whose description carries a marker of
-another family, or merely mentions the family in prose, is never returned: the kernel matches the marker again on
-every row rather than trusting the control plane's text search. A row that carries another module's
-`<!-- aidenhq-module:… -->` marker is not the caller's either, so it is never returned (see the close rule below).
-This is the only way a module can enumerate tasks by source; there is no route for another module's family.
+**Refuses** with 400 any other `source:` family and any other caller. A row that merely mentions the family in prose is never
+returned: the kernel checks each row again rather than trusting the control plane's text search. A row that carries another
+module's `<!-- aidenhq-module:… -->` marker is not the caller's either, so it is never returned (see the close rule below).
+No route lists another module's family.
 
 ## `POST /v1/tasks/:task/close` — close a task the module filed
 

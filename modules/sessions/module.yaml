@@ -1,7 +1,7 @@
 name: sessions
 description: "Sessions: long-lived work that waits on events or time. The Session agent holds one task as a real coding session in the always-on computer, idles at no cost, and wakes when a watched pull request changes or a timer is due; the event watches it arms are this module's service."
 license: MIT
-# Design: docs/superpowers/specs/2026-11-25-sessions-design.md. The Session agent (profile session, engine opencode) is an ordinary
+# Design: docs/design/sessions.md. The Session agent (profile session, engine opencode) is an ordinary
 # kernel agent: a session is a task it holds, run as one long-lived job (kernel/src/admission.ts), woken by the kernel's wake
 # notices. This module's service holds the event watches (service/src/): `watch_arm` records one on the caller's own task, the
 # service reads the kernel's event log with a committed cursor and files a wake notice on the task when a watch's event arrives,

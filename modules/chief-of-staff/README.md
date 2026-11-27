@@ -16,14 +16,12 @@ connected (each is an optional grant).
 
 - Aiden reads Google Calendar, Glean, HubSpot and more when connected, plus the task tools. The roles `fleet-admin` and
   `product-issues` are his.
-- Event wake-ups (board `wake.ts`, every 2 minutes): a heartbeat agent is woken on its open task, with a notice naming
-  what changed, when a sub-task it delegated is done or cancelled, an approval card on it is decided, a sub-task's rubric check
-  lists something unmet, or a PR it names merges or closes, unless a run of it already followed; at most 4 wakes per agent per hour.
+- Event wake-ups: the kernel's wake inbox (`kernel/src/wakes.ts`) wakes a heartbeat agent on its open task when what it
+  waits on changes: a new comment, a kernel notice that a write, approval card or delegated sub-task finished, or a
+  `wake_at` it set. Each reason starts at most one job.
 - Setting `heartbeat_hours` (default 4): how often a heartbeat agent checks the work it waits on.
 
 ## New installs
 
 In the default bundle. Quiet start: Aiden's heartbeat is off and the `daily-brief` routine (weekdays 08:30 in your
-timezone) and the Researcher's `task-replies` routine start paused. When onboarding ends, the board files Aiden one task and
-he offers one next step at a time as an `idea` task (skill `ideas`, also after each daily brief): a teammate from your
-Set-up-next list, a paused routine worth turning on, a connection you skipped. Not now keeps it away for 30 days.
+timezone) and the Researcher's `task-replies` routine start paused.

@@ -11,7 +11,7 @@
 // - connections.json `<connection>.events`: { resource, kinds, filter, reads }: `reads` are the read tools whose grant reaches
 //   what the connection's events carry.
 //
-// Code services read a second delivery (docs/superpowers/specs/2026-11-24-github-change-feed-design.md §3): an append-only log
+// Code services read a second delivery (modules/github/README.md, "The change feed"): an append-only log
 // (`event_log`), kept 3 days, of the events whose kind and resource some module subscribes to (kernel modules.json
 // `modules.<m>.subscribes.<connection>`: { kinds, resources: [...] | "*" }, compiled from module.yaml `subscribes:`). A module
 // reads it with its own committed cursor (GET /v1/events/log), and the kernel keeps where each reader is (`event_readers`), so

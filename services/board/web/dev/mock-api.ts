@@ -3,7 +3,7 @@
 // Neutral sample data only. Writes answer ok and change nothing (an answer to WOR-821 is refused 409, the "already answered" case). GET /__mock?welcome=1|0 starts or ends onboarding
 // (a fresh install: only Aiden on the team; hiring and onboarding's writes are kept in memory, a module change goes live in 5 s, a trial finds 4 tasks in 3 s,
 // none with ?empty=1); ?connected=1 marks every setup flow done; ?key=1 shows the recovery key screen first;
-// GET /__mock?empty=1 empties every list (empty states, Home's fresh install); ?nocal=1 drops Home's calendar block; ?quiet=1 is Home after the owner has looked (nothing needs him, nothing new, no idea); ?slow=<ms> delays every answer (loading states); ?search=keyword|down
+// GET /__mock?empty=1 empties every list (empty states, Home's fresh install); ?nocal=1 drops Home's calendar block; ?quiet=1 is Home after the owner has looked (nothing needs him, nothing new); ?slow=<ms> delays every answer (loading states); ?search=keyword|down
 // answers task search with keyword hits only, or fails it (its degraded notes). ?email=<address> signs the mock owner in as it;
 // ?org=1 lists an organisation with its own Google app. The Google flow is a short sample of modules/google/module.yaml's `ways`. ?slack=none|signin|org|full|old sets the
 // Slack setup page's state (nothing yet, sign-in only, an organisation's sign-in, sign-in and bot, a bot app that predates the manifest).
@@ -633,14 +633,14 @@ const REPORT = "# Repo review: acme/payments\n\n**Verdict:** concerns, at `4e1a9
 
 // Home (GET /api/home), as V3Home shows it. Snoozed rows leave the next read; `nocal` drops the calendar block.
 let lastBody: any = {};
-const homeMock = { snoozed: new Set<string>(), nocal: false, quiet: false };
+const homeMock = { snoozed: new Set<string>(), nocal: false, quiet: false, many: false };
 const fref = (key: string, state: "idle" | "working" | "needs" = "idle") => {
   const a = roster.find((r) => r.key === key)!;
   return { key, name: a.name, job: a.teammate?.job ?? "", face: a.teammate?.face ?? null, state };
 };
 const sinceItem = (key: string, text: string, min: number, task: string | null, kind = "done") => ({ teammate: fref(key), text, at: ago(min), task, kind });
 const homeData = () => {
-  if (mock.empty) return { as_of: new Date().toISOString(), since_from: ago(1440), since_complete: true, greeting: { needs: 0 }, needs: [], since: null, world: { waiting_on: null, today: null }, team: [], idea: null };
+  if (mock.empty) return { as_of: new Date().toISOString(), since_from: ago(1440), since_complete: true, greeting: { needs: 0 }, needs: [], since: null, world: { waiting_on: null, today: null }, team: [] };
   const needs = [
     { id: "id-841", kind: "answer", teammate: fref("open-loops", "needs"), since: ago(7200), task: { identifier: "WOR-841", title: "Chase Jonas Weber for the signed contract" }, question: "Send a chaser to Jonas Weber about the Northwind contract?", detail: "Hi Jonas, checking in on the signed vendor contract. Is anything holding it up on your side? We're speaking at 16:30 today, happy to cover it then.", options: ["Send", "Edit", "Not now"], questions: [{ question: "Send a chaser to Jonas Weber about the Northwind contract?", options: ["Send", "Edit", "Not now"] }], waitSince: ago(7200) },
     { id: "id-815", kind: "answer", teammate: fref("researcher", "needs"), since: ago(40), task: { identifier: "WOR-815", title: "Weekly metrics digest" }, question: "Weekly metrics digest: compare against last week, or the same week last month?", detail: undefined, options: ["Last week", "Same week last month"], questions: [{ question: "Which week should the digest compare against?", options: ["Last week", "Same week last month"] }], waitSince: ago(40) },
@@ -649,6 +649,8 @@ const homeData = () => {
     // People waiting on the owner's reply (open needs-response tasks Intake filed), after the teammates' asks.
     { id: "id-861", kind: "open", teammate: fref("chief-of-staff"), since: ago(2900), task: { identifier: "WOR-861", title: "Reply to Priya Nair: can you approve the Q1 hiring plan?" }, question: "can you approve the Q1 hiring plan?", reply: { person: "Priya Nair", source: "slack" } },
     { id: "id-862", kind: "open", teammate: fref("chief-of-staff"), since: ago(300), task: { identifier: "WOR-862", title: "Reply to Dana Cho: Northwind security questionnaire" }, question: "Northwind security questionnaire", reply: { person: "Dana Cho", source: "gmail" } },
+    // ?many=1: more than a card lists (the newest ten show), with long titles.
+    ...(homeMock.many ? Array.from({ length: 9 }, (_, i) => ({ id: `id-9${i}`, kind: "open", teammate: fref("chief-of-staff"), since: ago(20 + i * 90), task: { identifier: `WOR-9${i}`, title: "Reply" }, question: "Could you confirm whether the revised statement of work for the second phase of the Northwind integration, including the security addendum, is approved on your side before Friday's call?", reply: { person: ["Marta Quinn", "Ravi Shah", "Elena Petrova"][i % 3]!, source: i % 2 ? "slack" : "gmail" } })) : []),
   ].filter((n) => !homeMock.quiet && ![...homeMock.snoozed].some((k) => k === n.id || k.startsWith(`${n.id}:`))); // an answer row's key carries its wait
   const items = [
     sinceItem("ship", "Invoices export v2 shipped. PR #812 merged at 06:10 after review.", 140, "WOR-812"),
@@ -667,11 +669,12 @@ const homeData = () => {
     since: homeMock.quiet ? null : { groups, items, total: items.length },
     world: {
       waiting_on: [
-        { identifier: "WOR-843", title: "Jonas Weber · signed contract", age_days: 9, quiet_days: 5 },
-        { identifier: "WOR-844", title: "Priya Nair · design doc review", age_days: 2, quiet_days: 2 },
-        { identifier: "WOR-845", title: "Lena Park · hiring loop feedback", age_days: 1, quiet_days: 1 },
-        { identifier: "WOR-846", title: "Omar Haddad · Q1 budget numbers", age_days: 3, quiet_days: 0 },
-      ],
+        { id: "w-843", identifier: "WOR-843", title: "Jonas Weber · signed contract", age_days: 9, quiet_days: 5 },
+        { id: "w-844", identifier: "WOR-844", title: "Priya Nair · design doc review", age_days: 2, quiet_days: 2 },
+        { id: "w-845", identifier: "WOR-845", title: "Lena Park · hiring loop feedback", age_days: 1, quiet_days: 1 },
+        { id: "w-846", identifier: "WOR-846", title: "Omar Haddad · Q1 budget numbers", age_days: 3, quiet_days: 0 },
+        ...(homeMock.many ? Array.from({ length: 9 }, (_, i) => ({ id: `w-9${i}`, identifier: `WOR-95${i}`, title: `Vendor ${i + 1} · countersigned data processing agreement with the revised liability cap and the sub-processor list for the EU region`, age_days: 4 + i, quiet_days: i })) : []),
+      ].filter((w) => !homeMock.snoozed.has(w.id)),
       today: homeMock.nocal ? null : { timezone: "Asia/Dubai", events: [
         { id: "ev1", start: `${new Date().toISOString().slice(0, 10)}T06:00:00Z`, title: "Leadership sync", all_day: false, prep: "WOR-811" },
         { id: "ev2", start: `${new Date().toISOString().slice(0, 10)}T10:00:00Z`, title: "1:1 Priya", all_day: false },
@@ -687,7 +690,6 @@ const homeData = () => {
       ]),
       ...roster.filter((r) => r.teammate && (homeMock.quiet || !["open-loops", "reviewer-manager", "app-maintainer"].includes(r.key))).map((r) => ({ teammate: fref(r.key), line: "Nothing new" })),
     ],
-    idea: homeMock.quiet ? null : { identifier: "WOR-850", teammate: fref("open-loops"), question: "You chase Jonas almost every week. Want Tess to draft a Monday check-in with Northwind for you to approve?", options: ["Show me the draft", "Not now"], waitSince: ago(300) },
   };
 };
 /** One agent's chats (GET /api/chats?agent=): Aiden has three, Max two, a settled page for each. */
@@ -845,6 +847,7 @@ createServer((req, res) => {
     if (url.searchParams.has("email")) mock.email = url.searchParams.get("email") ?? mock.email;
     if (url.searchParams.has("slow")) mock.slow = Number(url.searchParams.get("slow"));
     if (url.searchParams.has("search")) mock.search = url.searchParams.get("search") ?? "ok";
+    if (url.searchParams.has("many")) homeMock.many = url.searchParams.get("many") === "1";
     if (url.searchParams.has("nocal")) homeMock.nocal = url.searchParams.get("nocal") === "1";
     if (url.searchParams.has("quiet")) homeMock.quiet = url.searchParams.get("quiet") === "1";
     if (url.searchParams.has("slack")) mock.slack = url.searchParams.get("slack") ?? "none";

@@ -58,17 +58,17 @@ No live instance and no paid keys are needed. Use Node 24 and run `npm ci` once 
 
 | Package | Commands |
 |---|---|
-| `scripts` (compiler, setup, `paperclip-tasks-mcp`, shared-code drift) | `npm test` |
+| `scripts` (compiler, setup, shared-code drift) | `npm test && npm run typecheck` |
+| `kernel` | `npm test && npm run typecheck` |
 | `services/computer` | `node --test test/*.test.ts` |
 | `modules/apps-platform/gate` | `npm test && npm run typecheck` |
-| `services/gateway` | `npm test && npm run typecheck` |
-| `services/board` | `npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run build` |
+| `services/board` | `npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run lint && npm run build` |
 | `modules/apps-platform/apps-mcp`, `modules/*/connections/*`, `modules/security/scanner` | `npm test && npm run typecheck` |
 
 - **The board's build check.** `npx tsc -p tsconfig.build.json --noEmit` is stricter than vitest and matches the
   Docker build. Run it for every board change.
-- **Shared code.** After editing `kernel/sdk/src/caller.ts`, `kernel/sdk/src/fence.ts`, `kernel/sdk/src/source-store.ts` or `kernel/sdk/src/vendor/`, run
-  `node scripts/sync-shared.ts`; the `scripts` tests fail if the copies drift.
+- **Shared code.** After editing a file `scripts/sync-shared.ts` lists (the SDK files under `kernel/sdk/src/`, `services/shared/`, the design system, the app starter), run
+  `node scripts/sync-shared.ts`; the `scripts` tests fail if the copies drift (`ci-local.ts` syncs for you).
 - **The reviewer eval.** `node modules/ai-reviewer/scripts/reviewer-eval.ts` runs the AI reviewer against every planted
   case in `modules/ai-reviewer/test/reviewer-cases/` and must pass. It needs a paid model key, so CI runs it (the
   `reviewer-eval` job) only for a same-repo PR or a push to main that touches a path in `REVIEWER_CODE`
@@ -159,8 +159,6 @@ checks.
 - **CI for fork PRs runs on GitHub-hosted runners only**, with no secrets and no access to our self-hosted runners. Don't
   expect a deploy, a reviewer-eval or anything else that needs a secret to run on your PR; the maintainer runs those.
   Those hosted checks are advisory, not required: the maintainer's own review and our self-hosted CI decide the merge.
-  `scripts/supply-chain/fork-lint.ts` (run by the scripts suite) fails any workflow change that lets a fork PR reach a
-  self-hosted runner.
 
 ### How community PRs are reviewed
 

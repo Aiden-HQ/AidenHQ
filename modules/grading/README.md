@@ -20,4 +20,4 @@ No tools. A `task_delegate` with a rubric (required for an agent marked `graded:
 
 ## New installs
 
-Always installed (core requires it). Nothing is checked until a delegated task with a rubric closes.
+In the default bundle. Nothing is checked until a delegated task with a rubric closes.

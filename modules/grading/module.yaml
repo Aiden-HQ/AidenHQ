@@ -1,5 +1,5 @@
 name: grading
-description: "Completion checks as housekeeping: a delegated task's rubric, one check of it after the task closes (read from the agent's own report), and the result on the board. Nothing is held or sent back. Always installed (core requires it)."
+description: "Completion checks as housekeeping: a delegated task's rubric, one check of it after the task closes (read from the agent's own report), and the result on the board. Nothing is held or sent back. In the default bundle."
 license: MIT
 # The service polls its open rubrics (service/src/check.ts): once a task is done, one model pass reads the rubric and the agent's
 # report (kernel.cp-read), with a grader token billed to the task (kernel.grader); an unmet criterion sends the delegating agent one

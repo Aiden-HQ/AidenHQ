@@ -115,8 +115,6 @@ export interface AppOptions {
   setupFlows?: { flows: (SetupFlowPoint & { token?: string })[]; fetchImpl?: typeof fetch };
   /** Onboarding's finished marker (data/board/welcome-sent): present means onboarding is done. */
   welcomeMarker?: string;
-  /** Files a task for the chief of staff through the kernel (POST /v1/board-tasks): onboarding's finish. */
-  fileTask?: (t: { title: string; description: string; source: string }) => Promise<void>;
   /** The kernel's push test (POST /v1/notify/test): the fixed test card to one channel's transport, its answer back. */
   notifyTest?: (to: string) => Promise<{ sent: boolean; off?: true; reason?: string }>;
   /** The grading module's client (grading.ts); default: built from GRADING_URL and GRADING_BOARD_KEY_FILE. */
@@ -2700,8 +2698,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/role$/, handle: async (m, body, who) => opts.accounts!.call("role", who, { id: m[1]!, role: parse(z.object({ role: RoleSchema }).strict(), body).role }) },
     { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/(disable|enable)$/, handle: async (m, _b, who) => opts.accounts!.call(m[2]!, who, { id: m[1]! }) },
     { method: "POST", path: /^\/api\/accounts\/([\w-]{1,64})\/link$/, handle: async (m, _b, who) => opts.accounts!.call("link", who, { id: m[1]! }) },
-    ...(opts.accounts && opts.welcomeMarker && opts.fileTask
-      ? welcomeRoutes({ accounts: opts.accounts, store, marker: opts.welcomeMarker, fileTask: opts.fileTask, teammates: () => hiring.rows(false) })
+    ...(opts.accounts && opts.welcomeMarker
+      ? welcomeRoutes({ accounts: opts.accounts, store, marker: opts.welcomeMarker })
       : []),
     // Hiring and a teammate's setup (teammates.ts): the list, its start and trial, each account's set-up-next queue.
     ...hiring.routes,

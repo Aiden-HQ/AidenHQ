@@ -1,6 +1,6 @@
 # Guided setup: a light install, onboarding, then Home
 
-Status: design (2026-11-17), not built. The default module set ("the bundle" below) is the kernel's `modules/marketplace.json` `bundle`; a release pins one kernel sha plus image digests and lists no modules.
+The default module set ("the bundle" below) is the kernel's `modules/marketplace.json` `bundle`; a release pins one kernel sha plus image digests and lists no modules.
 
 ## Why
 
@@ -12,12 +12,11 @@ A non-technical tester tried to set up AidenHQ and was overwhelmed at every stag
 
 The owner's direction: the initial setup is extremely light and only gets the person talking to Aiden. Onboarding then
 sets up one teammate on the owner's own data and where the team reaches them, every step skippable, and lands on Home
-(2026-11-26: the wizard and Aiden's welcome tour were replaced; Part 3 and Part 4).
+(Part 3 and Part 4).
 
 Success: a person who has never used SSH pastes one prompt into their own AI (Claude Code, Codex, ...). They watch the
 install's progress in their AI. Within a couple of minutes of opening the link they are chatting with Aiden. They meet
-no key, file or command they have to understand. The owner accepts a larger build, done with subagents, to get this
-ideal result.
+no key, file or command they have to understand.
 
 ## Goals
 
@@ -36,9 +35,9 @@ ideal result.
 
    Google is a teammate's setup flow when that teammate needs it. A **guided Google setup** (create your own OAuth
    client, then connect) is Google's setup flow.
-4. **It ends on Home** (Part 4): Next up beside Needs you, and Aiden offers one next step at a time as an idea.
+4. **It ends on Home** (Part 4): Next up under the greeting, then Needs you.
 5. **Every module that needs user setup has a setup flow,** one generic component opened at `/setup/<module>`.
-   Onboarding and hiring show the ones a teammate needs inline, Aiden's ideas link to them, and Modules' Turn on opens
+   Onboarding and hiring show the ones a teammate needs inline, and Modules' Turn on opens
    them after install or enable. Skipped ones stay reachable that way. Background work never pings the owner; his own request gets the one Connect link in that conversation.
 6. **No GitHub needed, apps included.** A new on-server code host (`codehost-local`) lets agents build, review, merge
    and deploy apps with git repos on the server. GitHub becomes an optional add-on for syncing off the server.
@@ -65,32 +64,9 @@ ideal result.
 
 ## Constraints
 
-- The kernel owns accounts, the vault and the first-run page (`kernel/src/admin.ts`). The board can't write secrets
-  today: secrets reach the vault only through POST `/setup` (first run) or the shell.
+- The kernel owns accounts, the vault and the first-run page (`kernel/src/admin.ts`). The board never writes a secret
+  itself: a pasted setup secret goes through the kernel's secret-write endpoint (`kernel/src/module-secrets.ts`).
 - Generic core: code finds modules by what they declare, never by name.
-- Minimal-core install (`docs/design/minimal-core-install.md`):
-  - The owner chose `exposure: public` (HTTPS on the server's IP, mandatory TOTP) as the default.
-  - The setting and its firewall are merged (#128).
-  - The Caddy front door (unit U2) is not built. Until it is, a server install without Tailscale needs an SSH tunnel.
-- Supply-chain rules apply to any new image or package (Caddy pin `caddy:2.11.9` by digest is already chosen).
-- Google refuses raw-IP redirect URIs (minimal-core section 1). The guided Google setup needs the board on a name
-  (Tailscale, a domain, or `localhost` on a Mac). On a bare-IP board the guide says so first and offers the way to get
-  one.
-- Today Aiden's module requires GitHub: `chief-of-staff` requires `engineering`, which requires `github` and
-  `codehost-github`.
-
-## Approaches considered
-
-- **A. Board onboarding driven by module declarations (picked).**
-  - The kernel's `/setup` shrinks to account, authenticator and model.
-  - The board runs onboarding at first sign-in: one teammate (its module's `teammate:` block and setup flows), then
-    where the team reaches you (2026-11-26: replaced the first-run wizard of per-module flow screens).
-  - It ends on Home.
-  - Reuses the board's UI, design system and Google connect flow.
-- **B. Grow the kernel's `/setup` into the whole wizard.** Rejected: plain server-rendered HTML, and it pulls sign-in
-  flows the board owns into the trusted kernel.
-- **C. Aiden runs everything in chat.** Rejected by the owner, who wants a guided first run. Aiden handles everything
-  after it, one idea at a time.
 
 ## Design
 
@@ -101,42 +77,26 @@ ideal result.
   machine (Linux, or Mac via Lima).
 - Keep the email (the AI fills it in when it knows it). `owner_email` is read by Paperclip setup, the gate, Google
   sources and Intake, so it stays an install input.
-- Drop `AIDENHQ_GITHUB_TOKEN` once the first public release is cut. The repos are public since 2026-11-17, and the
-  token stays only as an optional variable for private forks.
-- Drop the Tailscale question from the default path; it becomes optional later, through Aiden.
+- No GitHub token and no Tailscale question in the default path; Tailscale is optional later, through Aiden.
 - The final message is the box with one link, plus "keep the Mac awake" on a Mac. No tunnel line, no recovery-key line.
 
 **Installer and `ops/setup.sh --unattended`.**
-- The default exposure on a server with a public IPv4 is `public`, served by Caddy (U2, built as part of this work, per
-  minimal-core sections 4.1 to 4.3). On a bare IP the setup link is `https://<ip>:8446/setup?token=…` (the kernel's admin listener needs its own origin; owner-approved 2026-11-17), and the board is `https://<ip>`.
+- The default exposure on a server with a public IPv4 is `public`, served by Caddy ([access.md](access.md)). On a bare IP the setup link is `https://<ip>:8446/setup?token=…` (the kernel's admin listener needs its own origin; owner-approved 2026-11-17), and the board is `https://<ip>`.
 - A Mac or a server without a public IP stays `local`:
   - On a Mac, the link is `http://127.0.0.1:3121/...`, opened on the Mac itself.
   - On a server without a public IP, the tunnel stays, as the documented fallback.
-- The vault recovery key is no longer written to `/root/aidenhq-vault-recovery.txt` for the person to fetch. The kernel
-  shows it once, from onboarding's recovery-key screen (Part 3); today `/setup` already shows it once on unattended installs.
+- The vault recovery key is shown once by the kernel, from onboarding's recovery-key screen (Part 3), never as a file for
+  the person to fetch.
 
-**A short, visible wait.** Today the first install builds the board and app images locally and pulls about 25 GB
-(the Paperclip image alone is 17 GB). Aiden runs through Paperclip from the first message (owner's decision), so
-everything installs before the link: there is no background stage, and when the link arrives everything works.
+**A short, visible wait.** Everything installs before the link: there is no background stage, and when the link arrives
+everything works (Aiden runs through Paperclip from the first message).
 - **Prebuilt images.** Each release publishes its images (board, apps-mcp, module services) to a registry, built by CI
-  and pinned by digest in the release file. The installer pulls them in parallel; it builds nothing. Local builds stay
-  for development and forks.
+  and pinned by digest in the release file ([release-updates.md](release-updates.md)). The installer pulls them in
+  parallel; it builds nothing. Local builds stay for development and forks.
 - **Progress.** The installer prints numbered progress lines
-  (`AIDENHQ_PROGRESS=<n>/<total> <percent>% <step> ~<minutes left>`). The prompt tells the user's AI to relay them as
-  one short progress line, so the person watches it fill in their AI. The link arrives only once the health checks
-  pass.
-- **If the wait is still long,** the next options, in order:
-  1. a maintained server image with everything cached;
-  2. on a Mac, images pre-pulled into the Lima VM image.
-
-**Builder's first spike.** Measure a cold install, from bare server to first successful reply, on a 4-core, 8 GB
-server:
-- infrastructure time, reported separately from human time (buying a server, the authenticator, OpenRouter payment);
-- the transfer and extraction time of each image.
-
-The target is a short, honest wait: as few minutes as the measurement allows from install start to the link, and
-seconds from the link to the first reply. The spike reports the measured time and whether the options above are
-needed, for the owner to pick.
+  (`AIDENHQ_PROGRESS=<n>/<total> <percent>% <step> ~<minutes left>`, `ops/lib/progress.sh`). The prompt tells the user's AI
+  to relay them as one short progress line, so the person watches it fill in their AI. The link arrives only once the
+  health checks pass.
 
 ### Part 2: first-run page (kernel `/setup`)
 
@@ -189,9 +149,9 @@ shows the ones a teammate or a channel needs, inline. Only modules that can't wo
 pairing) have one. Modules that work out of the box have none; their settings get a separate settings page, built in
 other work.
 
-A module declares it as a board point, `board.setup_flows`, the same way it declares `board.signins` today; compile
-writes it into `config/points/board.json`, which the board already reads. The exact fields are in the plan
-(Task 1 of the implementation plan). In outline:
+A module declares it as a board point, `board.setup_flows`, the same way it declares `board.signins`; compile
+writes it into `config/points/board.json`, which the board reads. The fields are in
+`modules/board/schemas/setup_flows.json`. In outline:
 
 ```yaml
 board.setup_flows:
@@ -225,20 +185,10 @@ value (a company's own Glean, Grafana or Primer address) is asked for, as a fiel
 `secrets`), next to the scope picker where the vendor offers scopes. Flows remain only where the owner must make something
 elsewhere first (Google's OAuth client, the Slack app, HubSpot's MCP connector, a GitHub token, a bot) or pair a channel.
 
-**Every module that needs one gets a flow in this work** (since narrowed by the rule above). The candidates, from the modules repo's credentials and
-`connections.<x>.setup` texts:
-- **Channels:** `channel-telegram`, `slack` (its advanced part; was `channel-slack`).
-- **Connections:** `google` (the guided own-client flow), `slack` (read, signed in as the owner), `github`, `glean`,
-  `jira` (Atlassian sign-in), `primer`, `meetings`, `grafana`, `clickhouse`.
-- **Code and engines:** `github` (one device sign-in: "connect GitHub"), `engine-claude` (a
-  subscription token), `engine-codex` (its own sign-in, when not on OpenRouter).
-- **Monitoring:** `monitoring` and `security`, if they need user keys.
-
-The builder confirms the list module by module: a module whose only inputs have working defaults gets no flow.
-- Today's shell-only setup (`.env` values, `scripts/*-auth.sh` over a tunnel, `docker compose ... --force-recreate`) is
-  replaced by the flow: values a user gives become vault secrets or module state.
-- A host-level `.env` value that must stay host-controlled is the exception, and the builder lists each one for the
-  owner.
+**Which modules have a flow.** Only a module whose inputs have no working default: a channel (`channel-telegram`, `slack`'s
+advanced part), `google` (the guided own-client flow), `github`, `jira`, `primer`, `grafana`, `meetings` and the like, from
+their `connections.<x>.setup` texts. The values a user gives become vault secrets or module state; a host-level `.env`
+value that must stay host-controlled is the exception.
 
 **Saving a pasted secret** needs a new **kernel secret-write endpoint**:
 - It is admin-only and CSRF-checked, and writes only secrets a module declared with `setup:` (the same allowlist
@@ -270,9 +220,9 @@ The flow is done when paired.
      on your phone".
    - New work: the bot gets a `/start <code>` pairing handler. The paired chat id is the Telegram service's own state
      (its data dir), not `.env`, the vault or a setting, so pairing needs no apply.
-3. **Aiden in Slack** (`slack`, advanced part, was `channel-slack`; `secret` then `pair`): talk to Aiden and get approvals in Slack.
-   - The app is made (or updated) by Slack's API from a pasted App Configuration Token (2026-11-23, spec
-     `docs/superpowers/specs/2026-11-23-slack-setup-design.md`).
+3. **Aiden in Slack** (`slack`, advanced part; `secret` then `pair`): talk to Aiden and get approvals in Slack.
+   - The app is made (or updated) by Slack's API from a pasted App Configuration Token (see
+     [connections-simple.md](connections-simple.md) for the Slack app).
    - One line says "a workspace admin may need to approve it".
    - Paste two tokens (app-level `xapp-` and bot `xoxb-`), then Save.
    - Pair by DMing the bot the one-time code. The owner's Slack id comes from that DM, not typed and not guessed.
@@ -283,7 +233,7 @@ The flow is done when paired.
 Every flow has **Skip this step**; a teammate set up with a skipped connection starts on its next run once it is connected.
 
 **Modules the steps need.**
-- `slack` (with the former `channel-slack` as its advanced part) is in the default bundle. It is idle until its tokens are saved, as `channel-telegram` already is;
+- `slack` (its advanced part carries the channel) is in the default bundle. It is idle until its tokens are saved, as `channel-telegram` already is;
   checked: with no tokens it starts and only reports Slack as not set up.
 - `google` joins the bundle too, idle until the guided setup runs.
 - So no channel flow needs a module-change card first.
@@ -329,75 +279,15 @@ one primary button.
 
 ### Part 4: after onboarding
 
-Finishing lands on Home. The board records it, then files one chief-of-staff task (source `welcome`) naming who is on the
-team (a refused filing is logged and never holds the owner in onboarding); Aiden
-answers with his first idea (his `ideas` skill), one question at a time. Later modules and teammates are set up from
-the hiring page (`#/team/hire`), from Home's Next up, or when Aiden's idea links one there.
+Finishing lands on Home. The board records it. Later modules and teammates are set up from
+the hiring page (`#/team/hire`) or from Home's Next up.
 
-### Part 4b: on-server code host (`codehost-local`)
+### Part 4b: on-server code host
 
-**Goal.** A fresh install with no GitHub builds, reviews, merges and deploys agent-made apps. Everything stays on the
-server.
-
-**Module shape.**
-- A code host becomes a role a module `provides: [ codehost ]`, the same way engines do. `codehost-github` and the new
-  `codehost-local` both provide it.
-- `engineering` requires `codehost` (any provider), not `codehost-github`. The `github` read module leaves
-  `engineering`'s hard requirements.
-- The default bundle carries `codehost-local`, `codehost-github` and `github` (owner, 2026-11-19). The GitHub ones stay
-  idle until GitHub is connected (the App, setup step 8); then new repositories go to GitHub and local ones stay local
-  (`docs/design/codehost-local.md` §2).
-
-**Build on what exists.** Setup already creates a local bare repo as the instance repo's remote. The kernel's job workspaces
-already clone from local URLs, and the git sandbox already blocks direct pushes. `codehost-local` extends these:
-- it reuses `codehost-github/src/{git.mjs,plan.ts}` for git handling and tiering;
-- it uses existing kernel write records for review;
-- it adds no PR database and no new UI.
-
-A self-hosted forge (Forgejo) was considered and rejected for now. The runner speaks GitHub GraphQL and App tokens, so
-a forge would need an adapter plus a service to maintain. Bare git plus kernel records costs less for agent-only use.
-A forge becomes the choice if people need to collaborate on the code.
-
-**What it does.** The same write kinds and the same gates as GitHub, on bare repos under the data dir:
-- **Push:** to a task branch.
-- **Change request:** the local counterpart of a PR, a kernel write record carrying the diff.
-- **Checks:** the repo's declared test and build commands, run in the same sandboxed job jail Engineers use, bound to
-  the exact head commit.
-- **Merge:** a squash onto `main` at the reviewed head, once the checks are green, through the existing tiering. The AI
-  reviewer runs on the change exactly as it does on a GitHub PR.
-- **Create repo.**
-
-The apps platform reads app repos from the code host role. Today `apps-mcp/src/git.ts` hardcodes GitHub URLs, so
-changing module requirements alone isn't enough. The board shows a change request's diff and checks where it shows PRs
-today. Exact-head checks and an atomic merge validation (the head hasn't moved since review) stay essential.
-
-**Opening apps on a bare-IP server.** Building without GitHub doesn't make apps reachable. On a bare IP, minimal-core
-section 4.6 needs a domain or Tailscale to serve apps. Google's redirect needs a name too. Proposal:
-- Give every server a free name automatically, through a wildcard IP-name service: `<ip-with-dashes>.sslip.io`, which
-  resolves to the IP. Apps then get `<app>.<that name>`.
-- Caddy gets real certificates for these names.
-- Unverified, so the builder checks first: Let's Encrypt rate limits for that domain (is it on the Public Suffix
-  List?), whether Google accepts such a redirect URI, and the trust cost of depending on a third-party DNS service.
-- If it fails those checks, the board stays on the IP, and Aiden offers Tailscale or a domain when an app is first
-  built.
-
-**Not in scope.** No git web UI and no remote access for people (it's an agent code host). Upstream contributions to
-AidenHQ keep needing GitHub (`github_bot_token`), offered with "connect GitHub".
-
-**Adding GitHub later.** A repo can get a GitHub mirror (push-only sync) without moving its code host. Moving fully to
-`codehost-github` is a later, separate feature.
-
-**This part is a goal and a shape, not yet a buildable design.** It gets its own short spec after a recon pass:
-- Map every GitHub assumption in the runner, the apps platform (`apps-mcp`), the `ci` module and the platform module's
-  self-improvement flow.
-- Then split the shared part (the write kinds and their tiering in `codehost-github/src/plan.ts`) from the
-  GitHub-specific transport.
-
-It is the largest piece of this design. Changes to `plan.ts` and the tier function fall under the reviewer-eval rule:
-the eval must stay at 100%.
-
-Until it lands, the GitHub modules stay in the bundle, idle. That already works: installs run today with no GitHub
-sign-in until docs/setup.md step 8. So steps 1 to 5 of the order don't wait on it.
+A fresh install with no GitHub builds, reviews, merges and deploys agent-made apps, with every repository on the server.
+A code host is a role a module `provides: [ codehost ]`; `engineering` requires `codehost`, not a particular provider. The
+default bundle carries `codehost-local` and `github`; GitHub stays idle until connected and **Fleet repos** (`github_fleet_org`) is set; then new repositories go to GitHub
+and local ones stay local. The design is [codehost-local.md](codehost-local.md).
 
 ### Part 5: the "Getting started" page
 
@@ -409,79 +299,14 @@ A short page on aidenhq.ai (`/start`), one screen:
 
 The prompt's final message links to it.
 
-## What changes where
-
-| Area | Change |
-|---|---|
-| `aidenhq-distro` prompt, installer, site | shorter prompt (choice + email only), no token/Tailscale asks, progress lines relayed by the AI, link only when everything is healthy, `/start` page |
-| release pipeline | prebuilt images per release, pinned by digest in the release file |
-| `ops/setup.sh --unattended`, `ops/apply-config.sh` | parallel pulls instead of builds, progress lines, public exposure default with Caddy (U2), recovery key shown by the kernel |
-| kernel `/setup` | account, authenticator, OpenRouter PKCE (+ paste fallback); recovery key and `github_bot_token` move out |
-| kernel | admin secret-write endpoint for declared `setup:` secrets, recreating that module's containers; `/recovery-key` show-once page |
-| `scripts/modules.ts`, compile | `board.setup_flows` point validated and written into `config/points/board.json` |
-| board | `/setup/<module>` flow component, `GET /api/setup-flows`, `/welcome` onboarding (one teammate, reach + push test), hiring (`#/team/hire`), the welcome task to Aiden at the end |
-| modules needing user setup (list above) | `board.setup_flows` points and `setup:` fields replacing shell-only setup; Telegram and Slack pairing; Slack and Google join the bundle |
-| modules: codehost role | new `codehost-local`; `codehost-github` provides `codehost`; engineering requires `codehost`; GitHub modules leave the bundle |
-| apps platform, runner, ci | read repos and run checks through the code host role |
-| modules: chief-of-staff | the `ideas` skill (one next step at a time) |
-| docs | SETUP.md's default path becomes "paste the prompt"; today's manual path moves to docs/setup.md as reference |
-
-## Order
-
-1. The install-time spike, then prebuilt images, progress lines, the Caddy front door (U2) and the installer and
-   prompt changes: the one-link, two-minute install.
-2. Kernel `/setup` slimmed, with OpenRouter PKCE.
-3. Kernel secret-write endpoint, the `board.setup_flows` schema, the board's flow component and route, onboarding with
-   the recovery-key step.
-4. The setup flows: Telegram and Slack pairing first (onboarding's reach step), then every other module on the list, in
-   parallel lanes.
-5. Aiden's ideas, the guided Google flow and the `/start` page.
-6. `codehost-local` and the code host role (can run in parallel with 2 to 5). GitHub leaves the bundle only when it
-   lands.
-
-Each lands as its own PR, or several for 6. Steps 1 and 2 alone already remove the tunnel, the GitHub token and the long
-form.
-
-## Left to the builder
-
-- Exact copy for each step (owner reviews it before merge).
-- Onboarding's visual details within the design system.
-- How the kernel finds and recreates a module's containers.
-- Test shape: one end-to-end that walks first run → onboarding finish (`{}`) → one welcome task for Aiden, no chat, plus
-  the unattended-install test updated for the shorter `/setup`.
-
 ## Decided with the owner
 
-- Google is not an onboarding step of its own (a teammate that needs it sets it up inline). A guided own-client setup is built and triggered later, by Aiden or the marketplace. A shared
+- Google is not an onboarding step of its own (a teammate that needs it sets it up inline). A guided own-client setup is triggered by Aiden or the marketplace. A shared
   AidenHQ client was rejected: Google's paid restricted-scope assessment, and a relay that would see users' tokens.
-- GitHub is fully optional, and the on-server code host is part of this work.
+- GitHub is fully optional; the on-server code host replaces it by default.
 - Aiden's first chat is the full Aiden through Paperclip. A feature is offered in full or not until its setup is done;
   never half-working.
 - No background install stage: everything installs first, with visible progress, then the link.
-- Setup is one general per-module flow, opened at `/setup/<module>`. This work builds a flow for every module that needs
-  user setup. When the marketplace (built in other work) triggers it is decided with that page. Modules that need no
-  user setup get no flow; their settings page is separate work.
-
-- Aim for chatting within a couple of minutes; a larger build with subagents is fine.
-
-## Calls made in writing this (owner to check)
-
-- The AI still asks for the email: many parts read `owner_email`, and asking costs the user nothing.
-- Prebuilt release images pulled in parallel, and progress lines the user's AI relays.
-- Onboarding's steps are module setup flows (instructions, the existing `setup:` fields, optional Connect or pairing), with
-  completion read from real connection status. "Finish setup later" is always one click away.
-- The on-server code host builds on the existing local bare repos and `repo_sources`, not a new forge.
-- `slack` (advanced part) and `google` join the default bundle, idle until connected.
-- A secret save recreates only that module's containers, directly from the kernel; no settings-change path.
-- The recovery key is shown on a kernel page, never through the board.
-- Telegram and Slack both pair with a one-time code that only a signed-in admin can mint.
-- The board, not `ops/setup.sh`, files Aiden's welcome task, when onboarding finishes in any way.
-- `github_bot_token` leaves first run and is offered with "connect GitHub".
-
-## Unverified: the builder checks these first
-
-- The free per-server name (sslip.io or similar): rate limits, Google redirect acceptance, trust.
-- The real time to the full Aiden's first reply today, and how much of it is the Paperclip image.
-- OpenRouter's PKCE flow accepts `http://127.0.0.1:3121/...` (Mac) and a bare-IP HTTPS callback. If not, the paste field
-  becomes primary there.
-- The `google` module runs idle with no OAuth client.
+- Setup is one general per-module flow, opened at `/setup/<module>`. Every module that needs user setup has a flow;
+  modules that need none get no flow, and their settings page is separate.
+- Aim for chatting within a couple of minutes.

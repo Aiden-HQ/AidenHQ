@@ -60,7 +60,7 @@ export type Kept = Adoption & {
   /** The repair filed for a head (github's `repair`, ship's check job), and whether its leftovers have woken the Engineer. */
   repair?: { head: string; record: string; woke?: boolean; retried?: boolean };
   /** The App's approval filed for a head (github's `approve`): its record and attempt, and why it ended without one (no App). */
-  /** The App's approval: its record, the policy it was issued under (risk tiers §7), and `dismissed`: the record dismissing it. */
+  /** The App's approval: its record, the policy it was issued under (docs/design/code-review.md, Risk tiers), and `dismissed`: the record dismissing it. */
   approve?: { head: string; attempt: number; record: string; why?: string; policy?: string; dismissed?: string };
   /** What github's write-time recheck of members' comments needs (/v1/generation): the hand-off's time and the author whose own comments ask nothing; kept as the round asked for it. */
   commentsFor?: { since: string; author?: string };

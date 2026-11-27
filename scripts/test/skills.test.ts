@@ -30,7 +30,7 @@ test("an agent gets exactly its effective list", () => {
   assert.deepEqual(skillsOf(instance(), "review-chaser"), []);
   assert.deepEqual(skillsOf(instance({ skills: ["acme.nudge", "primer.primer-docs"] }), "review-chaser"), ["acme.nudge", "primer.primer-docs"]);
   // An override adds to a local agent and removes from a product agent, through the one shape.
-  const over = instance({ overrides: { agents: { "review-chaser": { skills: { add: ["acme.nudge"] } }, "chief-of-staff": { skills: { remove: ["chief-of-staff.ideas", "tasks.delegate-work"] } } } } });
+  const over = instance({ overrides: { agents: { "review-chaser": { skills: { add: ["acme.nudge"] } }, "chief-of-staff": { skills: { remove: ["tasks.delegate-work"] } } } } });
   assert.deepEqual(skillsOf(over, "review-chaser"), ["acme.nudge"]);
   assert.deepEqual(skillsOf(over, "chief-of-staff"), []);
   // A skill of an available module that isn't enabled (maintainer isn't in the bundle) is dropped; an unknown id fails.
@@ -38,6 +38,19 @@ test("an agent gets exactly its effective list", () => {
   assert.throws(() => compile(product, instance({ skills: ["acme.nope"] })), /agents\.review-chaser\.skills: unknown skill acme\.nope/);
   assert.throws(() => compile(product, instance({ overrides: { agents: { "chief-of-staff": { skills: { add: ["nowhere.x"] } } } } })), /agents\.chief-of-staff\.skills: unknown skill nowhere\.x/);
   assert.throws(() => compile(product, instance({ overrides: { agents: { "chief-of-staff": { skills: ["tasks.delegate-work"] } } } })), /overrides\.agents\.chief-of-staff\.skills: \{ add\?: \[ids\], remove\?: \[ids\] \}/);
+});
+
+test("a retired skill in a saved override is dropped with a warning, not an upgrade failure", () => {
+  // A release removed chief-of-staff.ideas: an owner who opted out of it (or added it) keeps compiling.
+  const removed = instance({ overrides: { agents: { "chief-of-staff": { skills: { remove: ["chief-of-staff.ideas"] } } } } });
+  assert.deepEqual(compile(product, removed).paperclip.agents["chief-of-staff"].skills, ["tasks.delegate-work"]);
+  assert.match(compile(product, removed).warnings.join("\n"), /overrides\.agents\.chief-of-staff\.skills\.remove: chief-of-staff\.ideas was retired/);
+  // Adding it is the same: a no-op now that it is gone.
+  const added = instance({ overrides: { agents: { "chief-of-staff": { skills: { add: ["chief-of-staff.ideas"] } } } } });
+  assert.deepEqual(compile(product, added).paperclip.agents["chief-of-staff"].skills, ["tasks.delegate-work"]);
+  assert.match(compile(product, added).warnings.join("\n"), /chief-of-staff\.ideas was retired/);
+  // A skill no release ever had is still an error, in the override and in the agent's own list.
+  assert.throws(() => compile(product, instance({ overrides: { agents: { "chief-of-staff": { skills: { remove: ["chief-of-staff.nope"] } } } } })), /unknown skill chief-of-staff\.nope/);
 });
 
 test("when on a skill fails compile", () => {

@@ -1,5 +1,5 @@
 name: channel-telegram
-description: "The owner's Telegram: their chat with Aiden (typed, and voice notes with the voice module), approval cards decided with single-use decision tokens, and a transport for owner-channel's notify. Always installed (core requires it); Telegram itself is optional."
+description: "The owner's Telegram: their chat with Aiden (typed, and voice notes with the voice module), approval cards decided with single-use decision tokens, and a transport for owner-channel's notify. In the default bundle; Telegram itself is optional."
 # A channel (channel@1): the kernel hands it each pending card with a single-use approve and reject token bound to the card's
 # digest and this channel, and posts what the owner writes here as theirs (stamped [telegram]). It can approve every card it
 # is sent: telegram_decide is how the owner limits that. As a transport, the kernel sends it owner-channel's messages one at a

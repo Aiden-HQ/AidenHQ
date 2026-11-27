@@ -1,4 +1,4 @@
-// Home end to end (GET /api/home, POST /api/home/seen and /snooze): needs with cards deduped onto their tasks, ideas aside,
+// Home end to end (GET /api/home, POST /api/home/seen and /snooze): needs with cards deduped onto their tasks,
 // since items one per task under their teammate, the world blocks absent without failing, the since cursor and snoozes.
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
@@ -30,7 +30,6 @@ const base = { priority: "medium", assigneeUserId: null, assigneeAdapterOverride
 const issue = (n: number, o: Partial<Issue>): Issue => ({ ...base, id: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`, identifier: `WOR-${n}`, title: `Task ${n}`, assigneeAgentId: "tess", ...o });
 const carded = issue(1, { title: "Deploy the app" });
 const asking = issue(2, { title: "Chase Sam" });
-const idea = issue(3, { title: "Try a weekly digest", assigneeAgentId: "cos", labels: [label("idea")] });
 // Intake's person waiting on a reply: older than every ask, yet listed after them.
 const reply = issue(6, { title: "Reply to Priya Nair: can you sign off the hiring plan?", assigneeAgentId: "intake", createdAt: ago(80 * H), description: "## Source\n\nType: Slack\nChannel: DM with Priya Nair\nFrom: Priya Nair\n\nsource:slack:C1/1700.1", labels: [label("needs-response")] });
 const done = issue(5, { title: "Chase the vendor", status: "done", completedAt: ago(H / 2) });
@@ -43,16 +42,15 @@ const pc = {
   me: async () => "me-1",
   agents: async () => agents,
   routines: async () => [],
-  labels: async () => [label("idea")],
+  labels: async () => [],
   company: async () => ({ issuePrefix: "WOR" }),
-  openIssues: async () => [carded, asking, idea, reply],
+  openIssues: async () => [carded, asking, reply],
   closedSince: async () => [done],
   comments: async () => [],
 } as unknown as Paperclip;
 const states = fakeStates([
   row(carded.id, { identifier: "WOR-1", kind: "waiting", reason: "card_owner", ref: "record:k-a1", attention: [{ who: "owner", why: "card", ref: "record:k-a1", since: ago(5 * H) }] }),
   row(asking.id, { identifier: "WOR-2", kind: "waiting", reason: "owner_wait", question: "Chase Sam again tomorrow?", detail: "Draft: Hi Sam…", wait_since: ago(3 * H), attention: [{ who: "owner", why: "owner_wait", ref: `task:${asking.id}`, since: ago(3 * H) }] }),
-  row(idea.id, { identifier: "WOR-3", kind: "waiting", reason: "owner_wait", question: "Try a weekly digest?", wait_since: ago(4 * H), attention: [{ who: "owner", why: "owner_wait", ref: `task:${idea.id}`, since: ago(4 * H) }] }),
 ]);
 const records = fakeRecords([
   card({ id: "k-a1", issueId: carded.id, identifier: "WOR-1", sentence: "Deploy the app", requesterId: "tess", createdAt: ago(5 * H) }),
@@ -90,7 +88,7 @@ describe("home", () => {
     });
   let first: any;
 
-  it("needs: a card on a task is that task's one approval row, a card on no task its own; an idea waits apart", async () => {
+  it("needs: a card on a task is that task's one approval row, a card on no task its own", async () => {
     first = await call("GET", "/api/home");
     expect(first.needs.map((n: { id: string; kind: string }) => [n.id, n.kind])).toEqual([["k-b2", "approval"], ["k-a1", "approval"], [asking.id, "answer"], [reply.id, "open"]]);
     expect(first.needs[1]).toMatchObject({ task: { identifier: "WOR-1" }, teammate: { key: "open-loops", name: "Tess", state: "needs" }, card: { id: "k-a1" } });
@@ -98,7 +96,6 @@ describe("home", () => {
     expect(first.needs[2]).toMatchObject({ question: "Chase Sam again tomorrow?", detail: "Draft: Hi Sam…", waitSince: ago(3 * H) });
     expect(first.needs[3]).toMatchObject({ question: "can you sign off the hiring plan?", since: reply.createdAt, task: { identifier: "WOR-6" }, reply: { person: "Priya Nair", source: "slack" } });
     expect(first.greeting).toEqual({ needs: 4 });
-    expect(first.idea).toMatchObject({ identifier: "WOR-3", question: "Try a weekly digest?", teammate: { key: "chief-of-staff" } });
   });
 
   it("since: one item per task (the ledger's done and the closed task are one), a hidden agent's under its teammate", async () => {
