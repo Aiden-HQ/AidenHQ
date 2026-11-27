@@ -25,3 +25,5 @@ export function dayStart(day: string, tz: unknown): number {
   while (hi - lo > 6e4) { const m = lo + Math.floor((hi - lo) / 2 / 6e4) * 6e4; if (format(z).format(m) >= day) hi = m; else lo = m; }
   return hi;
 }
+/** The owner's zone from the instance `timezone` setting (OWNER_TIMEZONE), never the host's. */
+export const ownerZone = (): string => zone(process.env.OWNER_TIMEZONE);

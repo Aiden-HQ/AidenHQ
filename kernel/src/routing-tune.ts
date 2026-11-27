@@ -23,7 +23,7 @@ import { yamlText } from "./settings-change.ts";
 import { DEFAULT_WEIGHTS, pickMember, type Candidate, type Weights } from "./team-routing.ts";
 import { openFacts } from "./facts.ts";
 import type { RouteSnapshot } from "./wakes.ts";
-import { addDays, dayStart, ownerDay } from "./owner-day.ts";
+import { addDays, dayStart, ownerDay } from "../sdk/src/owner-day.ts";
 
 export class Refused extends Error { status = 422; }
 const refuse = (msg: string): never => { throw new Refused(msg); };

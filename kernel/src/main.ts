@@ -42,7 +42,7 @@ import { createReplyRelay } from "./relay.ts";
 import { KERNEL_STAGES, type Stage } from "./flow-stages.ts";
 import { journeysOf } from "./journeys.ts";
 import { createChannels, type Api, type ModulesFile } from "./channels.ts";
-import { zone } from "./owner-day.ts";
+import { zone } from "../sdk/src/owner-day.ts";
 import { createLane } from "./lane.ts";
 import { checksFile, createChecks } from "./checks.ts";
 import { createAsCaller, createBoardCp, createCp } from "./cp.ts";

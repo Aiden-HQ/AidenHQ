@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { fence } from "./aidenhq-sdk/fence.ts";
 import type { KernelClient } from "./aidenhq-sdk/kernel-client.ts";
-import { addDays, dayStart, ownerDay, ownerZone } from "./owner-day.ts";
+import { addDays, dayStart, ownerDay, ownerZone } from "./aidenhq-sdk/owner-day.ts";
 
 const MIN = 60_000;
 const DAY_MS = 24 * 60 * MIN;

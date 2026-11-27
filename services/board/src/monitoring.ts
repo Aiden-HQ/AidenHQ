@@ -5,7 +5,7 @@
  *                          open incidents and firing alerts are the fleet-steward service's own /metrics.
  */
 import type { Approval, Records } from "./records.js";
-import { dayStart, ownerDay } from "./owner-day.js";
+import { dayStart, ownerDay } from "./aidenhq-sdk/owner-day.js";
 
 /** Prometheus text exposition (version 0.0.4). */
 export async function metricsText(records: Pick<Records, "list">, tz: string, now = Date.now()): Promise<string> {

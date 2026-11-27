@@ -6,7 +6,7 @@ import type { Issue, Paperclip } from "./paperclip.js";
 import type { PastRun } from "./runs.js";
 import type { CostReport } from "./costs.js";
 import { oneLine, report, type Row } from "./aidenhq-sdk/quality.js";
-import { addDays, dayStart, ownerDay } from "./owner-day.js";
+import { addDays, dayStart, ownerDay } from "./aidenhq-sdk/owner-day.js";
 
 const DAY = 864e5;
 

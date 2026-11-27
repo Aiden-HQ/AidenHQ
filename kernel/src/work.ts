@@ -28,7 +28,7 @@
 //   GET /v1/work/metrics     Prometheus text (aidenhq_kernel_jobs_*, aidenhq_kernel_session_*) over the same rows
 import type { DatabaseSync } from "node:sqlite";
 import { fleetGenerations } from "./generations.ts";
-import { addDays, dayStart, ownerDay } from "./owner-day.ts";
+import { addDays, dayStart, ownerDay } from "../sdk/src/owner-day.ts";
 import { MALICE } from "./tier.ts";
 import type { Records } from "./records.ts";
 

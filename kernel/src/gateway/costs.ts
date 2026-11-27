@@ -8,7 +8,7 @@
 // drops whole buckets of both together, the rollup's first, so the calls leaving rebuild nothing.
 // Every range snaps to the buckets: its start floored, its end ceiled.
 import type { DatabaseSync } from "node:sqlite";
-import { ownerDay } from "../owner-day.ts";
+import { ownerDay } from "../../sdk/src/owner-day.ts";
 
 const DAY_MS = 864e5;
 const STEP_MS = 15 * 60_000;

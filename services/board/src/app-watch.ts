@@ -5,7 +5,7 @@
 //   when it has stayed open over 30 minutes or the app had 3 or more incidents in 24 hours: one task per incident.
 // - Resources: an app over 90% of its memory limit, or the host disk over 85%: one task per cause per day.
 import type { Store } from "./store.js";
-import { ownerDay } from "./owner-day.js";
+import { ownerDay } from "./aidenhq-sdk/owner-day.js";
 
 export interface AppStatus { name: string; incident?: { opened_at: number | string; kind: string; detail: string }; stats?: { mem_bytes: number; mem_limit_bytes: number } }
 /** A task for the chief of staff; the same `source` is the same task (POST /v1/board-tasks). */

@@ -4,7 +4,7 @@
 // read as the owner (the board key); unreadable, nothing is limited (fail open).
 import type { DatabaseSync } from "node:sqlite";
 import type { Api } from "./channels.ts";
-import { dayStart, ownerDay } from "./owner-day.ts";
+import { dayStart, ownerDay } from "../sdk/src/owner-day.ts";
 
 export const NOTIFY_LIMIT = 5;
 

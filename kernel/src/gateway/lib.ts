@@ -54,7 +54,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { addDays, dayStart, ownerDay, ownerMonth, zone } from "../owner-day.ts";
+import { addDays, dayStart, ownerDay, ownerMonth, zone } from "../../sdk/src/owner-day.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { CI_KIND, CI_PREFIX, ciBodyProblem, githubKeys, verifyGithubOidc } from "./ci.ts";

@@ -8,7 +8,7 @@ import { BadRequest } from "./board.js";
 import { departmentOf } from "./activity.js";
 import type { CostReport, KeyUsage, SpendSummary } from "./costs.js";
 import type { Agent } from "./paperclip.js";
-import { addDays, dayStart, ownerDay } from "./owner-day.js";
+import { addDays, dayStart, ownerDay } from "./aidenhq-sdk/owner-day.js";
 import type { CatalogModel } from "./model-catalog.js";
 
 const DAY = 864e5;

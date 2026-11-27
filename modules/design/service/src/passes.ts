@@ -3,7 +3,7 @@
 // one module task for the holder of role `ui-login`, keyed by source `design:pass:<app>:<run>`; one runs per app at a time (the
 // store's unique index), and none starts once the app's passes billed its day cap (the kernel's ledger, per owner's day). The job
 // tools (jobtools.ts) release a supplied login only to that task while the run is the app's running pass.
-import { dayStart, ownerDay, ownerZone } from "./owner-day.ts";
+import { dayStart, ownerDay, ownerZone } from "./aidenhq-sdk/owner-day.ts";
 import type { PassRow, Store } from "./store.ts";
 
 export const MODES = ["read", "test-write", "any"] as const;

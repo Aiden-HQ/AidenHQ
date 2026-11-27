@@ -1,6 +1,6 @@
 // One agent's 7 days against the 7 before, from facts the system already holds: tasks done (control plane), approval records and
 // billed cost (the kernel's /v1/work?since=), jobs (the kernel's ledger). A diagnostic for the Coach, not a ranking.
-import { addDays, dayStart, ownerDay } from "./owner-day.ts";
+import { addDays, dayStart, ownerDay } from "./aidenhq-sdk/owner-day.ts";
 
 export interface Closed { id: string; identifier: string; title: string; status: string; assigneeAgentId?: string | null; createdAt?: string | null; completedAt?: string | null; updatedAt: string }
 /** One row of the kernel's job ledger (/v1/work?agent=): the shape the scorecard reads. */

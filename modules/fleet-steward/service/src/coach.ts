@@ -9,7 +9,7 @@ import { agentPaused } from "./aidenhq-sdk/agent-paused.ts";
 import type { KernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { detectorState, type Kv } from "./detector.ts";
 import { scorecard, type Closed } from "./scorecard.ts";
-import { addDays, dayStart, ownerDay, ownerZone } from "./owner-day.ts";
+import { addDays, dayStart, ownerDay, ownerZone } from "./aidenhq-sdk/owner-day.ts";
 
 type Agent = { id: string; name: string; status: string; lifecycleHolds?: string[]; createdAt?: string; metadata?: { setupKey?: string; model?: unknown; engine?: unknown } };
 type Issue = { id: string; identifier: string; title: string; description?: string | null; descriptionTruncated?: boolean; status: string; createdAt?: string; updatedAt: string; assigneeAgentId?: string | null; completedAt?: string | null };

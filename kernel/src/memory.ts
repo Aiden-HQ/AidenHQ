@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ownerDay } from "./owner-day.ts";
+import { ownerDay } from "../sdk/src/owner-day.ts";
 export { fillMemory } from "../sdk/src/fence.ts";
 
 export const MEMORY_MAX = 4096, FACT_MAX = 500, SOURCE_MAX = 300, WRITES_PER_JOB = 10;

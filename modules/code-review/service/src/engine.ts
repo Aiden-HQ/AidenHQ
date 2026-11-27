@@ -51,7 +51,7 @@ import { render } from "./report.ts";
 import { PREVIOUS_BUDGET, SETUP_PATH } from "./adapters.ts";
 import { INPUT_MAX, mergeRecords, type DeepsecStore } from "./deepsec-store.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
-import { dayStart, ownerDay, ownerZone } from "./owner-day.ts";
+import { dayStart, ownerDay, ownerZone } from "./aidenhq-sdk/owner-day.ts";
 
 /** How a finding reopened by an unsafe answer says so in the post (fixed words). */
 const REOPENED = { title: "Reopened, its answer found unsafe: ", why: "The recheck found the answer to this finding unsafe: its fix or reason hides the problem or adds one.\n\n" };

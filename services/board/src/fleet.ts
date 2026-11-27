@@ -9,7 +9,7 @@ import { OPEN, type Agent, type Issue, type Paperclip, type Routine } from "./pa
 import { isLive, type Records } from "./records.js";
 import { lastRunsOf, liveRunsOf, type KernelActivity } from "./runs.js";
 import type { CostReport } from "./costs.js";
-import { addDays, dayStart, ownerDay } from "./owner-day.js";
+import { addDays, dayStart, ownerDay } from "./aidenhq-sdk/owner-day.js";
 import type { Store } from "./store.js";
 
 export class Refused extends Error {}

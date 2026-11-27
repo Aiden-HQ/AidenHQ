@@ -161,7 +161,7 @@ import { requestChain } from "./review-loop.ts";
 import { NAME, type ConnectionState } from "./connection-state.ts";
 import { MemoryError, memoryOp, view as memoryView, type Memory } from "./memory.ts";
 import { EventsError, type Events } from "./events.ts";
-import { ownerDay } from "./owner-day.ts";
+import { ownerDay } from "../sdk/src/owner-day.ts";
 import { OWNER_CAUSES, readNeed } from "../sdk/src/vendor/needs.ts";
 
 const MAX_ATTACHMENT = 25 * 1024 * 1024;

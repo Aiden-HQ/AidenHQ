@@ -11,7 +11,7 @@ import { alertIncidents, firing, parseAlerts, receiveAlerts } from "./alerts.ts"
 import { coachReads } from "./coach.ts";
 import { checks, detectorState, gateActivity, QUIET_MS, snoozeFollowup, staleFollowups, stewardOn, tick, type Kv } from "./detector.ts";
 import { createMcp, fleetTools } from "./mcp.ts";
-import { ownerDay, ownerZone } from "./owner-day.ts";
+import { ownerDay, ownerZone } from "./aidenhq-sdk/owner-day.ts";
 import { isModule } from "./module-caller.ts";
 import { createStewardServer } from "./server.ts";
 

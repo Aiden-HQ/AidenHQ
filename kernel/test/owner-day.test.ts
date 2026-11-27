@@ -1,7 +1,7 @@
 // The owner's day: midnight in the owner's zone, across an offset (half hour), a spring-forward and a fall-back day.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addDays, dayStart, ownerDay, ownerMonth, zone } from "../src/owner-day.ts";
+import { addDays, dayStart, ownerDay, ownerMonth, zone } from "../sdk/src/owner-day.ts";
 
 test("a day is the owner's calendar day, whole across DST", () => {
   const t = Date.parse("2026-11-27T20:30:00Z"); // 00:30 the 28th in Dubai, 02:00 the 28th in Kolkata, still the 27th in New York
