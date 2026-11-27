@@ -1249,11 +1249,14 @@ health() {
       # A module service the baseline never mentions did not exist before this apply: it has no earlier verdict to compare
       # with, so it gets the same deadline as a regression instead of being excused. (A container takes a few seconds to
       # start, and its HEALTHCHECK a moment after that; the baseline has no line for it until one exists.)
+      # The baseline is matched by the whole check name, never by a substring: `module service monitoring/grafana-mcp` is not
+      # `module service monitoring/grafana`, and treating the prefix as the same service would excuse a container this apply
+      # started. The name carries the module too, so two modules' `api` services stay two services.
       local mfail mname
       while IFS= read -r mfail; do
         [ -n "$mfail" ] || continue
         mname="${mfail#  FAIL  }"; mname="${mname%%  *}"
-        grep -qF -- "$mname" "$base" || newmod+="${newmod:+, }${mfail#  FAIL  }"
+        grep -qxF -- "  ok    $mname" "$base" || grep -qF -- "  FAIL  $mname  " "$base" || newmod+="${newmod:+, }${mfail#  FAIL  }"
       done <<< "$(grep -F '  FAIL  module service ' <<< "$out" || true)"
       [ -n "$regress$newmod" ] || break
       [ "$(date +%s)" -lt "$deadline" ] || {

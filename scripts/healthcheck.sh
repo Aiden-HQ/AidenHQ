@@ -113,13 +113,14 @@ module_services_check() {
   while read -r mod svc; do
     [ -n "$mod" ] || continue
     state="$(module_service_state "$mod" "$svc")"
-    # The check's name is the service alone, so the apply's baseline (which matches ok lines by name) still recognises it
-    # when it turns red; what changed is the detail after it, the same way `check` prints its own failures.
+    # The check's name is `<module>/<service>`, never the service alone: two modules can each declare a service named
+    # `api`, and a baseline line for one must not excuse the other (WOR-14006 review). What changed is the detail after it,
+    # the same way `check` prints its own failures.
     case "$state" in
-      "running healthy") printf '  ok    module service %s\n' "$svc" ;;
-      "running none") skip "module service $svc ($mod: its image declares no health check)" ;;
-      "absent none") printf '  FAIL  module service %s  %s: no container\n' "$svc" "$mod"; fails=$((fails + 1)) ;;
-      *) printf '  FAIL  module service %s  %s: %s\n' "$svc" "$mod" "$state"; fails=$((fails + 1)) ;;
+      "running healthy") printf '  ok    module service %s/%s\n' "$mod" "$svc" ;;
+      "running none") skip "module service $mod/$svc (its image declares no health check)" ;;
+      "absent none") printf '  FAIL  module service %s/%s  no container\n' "$mod" "$svc"; fails=$((fails + 1)) ;;
+      *) printf '  FAIL  module service %s/%s  %s\n' "$mod" "$svc" "$state"; fails=$((fails + 1)) ;;
     esac
   done <<< "$model"
 }

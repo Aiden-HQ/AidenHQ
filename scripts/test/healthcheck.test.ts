@@ -54,20 +54,26 @@ if [ "$1" = compose ]; then
   exit 1
 fi
 if [ "$1" = ps ]; then
-  label=""; running=""; for a in "$@"; do
+  label=""; mod=""; running=""; for a in "$@"; do
     case "$a" in
       label=aidenhq.service=*) label="\${a#label=aidenhq.service=}";;
+      label=aidenhq.module=*) mod="\${a#label=aidenhq.module=}";;
       -q) ;;
       *) [ "$a" = "-aq" ] && running="\${a%-aq}" ;;
     esac
   done
-  state="$(sed -n "s|^$label=||p" "$STATE" 2>/dev/null | head -1)"
+  # A state line may name <module>/<service> when two modules declare the same service name (absent: the service alone).
+  state=""; [ -n "$mod" ] && state="$(sed -n "s|^$mod/$label=||p" "$STATE" 2>/dev/null | head -1)"
+  [ -n "$state" ] || state="$(sed -n "s|^$label=||p" "$STATE" 2>/dev/null | head -1)"
   [ -n "$state" ] || exit 0
-  case "$state" in running*) echo "id-$label" ;; *) [ -n "$running" ] || echo "id-$label" ;; esac
+  id="id-\${mod:+$mod/}$label"
+  case "$state" in running*) echo "$id" ;; *) [ -n "$running" ] || echo "$id" ;; esac
   exit 0
 fi
 if [ "$1" = inspect ]; then
-  svc="\${4#id-}"; sed -n "s|^$svc=||p" "$STATE" 2>/dev/null | head -1
+  svc="\${4#id-}"; state="$(sed -n "s|^$svc=||p" "$STATE" 2>/dev/null | head -1)"
+  [ -n "$state" ] || { svc="\${svc##*/}"; state="$(sed -n "s|^$svc=||p" "$STATE" 2>/dev/null | head -1)"; }
+  printf '%s\n' "$state"
   exit 0
 fi
 exit 0
@@ -205,8 +211,19 @@ test("a module service whose container is running and healthy passes", async () 
   writeFileSync(join(dir, "modules.json"), moduleModel([["ssh", "server-manager"]]));
   writeFileSync(join(dir, "state"), "ssh=running healthy\n");
   const r = await run(dir);
-  assert.match(r.out, /^  ok    module service ssh$/m, r.out);
+  assert.match(r.out, /^  ok    module service server-manager\/ssh$/m, r.out);
   assert.doesNotMatch(r.out, /^  FAIL  module service/m, r.out);
+});
+
+test("two modules that each declare a service named api are two checks, never one", async () => {
+  // The check's name is <module>/<service>: a baseline line for one module's `api` must not excuse the other's (WOR-14006
+  // review). One healthy and one unhealthy, in one model, prints one ok and one FAIL.
+  const dir = checkout();
+  writeFileSync(join(dir, "modules.json"), moduleModel([["api", "alpha"], ["api", "beta"]]));
+  writeFileSync(join(dir, "state"), "alpha/api=running healthy\nbeta/api=running unhealthy\n");
+  const r = await run(dir);
+  assert.match(r.out, /^  ok    module service alpha\/api$/m, r.out);
+  assert.match(r.out, /^  FAIL  module service beta\/api  running unhealthy$/m, r.out);
 });
 
 test("a module service whose container is unhealthy fails, naming it and its module", async () => {
@@ -214,7 +231,7 @@ test("a module service whose container is unhealthy fails, naming it and its mod
   writeFileSync(join(dir, "modules.json"), moduleModel([["ssh", "server-manager"]]));
   writeFileSync(join(dir, "state"), "ssh=running unhealthy\n");
   const r = await run(dir);
-  assert.match(r.out, /^  FAIL  module service ssh  server-manager: running unhealthy$/m, r.out);
+  assert.match(r.out, /^  FAIL  module service server-manager\/ssh  running unhealthy$/m, r.out);
   assert.match(r.out, /check\(s\) failed\.$/m, r.out);
 });
 
@@ -222,7 +239,7 @@ test("a module service with no container at all fails: an enabled module's servi
   const dir = checkout();
   writeFileSync(join(dir, "modules.json"), moduleModel([["server-manager-ssh", "server-manager"]]));
   const r = await run(dir);
-  assert.match(r.out, /^  FAIL  module service .+  server-manager: no container$/m, r.out);
+  assert.match(r.out, /^  FAIL  module service server-manager\/server-manager-ssh  no container$/m, r.out);
 });
 
 test("a module service whose image declares no health check is listed, never failed", async () => {
@@ -232,7 +249,7 @@ test("a module service whose image declares no health check is listed, never fai
   writeFileSync(join(dir, "modules.json"), moduleModel([["db", "primer"]]));
   writeFileSync(join(dir, "state"), "db=running none\n");
   const r = await run(dir);
-  assert.match(r.out, /^  skip  module service .+ \(primer: its image declares no health check\)$/m, r.out);
+  assert.match(r.out, /^  skip  module service primer\/db \(its image declares no health check\)$/m, r.out);
   assert.doesNotMatch(r.out, /^  FAIL  module service/m, r.out);
 });
 
@@ -240,7 +257,7 @@ test("an on_demand service (a compose profile) is not probed: the host never sta
   const dir = checkout();
   writeFileSync(join(dir, "modules.json"), moduleModel([["runner", "ci", { profiles: ["ci"] }]]));
   const r = await run(dir);
-  assert.doesNotMatch(r.out, /^  (ok|FAIL|skip)  module service (runner|ci-runner)/m, r.out);
+  assert.doesNotMatch(r.out, /^  (ok|FAIL|skip)  module service ci\/(runner|ci-runner)/m, r.out);
 });
 
 test("a compose model that cannot be read skips the probe rather than failing every service", async () => {

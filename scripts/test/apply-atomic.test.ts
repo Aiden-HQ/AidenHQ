@@ -104,10 +104,16 @@ echo "  ok    paperclip http (127.0.0.1:3100)"
 # ctrl/new-module-stuck: a module service this apply starts (no baseline line) is never healthy; ctrl/new-module-ok: it
 # turns healthy on the second probe, the way a container takes a moment to start (WOR-14006).
 # Only after the switch: before it the module's service is not in the model at all, so the baseline has no line for it.
-if [ -f "$CTRL/new-module-stuck" ] && [ -f "$CTRL/switched" ]; then echo "  FAIL  module service ssh  server-manager: running starting"; fi
+if [ -f "$CTRL/new-module-stuck" ] && [ -f "$CTRL/switched" ]; then echo "  FAIL  module service server-manager/ssh  running starting"; fi
 if [ -f "$CTRL/new-module-ok" ] && [ -f "$CTRL/switched" ]; then
   n="$(cat "$CTRL/new-module-probes" 2>/dev/null || echo 0)"; echo $((n + 1)) > "$CTRL/new-module-probes"
-  [ "$n" -ge 1 ] && echo "  ok    module service ssh" || echo "  FAIL  module service ssh  server-manager: running starting"
+  [ "$n" -ge 1 ] && echo "  ok    module service server-manager/ssh" || echo "  FAIL  module service server-manager/ssh  running starting"
+fi
+# ctrl/prefix: the baseline has \`monitoring/grafana-mcp\`; the apply starts \`monitoring/grafana\`, absent after the switch.
+# A baseline line names one service of one module, and neither a prefix of its name nor another module's service excuses a
+# failure (WOR-14006 review).
+if [ -f "$CTRL/prefix" ]; then
+  if [ -f "$CTRL/switched" ]; then echo "  FAIL  module service monitoring/grafana  no container"; else echo "  ok    module service monitoring/grafana-mcp"; fi
 fi
 echo "  skip  ops-mcp (meetings module not installed)"
 # What is applied decides (data/applied-product), as on a host the running services do, never the checkout alone.
@@ -1364,7 +1370,17 @@ test("a module service this apply starts and that never gets healthy fails the g
   assert.notEqual(r.status, 0, r.out);
   const g = w.gens().find((x) => x.health === "failed");
   assert.ok(g, r.out);
-  assert.match(g.reason, /module services this apply started are not healthy: module service ssh  server-manager: running starting/, g.reason);
+  assert.match(g.reason, /module services this apply started are not healthy: module service server-manager\/ssh  running starting/, g.reason);
+});
+
+test("a module service the baseline has under another module is not excused by it", async () => {
+  const w = world();
+  writeFileSync(w.d("ctrl/prefix"), "");
+  const r = await w.run();
+  assert.notEqual(r.status, 0, r.out);
+  const g = w.gens().find((x) => x.health === "failed");
+  assert.ok(g, r.out);
+  assert.match(g.reason, /module services this apply started are not healthy: module service monitoring\/grafana  no container/, g.reason);
 });
 
 test("a module service this apply starts is waited on: healthy on its second probe, the generation is good", async () => {
@@ -1372,7 +1388,7 @@ test("a module service this apply starts is waited on: healthy on its second pro
   writeFileSync(w.d("ctrl/new-module-ok"), "");
   const r = await w.run();
   assert.equal(r.status, 0, r.out);
-  assert.match(r.out, /health: waiting on module service ssh  server-manager: running starting/, r.out);
+  assert.match(r.out, /health: waiting on module service server-manager\/ssh  running starting/, r.out);
   assert.equal(w.gens().at(-1).health, "good", r.out);
   assert.equal(Number(readFileSync(w.d("ctrl/new-module-probes"), "utf8")), 2, "probed twice before passing");
 });
