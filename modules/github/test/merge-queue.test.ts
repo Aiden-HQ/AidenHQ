@@ -398,7 +398,7 @@ test("a product PR that changes the reviewer merges on green checks at its bound
   await settle();
   assert.equal(github.merges().length, 1);
   assert.equal(outcomes[0]?.ok, false);
-  assert.match(outcomes[0].text, /outside the fleet org, the product repo and maintainer_repos/);
+  assert.match(outcomes[0].text, /outside the fleet org, the product repo and the listed repos/);
 
   // The product PR moved after its record was approved: stopped at once, never merged.
   prs["acme/aidenhq"] = { head: "e".repeat(40), checks: "SUCCESS" };
@@ -1628,13 +1628,13 @@ test("an edit that skipped every job never turns a red head green, and an invali
   assert.equal(decide(dataWithStatus, H).do, "fail", "a status's timestamp is not a check run's rank");
 });
 
-test("a maintained repo merges as the owner; once it leaves maintainer_repos its approved merge is refused at queue time", async () => {
+test("a listed repo merges as the owner; once it leaves the listed repos its approved merge is refused at queue time", async () => {
   const prs = { "globex/payments": { head: HEAD, checks: "SUCCESS" } };
   const github = fakeGitHub(prs);
   const dir = mkdtempSync(join(tmpdir(), "merges-"));
   const reports = [];
-  const queue = (maintained) => createMerges({
-    dir, gh: github.gh, fleetOrg: "acme-agents", productRepo: "acme/aidenhq", maintained,
+  const queue = (listed) => createMerges({
+    dir, gh: github.gh, fleetOrg: "acme-agents", productRepo: "acme/aidenhq", listed,
     reviewGate: async () => undefined, report: async (id, o) => void reports.push({ id, ...o }),
   });
   const tick = () => new Promise((r) => setTimeout(r, 20));
@@ -1653,7 +1653,7 @@ test("a maintained repo merges as the owner; once it leaves maintainer_repos its
   await tick();
   assert.equal(github.merges().length, 1, "not merged");
   assert.equal(unlisted.status("k-00000000000000f2").state, "failed");
-  assert.match(reports.find((r) => r.id === "k-00000000000000f2").text, /outside the fleet org, the product repo and maintainer_repos/);
+  assert.match(reports.find((r) => r.id === "k-00000000000000f2").text, /outside the fleet org, the product repo and the listed repos/);
 });
 
 test("merge queue waits while disconnected", async (t) => {

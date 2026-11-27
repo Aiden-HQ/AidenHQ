@@ -1,5 +1,5 @@
 // The code host's gates that must not loosen now that it acts as the owner (spec 2026-11-20-github-owner-identity): outside our
-// own repos (the fleet org's, the product repo) and maintainer_repos it only pushes and opens PRs, and the owner's token reaches a
+// own repos (the fleet org's, the product repo) and the listed repos it only pushes and opens PRs, and the owner's token reaches a
 // git child only through that child's env, answered by a helper for https://github.com alone.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -13,7 +13,7 @@ test("outside the fleet org and the product repo: PR-only (no merge unless liste
   assert.equal(ownRepo("other/lib", ORG, PRODUCT), false);
   assert.equal(ownRepo(`${ORG}/app`, ORG, PRODUCT) && ownRepo(PRODUCT, ORG, PRODUCT), true);
   assert.equal(mergeable("other/lib", ORG, PRODUCT, []), false);
-  assert.equal(mergeable("Other/Lib", ORG, PRODUCT, ["other/lib"]), true, "a maintained repo merges");
+  assert.equal(mergeable("Other/Lib", ORG, PRODUCT, ["other/lib"]), true, "a listed repo merges");
   assert.throws(() => plan({ kind: "github.push", args: {} }, { agentsOrg: ORG, productRepo: PRODUCT, instanceRepo: `${ORG}/aidenhq-instance`, branches: [{ repo: "other/lib", branch: "main", defaultBranch: "main", sha: "a".repeat(40), files: ["a"] }] }), /outside the agents org/);
 });
 

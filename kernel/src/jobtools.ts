@@ -37,7 +37,7 @@ export function createJobTools({ db, secret, engines, orgs = () => [], reach = (
   engines: () => string[];
   /** The agents orgs (one per enabled code host): the only orgs a job's `repo-checkout` may name. */
   orgs?: () => string[];
-  /** Whether the code host's merge rules reach this repo (the agents orgs, the product, `maintainer_repos`; never the instance repo, which only Apply writes): the repos a session may push. */
+  /** Whether the code host's merge rules reach this repo (the agents orgs, the product, the listed repos: the Maintainer's and Ship's; never the instance repo, which only Apply writes): the repos a session may push. */
   reach?: (repo: string) => boolean;
   /** The owner's autonomy setting: `off` binds sessions, so no git token is given then. */
   autonomy?: () => string;
@@ -112,7 +112,7 @@ export function createJobTools({ db, secret, engines, orgs = () => [], reach = (
       const m = /^([\w.-]+)\/([\w.-]+)$/.exec(String(b?.repo ?? "").trim());
       if (!m || /^\.+$/.test(m[1]!) || /^\.+$/.test(m[2]!)) throw new JobToolError(400, "bad-repo", "give the repository as org/name");
       const repo = `${m[1]}/${m[2]!.replace(/\.git$/, "")}`;
-      if (!reach(repo)) throw new JobToolError(403, "not-allowed", `${repo} isn't a repository the code host merges in (the agents orgs, the product, maintainer_repos)`);
+      if (!reach(repo)) throw new JobToolError(403, "not-allowed", `${repo} isn't a repository the code host merges in (the agents orgs, the product, a repo listed for the Maintainer or Ship)`);
       return { repo };
     },
     /**

@@ -70,7 +70,7 @@ subscribes:
     resources: "*"
 # The live read a watch checks on arm and on restart (POST /v1/codehost/read): the repos the code host manages.
 codehost:
-  read: { repos: [ "@agents/*", "@product", "@instance", "@maintained" ] }
+  read: { repos: [ "@agents/*", "@product", "@instance", "@listed" ] }
 connections:
   sessions:
     setup: "Built in: nothing to connect."

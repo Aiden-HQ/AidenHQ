@@ -211,7 +211,7 @@ member with open tasks can't be removed: drain or hand them off first. Every age
 The board's Agents page draws the team as a parent row (running of its members' parallel slots) over its members, and its
 Settings tab edits the team in place: the record's model, effort and `max_parallel` write `teams.<name>.defaults`, a member's
 write `teams.<name>.members.<key>`.
-A task's repos are only those the code hosts have (the agents org's, the product, the instance, `github_orgs`, `maintainer_repos`, and `local/…`
+A task's repos are only those the code hosts have (the agents org's, the product, the instance, `github_orgs`, the listed repos (`listed_repos`: the Maintainer's and Ship's lists), and `local/…`
 repos that exist): a branch, a path or a library named like `owner/name` is none. Weights are each 0 to 10, load at least 1;
 a member lists at most 20 repo patterns. The Fleet Steward tunes members' `repos` and the `weights` daily, as reviewed
 experiments ([design/settings-changes.md](design/settings-changes.md), Routing tuning).

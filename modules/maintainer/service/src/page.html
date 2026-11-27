@@ -74,7 +74,7 @@
   const draft = (repo) => (drafts[repo] ??= structuredClone(saved(repo)));
   const dirty = (repo) => repo in drafts && !eq(drafts[repo], saved(repo));
   // What a Close needs a number for, and the number it starts from.
-  const SUGGEST = { no_reply_days: 14, inactive_issue_days: 60, quiet_pr_days: 7 };
+  const SUGGEST = { no_reply_days: 14, inactive_issue_days: 60 };
 
   // The proposal: each changed field (a field back at its default is null, so the entry stays as short as it can).
   function edits() {
@@ -134,8 +134,6 @@
     for (const [act, verb] of [["close", "closes"], ["label", "labels"]]) { const l = Object.keys(names).filter((k) => d.actions[k] === act).map((k) => names[k]); if (l.length) bits.push(`${verb} ${l.join(", ")}`); }
     if (d.no_reply_days) bits.push(`closes unanswered issues after ${d.no_reply_days} days`);
     if (d.inactive_issue_days) bits.push(`closes inactive issues`);
-    if (d.quiet_pr_days) bits.push("closes quiet contributor PRs");
-    if (d.dependabot !== "off") bits.push(d.dependabot === "all" ? "takes every Dependabot update" : "fixes failing Dependabot updates");
     const s = bits.join(" · ") || "lists the repo; nothing automatic";
     return s[0].toUpperCase() + s.slice(1);
   }
@@ -166,10 +164,7 @@
         act("fixed", "Already fixed", ["Merged work already fixes it; the comment cites the commit. Label adds ", code("fixed"), "."])),
       sec("Cleanup", null,
         closeRow(repo, "no_reply_days", "No reply to a question", ["Asked the reporter for details and heard nothing. Covers empty reports too."], "Close after"),
-        closeRow(repo, "inactive_issue_days", "Inactive issues", [`One notice first, then closed ${D.inactive_grace_days} days later if still quiet.`], "Notice after"),
-        closeRow(repo, "quiet_pr_days", "Inactive contributor PRs", ["A nudge, then closed after the same wait again. Drafts wait twice as long."], "Nudge after")),
-      sec("Pull requests", null,
-        srow("Dependabot updates", ["Which dependency bumps an engineer takes through to a merge."], seg(repo, "dependabot", [["off", "Off"], ["failing", "Failing checks"], ["all", "All"]], d.dependabot, (v) => change(repo, { dependabot: v })))),
+        closeRow(repo, "inactive_issue_days", "Inactive issues", [`One notice first, then closed ${D.inactive_grace_days} days later if still quiet.`], "Notice after")),
       h("div", { className: "sec last" }, advBtn, ...(adv ? [
         srow("Fix label", ["The label that asks for a fix."], fixLabel),
         srow("Who may approve with a label", ["A label from anyone else is ignored."], roles),
@@ -185,7 +180,6 @@
     const btn = (text, fn, cls = "") => { const b = h("button", { type: "button", textContent: text, className: cls }); b.addEventListener("click", fn); return b; };
     const acts = gone ? [btn("Keep", () => { removing = null; redraw(); propose(); })]
       : open && fresh ? [btn("Discard", () => { added = added.filter((x) => x !== repo); delete drafts[repo]; redraw(); propose(); })]
-      : open && r.ship ? [h("span", { className: "sum", textContent: "Remove it on the Ship page" })]
       : open ? [btn("Remove", () => { removing = repo; redraw(); propose(); })]
       : [btn("Edit", () => { openRepo = repo; redraw(); })];
     const top = h("div", { className: "top" }, h("div", { className: "who" }, h("div", { className: "name" }, h("span", { textContent: repo }), ...tags.filter(Boolean)), h("div", { className: "sum", textContent: summary(d) })), h("div", { className: "acts" }, ...acts));

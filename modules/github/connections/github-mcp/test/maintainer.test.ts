@@ -1045,9 +1045,11 @@ it("maintainer_repos: defaults, bare repos, and a role outside admin, maintain o
     [OTHER, "fix-me", ["write"]],
   ]);
   // Duties are opt-in (fixes and new-issue triage aside), and every verdict labels.
-  expect(parseRepos(PRODUCT)[0]).toMatchObject({ fixes: true, triage: "new", features: false, dependabot: "off", quiet_pr_days: null, actions: { duplicate: "label", invalid: "label", fixed: "label" }, no_reply_days: null, inactive_issue_days: null, protected_labels: ["roadmap", "wip", "blocked"] });
-  expect(parseRepos(JSON.stringify([{ repo: PRODUCT, features: true, fixes: false, quiet_pr_days: 14, actions: { fixed: "close" } }]))[0]).toMatchObject({ fixes: false, features: true, quiet_pr_days: 14, actions: { duplicate: "label", invalid: "label", fixed: "close" } });
-  expect(() => parseRepos(JSON.stringify([{ repo: PRODUCT, contributor_prs: true }]))).toThrow("maintainer_repos[0]: unknown key contributor_prs (it is now quiet_pr_days)");
+  expect(parseRepos(PRODUCT)[0]).toMatchObject({ fixes: true, triage: "new", features: false, actions: { duplicate: "label", invalid: "label", fixed: "label" }, no_reply_days: null, inactive_issue_days: null, protected_labels: ["roadmap", "wip", "blocked"] });
+  expect(parseRepos(JSON.stringify([{ repo: PRODUCT, features: true, fixes: false, actions: { fixed: "close" } }]))[0]).toMatchObject({ fixes: false, features: true, actions: { duplicate: "label", invalid: "label", fixed: "close" } });
+  expect(() => parseRepos(JSON.stringify([{ repo: PRODUCT, contributor_prs: true }]))).toThrow("maintainer_repos[0]: unknown key contributor_prs (moved to Ship: quiet_pr_days on the repo's ship.repos entry)");
+  // Pull requests are Ship's: an entry still carrying a PR duty names its new home.
+  expect(() => parseRepos(JSON.stringify([{ repo: PRODUCT, dependabot: "all" }]))).toThrow("unknown key dependabot (moved to Ship: dependabot on the repo's ship.repos entry)");
   for (const bad of [
     [{ repo: PRODUCT, quiet_pr_days: 0 }],
     [{ repo: PRODUCT, quiet_pr_days: "x" }],
@@ -1073,8 +1075,7 @@ it("maintainer_repos: defaults, bare repos, and a role outside admin, maintain o
 
 it("days have no upper limit and null is off; protected labels take any text", () => {
   const at = (e: object) => parseRepos(JSON.stringify([{ repo: PRODUCT, ...e }]))[0]!;
-  expect(at({ dependabot: "all" }).dependabot).toBe("all");
-  expect(at({ quiet_pr_days: 365, no_reply_days: 400, inactive_issue_days: null })).toMatchObject({ quiet_pr_days: 365, no_reply_days: 400, inactive_issue_days: null });
+  expect(at({ no_reply_days: 400, inactive_issue_days: null })).toMatchObject({ no_reply_days: 400, inactive_issue_days: null });
   expect(at({ protected_labels: ["🚧 in progress"] }).protected_labels).toEqual(["🚧 in progress"]);
 });
 
@@ -1218,7 +1219,7 @@ it("oneIssue reads the issue as it stands with its label's trust verdict, and nu
   expect((await maintainer(f).bootstrap([OTHER])).repos).toEqual([]);
 });
 
-it("pr_list tells bot, fleet and human PRs apart, and reads a human author's latest activity and what waits on them", async () => {
+it("Ship's quiet-PR read tells bot, fleet and human PRs apart, reads a human author's latest activity and what waits on them, and reads only listed repos", async () => {
   const f = fake({});
   const pr = (number: number, login: string, extra: object = {}) => ({ number, user: { login, type: login.endsWith("[bot]") ? "Bot" : "User" }, draft: false, labels: [{ name: "x" }], requested_reviewers: [], requested_teams: [], head: { sha: `s${number}` }, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-03-01T00:00:00Z", ...extra });
   const answers: Record<string, unknown> = {
@@ -1241,8 +1242,13 @@ it("pr_list tells bot, fleet and human PRs apart, and reads a human author's lat
     const hit = u.hostname === "api.github.com" ? answers[u.pathname] : undefined;
     return hit !== undefined ? { status: 200, json: async () => hit } : f.fetchFn(url, init);
   }) as unknown as typeof fetch;
-  const m = new Maintainer(accessFor(fetchFn), parseRepos(JSON.stringify([{ repo: PRODUCT }])), [], records([2])); // #2 is the fleet's
-  const { prs } = await m.prList(PRODUCT);
+  // The Maintainer's own list is empty: Ship's repo is read because it is a listed repo, not a maintained one.
+  const m = new Maintainer(accessFor(fetchFn), [], [], records([2])); // #2 is the fleet's
+  await expect(m.prRepos([{ repo: PRODUCT, quiet_pr_days: 7 }], ["other/x"])).rejects.toThrow(/isn't a listed repo/);
+  await expect(m.prRepos([{ repo: PRODUCT, quiet_pr_days: 0 }], [PRODUCT])).rejects.toThrow(/list of up to 50/);
+  const { repos } = await m.prRepos([{ repo: PRODUCT, quiet_pr_days: 7 }], [PRODUCT.toUpperCase()]);
+  expect(repos.map((r) => [r.repo, r.quiet_pr_days, r.error])).toEqual([[PRODUCT, 7, undefined]]);
+  const prs = repos[0]!.prs!;
   expect(prs.map((p) => [p.number, p.author_kind])).toEqual([[1, "bot"], [2, "fleet"], [3, "human"], [4, "human"]]);
   // Dave's comment is not the author's: Carol's latest word is her own comment, and a review is asked of someone.
   expect(prs[2]).toMatchObject({ draft: true, review_requested: true, last_author_activity: "2026-02-01T00:00:00Z", waiting_on_author: "still a draft" });

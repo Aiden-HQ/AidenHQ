@@ -53,8 +53,8 @@ interface State {
   agentsOrg?: string;
   instanceRepo?: string;
   productRepo?: string;
-  /** maintainer_repos ("owner/name"): merged and closed as in the agents org. */
-  maintained?: string[];
+  /** The listed repos ("owner/name": the Maintainer's and Ship's lists): merged and closed as in the agents org. */
+  listed?: string[];
   requester?: { platform?: boolean };
   workspace?: string;
   branches?: Branch[];
@@ -79,11 +79,11 @@ const isLocal = (repo: unknown) => same(orgOf(repo), LOCAL_ORG);
 const agentsOrgs = (s: State) => [s.agentsOrgs ?? s.agentsOrg].flat().filter(Boolean);
 const inAgentsOrg = (repo: unknown, s: State) => agentsOrgs(s).some((o) => same(orgOf(repo), o));
 /**
- * A repo the owner listed in `maintainer_repos` outside the agents org (`maintained`, the code host's parsed list): the fleet
+ * A repo the owner listed for the Maintainer or Ship outside the agents org (`listed`, compile's listed_repos): the fleet
  * merges and closes there as in the agents org (owner, 2026-11-20). The owner's account reaching a repo never counts by itself.
  */
-const inMaintained = (repo: unknown, s: State) => !inAgentsOrg(repo, s) && (s.maintained ?? []).some((r) => same(r, repo));
-const LISTED = "the owner listed it in maintainer_repos";
+const inListed = (repo: unknown, s: State) => !inAgentsOrg(repo, s) && (s.listed ?? []).some((r) => same(r, repo));
+const LISTED = "the owner listed it for the Maintainer or Ship";
 
 /**
  * Each item's parts (a branch of a push or PR, a PR of a merge or close; create_repo is one item), in the request's order.
@@ -153,7 +153,7 @@ function shipEffectParts(action: "approve" | "enqueue" | "repair" | "retarget", 
 function shipEffectPart(action: "approve" | "enqueue" | "repair" | "retarget", p: Pr, s: State): Part {
   const ref = `${p.repo}#${p.number ?? "?"}`;
   if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`);
-  if (!same(p.repo, s.productRepo) && !inAgentsOrg(p.repo, s) && !inMaintained(p.repo, s)) return REJECT("outside-merge", `${ref} is outside the agents org, the product repo and maintainer_repos`);
+  if (!same(p.repo, s.productRepo) && !inAgentsOrg(p.repo, s) && !inListed(p.repo, s)) return REJECT("outside-merge", `${ref} is outside the agents org, the product repo and the listed repos`);
   if (!p.ship) return REJECT("ship-generation", `${ref}: a ${action} names an adoption`);
   if (!p.ship.byShip) return REJECT("ship-only", `${ref}: only the ship module files a ${action}`);
   const refused = shipRefusal(p.ship, ref);
@@ -170,7 +170,7 @@ function shipEffectPart(action: "approve" | "enqueue" | "repair" | "retarget", p
 function retitlePart(p: Pr, s: State): Part {
   const ref = `${p.repo}#${p.number ?? "?"}`;
   if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`);
-  if (!same(p.repo, s.productRepo) && !inAgentsOrg(p.repo, s) && !inMaintained(p.repo, s)) return REJECT("outside-merge", `${ref} is outside the agents org, the product repo and maintainer_repos`);
+  if (!same(p.repo, s.productRepo) && !inAgentsOrg(p.repo, s) && !inListed(p.repo, s)) return REJECT("outside-merge", `${ref} is outside the agents org, the product repo and the listed repos`);
   if (!p.ship) return REJECT("ship-generation", `${ref}: a retitle names an adoption`);
   // A job files a retitle on the adoption's own task (the Engineer ship woke): an adoption with no task yet belongs to nobody,
   // and no job may write a PR it wasn't handed.
@@ -250,15 +250,15 @@ function publishParts(action: string, b: Branch, s: State): Part[] {
 }
 
 /**
- * close: prs [{ repo }]. Tier 0 in the agents org, on the product repo and on a maintained repo: closing changes no code,
+ * close: prs [{ repo }]. Tier 0 in the agents org, on the product repo and on a listed repo: closing changes no code,
  * the reason is posted on the PR, and reopening it undoes it (agents are trusted: a duplicate PR is theirs to close). The
  * instance repo's PRs are the owner's.
  */
 function closePart(p: Pr, s: State) {
   if (same(p.repo, s.instanceRepo)) return REJECT("core-repo-close", `${p.repo} is the instance repo: its PRs are the owner's`);
   if (same(p.repo, s.productRepo)) return T(0, "product-close", "closing a PR of the product repo is reversible (reopen) and changes no code");
-  if (inMaintained(p.repo, s)) return T(0, "maintained-close", `closing a PR of ${p.repo} (${LISTED}) is reversible and changes no code`);
-  if (!inAgentsOrg(p.repo, s)) return REJECT("outside-close", `${p.repo} is outside the agents org and maintainer_repos`);
+  if (inListed(p.repo, s)) return T(0, "listed-close", `closing a PR of ${p.repo} (${LISTED}) is reversible and changes no code`);
+  if (!inAgentsOrg(p.repo, s)) return REJECT("outside-close", `${p.repo} is outside the agents org and the listed repos`);
   return T(0, "agents-org-close", `closing a PR of ${p.repo} is reversible and changes no code`);
 }
 
@@ -337,10 +337,10 @@ function mergeParts(p: Pr, s: State): Part[] {
   if (same(p.repo, s.instanceRepo)) return [REJECT("core-repo-merge", `${ref} is the instance repo: it changes only through apply`)];
   if (same(p.repo, s.productRepo)) return productMergeParts(p, ref, s);
   if (!Array.isArray(p.files)) return [REJECT("unknown-files", `couldn't list every file ${ref} changes; try again`)];
-  // A maintained repo outside the agents org merges like an agents-org repo, under its own rule names (the reviewer sees
+  // A listed repo outside the agents org merges like an agents-org repo, under its own rule names (the reviewer sees
   // where it is). Anywhere else the code host only opens PRs: the merge queue refuses it too (merges.ts).
-  const listed = inMaintained(p.repo, s);
-  if (!listed && !inAgentsOrg(p.repo, s)) return [REJECT("outside-merge", `${ref} is outside the agents org and maintainer_repos: the code host only opens PRs there`)];
+  const listed = inListed(p.repo, s);
+  if (!listed && !inAgentsOrg(p.repo, s)) return [REJECT("outside-merge", `${ref} is outside the agents org and the listed repos: the code host only opens PRs there`)];
   const friction = mergeFriction(p, ref);
   if (friction) return [friction];
   const parts: Part[] = [];
@@ -351,7 +351,7 @@ function mergeParts(p: Pr, s: State): Part[] {
   if (p.sensitive) parts.push(T(1, "sensitive-app", `${ref} is a sensitive app's repo (access, caps or connects to paperclip)`));
   // A head the runner didn't push (a fork, someone else's push, Dependabot's): the reviewer reads the diff first.
   if (!p.ownHead) parts.push(listed
-    ? T(1, "maintained-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of ${p.repo} (${LISTED})`)
+    ? T(1, "listed-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of ${p.repo} (${LISTED})`)
     : T(1, "agents-org-merge-foreign-head", `${ref}: its head isn't a commit the runner pushed to a branch of ${p.repo}`));
   // Merged at once when CI is green (owner, 2026-11-12): the PR merges on its own (an independent queue), strict and bound to
   // this head, only once every named check passed on it; red leaves it unmerged. None yet or still running waits.
@@ -360,7 +360,7 @@ function mergeParts(p: Pr, s: State): Part[] {
   // A change request on this server: no CI code-review job read it (that needs GitHub's OIDC), so the AI reviewer reads the
   // card's diff and the request chain (owner, 2026-11-17). Merged only once every named check is green on this head.
   if (isLocal(p.repo)) parts.push(T(1, "local-merge", `${ref}: a change request on this server; ${c.text}`));
-  else if (listed) parts.push(c.green ? T(0, "maintained-merge", `${ref} (${LISTED}): ${c.text}`) : T(0, "maintained-merge-checks-running", `${ref} (${LISTED}): ${c.text}`));
+  else if (listed) parts.push(c.green ? T(0, "listed-merge", `${ref} (${LISTED}): ${c.text}`) : T(0, "listed-merge-checks-running", `${ref} (${LISTED}): ${c.text}`));
   else parts.push(c.green ? T(0, "agents-org-merge", `${ref}: ${c.text}`) : T(0, "agents-org-merge-checks-running", `${ref}: ${c.text}`));
   return parts;
 }

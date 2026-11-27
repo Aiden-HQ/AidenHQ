@@ -1,7 +1,7 @@
 // The quiet_pr_days duty (moved from the Maintainer's watcher): a quiet human PR is nudged, then closed after another quiet spell.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { prTick } from "../service/src/contributor.ts";
+import { contributorPrAct, prTick } from "../service/src/contributor.ts";
 
 const kv = () => {
   const m = new Map();
@@ -18,7 +18,7 @@ test("a quiet PR is nudged, then closed after another quiet spell; an active aut
   const store = kv(), log = logs(), tasks = [];
   let now = NOW, rows = [pr({ number: 1 }), pr({ number: 2 })];
   const prs = async () => ({ repos: [{ repo: R, quiet_pr_days: 7, prs: rows }] });
-  const firePr = async (_r, t) => (tasks.push(`${t.kind}:${t.number}`), true);
+  const firePr = async (_r, t) => (tasks.push(`${t.kind}:${t.number}`), "done" as const);
   const look = () => prTick({ prs, firePr, store, log, now });
   assert.equal(await look(), 2);
   // Within the hour nothing is read again.
@@ -38,7 +38,7 @@ test("a nudge keeps the deadline it promised when the repo's quiet window is low
   let now = NOW, days = 14;
   const rows = [pr({ number: 1, last_author_activity: ago(15) })];
   const prs = async () => ({ repos: [{ repo: R, quiet_pr_days: days, prs: rows }] });
-  const firePr = async (_r, t) => (tasks.push(t), true);
+  const firePr = async (_r, t) => (tasks.push(t), "done" as const);
   assert.equal(await prTick({ prs, firePr, store, log, now }), 1);
   assert.equal(tasks[0].close_by, new Date(NOW + 14 * DAY).toISOString().slice(0, 10));
   // The owner lowers the window to 7: the 14 days the nudge promised still hold.
@@ -50,4 +50,47 @@ test("a nudge keeps the deadline it promised when the repo's quiet window is low
   assert.deepEqual(tasks.map((t) => t.kind), ["nudge", "close"]);
   assert.equal(tasks[1].close_by, new Date(NOW + 14 * DAY).toISOString().slice(0, 10));
   // Had the close recomputed from the lowered window it would already have been filed at NOW + 8 days.
+});
+
+test("Ship nudges and closes a quiet PR itself, in fixed words: a nudge is one comment; a close is a comment, then the close; a failed close retries only the close", async () => {
+  const calls: string[] = [];
+  let closes = 0;
+  const act = contributorPrAct({ comment: async (repo, n, text) => (calls.push(`comment ${repo}#${n}: ${text}`), true), close: async (repo, n) => (calls.push(`close ${repo}#${n}`), ++closes > 1) });
+  assert.equal(await act("acme/app", { number: 7, kind: "nudge", waiting: "failing checks (1)", close_by: "2026-12-10", activity: "x" }), "done");
+  assert.deepEqual(calls, ["comment acme/app#7: This pull request is waiting on its author: failing checks (1). Still working on this? Push or reply by 2026-12-10 to keep it open."]);
+  calls.length = 0;
+  const close = { number: 7, kind: "close" as const, waiting: null, close_by: "2026-12-10", activity: "x" };
+  assert.equal(await act("acme/app", close), "noted", "the comment posted, the close refused");
+  assert.match(calls[0]!, /^comment acme\/app#7: Closed for inactivity\. .*github\.com\/acme\/app\/issues\/new/);
+  calls.length = 0;
+  assert.equal(await act("acme/app", close, { noted: true }), "done");
+  assert.deepEqual(calls, ["close acme/app#7"], "the retry only closes");
+  const none = contributorPrAct({ comment: async () => false, close: async () => (calls.push("closed anyway"), true) });
+  assert.equal(await none("acme/app", close), false);
+  assert.ok(!calls.includes("closed anyway"));
+});
+
+test("a close reads the PR again first: an author who acted since the batch read keeps it open", async () => {
+  const day = 86_400_000, now = Date.parse("2026-12-20T00:00:00Z");
+  const row = (activity: string) => ({ number: 9, author_kind: "human" as const, draft: false, last_author_activity: activity, review_requested: false, waiting_on_author: "failing checks (1)" });
+  const state: Record<string, string> = { maintainer_prs: JSON.stringify({ repos: { "acme/app": { nudged: { 9: { at: "2026-12-01T00:00:00Z", author_activity_at: "2026-11-20T00:00:00Z", close_at: "2026-12-08T00:00:00Z" } } } } }) };
+  const store = { meta: (k: string) => state[k], setMeta: (k: string, v: string) => void (state[k] = v) };
+  let reads = 0;
+  const prs = async () => ({ repos: [{ repo: "acme/app", quiet_pr_days: 7, prs: [row(++reads === 1 ? "2026-11-20T00:00:00Z" : new Date(now - day).toISOString())] }] });
+  const done: string[] = [];
+  assert.equal(await prTick({ prs, firePr: async (_r, t) => (done.push(t.kind), "done"), store, log: { info() {}, warn() {} }, now }), 0);
+  assert.deepEqual(done, []);
+  assert.equal(reads, 2);
+});
+
+
+test("a repo's quiet-PR history is one, whatever its spelling: a nudge kept as Acme/App is not sent again for acme/app", async () => {
+  const now = Date.parse("2026-12-03T00:00:00Z");
+  const state: Record<string, string> = { maintainer_prs: JSON.stringify({ repos: { "Acme/App": { nudged: { 9: { at: "2026-12-01T00:00:00Z", author_activity_at: "2026-11-20T00:00:00Z", close_at: "2026-12-08T00:00:00Z" } } } } }) };
+  const store = { meta: (k: string) => state[k], setMeta: (k: string, v: string) => void (state[k] = v) };
+  const prs = async () => ({ repos: [{ repo: "acme/app", quiet_pr_days: 7, prs: [{ number: 9, author_kind: "human" as const, draft: false, last_author_activity: "2026-11-20T00:00:00Z", review_requested: false, waiting_on_author: "failing checks (1)" }] }] });
+  const done: string[] = [];
+  assert.equal(await prTick({ prs, firePr: async (_r, t) => (done.push(t.kind), "done"), store, log: { info() {}, warn() {} }, now }), 0);
+  assert.deepEqual(done, []);
+  assert.ok(JSON.parse(state.maintainer_prs!).repos["acme/app"].nudged[9]);
 });

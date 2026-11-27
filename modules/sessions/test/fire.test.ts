@@ -65,6 +65,6 @@ test("restart reconciles", async () => {
 test("unwatched repo is refused", async () => {
   const { kernel, watches, armWatch } = setup();
   kernel.unwatched.add("acme/widgets");
-  await assert.rejects(armWatch(), /acme\/widgets isn't watched: add it to maintainer_repos/);
+  await assert.rejects(armWatch(), /acme\/widgets isn't watched: the owner adds it to the Maintainer's or Ship's list/);
   assert.deepEqual(watches.list("T1"), []);
 });

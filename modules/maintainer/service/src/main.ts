@@ -44,7 +44,7 @@ startMaintainer({
 const readKey = () => { try { return readFileSync(process.env.MAINTAINER_SERVICE_KEY_FILE ?? "", "utf8").trim(); } catch { return ""; } };
 const jwks = kernelJwks(`${process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130"}/v1/jwks`);
 const mcp = serveMcp(
-  createMcp("maintainer", configTools({ repos: () => process.env.MAINTAINER_REPOS ?? "", shipRepos: () => process.env.MAINTAINER_SHIP_REPOS ?? "" }), [{ uri: "ui://maintainer/page", html: pageHtml(new URL("./", import.meta.url)) }]),
+  createMcp("maintainer", configTools({ repos: () => process.env.MAINTAINER_REPOS ?? "" }), [{ uri: "ui://maintainer/page", html: pageHtml(new URL("./", import.meta.url)) }]),
   readKey, (req) => verifyCaller(req, jwks, "maintainer"),
 );
 createServer(async (req, res) => {

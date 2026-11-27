@@ -450,7 +450,7 @@ vendor_tags="$(node --input-type=module -e '
     glean: ["employee_search", "meeting_lookup", "code_search", "chat", "user_activity", "memory_schema"],
     grafana: ["alerting_rules_read", "alerting_silences_read", "generate_deeplink", "render_grafana_app", "suggest_loki_alloy_label_config", "user_info", "validate_provisioning_file"],
     // the own tools of github-mcp (every route they use is listed in the GitHub check below) share its host with github_official.
-    github: ["github_project_read", "github_issue_read", "github_job_log", "github_pr_files", "github_pr_threads", "github_product_issue_status", "github_issue_link", "github_issue_list", "github_label_events", "github_pr_list", "github_repo_tree", "github_repo_file"],
+    github: ["github_project_read", "github_issue_read", "github_job_log", "github_pr_files", "github_pr_threads", "github_product_issue_status", "github_issue_link", "github_issue_list", "github_label_events", "github_repo_tree", "github_repo_file"],
     github_official: ["issue_read", "pull_request_read"],
     hubspot: ["tool_guidance"],
     primer: ["primer_record_changes", "primer_widget_get"],

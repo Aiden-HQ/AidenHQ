@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { followFeed, RETRY_MS, startLoop } from "../service/src/loop.ts";
+import { followFeed, RETRY_MS, startLoop, watchSet } from "../service/src/loop.ts";
 import { adoptedPass } from "../service/src/adopted.ts";
 import { ciRecover } from "../service/src/ci-recover.ts";
 import { PRESETS } from "../service/src/settings.ts";
@@ -1585,4 +1585,18 @@ test("a list page that times out is retried at half the size, the size is kept, 
   full = true;
   await m.watch.tick();
   assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 12, "a quick full page doubles it once the cooldown passed");
+});
+
+test("the watch set comes from Ship's own entries: a repo ship works gets every duty; one it doesn't, only its Dependabot duty while that is on", () => {
+  const settings: Record<string, { enabled: boolean; dependabot: "off" | "failing" | "all" }> = {
+    "acme/product": { enabled: true, dependabot: "all" }, "on/repo": { enabled: true, dependabot: "off" },
+    "off/bumps": { enabled: false, dependabot: "failing" }, "off/quiet": { enabled: false, dependabot: "off" }, "off/tracked": { enabled: false, dependabot: "off" },
+  };
+  const set = Object.fromEntries(watchSet({ repos: ["acme/product", "on/repo", "On/Repo", "off/bumps", "off/quiet", "off/tracked", "no/entry"], settings: (r) => settings[r] ?? null, tracked: (r) => r === "off/tracked" }));
+  assert.deepEqual(set, {
+    "acme/product": { duties: "all", dependabot: "all" },
+    "on/repo": { duties: "all", dependabot: "off" },
+    "off/bumps": { duties: "dependabot", dependabot: "failing" },
+    "off/tracked": { duties: "dependabot", dependabot: "off" }, // polled only to close the tasks it filed
+  });
 });

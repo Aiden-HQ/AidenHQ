@@ -497,14 +497,24 @@ test("teams: any module agent becomes a team record over named members (template
   assert.throws(bad({}, { overrides: { agents: { engineer: { max_parallel: 2 } } } }), /engineer is team research's record/);
 });
 
-test("maintainer_repos: an old key or a boolean dependabot fails the compile naming the new one, so the last good generation keeps running", () => {
+test("maintainer_repos: an old key (a pull-request duty included) fails the compile naming its new home, so the last good generation keeps running", () => {
   const bad = (entry) => () => compile(product, pinst(["github"], { ...owner, maintainer_repos: [entry] }));
-  assert.throws(bad({ repo: "acme/app", dependabot: true }), /settings.maintainer_repos: .*dependabot must be one of off, failing, all \(true is all\)/);
+  assert.throws(bad({ repo: "acme/app", dependabot: "all" }), /settings.maintainer_repos: .*dependabot \(moved to Ship: dependabot on the repo's ship.repos entry\)/);
+  assert.throws(bad({ repo: "acme/app", quiet_pr_days: 7 }), /quiet_pr_days \(moved to Ship: quiet_pr_days on the repo's ship.repos entry\)/);
   assert.throws(bad({ repo: "acme/app", label: "fix" }), /label \(it is now fix_label\)/);
   assert.throws(bad({ repo: "acme/app", issues: false }), /issues \(it is now fixes\)/);
   assert.throws(bad({ repo: "acme/app", preset: "full" }), /preset \(removed: set triage and features\)/);
   assert.throws(bad({ repo: "acme//tools" }), /settings.maintainer_repos: .*repo must be owner\/name/);
-  assert.doesNotThrow(bad({ repo: "acme/app", dependabot: "all", fix_label: "fix", fixes: false }));
+  assert.doesNotThrow(bad({ repo: "acme/app", features: true, fix_label: "fix", fixes: false }));
+});
+
+test("listed repos: the Maintainer's list and Ship's, the Maintainer's only while its module is on; code review's never", () => {
+  const settings = { ...owner, maintainer_repos: ["acme/app", { repo: "Globex/Lib" }], ship: { defaults: "cautious", repos: { "globex/lib": "full", "initech/api": {} } }, code_review: { repos: [{ repo: "umbrella/web" }] } };
+  const listed = (modules) => { const r = compile(product, pinst(modules, settings)); return [r.kernelModules.repos.listed, r.compose.services["github-github"].environment.GITHUB_LISTED_REPOS]; };
+  assert.deepEqual(listed(["github", "maintainer", "ship"]), [["acme/app", "globex/lib", "initech/api"], "acme/app,globex/lib,initech/api"]);
+  assert.deepEqual(listed(["github", "ship"])[0], ["globex/lib", "initech/api"], "the Maintainer off: its list grants nothing");
+  // A Ship entry its own editor would refuse grants nothing: the compile fails naming it.
+  assert.throws(() => compile(product, pinst(["github", "ship"], { ...owner, ship: { repos: { "x/y": null } } })), /settings.ship: x\/y: a preset name or a map of fields/);
 });
 
 test("code review: every watched repo asks its verdict; the kernel skips the AI reviewer only where every selectable tier gates; old shapes fail", () => {

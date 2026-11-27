@@ -27,7 +27,7 @@
  *
  * The cursor (the last log seq committed) moves only after a batch's effects are written to this service's state file (state.json), so a
  * crash or a refused filing redelivers it; every handler is idempotent (the fired, noted and triaged sets, and the task sources).
- * `quiet_pr_days` nudges are the ship module's (modules/ship/service/src/contributor.ts).
+ * Pull requests (quiet contributor PRs, Dependabot) are the ship module's (its per-repo settings).
  */
 import { readFileSync } from "node:fs";
 import { kernelClient, type FactIn } from "./aidenhq-sdk/kernel-client.ts";

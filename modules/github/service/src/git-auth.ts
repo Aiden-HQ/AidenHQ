@@ -30,11 +30,11 @@ const isProduct = (slug: string | undefined, product: ProductRepos) => [product 
 export const ownRepo = (slug: string | undefined, fleetOrg: string | undefined, productRepo: ProductRepos) => inOrg(fleetOrg, slug) || isProduct(slug, productRepo);
 
 /**
- * Where the merge queue merges (owner, 2026-11-20): our own repositories and every repository the owner listed in
- * maintainer_repos (`maintained`). Elsewhere the code host only opens PRs.
+ * Where the merge queue merges (owner, 2026-11-20): our own repositories and every listed repository (`listed`: the
+ * owner listed it for the Maintainer or Ship). Elsewhere the code host only opens PRs.
  */
-export const mergeable = (slug: string | undefined, fleetOrg: string | undefined, productRepo: ProductRepos, maintained: string[]) =>
-  ownRepo(slug, fleetOrg, productRepo) || maintained.some((m) => sameSlug(slug, m));
+export const mergeable = (slug: string | undefined, fleetOrg: string | undefined, productRepo: ProductRepos, listed: string[]) =>
+  ownRepo(slug, fleetOrg, productRepo) || listed.some((m) => sameSlug(slug, m));
 
 /**
  * Per-command git config for a token in env AIDENHQ_GIT_TOKEN (never argv, URL or .git/config): settings a planted repo

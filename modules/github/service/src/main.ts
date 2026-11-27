@@ -6,7 +6,8 @@
 //   CACHE_DIR               the bare cache clones and the held writes (its data dir)
 //   GITHUB_FLEET_ORG        github_fleet_org: where the fleet's repos live on GitHub ("" while unset)
 //   INSTANCE_REPO, PRODUCT_REPO
-//   GITHUB_MAINTAINER_REPOS the maintained repos (setting maintainer_repos): the fleet merges and closes there
+//   GITHUB_LISTED_REPOS     the listed repos (compile's listed_repos: the Maintainer's and Ship's lists, comma-separated):
+//                           the fleet merges and closes there as in the fleet org
 //   GITHUB_RELEASE_WINDOW_MINUTES release_window_minutes: the release train's batch window (minutes)
 //   GITHUB_REVIEW_GATED     the repos code review gates (comma-separated; compile derives it): their merges wait for its verdict,
 //                           asked with the module's own token
@@ -20,7 +21,6 @@ import { createServer } from "node:http";
 import { mergeable } from "./git-auth.ts";
 // github-mcp's built entry (the image builds it beside this tree): it starts both connections and hands back the owner's access.
 import { startGithubMcp } from "../../connections/github-mcp/dist/src/main.js";
-import { parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
 import { createService, reviewerOf, shipAdoptions } from "./service.ts";
 import { createReviewGate } from "./review-gate.ts";
 import { serveOps } from "./ops.ts";
@@ -38,8 +38,7 @@ if (!key) throw new Error("github: CODEHOST_KEY_FILE is empty");
 const { access, app: githubApp, reportNeed, sync, sources, useFeed } = await startGithubMcp();
 const fleetOrg = env.GITHUB_FLEET_ORG ?? "";
 
-// A list the parser refuses (an old key after an upgrade) leaves no repo maintained and says why, rather than taking the code host down.
-const maintained = (() => { try { return parseRepos(env.GITHUB_MAINTAINER_REPOS ?? ""); } catch (e) { log("maintainer_repos refused: no repo is maintained until it is fixed", { err: String((e as Error).message).slice(0, 300) }); return []; } })();
+const listed = (env.GITHUB_LISTED_REPOS ?? "").split(",").map((r) => r.trim()).filter(Boolean);
 // compile always sets it (module.yaml's default, 5-1440): anything else is a broken deploy, so fail loudly.
 const releaseWindowMinutes = Number(env.GITHUB_RELEASE_WINDOW_MINUTES);
 if (!Number.isInteger(releaseWindowMinutes) || releaseWindowMinutes < 1) throw new Error(`github: GITHUB_RELEASE_WINDOW_MINUTES is not a positive number of minutes: ${env.GITHUB_RELEASE_WINDOW_MINUTES}`);
@@ -48,7 +47,7 @@ const reviewGate = createReviewGate({ gated: (env.GITHUB_REVIEW_GATED ?? "").spl
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
   access, reportNeed, ops: serveOps, fleetOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
-  productRepo: env.PRODUCT_REPO || undefined, maintained: maintained.map((r) => r.repo), releaseWindowMinutes,
+  productRepo: env.PRODUCT_REPO || undefined, listed, releaseWindowMinutes,
   churnExclude: (env.CHURN_EXCLUDE ?? "").split(",").map((g) => g.trim()).filter(Boolean),
   reviewGate,
   // The ship module's adoptions, only while it is on (compiled): absent, every write naming an adoption is refused.
@@ -66,11 +65,11 @@ access.withCaller("train", () => handle.startReleases());
 const kernelUrl = env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130";
 const feed = createFeed({
   gh: access.rest, cacheDir, kernel: kernelClient(kernelUrl, key), log,
-  // The repos the code host manages, the maintained ones included: always watched.
+  // The repos the code host manages, the listed ones included: always watched.
   // Signed out, the set can't be read: the feed keeps what it watched (and its state) until GitHub is back.
   managed: async () => {
     if (!access.connected()) throw new Error("GitHub isn't connected");
-    return [...new Set([...(await handle.managedRepos()), ...maintained.map((r) => r.repo.toLowerCase())])];
+    return [...new Set([...(await handle.managedRepos()), ...listed.map((r) => r.toLowerCase())])];
   },
   kindOf: (who, association, repo, seen) => handle.flow.kindOf(who, association, repo, seen),
   member: (who, association, repo) => handle.flow.isMember(who, association, repo),
@@ -97,7 +96,7 @@ const ship = shipRoutes({
   gh: access.rest, decision: handle.shipDecision, gate: reviewGate, cacheDir,
   // A head's check runs from the feed's snapshot while it is fresh, instead of a second read of the same list.
   checkRuns: (repo, sha) => feed.checkRuns(repo, sha),
-  allowed: (repo) => mergeable(repo, fleetOrg, env.PRODUCT_REPO || undefined, maintained.map((r) => r.repo)),
+  allowed: (repo) => mergeable(repo, fleetOrg, env.PRODUCT_REPO || undefined, listed),
   isShip: (auth) => isModule(kernelUrl, auth, "ship"),
 });
 /** Who a request's GitHub calls are for, in the hourly count: ship, an op (`ops:<op>`), an apply step, or the code host's writes. */

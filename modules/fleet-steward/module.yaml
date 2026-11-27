@@ -48,6 +48,8 @@ agents:
       # Where the product-bug issues the Maintainer filed for it stand: a read. Filing is the Maintainer's; github_issue_link is
       # the report as the owner's prefilled link, for an install where GitHub isn't connected (prompt product-bugs).
       github?: [ github_product_issue_status, github_issue_link, github_issue_list ]
+      # Ship's status (a read): the weekly review's Dependabot step reads the product repo's `dependabot` from it.
+      ship?: [ ship_status ]
       # fleet_status through fleet-read (no fleet_control, no relaying, no approvals decided); coach_record through fleet-audit;
       # handbook_list/handbook_read through librarian; task_route, and task_finish/task_cancel on any agent's
       # task, through fleet-settle. task_create/task_delegate only to delegate_to below. task_handoff only on its own part of the

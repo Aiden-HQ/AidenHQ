@@ -3,7 +3,7 @@
 ## What it does
 
 Owns the lifecycle of every pull request on the repos it covers: the fleet's own repos (the agents org and the product
-repo) and every repo in `maintainer_repos`. One `ship` setting holds per-repo entries and two presets (`cautious`, the
+repo) and every repo added to Ship (its own list, the keys of `ship.repos`: the Maintainer and code review keep theirs). One `ship` setting holds per-repo entries and two presets (`cautious`, the
 default, and `full`), every knob a per-repo setting with no floor in code (`null` caps are unlimited).
 
 Its watch loop reads a repo's open PRs (one list read) when the github module's change feed reports a change there (a PR
@@ -16,9 +16,12 @@ or review comments (code review's findings, and any unanswered review thread or 
 github's member-comments.ts), and files the merge (`github.merge`) once code review passes. Past a cap (`caps`) the PR holds and its
 owner is told: a task's PR wakes whoever asked for the task, a member's PR gets its report comment and its author assigned; a new
 push resumes it. Checks whose jobs never started, and check runs wedged after their job finished, are re-run for any PR. Ship
-also closes a cancelled, superseded or finished task's leftover PR, files a Dependabot PR's task, and has the Maintainer nudge,
-then close, a quiet contributor PR on repos with `quiet_pr_days` set. The pause stops all of it, merges already filed included.
-The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui://ship/page`) is where it is set: Add repo (a draft panel: the name, a start from Defaults, Cautious, Full or a copy of a listed repo, and the same settings editor; a repo that starts from Defaults follows later changes to them) and, per repo, on or off, preset, which PRs to adopt (`handoff`), `by_tier` (per risk tier: whether the App approves and whether ship merges), a global pause, and the holds. The module's settings are for the advanced options only.
+also closes a cancelled, superseded or finished task's leftover PR, files a Dependabot PR's task on repos whose entry sets `dependabot`
+(off, failing, all), and nudges, then closes, a quiet contributor PR on repos whose entry sets `quiet_pr_days` (both in fixed
+words, as the owner, with the Ship footer; a close reads the PR again first). Both run on the product repo (which may
+take them from Defaults) and on every repo with an entry, whether or not Ship works the repo's PRs. Pull requests are Ship's:
+the Maintainer does issues only. The pause stops all of it, merges already filed included.
+The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui://ship/page`) is where it is set: Add repo (a draft panel: the name, a start from Defaults, Cautious, Full or a copy of a listed repo, and the same settings editor; a repo that starts from Defaults follows later changes to them) and, per repo, on or off, preset, which PRs to adopt (`handoff`), Dependabot updates, inactive contributor PRs, `by_tier` (per risk tier: whether the App approves and whether ship merges), a global pause, and the holds. The module's settings are for the advanced options only.
 
 ## How a PR moves
 
@@ -53,8 +56,9 @@ The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui
 
 ## Connect
 
-GitHub only: ship is available once a GitHub repo is connected (the `github` module); the local code host keeps its own merge path. List repos in `maintainer_repos` (the fleet's own are covered already), then give a repo an entry
-in the Fleet page, or ask Aiden.
+GitHub only: ship is available once a GitHub repo is connected (the `github` module); the local code host keeps its own merge path. Add a repo on the Fleet page (the fleet's own are covered
+already); its settings change there or through Aiden. A repo added to Ship is also a listed repo, where the fleet's work may merge
+and close (the code host's `listed_repos`: Ship's list and the Maintainer's).
 
 Without ship, no PR is watched: Engineers merge their own green PRs (`aidenhq merge`, a `github.merge` record).
 
@@ -62,9 +66,9 @@ Without ship, no PR is watched: Engineers merge their own green PRs (`aidenhq me
 
 Sam (the `ship` agent) is ship's teammate: he answers the owner about a PR's merge state, holds and the queue, and changes
 the settings when asked. The `ship` connection. Read: `ship_config`, `ship_status`. Write: `ship_configure`. Both need the
-`ship-admin` role (Sam, the Maintainer and Aiden hold it); the owner's own Fleet page calls them too, and `ship_configure` then only returns the typed settings change (the board files it on his Save). A repo ship doesn't cover yet is the owner's to add from the Fleet page, as one change covering its `maintainer_repos` and `ship` entries. Code review is separate: adding a repo to ship never turns it on (the owner does that from the Reviews page), and a repo it doesn't watch merges by the `unwatched` setting. A change that loosens anything (more hand-off, a higher or removed cap, a tier's approve or merge raised) is the owner's, made from the
+`ship-admin` role (Sam, the Maintainer and Aiden hold it); the owner's own Fleet page calls them too, and `ship_configure` then only returns the typed settings change (the board files it on his Save). A repo ship doesn't cover yet is the owner's to add from the Fleet page: Add writes only its `ship` entry and Remove drops only that. The Maintainer and code review are separate: adding a repo to Ship never lists it there (the owner does that from their pages), and a repo code review doesn't watch merges by the `unwatched` setting. Ship reads no other module's list. A change that loosens anything (more hand-off, a higher or removed cap, a tier's approve or merge raised, `dependabot: all`, quiet-PR closing turned on) is the owner's, made from the
 Fleet page.
 
 ## New installs
 
-In the default bundle, quiet: a repo is worked only when it is enabled (`enabled`, on by default for the fleet's own repos; enabling a listed repo applies `cautious`). The Fleet page's controls are Enabled, Preset, Which PRs to adopt (`handoff`) and `by_tier` (approve and merge per risk tier). With `defaults: cautious` it works only the fleet's own repos, as github's PR watch did. A `maintainer_repos` repo is not touched until it has an entry.
+In the default bundle, quiet: a repo is worked only when it is enabled (`enabled`, on by default for the fleet's own repos; enabling a listed repo applies `cautious`). The Fleet page's controls are Enabled, Preset, Which PRs to adopt (`handoff`) and `by_tier` (approve and merge per risk tier). With `defaults: cautious` it works only the fleet's own repos, as github's PR watch did. Dependabot tasks and quiet-PR closing are off everywhere until the owner turns them on per repo (or in Defaults); before pull requests moved to Ship, an unlisted product repo took every Dependabot bump, so an install that wants that sets `dependabot: all` on the product repo's entry.

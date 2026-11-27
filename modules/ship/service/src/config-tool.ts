@@ -2,8 +2,7 @@
 // repo, `ship_configure` changes one repo's entry. Built like code-review's: the change is applied to the raw value, the whole
 // result validated, and one typed settings change filed as the calling job (POST /v1/settings/agent).
 // A change that loosens anything (loosens()) is the owner's: the tool refuses it and the owner makes it from the board.
-import { CAP_KEYS, CONTROLS, covers, effective, FIELDS, loosens, PRESETS, removable, TIERS, validate, type Scope } from "./settings.ts";
-import { addListed } from "./aidenhq-sdk/maintained-repos.ts";
+import { CAP_KEYS, CONTROLS, effective, inFleet, FIELDS, loosens, PRESETS, removable, TIERS, validate, type Scope } from "./settings.ts";
 import { status } from "./status.ts";
 import type { State } from "./state.ts";
 import type { Tool } from "./mcp.ts";
@@ -58,74 +57,47 @@ export function applyShipChange(raw: Dict, c: Change): { value: Dict; summary: s
   const target = isDefaults ? value : repos;
   const slot = isDefaults ? "defaults" : key;
   if (next === undefined) delete target[slot]; else target[slot] = next;
-  // An entry left outside the scope (its repo was taken off the Maintainer) isn't this change's to fix: only the repo being changed is checked against it.
-  const entries = Object.entries((value.repos as Dict) ?? {}).filter(([k]) => covers(k, c.scope) || k.toLowerCase() === c.repo.toLowerCase());
-  const errors = validate({ ...value, repos: Object.fromEntries(entries) }, c.scope);
+  const errors = validate(value);
   if (errors.length) throw new Error(`that setting wouldn't work: ${errors.join("; ")}`);
   return { value, summary: [summary], loosens: loosens(raw, value, c.scope) };
 }
 
+const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 const same = (a: unknown, b: string) => String(typeof a === "string" ? a : (a as Dict)?.repo).toLowerCase() === b.toLowerCase();
 
 /**
- * Adds a repo to ship: one settings change that lists it for the Maintainer (maintainer_repos, no duty on, unless already listed) and
- * gives it its ship entry, so what is missing lands together or none does. Code review is separate and stays as it is: the owner
- * turns it on from the Reviews page (a repo it doesn't watch merges by the `unwatched` setting). Only the owner's Fleet page calls it.
- * No `change` is an empty entry: it inherits the defaults and follows their later changes.
+ * Adds a repo to Ship: its entry in ship.repos, Ship's own list, and nothing else (the Maintainer and code review keep their own
+ * lists). Only the owner's Fleet page calls it. No `change` is an empty entry: it inherits the defaults and follows their later changes.
  */
-export function addRepo(d: { raw: Dict; scope: Scope; maintainerRepos: unknown[]; codeReview: Dict }, repo: string, change: unknown) {
-  // A repo the Maintainer already lists (or the fleet covers) keeps its entry and duties: only what is missing is added.
-  const listed = covers(repo, d.scope);
-  const maintainerRepos = listed ? undefined : addListed(d.maintainerRepos, repo, { fixes: false, triage: "off" });
-  const { value, summary } = applyShipChange(d.raw, { repo, change: change ?? {}, scope: { ...d.scope, listed: [...d.scope.listed, repo] } });
-  const changes: Dict[] = [
-    ...(maintainerRepos ? [{ kind: "setting", key: "maintainer_repos", value: maintainerRepos }] : []),
-    { kind: "setting", key: "ship", value: (({ paused: _p, ...ship }) => ship)(value) },
-  ];
-  return { changes, summary: [`${repo}: added to ship (${listed ? "already listed" : "listed for the Maintainer"}; code review is turned on from the Reviews page), then ${summary[0]!.slice(repo.length + 2)}`] };
+export function addRepo(d: { raw: Dict }, repo: string, change: unknown) {
+  if (!REPO.test(repo)) throw new Error(`${repo.slice(0, 100)} isn't owner/name`);
+  const { value, summary } = applyShipChange(d.raw, { repo, change: change ?? {}, scope: { fleet: [] } });
+  return { changes: [{ kind: "setting", key: "ship", value: (({ paused: _p, ...ship }) => ship)(value) }] as Dict[], summary: [`${repo}: added to Ship, then ${summary[0]!.slice(repo.length + 2)}`] };
 }
 
-/** Takes a listed repo off ship and the Maintainer in one change (and off code review when the owner watches it there): no ship entry is left outside the scope. Only the owner's Fleet page calls it. */
-export function removeRepo(d: { raw: Dict; scope: Scope; maintainerRepos: unknown[]; codeReview: Dict }, repo: string) {
+/** Takes a repo off Ship: its entry goes, and nothing else (the Maintainer and code review keep their own lists). Only the owner's Fleet page calls it. */
+export function removeRepo(d: { raw: Dict; scope: Scope }, repo: string) {
   const hasEntry = Object.keys((d.raw.repos as Dict) ?? {}).some((k) => same(k, repo));
-  if (!removable(repo, d.scope, hasEntry)) throw new Error(`${repo} isn't a listed repo (a fleet repo stays covered)`);
-  if (!covers(repo, d.scope) && hasEntry) {
-    // An orphan entry (its repo left the Maintainer): only the ship entry goes.
-    const { paused: _p, ...ship } = structuredClone(d.raw);
-    ship.repos = Object.fromEntries(Object.entries((ship.repos ?? {}) as Dict).filter(([k]) => !same(k, repo)));
-    return { changes: [{ kind: "setting", key: "ship", value: ship }] as Dict[], summary: [`${repo}: its ship entry removed`] };
-  }
+  if (!removable(repo, d.scope, hasEntry)) throw new Error(`${repo} has no entry of its own to remove (a fleet repo stays covered)`);
   const { paused: _p, ...ship } = structuredClone(d.raw);
-  const repos = (ship.repos ?? {}) as Dict;
-  for (const k of Object.keys(repos)) if (same(k, repo)) delete repos[k];
-  const reviewed = ((d.codeReview.repos as unknown[]) ?? []);
-  const watched = reviewed.filter((x) => !same(x, repo));
-  return {
-    changes: [
-      { kind: "setting", key: "maintainer_repos", value: d.maintainerRepos.filter((x) => !same(x, repo)) },
-      ...(watched.length === reviewed.length ? [] : [{ kind: "setting", key: "code_review", value: { ...d.codeReview, repos: watched } }]),
-      { kind: "setting", key: "ship", value: { ...ship, repos } },
-    ] as Dict[],
-    summary: [`${repo}: removed from ship and the Maintainer${watched.length === reviewed.length ? "" : " and code review"}`],
-  };
+  ship.repos = Object.fromEntries(Object.entries((ship.repos ?? {}) as Dict).filter(([k]) => !same(k, repo)));
+  return { changes: [{ kind: "setting", key: "ship", value: ship }] as Dict[], summary: [`${repo}: removed from Ship`] };
 }
 
 export function configTools(d: {
   raw: () => Dict; scope: () => Scope; state: State;
-  /** maintainer_repos and settings.code_review as compiled (a new repo is added to maintainer_repos; code_review is only read, for a remove). */
-  maintainerRepos: () => unknown[]; codeReview: () => Dict;
   /** POST /v1/settings/agent as the calling job (its assertion goes along). */
   file: (changes: Dict[], assertion: string) => Promise<unknown>;
 }): Tool[] {
   return [
     {
       name: "ship_config", roles: ["ship-admin"],
-      description: "What ship is set to: the raw setting, its problems, the presets, the scope (fleet repos and listed ones) and the effective settings of each listed repo.",
+      description: "What ship is set to: the raw setting, its problems, the presets, the scope (the fleet's own repos) and the effective settings of each repo with an entry.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       run: async () => {
         const raw = d.raw(), scope = d.scope();
         const repos = Object.keys((raw.repos as Dict) ?? {}).map((r) => [r, effective(raw, r, scope)]);
-        return { setting: raw, problems: validate(raw, scope), scope, presets: PRESETS, controls: CONTROLS, defaults: effective(raw, "*/*", { fleet: ["*/*"], listed: [] }), repos: Object.fromEntries(repos) };
+        return { setting: raw, problems: validate(raw), scope, presets: PRESETS, controls: CONTROLS, defaults: effective(raw, "*/*", { fleet: ["*/*"] }), repos: Object.fromEntries(repos) };
       },
     },
     {
@@ -136,29 +108,30 @@ export function configTools(d: {
     },
     {
       name: "ship_configure", roles: ["ship-admin"],
-      description: "Change ship's settings in one reviewed settings change on your task. { repo: owner/name or `defaults`, change: a preset name (cautious | full), a map of the fields to change (reset: [field, caps.x, by_tier.<tier>.approve or merge, or unwatched.merge to drop back to the preset], enabled, preset, handoff, rebase, generated { globs, command }, fix, protected, caps { … null = unlimited }, approve, safe, merge, stop_label, actions { conflict | behind | before_merge: [ { comment: /rebase } | { workflow: pr-rebase.yml, inputs? } ] }: the repo's own commands and workflows, before_merge workflows only, an ordinary change) or null to drop the entry } and/or { paused: true | false } for the kill switch (its own setting, ship_paused: it works whatever state the repo entries are in); { edits: { repos: { <repo>: change, … }, paused? } } applies several together (the Fleet page's pending edits); or { repo, add: true } (the owner's: lists a new repo for the Maintainer and gives it its ship entry; code review is separate, turned on from the Reviews page), or { repo, remove: true } (the owner's: it takes a listed repo off ship and the Maintainer, and off code review when it is watched there). A repo ship doesn't cover yet is the owner's to add from the Fleet page. Refused whole when the result wouldn't validate. A change that loosens anything (more handoff, a higher or removed cap, a tier's approve or merge raised, a wider fix, a narrower protected list, clearing paused) is the owner's: it is refused here and the owner makes it from the Fleet page.",
+      description: "Change ship's settings in one reviewed settings change on your task. { repo: owner/name or `defaults`, change: a preset name (cautious | full), a map of the fields to change (reset: [field, caps.x, by_tier.<tier>.approve or merge, or unwatched.merge to drop back to the preset], enabled, preset, handoff, rebase, generated { globs, command }, fix, protected, caps { … null = unlimited }, approve, safe, merge, stop_label, actions { conflict | behind | before_merge: [ { comment: /rebase } | { workflow: pr-rebase.yml, inputs? } ] }: the repo's own commands and workflows, before_merge workflows only, an ordinary change, dependabot: off | failing | all (all is the owner's), quiet_pr_days: days or null (turning it on is the owner's)) or null to drop the entry } and/or { paused: true | false } for the kill switch (its own setting, ship_paused: it works whatever state the repo entries are in); { edits: { repos: { <repo>: change, … }, paused? } } applies several together (the Fleet page's pending edits); or { repo, add: true } (the owner's: gives a new repo its ship entry; the Maintainer and code review keep their own lists), or { repo, remove: true } (the owner's: drops the repo's ship entry, nothing else). A repo ship doesn't cover yet is the owner's to add from the Fleet page. Refused whole when the result wouldn't validate. A change that loosens anything (more handoff, a higher or removed cap, a tier's approve or merge raised, a wider fix, a narrower protected list, clearing paused) is the owner's: it is refused here and the owner makes it from the Fleet page.",
       inputSchema: { type: "object", properties: { repo: { type: "string" }, change: {}, paused: { type: "boolean" }, add: { type: "boolean" }, remove: { type: "boolean" }, edits: { type: "object" } }, additionalProperties: false },
       run: async (a, caller) => {
         const raw = d.raw(), scope = d.scope(), owner = caller.kind === "owner";
         const repo = typeof a.repo === "string" ? a.repo : undefined;
         const hasEntry = (r: string) => Object.keys((raw.repos as Dict) ?? {}).some((k) => same(k, r));
-        const notYours = (r: string) => `${r} isn't covered yet: adding a repo (its maintainer_repos and ship entries together) is the owner's: ask them to add it from the Fleet page`;
+        const notYours = (r: string) => `${r} isn't on Ship yet: adding a repo is the owner's: ask them to add it from the Fleet page`;
         let changes: Dict[], summary: string[], l: string[] = [];
         if (a.remove === true && repo) {
           if (!owner) throw new Error("removing a repo is the owner's: ask them to remove it from the Fleet page");
-          ({ changes, summary } = removeRepo({ raw, scope, maintainerRepos: d.maintainerRepos(), codeReview: d.codeReview() }, repo));
+          ({ changes, summary } = removeRepo({ raw, scope }, repo));
         } else if (a.add === true && repo) {
-          // One change across the github, code-review and ship settings: the board saves it for the owner; an agent's filing is per module, so an agent is refused.
           if (!owner) throw new Error(notYours(repo));
           if (typeof a.paused === "boolean") throw new Error("adding a repo is its own change: pause separately");
           if (hasEntry(repo)) throw new Error(`${repo} is already on ship: change it in the table`);
-          ({ changes, summary } = addRepo({ raw, scope, maintainerRepos: d.maintainerRepos(), codeReview: d.codeReview() }, repo, a.change));
+          ({ changes, summary } = addRepo({ raw }, repo, a.change));
         } else {
           const edits = (a.edits as { repos?: Dict; paused?: boolean } | undefined) ?? { repos: repo ? { [repo]: a.change } : {}, paused: typeof a.paused === "boolean" ? a.paused : undefined };
           let value: Dict = raw;
           summary = [];
           for (const [r, change] of Object.entries(edits.repos ?? {})) {
-            if (r !== "defaults" && change !== null && !hasEntry(r) && !covers(r, scope)) throw new Error(notYours(r));
+            if (r !== "defaults" && change !== null && !hasEntry(r) && !inFleet(r, scope)) throw new Error(notYours(r));
+            // Dropping a repo's entry takes it off Ship (and off the listed repos): the owner's, like Remove.
+            if (!owner && change === null && hasEntry(r) && !inFleet(r, scope)) throw new Error("removing a repo is the owner's: ask them to remove it from the Fleet page");
             const x = applyShipChange(value, { repo: r, change, scope }); value = x.value; summary.push(...x.summary);
           }
           changes = [];
