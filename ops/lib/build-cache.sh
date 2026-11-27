@@ -8,12 +8,14 @@
 # 20 GB floor. `DOCKER` and `DF` name the binaries (tests stub them).
 aidenhq_build_cache_ceiling_gb() {
   local docker="${DOCKER:-docker}" df="${DF:-df}" root kb gb
-  root="$("$docker" info -f '{{.DockerRootDir}}' 2>/dev/null)" || root=""
+  # Bounded like the prunes after it: a daemon that stops answering must not hold the apply here.
+  local bound=""; ! command -v timeout >/dev/null 2>&1 || bound="timeout -k 5s 15s"
+  root="$($bound "$docker" info -f '{{.DockerRootDir}}' 2>/dev/null)" || root=""
   kb=""
   [ -z "$root" ] || kb="$("$df" -Pk "$root" 2>/dev/null | awk 'NR==2 {print $2}')"
   case "$kb" in
     ''|*[!0-9]*) gb=20 ;;
-    *) gb=$((kb * 15 / 100 / 1000 / 1000)) ;;
+    *) gb=$((kb * 1024 * 15 / 100 / 1000000000)) ;; # df -k blocks are 1024 bytes; Docker's GB are 10^9
   esac
   [ "$gb" -ge 20 ] || gb=20
   [ "$gb" -le 60 ] || gb=60

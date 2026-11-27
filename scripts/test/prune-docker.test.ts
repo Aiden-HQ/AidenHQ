@@ -233,7 +233,7 @@ esac
 exit 0
 `);
   chmodSync(join(bin, "docker"), 0o755);
-  writeFileSync(join(bin, "df"), fakeDf(267_000_000));
+  writeFileSync(join(bin, "df"), fakeDf(260_742_188));
   chmodSync(join(bin, "df"), 0o755);
   return {
     bin,
@@ -447,11 +447,11 @@ test("the build-cache ceiling is 15% of the Docker disk, clamped to 20-60 GB, 20
       cwd: repo, encoding: "utf8", env: { PATH: "/usr/bin:/bin", DOCKER: join(dir, "docker"), DF: join(dir, "df") },
     }).trim();
   };
-  assert.equal(ceiling(100_000_000), "20", "100 GB disk: 15 GB, raised to the floor");
-  assert.equal(ceiling(267_000_000), "40", "267 GB disk: 15% = 40 GB");
-  assert.equal(ceiling(1_000_000_000), "60", "1 TB disk: 150 GB, capped");
+  assert.equal(ceiling(97_656_250), "20", "100 GB disk (1024-byte blocks): 15 GB, raised to the floor");
+  assert.equal(ceiling(260_742_188), "40", "267 GB disk: 15% = 40 GB");
+  assert.equal(ceiling(976_562_500), "60", "1 TB disk: 150 GB, capped");
   assert.equal(ceiling(null), "20", "unreadable disk: the floor");
-  assert.equal(ceiling(267_000_000, ""), "20", "no Docker root dir: the floor");
+  assert.equal(ceiling(260_742_188, ""), "20", "no Docker root dir: the floor");
 });
 
 test("the verification reads an absent Build Cache row and a failed image prune as failures, not as clean", () => {

@@ -33,6 +33,7 @@ main() {
   . ops/lib/generations.sh
   . ops/lib/progress.sh
   . ops/lib/ci-runner-enabled.sh
+  . ops/lib/build-cache.sh
   local want="" force=0 gen="" recover=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1136,7 +1137,7 @@ switchOver() {
   # would otherwise hold the apply here, after services restarted and before the new product is recorded as applied.
   # `-k 30s` is the hard deadline: timeout's own SIGTERM can be ignored by a stuck buildx child, and the SIGKILL 30 s
   # later guarantees each step ends, so the steps after it and the applied-product marker are still reached.
-  cache_gb="$(. ops/lib/build-cache.sh; aidenhq_build_cache_ceiling_gb)"
+  cache_gb="$(aidenhq_build_cache_ceiling_gb)"
   timeout -k 30s 15m docker builder prune -f --max-used-space "${cache_gb}GB" >/dev/null 2>&1 || true
   timeout -k 30s 15m docker builder prune -f --keep-storage "${cache_gb}GB" >/dev/null 2>&1 || true
   timeout -k 30s 10m docker image prune -af --filter until=48h --filter label!=aidenhq.keep=true >/dev/null 2>&1 || true

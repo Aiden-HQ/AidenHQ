@@ -178,11 +178,11 @@ runs, its live database is left out and its hourly dumps carry it; for a complet
 first. A Postgres volume in use (the warehouse's `pgdata`) is skipped; its nightly dump volume is copied. The secret
 vault and the notes vault are not included. The backup holds `auth.secret`, so it is mode 0700. It refuses to start
 unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a full root disk crashes Paperclip's
-Postgres). Each successful apply prunes unused images older than 48 hours and caps the build cache at 15% of the Docker disk, clamped to 20-60 GB (`ops/lib/build-cache.sh`; least recently used
+Postgres). Each successful apply prunes unused images older than 48 hours and caps the build cache at 15% of the Docker disk, clamped to 20-60 GB (`ops/lib/build-cache.sh`, one number shared with the verification below; least recently used
 first; both the buildx `--max-used-space` and the classic builder's `--keep-storage` form are tried, since which one the CLI
 knows depends on the buildx plugin). Each prune is its own `-`-prefixed `ExecStart=`, so every one runs whatever the ones
 before it did; a last, unprefixed step (`ops/prune-docker-verify.sh`) re-reads the host — daemon answering, build cache under
-its 40 GB ceiling, no one-off left — and fails the unit when a prune did nothing. `prune-docker.timer` runs the unit every four hours
+its ceiling (the same 15%-of-disk number), no one-off left — and fails the unit when a prune did nothing. `prune-docker.timer` runs the unit every four hours
 (not once a night: the peak between prunes is what crossed the alert line), so the space peak between prunes stays under
 the alert line. It also removes one-off containers — a container with no compose service and no `aidenhq.computer` label, the class a
 `docker run` without `--rm` leaves behind (WOR-9559's two syft scans) — once it has been *stopped* for over a day. It is not
