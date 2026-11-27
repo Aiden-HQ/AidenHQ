@@ -1224,3 +1224,32 @@ test("the watch set comes from Ship's own entries: a repo ship works gets every 
     "off/tracked": { duties: "dependabot", dependabot: "off" }, // polled only to close the tasks it filed
   });
 });
+
+test("a list page that times out is retried at half the size, the size is kept, and a quick page grows it back", async (t) => {
+  const sizes = [];
+  let full = false;
+  const gh = async (method, path, body) => {
+    if (path !== "/graphql") return { status: 404, body: {} };
+    sizes.push(body.variables.first);
+    // A heavy page fails as a 504 or as a 200 with no PR list; GitHub is quick again once pages are full.
+    if (!full && body.variables.first > 10) return body.variables.first === 25 ? { status: 200, body: {} } : { status: 504, body: {} };
+    // A full page (more to come) is what may grow the size; the empty last page after it isn't.
+    const more = full && !body.variables.after;
+    return { status: 200, body: { data: { repository: { defaultBranchRef: { name: "main", target: { oid: "m1", statusCheckRollup: checks("SUCCESS") } }, pullRequests: { pageInfo: { hasNextPage: more, endCursor: more ? "c1" : null }, nodes: [] } } } } };
+  };
+  const m = await multi(t, [{ repo: "acme/app", duties: "all" }], {}, { gh });
+  await m.watch.tick();
+  assert.deepEqual(sizes, [50, 25, 12, 6], "halved at once until a page answered");
+  assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 6);
+  await m.watch.tick();
+  assert.deepEqual(sizes.slice(4), [6], "the next read starts at the kept size");
+  assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 6, "no growth right after a shrink");
+  const db = JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"));
+  db["acme/app"].shrunkAt = Date.now() - 11 * 60_000;
+  writeFileSync(join(m.cacheDir, "loop.json"), JSON.stringify(db));
+  await m.watch.tick();
+  assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 6, "a quick but short page doesn't grow it");
+  full = true;
+  await m.watch.tick();
+  assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 12, "a quick full page doubles it once the cooldown passed");
+});

@@ -355,3 +355,18 @@ test("a compile check that throws is transient: nothing is filed or closed, and 
   assert.deepEqual(asked, [NEW], "the same tip is retried");
   assert.equal(f.k.writes.length, 1, "and now the bump files");
 });
+
+test("a restored filing with a saved commit is rebuilt on the checked revision when the target compiles", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-"));
+  const f = fakes();
+  const clock = { t: new Date("2026-11-18T10:00:00Z") };
+  await train(dir, f, clock).step();
+  writeState(dir, { open: { since: "2026-11-18T10:00:00Z" }, filing: { to: NEW, sha: "9".repeat(40), task: `t-release:instance:${NEW}`, identifier: "ACME-7" } });
+  clock.t = new Date("2026-11-18T10:20:00Z");
+  await train(dir, f, clock, { compile: async () => ({ ok: true, base: BASE }) }).step();
+  assert.equal(f.commitBase, BASE, "the bump is recommitted on the revision the check passed");
+  assert.equal(f.committed, bumpText(NEW));
+  assert.equal(f.k.writes.length, 1, "then filed on the task already filed for this target");
+  assert.equal(f.k.tasks.length, 0, "with no second task opened");
+  assert.equal(f.k.closed.length, 0, "and nothing cancelled");
+});

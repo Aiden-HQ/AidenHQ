@@ -847,3 +847,14 @@ it("labelling or closing an issue never makes it ours: only the note comment the
   const noted = (await m.state(PRODUCT, 1, "closed", "completed", "fixed by acme/product#7")) as { objects?: string[] };
   expect(noted.objects).toEqual([expect.stringMatching(new RegExp(`^github:${PRODUCT}#1/comment/\\d+$`))]);
 });
+
+it("a comment carrying an unterminated private key has everything from the header on removed", async () => {
+  const key = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
+  const m = maintainer(f);
+  const truncated = key.slice(0, key.indexOf("-----END"));
+  const sent = await m.commentBody(PRODUCT, 1, `before\n${truncated}`);
+  expect(sent).toBe("before\n[redacted]");
+  expect(sent).not.toContain("PRIVATE KEY");
+  for (const line of truncated.split("\n").slice(1, -1)) expect(sent).not.toContain(line);
+});

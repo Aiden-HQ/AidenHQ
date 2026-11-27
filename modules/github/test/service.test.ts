@@ -934,3 +934,28 @@ test("the apply read refuses what it can't read whole", async (t) => {
   const link = await call("/aidenhq/v1/apply/read", change("fleet/link", () => { rmSync(join(ws, "instance.yaml")); symlinkSync("/etc/passwd", join(ws, "instance.yaml")); }));
   assert.equal(link.status, 422, "instance.yaml isn't a regular file: refused");
 });
+
+test("ops answer the kernel only; the token op is gone", async (t) => {
+  const { call } = await setup(t);
+  assert.equal((await call("/ops/snapshot", { module: "apps-platform", repo: "acme-agents/widget", ref: "main" }, "apps-key")).status, 401);
+  assert.equal((await call("/ops/token", { module: "apps-platform", repo: "acme-agents/widget", perms: { contents: "read" } })).status, 404);
+});
+
+test("held write is re-checked on reconnect", async (t) => {
+  let on = false;
+  const { root, origin, ws, sha, outcomes, call, handle } = await setup(t, { connected: () => on });
+  const args = { workspace: "TASK-1", only: [{ repo: "acme-agents/widget", branch: "feature", sha }] };
+  assert.equal((await call("/aidenhq/v1/executor/plan", { kind: "github.push", args, requester: { kind: "job", roles: [] }, task: "t1" })).status, 200);
+  await call("/aidenhq/v1/executor/execute", { id: "k-00000000000000d2", kind: "github.push", args, digest: "d", idempotency_key: "h2" });
+  await new Promise((r) => setTimeout(r, 50));
+  // While GitHub was away the task's workspace went: the approved head's bundle is no longer there to read.
+  rmSync(join(dirname(ws), ".aidenhq"), { recursive: true });
+  const held = JSON.parse(readFileSync(join(root, "cache", "held.json"), "utf8"))["k-00000000000000d2"];
+  assert.deepEqual([held.asker.requester, held.asker.task], [{ kind: "job", roles: [] }, "t1"], "held with the requester who asked");
+  on = true;
+  await handle.stepHeld();
+  for (let i = 0; i < 300 && !outcomes.length; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.throws(() => sh(origin, "rev-parse", "--verify", "refs/heads/feature"), "the moved branch is not pushed");
+  assert.equal(outcomes[0]?.ok, false, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /changed while GitHub was disconnected; ask again/);
+});

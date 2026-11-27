@@ -1694,3 +1694,24 @@ test("a file page that can't be read throws, so the gate never answers from the 
   await merges.step();
   assert.deepEqual(github.merges(), [], "a partial file list is never a merge");
 });
+
+test("a planted record-id token in the PR body does not credit another writer's squash merge to the queue", async (t) => {
+  // The exact attack: the record id is knowable, so a PR body can name it. GitHub's default squash message keeps the body, so a
+  // third party's merge after our PUT times out has the record id in its commit message — and must still not be the queue's.
+  const planted = "queue-k-00000000000000ca";
+  const body = `Improve the widget\n\nCo-authored-by: AidenHQ merge queue ${planted} <noreply@aidenhq.ai>`;
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", merged: "b2".repeat(20), body, message: `${body}\n\n(#1)` } };
+  const cacheDir = mkdtempSync(join(tmpdir(), "codehost-planted-"));
+  writeFileSync(join(cacheDir, "pr-tasks.json"), JSON.stringify({ "https://github.com/acme-agents/widget/pull/1": { task: "WOR-9", branch: "feature" } }));
+  // Our PUT times out and changed nothing; someone else merges with GitHub's default message (which carries the PR body).
+  const { handle, outcomes, merge, settle } = await setup(t, { prs, cacheDir, putFails: () => true });
+  await merge("k-00000000000000ca", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges(); // the PUT goes unanswered: the PR is still open and the call is pending
+  prs["acme-agents/widget"].state = "MERGED"; // someone else merges it, GitHub's default message carrying the PR body
+  await handle.stepMerges(); // the poll sees it merged with the planted token in the message
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+  assert.match(outcomes[0].text, /was already merged/, "someone else's merge, not this queue's");
+  assert.doesNotMatch(outcomes[0].text, /Merged https:/);
+  assert.equal(outcomes[0].objects, undefined, "never named as a commit the queue made");
+});

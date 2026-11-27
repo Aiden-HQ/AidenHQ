@@ -611,4 +611,11 @@ describe("guard for posting", () => {
     expect(() => guard("PATCH", "/repos/a/b/issues/comments/9", { body: "x" })).not.toThrow();
     expect(() => guard("PATCH", "/repos/a/b/issues/comments/9", { body: "x", user: "y" })).toThrow();
   });
+
+  it("reads a thread's and a reply's 64-bit id from fullDatabaseId, not the deprecated 32-bit databaseId", async () => {
+    const t = thread("T1", "f_big", "owner1", 4_657_268_819);
+    t.comments.nodes.push({ fullDatabaseId: "4657373830", url: "u2", body: "fixed: 58099a73.", author: { login: "owner1" } });
+    const [got] = await poster(world({ threads: [t] })).threads({ owner: "acme", repo: "payments", number: 12 });
+    expect(got).toMatchObject({ comment: 4_657_268_819, replies: [{ id: 4_657_373_830 }] });
+  });
 });

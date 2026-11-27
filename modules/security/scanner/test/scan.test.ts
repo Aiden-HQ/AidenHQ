@@ -473,3 +473,22 @@ it("zero wire: the feed's briefings become rows with their CVE ids and exploitat
   expect(() => parseFeed("<html></html>")).toThrow("not RSS");
   expect(DDL).toContain("src_security.zerowire");
 });
+
+it("src_security: a shared image key whose second SBOM failed keeps the target unverified", async () => {
+  // The two SBOMs are one inventory, so a member that could not be read means the inventory is partial: the target is
+  // recorded as failed rather than reconciled from the half that read, which would resolve the failed half's findings.
+  const { store, rows, runs } = fakeStore();
+  const target = "image:sha256:index";
+  const sboms: Record<string, unknown> = { "one.json": { matches: [match("openssl", "3.0.1", "CVE-2024-0001", "/var/lib/dpkg/status")] } };
+  const now = Date.parse("2026-11-25T00:00:00Z");
+  const deps = {
+    dbUpdate: async () => undefined,
+    readBatch: async (): Promise<Batch> => ({ finishedAt: new Date(now - 3_600_000), targets: parseTargets(`${target}\tone.json\t\t\n${target}\t-\tdocker save: no room\t`, "/sbom"), imagesComplete: true }),
+    grype: async (f: string) => sboms[f.split("/").pop()!],
+    now: () => now,
+  };
+
+  expect(await scanPass(store, deps)).toBe(0);
+  expect(runs.filter((x) => x.scope === target)).toHaveLength(1);
+  expect(runs.find((x) => x.scope === target)?.error).toMatch(/no room/);
+});

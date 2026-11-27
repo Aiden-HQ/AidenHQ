@@ -1345,3 +1345,15 @@ test("a retitle outside the fleet's own repos is refused when the title names ou
   const own = await setup(t);
   assert.equal((await own.call("/aidenhq/v1/executor/plan", { kind: "github.retitle", args: { ...args, head: own.c1 }, requester: SHIP, task: "t1" })).status, 200);
 });
+
+test("the async enqueue rechecks code review's gate before the PUT", async (t) => {
+  let puts = 0, calls = 0;
+  const { c1, run } = await setup(t, {
+    reviewGate: async () => (++calls === 1 ? undefined : { wait: "code review: running" }),
+    asyncMerge: { put: () => { puts++; return { status: 202, body: { status: "pending", details: { uuid: "u-g" } } }; }, get: () => ({ status: 200, body: { status: "enqueued", details: {} } }) },
+  });
+  const out = await run("k-00000000000000fa", "github.enqueue", { repo: REPO, number: 7, head: c1, generation: 2, attempt: 1, base: "main" });
+  assert.equal(out.ok, false, out.text);
+  assert.match(out.text, /^ship-tier-pending: not queued: code review: running/, "a gate wait is retryable, never a hold");
+  assert.equal(puts, 0, "a review gate that closed while the enqueue was in flight stops the request");
+});
