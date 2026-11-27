@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { AnswerForm } from "./AnswerForm";
 import { HttpStatusError, SignInRequired, api, type Session } from "./api";
-import { ApprovalCard, BatchBar, Decide } from "./ApprovalCard";
+import { ApprovalCard, BatchBar, Decide, TIER_WORDS } from "./ApprovalCard";
 import { useLive } from "./events";
 import { askForNotifications, notificationsSupported } from "./notify";
 import { doneAction, formOnly, useNeedsKeys } from "./needs";
@@ -13,9 +13,10 @@ import { MoreTeam, NextUp, WelcomeStepper } from "./GettingStarted";
 import { Bone } from "./Skeleton";
 import { TaskCheck, useCheckOff } from "./MyTasks";
 import { chipOf } from "./own-tasks";
-import type { Approval, Board, Card, FaceRef, Home, NeedRow, SinceItem } from "./types";
-import { Banner, Button, DigestList, DigestRow, Face, Kbd, Monogram, Page, SectionCard, TeammateChip, Tile, faceProps } from "./ui";
-import { ago, clockOpts, clockText } from "./util";
+import type { About, Approval, Board, Card, FaceRef, Home, NeedRow, SinceItem, Waiting } from "./types";
+import { Markdown } from "./markdown";
+import { Banner, Button, DigestList, DigestRow, Face, Facts, Kbd, Monogram, Page, SectionCard, Tag, Tags, TeammateChip, Tile, faceProps, safeHref } from "./ui";
+import { ago, clockOpts, clockText, when } from "./util";
 import "./home.css";
 
 type Toast = (text: string, action?: { label: string; run: () => void }) => void;
@@ -23,8 +24,8 @@ type Toast = (text: string, action?: { label: string; run: () => void }) => void
 type Receipt = { text: string; onUndo?: () => void; row: NeedRow };
 /** A receipt's key and a row's snooze key (home.ts): an answer row's task and wait (a follow-up question on the same task is a new row), else the row's id. */
 const rkey = (r: NeedRow) => (r.kind === "answer" ? `${r.id}:${r.waitSince}` : r.id);
-/** What the detail drawer shows: a Needs row, or a card that isn't in Needs (#/approvals/<id>). */
-type Pane = { kind: "row"; id: string } | { kind: "card"; id: string } | null;
+/** What the detail drawer shows: a Needs row, a You're waiting on row (by its task's identifier), or a card that isn't in Needs (#/approvals/<id>). */
+type Pane = { kind: "row"; id: string } | { kind: "waiting"; id: string } | { kind: "card"; id: string } | null;
 
 /** The most rows Needs you and You're waiting on list (the newest); the rest is one click away in Tasks. */
 const HOME_ROWS = 10;
@@ -60,7 +61,8 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   const q = useQuery(QUERIES.home, onSignIn);
   const data = q.data;
   const reload = q.reload;
-  const waitingOn = useWaitingOn(data?.world.waiting_on ?? null, reload);
+  const [pane, setPane] = useState<Pane>(null);
+  const waitingOn = useWaitingOn(data?.world.waiting_on ?? null, reload, pane?.kind === "waiting" ? pane.id : null, (id) => setPane({ kind: "waiting", id }));
   useLive(["home", "approvals"], reload, 15_000);
   // The visit's since window: the first answer's start, sent back by every refetch while Home is open.
   useEffect(() => () => void (homeFrom.value = undefined), []);
@@ -71,7 +73,6 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   // Answered and decided rows keep their receipt for this visit, even when a refetch still lists them.
   const [receipts, setReceipts] = useState<Map<string, Receipt>>(() => new Map());
   const receipt = useCallback((row: NeedRow, r: Omit<Receipt, "row"> | null) => setReceipts((m) => { const n = new Map(m); if (r) n.set(rkey(row), { ...r, row }); else n.delete(rkey(row)); return n; }), []);
-  const [pane, setPane] = useState<Pane>(null);
   const [selecting, setSelecting] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   const [batching, setBatching] = useState<"approve" | "reject" | null>(null);
@@ -112,7 +113,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
     return () => io.disconnect();
   }, [sinceEl]);
   // The drawer covers Home (a sheet on a phone, a scrim and the right side elsewhere): what is behind it hasn't been seen (a row's pane closes when the row leaves).
-  const sheetOpen = !!pane && (pane.kind !== "row" || rows.some((r) => r.id === pane.id));
+  const sheetOpen = !!pane && (pane.kind === "row" ? rows.some((r) => r.id === pane.id) : pane.kind === "waiting" ? waitingOn.rows.some((w) => w.identifier === pane.id) : true);
   const sinceReady = !data?.since || (sinceInView && !sheetOpen);
   // Only while Home is in front: a task or run drawer over it (full screen on a phone) hides the snapshot.
   useLayoutEffect(() => {
@@ -214,7 +215,9 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   const approvals = rows.filter((r): r is NeedRow & { kind: "approval" } => r.kind === "approval" && !receipts.has(rkey(r)));
   const chosen = approvals.filter((r) => picked.includes(r.id)).map((r) => r.card);
   const paneRow = pane?.kind === "row" ? rows.find((r) => r.id === pane.id) : undefined;
-  const paneOpen = !!pane && (pane.kind !== "row" || !!paneRow);
+  const paneWaiting = pane?.kind === "waiting" ? waitingOn.rows.find((w) => w.identifier === pane.id) : undefined;
+  const paneOpen = !!pane && (pane.kind === "row" ? !!paneRow : pane.kind === "waiting" ? !!paneWaiting : true);
+  const projects = new Map((day?.projects ?? []).map((p) => [p.id, p.name]));
   const since = data.since && <SinceCard since={data.since} timezone={timezone} from={data.since_from} />;
   const sideShown = !!since;
   const waitingCard = waitingOn.card;
@@ -225,10 +228,15 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   const n = everyLive.length;
   // A row opens in a right drawer over the page (a full-screen sheet on a phone): Home underneath keeps its layout.
   const detail = paneOpen && pane && (
-    <HomeDrawer key={`${pane.kind}:${pane.id}`} rowId={pane.id} onClose={closePane}>
-      {pane.kind === "row" && paneRow && <RowDetail row={paneRow} answer={answer} done={done} receipt={receipts.get(rkey(paneRow))} />}
-      {pane.kind === "card" && <CardAlone key={pane.id} id={pane.id} />}
-    </HomeDrawer>
+    pane.kind === "row" && paneRow ? (
+      <RowDetail key={`row:${pane.id}`} row={paneRow} projects={projects} onClose={closePane} answer={answer} decided={decided} snooze={snooze} done={done} dismiss={dismiss} receipt={receipts.get(rkey(paneRow))} />
+    ) : pane.kind === "waiting" && paneWaiting ? (
+      <WaitingDetail key={`waiting:${pane.id}`} w={paneWaiting} projects={projects} onClose={closePane} close={waitingOn.close} later={waitingOn.later} />
+    ) : pane.kind === "card" ? (
+      <HomeDrawer key={`card:${pane.id}`} rowId={pane.id} onClose={closePane} head={<span className="home-drawer-who"><b>Card {pane.id}</b></span>}>
+        <CardAlone id={pane.id} />
+      </HomeDrawer>
+    ) : null
   );
 
   return (
@@ -284,21 +292,23 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
                   const person = r.kind === "open" ? r.reply?.person : null;
                   const who = person || r.teammate.name;
                   const role = r.kind === "open" && r.reply ? replyRole(r.reply) : r.teammate.job;
+                  const pick = selecting && r.kind === "approval" && !receipts.has(rkey(r));
+                  const mark = person ? <Monogram name={person} size={24} /> : face(r.teammate, 24, "needs");
                   return (
                     <div key={rkey(r)} id={`need-${r.id}`} role="option" aria-selected={keys.at === r.id} onClick={() => keys.setAt(r.id)}>
                       <DigestRow
                         d={{
                           id: r.id,
                           i,
-                          face: person ? <Monogram name={person} size={26} /> : face(r.teammate, 26, "needs"),
+                          // Picking cards for a batch: the box sits before the face, always shown (the buttons show only on hover).
+                          face: pick ? <><label className="approval-pick home-pick" title="Select for a batch decision"><input type="checkbox" checked={picked.includes(r.id)} onChange={() => setPicked((p) => (p.includes(r.id) ? p.filter((x) => x !== r.id) : [...p, r.id]))} aria-label={`Select: ${r.question}`} /></label>{mark}</> : mark,
                           text: <><b>{who}</b> · {r.question}</>,
                           title: `${who} · ${role}: ${r.question}`,
                           meta: r.kind === "open" && r.reply ? `Waiting ${ago(r.since)}` : ago(r.since),
                           active: keys.at === r.id || (pane?.kind === "row" && pane.id === r.id),
                           onOpen: () => (keys.setAt(r.id), setPane({ kind: "row", id: r.id })),
                           receipt: receipts.get(rkey(r)) ?? null,
-                          persist: true,
-                          actions: <RowActions row={r} answer={answer} decided={decided} snooze={snooze} done={done} dismiss={dismiss} pick={selecting && r.kind === "approval" ? { on: picked.includes(r.id), toggle: () => setPicked((p) => (p.includes(r.id) ? p.filter((x) => x !== r.id) : [...p, r.id])) } : undefined} />,
+                          actions: <RowActions row={r} answer={answer} decided={decided} snooze={snooze} done={done} dismiss={dismiss} />,
                         }}
                       />
                     </div>
@@ -373,8 +383,10 @@ function DayRow({ card, chip, onDone }: { card: Card; chip?: string; onDone: (c:
   );
 }
 
-/** A row's buttons: Approve and Reject, the first option (a one-question ask), or Done and Dismiss for a person waiting; Later hides it. Anything else is answered in the pane the row opens. */
-function RowActions({ row, answer, decided, snooze, done, dismiss, pick }: { row: NeedRow; answer: (r: NeedRow & { kind: "answer" }, t: string) => Promise<void>; decided: (r: NeedRow, d: "approve" | "reject") => void; snooze: (r: NeedRow) => Promise<void>; done: (r: NeedRow) => Promise<void>; dismiss: (r: NeedRow) => Promise<void>; pick?: { on: boolean; toggle: () => void } }) {
+type Acts = { answer: (r: NeedRow & { kind: "answer" }, t: string) => Promise<void>; decided: (r: NeedRow, d: "approve" | "reject") => void; snooze: (r: NeedRow) => Promise<void>; done: (r: NeedRow) => Promise<void>; dismiss: (r: NeedRow) => Promise<void> };
+
+/** A row's buttons: Approve and Reject, the first option (a one-question ask), or Done and Dismiss for a person waiting; Later hides it. Anything else is answered in the drawer the row opens. */
+function RowActions({ row, answer, decided, snooze, done, dismiss }: { row: NeedRow } & Acts) {
   const [busy, setBusy] = useState(false);
   const run = (f: () => Promise<void>) => async () => {
     setBusy(true);
@@ -386,11 +398,6 @@ function RowActions({ row, answer, decided, snooze, done, dismiss, pick }: { row
   if (row.kind === "approval")
     return (
       <>
-        {pick && (
-          <label className="approval-pick">
-            <input type="checkbox" checked={pick.on} onChange={pick.toggle} /> <span>Select</span>
-          </label>
-        )}
         <Decide a={row.card} size="sm" onDecided={(d) => decided(row, d)} />
         {later}
       </>
@@ -413,8 +420,9 @@ function RowActions({ row, answer, decided, snooze, done, dismiss, pick }: { row
   );
 }
 
-/** The right drawer a Needs row opens (the board's drawer look: a scrim over the page, click outside or Esc closes). Focus moves in and returns to the row. */
-function HomeDrawer({ rowId, onClose, children }: { rowId: string; onClose: () => void; children: React.ReactNode }) {
+/** The right drawer a Home row opens (the board's drawer look: a scrim over the page, click outside or Esc closes). Focus moves
+ * in and returns to the row. `head`: who it is from and how long it has waited; `foot`: the link to the whole task. */
+function HomeDrawer({ rowId, onClose, head, foot, children }: { rowId: string; onClose: () => void; head: React.ReactNode; foot?: React.ReactNode; children: React.ReactNode }) {
   const ref = useRef<HTMLElement>(null);
   const close = useRef(onClose);
   close.current = onClose;
@@ -451,41 +459,174 @@ function HomeDrawer({ rowId, onClose, children }: { rowId: string; onClose: () =
   return (
     <div className="drawer-backdrop" onPointerDown={(e) => e.target === e.currentTarget && close.current()}>
       <aside ref={ref} tabIndex={-1} className="drawer home-drawer" role="dialog" aria-modal="true" aria-label="Details">
-        <header className="drawer-head">
-          <h2 className="home-drawer-title">Details</h2>
+        <header className="drawer-head home-drawer-head">
+          {head}
           <span className="spacer" />
           <button type="button" className="btn quiet sm" onClick={onClose} aria-label="Close details">Close <Kbd>Esc</Kbd></button>
         </header>
         <div className="drawer-scroll">{children}</div>
+        {foot && <footer className="home-drawer-foot">{foot}</footer>}
       </aside>
     </div>
   );
 }
 
-/** A row in the drawer: the question, the full draft, the task, and every question of the ask (or the whole card). */
-function RowDetail({ row, answer, done, receipt }: { row: NeedRow; answer: (r: NeedRow & { kind: "answer" }, t: string) => Promise<void>; done: (r: NeedRow) => Promise<void>; receipt?: Receipt }) {
+type Fact = readonly [string, React.ReactNode] | false | null | undefined;
+
+/** How long something has waited: "40m", "5h", "9d" (never a date, as `ago` gives past a week). */
+const waited = (iso: string) => {
+  const m = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 60_000));
+  return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`;
+};
+/** An http(s) address as a link that opens in a new tab; any other value as text. */
+const value = (v: string) => (/^https?:\/\/\S+$/i.test(v) ? <a href={safeHref(v)} target="_blank" rel="noopener noreferrer">{v}</a> : v);
+const taskLink = (t: { identifier: string; title: string }) => <a href={`#/t/${t.identifier}`}><span className="home-ident">{t.identifier}</span> {t.title}</a>;
+
+/** The details every row's task gives: where it came from (with a link to the original message when the source has one), when it
+ * arrived and how long it has waited, the task and its parent, project, labels and who holds it. */
+function taskFacts(a: About | undefined, o: { from: string | null; task: { identifier: string; title: string } | null; since: string; waitLabel: string; holder: string | null; projects: Map<string, string> }): Fact[] {
+  const src = a?.source;
+  const project = a?.project ? o.projects.get(a.project) : undefined;
+  return [
+    src ? ["Source", <>{src.type ?? "A message"}{src.url && <> · <a href={safeHref(src.url)} target="_blank" rel="noopener noreferrer">Open the original ↗</a></>}</>] : o.from ? ["Source", o.from] : null,
+    ...(src?.fields ?? []).map(([k, v]): Fact => [k, value(v)]),
+    ["Arrived", when(a?.created ?? o.since)],
+    [o.waitLabel, waited(o.since)],
+    o.task ? ["Task", taskLink(o.task)] : null,
+    a?.parent ? ["Part of", taskLink(a.parent)] : null,
+    project ? ["Project", project] : null,
+    a?.labels.length ? ["Labels", <Tags>{a.labels.map((l) => <Tag key={l}>{l}</Tag>)}</Tags>] : null,
+    o.holder ? ["Handled by", o.holder] : null,
+  ];
+}
+
+/** The drawer's areas, top to bottom: the ask, every action, what it is about, its details. */
+function DetailBody({ title, actions, children, facts }: { title: string; actions: React.ReactNode; children?: React.ReactNode; facts: Fact[] }) {
   return (
     <div className="home-detail">
-      <div className="home-detail-who">
-        {chip(row.teammate, 32)}
-        {row.task && <a href={`#/t/${row.task.identifier}`}>{row.task.title}</a>}
-      </div>
-      <h3>{row.question}</h3>
-      {row.kind === "answer" && row.detail && <blockquote className="home-draft">{row.detail}</blockquote>}
-      {receipt ? (
-        <p className="home-done" role="status">{receipt.text}</p>
-      ) : row.kind === "answer" ? (
-        <AnswerForm key={row.waitSince} questions={row.questions.length ? row.questions : [{ question: row.question, options: row.options }]} askedAbove onAnswer={(t) => answer(row, t)} />
-      ) : row.kind === "approval" ? (
-        <ul className="approval-list">
-          <ApprovalCard a={row.card} open={(id) => (location.hash = `#/t/${id}`)} unfold />
-        </ul>
-      ) : (
-        <div className="home-detail-actions">
-          <Button variant="primary" onClick={() => void done(row)}>Mark done</Button>
-        </div>
-      )}
+      <h3 className="home-detail-title">{title}</h3>
+      <div className="home-detail-actions">{actions}</div>
+      {children && <section className="home-detail-content" aria-label="About this">{children}</section>}
+      <section className="home-detail-facts" aria-label="Details">
+        <h4 className="home-detail-h">Details</h4>
+        <Facts items={facts} />
+      </section>
     </div>
+  );
+}
+
+/** A task's own words in the drawer: why it was filed and what to do (Intake's and the meeting notes' format), else its opening. */
+function AboutText({ a, prefix }: { a?: About; prefix: string }) {
+  if (!a || (!a.reason && !a.suggested && !a.body)) return null;
+  return (
+    <>
+      {a.reason && <div className="home-detail-part"><h4 className="home-detail-h">Why</h4><p>{a.reason}</p></div>}
+      {a.suggested && <div className="home-detail-part"><h4 className="home-detail-h">Suggested</h4><p>{a.suggested}</p></div>}
+      {a.body && <div className="home-detail-part"><h4 className="home-detail-h">The task</h4><Markdown className="home-detail-md" text={a.body} prefix={prefix} /></div>}
+    </>
+  );
+}
+
+/** A Needs row in the drawer: who asks and since when, the ask, every action of its kind, the draft or the card, and the task's details. */
+function RowDetail({ row, projects, onClose, receipt, ...acts }: { row: NeedRow; projects: Map<string, string>; onClose: () => void; receipt?: Receipt } & Acts) {
+  const person = row.kind === "open" ? row.reply?.person : null;
+  const reply = row.kind === "open" && row.reply ? row.reply : null;
+  const [busy, setBusy] = useState(false);
+  const run = (f: () => Promise<void>) => async () => {
+    setBusy(true);
+    await f().catch(() => {});
+    setBusy(false);
+  };
+  const later = <Button variant="quiet" disabled={busy} title={`Hide it until ${clockText(8)} tomorrow`} onClick={run(() => acts.snooze(row))}>Later</Button>;
+  const age = row.kind === "answer" ? `Asked ${waited(row.since)} ago` : row.kind === "approval" ? `Filed ${waited(row.since)} ago` : reply ? `Waiting ${waited(row.since)}` : `Handed back ${waited(row.since)} ago`;
+  const head = (
+    <>
+      {person ? <span className="ui-mate"><Monogram name={person} size={32} /><span className="ui-mate-text"><b>{person}</b> · {replyRole(reply!)}</span></span> : chip(row.teammate, 32, `#/team/${row.teammate.key}`)}
+      <span className="home-drawer-age">{age}</span>
+    </>
+  );
+  const actions = receipt ? (
+    <p className="home-done" role="status">
+      {receipt.text}
+      {receipt.onUndo && <Button size="sm" variant="quiet" onClick={receipt.onUndo}>Undo</Button>}
+    </p>
+  ) : row.kind === "answer" ? (
+    <div className="home-detail-answer">
+      <AnswerForm key={row.waitSince} questions={row.questions.length ? row.questions : [{ question: row.question, options: row.options }]} askedAbove onAnswer={(t) => acts.answer(row, t)} />
+      {later}
+    </div>
+  ) : row.kind === "approval" ? (
+    <>
+      {row.card.state === "pending" && <Decide a={row.card} onDecided={(d) => acts.decided(row, d)} />}
+      {later}
+    </>
+  ) : (
+    <>
+      <Button variant="primary" disabled={busy} onClick={run(() => acts.done(row))}>Done</Button>
+      {reply && later}
+      {reply && <Button variant="quiet" disabled={busy} title="Close it as cancelled: it stays in history" onClick={run(() => acts.dismiss(row))}>Dismiss</Button>}
+    </>
+  );
+  const facts = taskFacts(row.about, {
+    from: row.kind === "approval" ? `${row.teammate.name}'s approval card` : `${row.teammate.name}, your teammate`,
+    task: row.task,
+    since: row.since,
+    waitLabel: row.kind === "answer" ? "Asked" : "Waiting",
+    holder: `${row.teammate.name}${row.teammate.job ? ` · ${row.teammate.job}` : ""}`,
+    projects,
+  });
+  if (row.kind === "approval") {
+    const c = row.card;
+    facts.push(["Reads", c.reads], ["Cost", c.cost], ["Who decides", TIER_WORDS[c.tier] ?? `Tier ${c.tier}`], ["Card", <a href={`#/approvals/${c.id}`}>{c.id}</a>]);
+  }
+  return (
+    <HomeDrawer rowId={row.id} onClose={onClose} head={head} foot={row.task && <a className="home-drawer-open" href={`#/t/${row.task.identifier}`}>Open task <span aria-hidden>→</span></a>}>
+      <DetailBody title={row.kind === "open" && reply ? (row.task.title || row.question) : row.question} actions={actions} facts={facts}>
+        {row.kind === "answer" && row.detail && (
+          <div className="home-detail-part">
+            <h4 className="home-detail-h">Draft</h4>
+            <blockquote className="home-draft">{row.detail}</blockquote>
+          </div>
+        )}
+        {row.kind === "approval" && (
+          <>
+            <div className="home-detail-part"><h4 className="home-detail-h">What changes</h4><pre className="home-pre">{row.card.changes}</pre></div>
+            {row.card.review && <div className="home-detail-part"><h4 className="home-detail-h">Reviewer's note</h4><p className="home-pre-line">{row.card.review}</p></div>}
+            {row.card.details && <div className="home-detail-part"><h4 className="home-detail-h">The exact request</h4><pre className="home-pre">{row.card.details}</pre></div>}
+          </>
+        )}
+        {row.kind !== "approval" && <AboutText a={row.about} prefix={row.task.identifier} />}
+      </DetailBody>
+    </HomeDrawer>
+  );
+}
+
+/** A You're waiting on row in the drawer: what is owed, Done, Later and Dismiss, its task's details. */
+function WaitingDetail({ w, projects, onClose, close, later }: { w: Waiting; projects: Map<string, string>; onClose: () => void; close: (id: string, status: "done" | "cancelled") => void; later: (w: Waiting) => void }) {
+  const head = (
+    <>
+      <span className="ui-mate"><Monogram name={w.title} size={32} /><span className="ui-mate-text"><b>You're waiting on</b></span></span>
+      <span className="home-drawer-age">{`Open ${w.age_days}d`}{w.quiet_days >= 1 ? ` · ${w.quiet_days}d quiet` : ""}</span>
+    </>
+  );
+  // Each action closes the drawer: the row leaves the card at once (and comes back with an error if refused).
+  const act = (f: () => void) => () => (f(), onClose());
+  return (
+    <HomeDrawer rowId={w.identifier} onClose={onClose} head={head} foot={<a className="home-drawer-open" href={`#/t/${w.identifier}`}>Open task <span aria-hidden>→</span></a>}>
+      <DetailBody
+        title={w.title}
+        actions={
+          <>
+            <Button variant="primary" title="It arrived: close it" onClick={act(() => close(w.identifier, "done"))}>Done</Button>
+            <Button variant="quiet" title={`Hide it until ${clockText(8)} tomorrow`} onClick={act(() => later(w))}>Later</Button>
+            <Button variant="quiet" title="No longer waiting on it: cancel the task" onClick={act(() => close(w.identifier, "cancelled"))}>Dismiss</Button>
+          </>
+        }
+        facts={taskFacts(w.about, { from: null, task: { identifier: w.identifier, title: w.title }, since: w.about?.created ?? new Date(Date.now() - w.age_days * 86_400_000).toISOString(), waitLabel: "Waiting", holder: w.about?.holder ?? null, projects })}
+      >
+        <AboutText a={w.about} prefix={w.identifier} />
+      </DetailBody>
+    </HomeDrawer>
   );
 }
 
@@ -541,7 +682,7 @@ function SinceAll({ items, total }: { items: SinceItem[]; total: number }) {
 }
 
 /** You're waiting on: the owner's open waiting-on tasks as a card (null when there are none), closed or snoozed in place. */
-function useWaitingOn(waitingOn: Home["world"]["waiting_on"], reload: () => Promise<void>) {
+function useWaitingOn(waitingOn: Home["world"]["waiting_on"], reload: () => Promise<void>, opened: string | null, open: (identifier: string) => void) {
   // Rows the owner closed here: hidden at once, back with the error if the close is refused.
   const [closed, setClosed] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
@@ -557,7 +698,7 @@ function useWaitingOn(waitingOn: Home["world"]["waiting_on"], reload: () => Prom
     );
   };
   // Later: off Home until 08:00 tomorrow, the same snooze as Needs you's (keyed by the task's id).
-  const later = (w: { id: string; identifier: string }) => {
+  const later = (w: Waiting) => {
     setError("");
     setClosed((s) => new Set(s).add(w.identifier));
     api.homeSnooze(w.id, true).then(
@@ -572,12 +713,12 @@ function useWaitingOn(waitingOn: Home["world"]["waiting_on"], reload: () => Prom
       <DigestList
         items={waiting.map((w) => ({
           id: w.identifier,
-          face: <Monogram name={w.title} size={26} />,
+          face: <Monogram name={w.title} size={24} />,
           text: w.title,
           title: w.title,
-          persist: true,
           meta: w.quiet_days >= 3 ? `${w.quiet_days}d quiet` : `${w.age_days}d`,
-          open: `#/t/${w.identifier}`,
+          onOpen: () => open(w.identifier),
+          active: opened === w.identifier,
           actions: (
             <>
               <Button size="sm" variant="primary" title="It arrived: close it" onClick={() => close(w.identifier, "done")}>Done</Button>
@@ -590,7 +731,7 @@ function useWaitingOn(waitingOn: Home["world"]["waiting_on"], reload: () => Prom
       />
     </SectionCard>
   );
-  return { card };
+  return { card, rows: waiting, close, later };
 }
 
 /** Today's calendar: each event opens its meeting (the video call, else the calendar page) in a new tab. */

@@ -344,31 +344,32 @@ button.ui-dr-top:hover .ui-dr-q { color: var(--accent); }
   .ui-dr-meta { grid-column: 2; padding-top: 2px; }
 }
 
-/* Digest (DigestList.tsx): one line per thing that happened, its link on the right. */
-.ui-digest { display: flex; flex-direction: column; min-width: 0; container-type: inline-size; }
-.ui-digest-row { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 16px; border-top: 1px solid var(--border); font-size: var(--text-md); line-height: 1.4; transition: background-color var(--fast) var(--ease-out), box-shadow var(--fast) var(--ease-out); }
+/* Digest (DigestList.tsx): exactly one line per item, ~40px. The buttons lie over the row's right end on hover or focus, on a
+   fade from transparent to the row's own (opaque) background, so the text and the age slip under them without moving. */
+.ui-digest { display: flex; flex-direction: column; min-width: 0; }
+.ui-digest-row { --row-bg: var(--surface); position: relative; display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px 16px; border-top: 1px solid var(--border); background: var(--row-bg); font-size: var(--text-md); line-height: 1.4; white-space: nowrap; transition: background-color var(--fast) var(--ease-out), box-shadow var(--fast) var(--ease-out); }
 .ui-digest-row:first-child { border-top: 0; }
-.ui-digest-row:hover { background: color-mix(in srgb, var(--hover) 50%, transparent); }
+.ui-digest-row:hover { --row-bg: color-mix(in srgb, var(--text) 3.5%, var(--surface)); }
 .ui-digest-row.openable { cursor: pointer; }
-.ui-digest-row.on, .ui-digest-row.on:hover { background: color-mix(in srgb, var(--accent) 5%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 32%, var(--border)); }
-.ui-digest-text { flex: 1; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
-.ui-digest-open { padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; text-decoration: none; cursor: pointer; border-radius: var(--radius-sm); }
+.ui-digest-row.on, .ui-digest-row.on:hover { --row-bg: color-mix(in srgb, var(--accent) 6%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 32%, var(--border)); }
+.ui-digest-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-digest-open { display: block; padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; text-decoration: none; cursor: pointer; border-radius: var(--radius-sm); }
 .ui-digest-open:focus-visible { outline: none; box-shadow: var(--ring); }
 .ui-digest-row:hover .ui-digest-open { color: var(--accent); }
 .ui-digest-text b { font-weight: 600; }
 .ui-digest-receipt { display: flex; align-items: center; gap: 8px; color: var(--ok-text); font-weight: 600; }
-.ui-digest-meta { flex: none; min-width: 6.5em; text-align: right; font-size: var(--text-sm); color: var(--faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.ui-digest-row > a:not(.ui-digest-open) { flex: none; font-size: var(--text-sm); text-decoration: none; white-space: nowrap; }
+.ui-digest-meta { flex: none; text-align: right; font-size: var(--text-sm); color: var(--faint); font-variant-numeric: tabular-nums; }
+.ui-digest-row > a:not(.ui-digest-open) { flex: none; font-size: var(--text-sm); text-decoration: none; }
 .ui-digest-row > a:not(.ui-digest-open):hover, .ui-digest-more:hover { text-decoration: underline; }
-.ui-digest-actions { flex: none; display: inline-flex; align-items: center; gap: 6px; }
+.ui-digest-actions { position: absolute; top: 1px; bottom: 1px; right: 1px; display: flex; align-items: center; justify-content: flex-end; gap: 6px; max-width: calc(100% - 2px); padding: 0 15px 0 56px; background: linear-gradient(to right, transparent, var(--row-bg) 44px); }
 .ui-digest-actions .btn { white-space: nowrap; max-width: 14rem; overflow: hidden; text-overflow: ellipsis; }
-@media (hover: hover) and (pointer: fine) { .ui-digest-actions:not(.persist) { opacity: 0; transition: opacity var(--fast) var(--ease-out); } .ui-digest-row:hover .ui-digest-actions, .ui-digest-row:focus-within .ui-digest-actions { opacity: 1; } }
-@media (hover: hover) and (pointer: fine) { .ui-digest-actions.persist .btn.quiet { opacity: 0.55; transition: opacity var(--fast) var(--ease-out); } .ui-digest-row:hover .ui-digest-actions .btn.quiet, .ui-digest-row:focus-within .ui-digest-actions .btn.quiet, .ui-digest-actions .btn.quiet:focus-visible { opacity: 1; } }
-@media (any-pointer: coarse) { .ui-digest-actions { opacity: 1; } }
-/* A card's buttons share one column, so the primary buttons' left edges line up down the rows. */
-@container (min-width: 561px) { .ui-digest-actions.persist { width: 15rem; justify-content: flex-start; } }
-/* Narrow cards (by the card's own width) and phones: the buttons go below the text, under it and not under the face. */
-@container (max-width: 560px) { .ui-digest-row { flex-wrap: wrap; } .ui-digest-actions { order: 3; flex: 1 0 100%; flex-wrap: wrap; padding-left: 36px; } }
+/* A form in the buttons (Reject's reason) takes the whole row. */
+.ui-digest-actions:has(form) { left: 1px; padding-left: 15px; background: var(--row-bg); }
+@media (hover: hover) {
+  .ui-digest-actions { opacity: 0; pointer-events: none; transition: opacity var(--fast) var(--ease-out); }
+  .ui-digest-row:hover .ui-digest-actions, .ui-digest-row:focus-within .ui-digest-actions { opacity: 1; pointer-events: auto; }
+}
+@media (hover: none) { .ui-digest-actions { display: none; } }
 .ui-digest-more { align-self: flex-end; padding: 8px 16px 10px; font-size: var(--text-sm); font-weight: 600; text-decoration: none; }
 
 /* Panes (DetailPane.tsx, SidePanel.tsx): slide in from the right, leave faster. On a phone, the whole screen. */

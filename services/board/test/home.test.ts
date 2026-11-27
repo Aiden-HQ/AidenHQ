@@ -31,7 +31,7 @@ const issue = (n: number, o: Partial<Issue>): Issue => ({ ...base, id: `00000000
 const carded = issue(1, { title: "Deploy the app" });
 const asking = issue(2, { title: "Chase Sam" });
 // Intake's person waiting on a reply: older than every ask, yet listed after them.
-const reply = issue(6, { title: "Reply to Priya Nair: can you sign off the hiring plan?", assigneeAgentId: "intake", createdAt: ago(80 * H), description: "## Source\n\nType: Slack\nChannel: DM with Priya Nair\nFrom: Priya Nair\n\nsource:slack:C1/1700.1", labels: [label("needs-response")] });
+const reply = issue(6, { title: "Reply to Priya Nair: can you sign off the hiring plan?", assigneeAgentId: "intake", createdAt: ago(80 * H), description: "## Source\n\nType: Slack\nChannel: DM with Priya Nair\nFrom: Priya Nair\nPermalink: https://acme.slack.com/archives/C1/p1700\n\n## Reason\n\nShe asks for a sign-off.\n\n<!-- source:slack:C1:1700.1 -->", labels: [label("needs-response")] });
 const done = issue(5, { title: "Chase the vendor", status: "done", completedAt: ago(H / 2) });
 const agents = [
   { id: "cos", name: "Aiden", status: "idle", metadata: { setupKey: "aidenhq:chief-of-staff", teammate: tm("Chief of staff", ["inbox-agent"]) } },
@@ -95,6 +95,8 @@ describe("home", () => {
     expect(first.needs[0]).toMatchObject({ task: null, teammate: { key: "chief-of-staff" } }); // Intake's card is Aiden's
     expect(first.needs[2]).toMatchObject({ question: "Chase Sam again tomorrow?", detail: "Draft: Hi Sam…", waitSince: ago(3 * H) });
     expect(first.needs[3]).toMatchObject({ question: "can you sign off the hiring plan?", since: reply.createdAt, task: { identifier: "WOR-6" }, reply: { person: "Priya Nair", source: "slack" } });
+    // The drawer's details: the Source block's lines (the link apart), the Reason, the labels.
+    expect(first.needs[3].about).toMatchObject({ created: reply.createdAt, labels: ["needs-response"], source: { type: "Slack", url: "https://acme.slack.com/archives/C1/p1700", fields: [["Channel", "DM with Priya Nair"], ["From", "Priya Nair"]] }, reason: "She asks for a sign-off." });
     expect(first.greeting).toEqual({ needs: 4 });
   });
 

@@ -1,5 +1,7 @@
-// The board's one compact row, one line per item: a face or monogram, the text, the caller's buttons inline, and the age or
-// a link on the right. The whole row is the click target (`onOpen`, or `open`: an address to go to); `active` marks the row
+// The board's one compact row, exactly one line per item: a face or monogram, the text (cut with an ellipsis), and the age
+// or a link on the right. The caller's buttons are hidden until the row is hovered or holds focus; then they lie over the
+// row's right end, the text fading out under them (no layout shift). A touch screen has no hover: its rows show no buttons
+// and a tap opens the row, where every action is. The whole row is the click target (`onOpen`, or `open`: an address to go to); `active` marks the row
 // the keyboard is on; `receipt` replaces the text once the row is answered. Shows the first `limit` (3); `more` links to all.
 import type { CSSProperties } from "react";
 import { Button, safeHref } from "./Button";
@@ -8,13 +10,11 @@ export type DigestItem = {
   id: string;
   face?: React.ReactNode;
   text: React.ReactNode;
-  /** Plain text of the row, the tooltip of a clamped line. */
+  /** Plain text of the row, the tooltip of a cut line. */
   title?: string;
   meta?: React.ReactNode;
   link?: { label: string; href: string };
   actions?: React.ReactNode;
-  /** The buttons stay visible (an answer is the point of the row); otherwise they show on hover. */
-  persist?: boolean;
   onOpen?: () => void;
   open?: string;
   /** A web address that opens in a new tab (a meeting); the row text is its link. */
@@ -54,9 +54,9 @@ export function DigestRow({ d }: { d: DigestItem }) {
           ) : (
             <span className="ui-digest-text" title={d.title}>{d.text}</span>
           )}
-          {d.actions && <span className={`ui-digest-actions${d.persist ? " persist" : ""}`}>{d.actions}</span>}
           {d.meta && <span className="ui-digest-meta">{d.meta}</span>}
           {d.link && <a href={safeHref(d.link.href)}>{d.link.label}</a>}
+          {d.actions && <span className="ui-digest-actions">{d.actions}</span>}
         </>
       )}
     </div>

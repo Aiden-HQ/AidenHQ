@@ -144,14 +144,32 @@ There is no "Your world" heading: Needs you is not part of anyone's world. Then 
 waiting on the owner**: the teammates' asks (answers, approval cards, handed-back tasks) and the people waiting on his
 reply (open tasks labelled `needs-response`, which Intake files from Slack and email), each ONE compact row. **One row
 component** (`DigestRow` in `ui/DigestList.tsx`) draws every list on Home (Needs you, You're waiting on, Today, Since you last
-looked): face or monogram, one clamped line of text ("who · what"), the row's buttons inline, the age on the right; the same
-48px rows and paddings everywhere, buttons wrapping under the text on a phone. **The whole row is the click target** (no
-Open button; Enter does the same): Needs rows open a right-hand **drawer** over the page (the board's drawer look: scrim, click outside, Esc or Close dismisses; focus moves in and back to the row; a full-screen sheet on a phone; Home underneath keeps its layout) where the full draft, every option and the card live,
-You're waiting on rows open the task (the row text is a real button or link, so Tab and Enter work). Buttons: an ask shows its single primary answer (the first option, or Approve and
-Reject… for a card) and **Later**; an ask with several questions or options has no inline answer, only Later, and its row
-click opens the drawer. A person waiting (`needs-response`) shows **Done** (closes the task as done), **Later** and **Dismiss** (closes it as
-cancelled; it stays in history); a task handed back to the owner shows Done only. You're waiting on rows have Done, Later and Dismiss with the same meanings (Later hides it
-until 08:00 tomorrow, mouse only: J/K/E/S belong to Needs you). Each card lists the **newest ten** (newest first); the greeting and the card's count are the full N.
+looked): **exactly one line**, ~40px: face or monogram, "who · what" cut with an ellipsis, the age or a link on the right.
+**A row's buttons are hidden until it is hovered or holds focus** (`:hover`, `:focus-within`): then they lie over the row's
+right end on a fade from transparent to the row's own background, so the text and age slip under them with no layout shift
+(Reject…'s reason field takes the whole row). A touch screen (`hover: none`) shows no buttons: a tap opens the drawer, which
+has every action. **The whole row is the click target** (no Open button; Enter does the same): Needs you and You're waiting
+on rows open a right-hand **drawer** over the page (the board's drawer look: scrim, click outside, Esc or Close dismisses;
+focus moves in and back to the row; `min(600px, 92vw)` wide, a full-screen sheet on a phone ending above its bottom bar; Home
+underneath keeps its layout). The row text is a real button or link, so Tab and Enter work. Row buttons: an ask shows its
+single primary answer (the first option, or Approve and Reject… for a card) and **Later**; an ask with several questions or
+options has no inline answer, only Later. A person waiting (`needs-response`) shows **Done** (closes the task as done),
+**Later** and **Dismiss** (closes it as cancelled; it stays in history); a task handed back to the owner shows Done only.
+You're waiting on rows have Done, Later and Dismiss with the same meanings (Later hides it until 08:00 tomorrow, mouse only:
+J/K/E/S belong to Needs you). While picking cards for a batch (Select), each card's box sits before its face, always shown.
+
+**The drawer**, top to bottom in separate areas: the head (the teammate's face, name and job, or the person and where they
+wrote; how long it has waited; Close), the ask as the title, **every action** of its kind (a card: Approve, Reject with a
+reason, Later; a question: every option and the typed answer, Later; a person: Done, Later, Dismiss; waiting on: Done, Later,
+Dismiss; a handback: Done), what it is about (a send's draft; a card's changes, reviewer's note and exact request; the task's
+Why and Suggested lines, or its opening), then **Details**: the source (Slack, Email, Meeting, or the teammate) with a link to
+the original message when the task has one, the Source block's other lines (Channel, From, Sent, Account, Subject, Meeting,
+Note, Quote…), when it arrived (the `time_format` setting), how long it has waited, the task and its open parent, project,
+labels and who handles it; a card adds Reads, Cost, who decides and its id. "Open task →" at the foot. `/api/home` carries
+these as each row's `about` (`aboutTask` in `services/board/src/home.ts`): the task's own fields and its description's Source,
+Reason and Suggested action sections (`## ` headings), the format Intake and the meeting notes write (`Permalink:` or
+`Link:` is the original's address, http(s) only); a description without a Source block sends its first 600 characters. Only
+fields a row has are shown. Each card lists the **newest ten** (newest first); the greeting and the card's count are the full N.
 **Needs you's "View all N →" expands the card in place**, showing every row the count includes (as Since's "All N" does),
 because the Tasks page filters tasks by lane or label and an approval card has no task to open there; "Fewer" folds it back.
 You're waiting on's "View all N →" (shown past ten) opens Tasks (`#/tasks?show=waiting`: the `waiting-on` label) on the Agent

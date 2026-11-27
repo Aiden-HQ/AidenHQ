@@ -20,7 +20,7 @@ const OUTCOME: Record<Approval["state"], string> = {
   unknown: "Unknown: the apply stopped without reporting back. Check the task; it is never retried.",
   auto: "Ran at once (Tier 0).",
 };
-const TIER_WORDS = ["Tier 0: ran at once", "Tier 1: the AI reviewer decides", "Tier 2: yours to decide"];
+export const TIER_WORDS = ["Tier 0: ran at once", "Tier 1: the AI reviewer decides", "Tier 2: yours to decide"];
 /** Waiting for the owner: a pending Tier 2 card. A pending Tier 1 card is with the AI reviewer. */
 export const forOwner = (a: Approval) => a.state === "pending" && a.tier === 2;
 /** A card the AI reviewer has not decided yet (Tier 1): in progress, not waiting on the owner. */
