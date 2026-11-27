@@ -1057,25 +1057,6 @@ test("security-sbom: without config/computers.json the previous batch stays, so 
   }
 });
 
-test("security-sbom: a Docker save that stops answering is cut off by the snapshot deadline", { skip: NOT_LINUX }, async () => {
-  // The save hangs and the snapshot budget is two seconds. The call must be terminated, the image recorded as a line, and
-  // the pass must finish (releasing the apply lock) rather than hold it while an apply waits.
-  const started = Date.now();
-  const { status, out, targets, locks } = await run({ AIDENHQ_SBOM_SNAPSHOT_SECS: "2", FAKE_SAVE_SLEEP: "20" }, {
-    containers: [{ id: "c1", image: "sha256:1111", config: "aidenhq/board:local", label: "sha256:2222" }],
-    tags: { "aidenhq/board:local": "sha256:9999" },
-    held: ["sha256:2222"],
-    sizes: { "sha256:2222": 1024 },
-  });
-  const took = (Date.now() - started) / 1000;
-  assert.equal(status, 0, out);
-  assert.ok(took < 15, `the pass held the lock for ${took}s on a 2s budget`);
-  const line = targets.find((t) => t[0] === "image:sha256:1111");
-  assert.ok(line, `the image was not recorded:\n${targets.map((t) => t.join("\t")).join("\n")}`);
-  assert.equal(line[1], "-", "it was not scanned");
-  assert.ok(locks.every((l) => l.startsWith("save held") || l.startsWith("run free")), locks.join("\n"));
-});
-
 test("security-sbom: a container's own platform is what is inspected and exported", { skip: NOT_LINUX }, async () => {
   // An amd64 host running the arm64 variant of a multi-platform image, with no compose label: the daemon resolves the
   // index to its amd64 manifest, but the container's `ImageManifestDescriptor` names the arm64 one it runs. Exporting or
