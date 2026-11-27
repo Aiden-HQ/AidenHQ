@@ -31,6 +31,10 @@ describe("fleet owner-words gate", () => {
   it("accepts the owner's own words naming the target with a matching verb", async () => {
     await expect(gate(pcWith("[telegram] run the daily brief now"), "run_routine", "daily brief", "run the daily brief now")).resolves.toBe("c1");
   });
+  it("matches the target ignoring case, punctuation and spacing, and refuses another routine", async () => {
+    await expect(gate(pcWith("Run the owner tasks re-triage now please"), "run_routine", "Owner tasks: re-triage", "run the owner tasks re-triage now")).resolves.toBe("c1");
+    await expect(gate(pcWith("Run the owner tasks re-triage now please"), "run_routine", "Daily brief", "run the owner tasks re-triage now")).rejects.toThrow(/name the target/);
+  });
   it("accepts the owner's opening chat message as the board recorded it, once per task", async () => {
     const typed = "Run the daily brief now please";
     await expect(gate(pcChat(chatDescription(typed)), "run_routine", "daily brief", "run the daily brief now", recorded(typed))).resolves.toBe("t1");
