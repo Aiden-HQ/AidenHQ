@@ -38,6 +38,8 @@ const DAY = 864e5;
 const MAX_WAIT = 7 * DAY;
 /** The shortest wait: a wait is never a way to wake again at once (an idle task is woken after 15 minutes anyway). */
 const MIN_WAIT = 15 * 60_000;
+/** An ISO date-time that names its zone: ends in Z or a UTC offset. */
+const ZONED = /T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i;
 const SWEPT = new Set(["todo", "in_progress"]);
 /** The idle reasons a wake could move a task out of; `unpolled` is one the sweep then skips (its wake would never be taken). */
 const IDLE_REASONS = new Set(["orphaned", "unknown", "unpolled"]);
@@ -354,8 +356,9 @@ export function createIdle({ db, facts, state, wakes, owner, team = () => false,
       const deadline = (): number => {
         let until: number;
         if (b.until !== undefined) {
-          until = typeof b.until === "string" ? Date.parse(b.until) : NaN;
-          if (!Number.isFinite(until) || until < t + MIN_WAIT) throw fail(400, "bad_request", "until is an ISO time at least 15 minutes ahead");
+          // An instant: a zone-less time would be read in the host's zone, so it carries Z or an offset.
+          until = typeof b.until === "string" && ZONED.test(b.until) ? Date.parse(b.until) : NaN;
+          if (!Number.isFinite(until) || until < t + MIN_WAIT) throw fail(400, "bad_request", "until is an ISO time with Z or an offset (2026-11-28T09:00Z), at least 15 minutes ahead");
           if (until > t + MAX_WAIT) throw fail(400, "bad_request", "until is at most 7 days ahead: wait again then if it still waits");
         } else if (who) until = t + MAX_WAIT;
         else if (on) until = t + DAY;
