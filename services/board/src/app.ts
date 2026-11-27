@@ -70,7 +70,7 @@ import { AsideSchema, askGateway, asideMessages, lineageTotal, modelOf, stillSet
 /** The board's record of a chat's opening message (store meta key prefix + the chat's id). */
 const CHAT_OPENING = "chat-opening:";
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
-export interface SignIn { id: string; label: string; connect: string; callback: string; mode?: "redirect" | "device"; httpsOnly?: boolean; missing: string; stopped: string; fields: SetupField[]; auth: McpAuth }
+export interface SignIn { id: string; label: string; connect: string; callback: string; mode?: "redirect" | "device" | "qr"; disconnect?: boolean; httpsOnly?: boolean; missing: string; stopped: string; fields: SetupField[]; auth: McpAuth }
 
 export interface AppOptions {
   /** Paperclip through the kernel, as the owner: every read and every write (all admins write as the owner, 2026-11-12). */
@@ -1582,7 +1582,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       ),
     ]);
     // Its Connect: the picker first where the proxy offers a choice of scopes, and the per-install values first while it has none.
-    const signIns = Object.fromEntries(states.map((s) => [s.id, s.status && { ...s.status, offer: s.offer, ...(s.mode === "device" ? { mode: "device" as const } : {}), ...(asksValues(s.status) && s.fields.length ? { fields: s.fields } : {}) }] as const));
+    const signIns = Object.fromEntries(states.map((s) => [s.id, s.status && { ...s.status, offer: s.offer, ...(s.mode === "device" || s.mode === "qr" ? { mode: s.mode } : {}), ...(s.disconnect ? { disconnect: true as const } : {}), ...(asksValues(s.status) && s.fields.length ? { fields: s.fields } : {}) }] as const));
     return connectionsView({ compiled, catalog, probes: probed.probes, signIns, google, sources });
   }
 
@@ -1626,15 +1626,16 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           scopes: offer && offer.supported.length > 1 ? { ...offer, ...(granted.length ? { granted } : {}) } : null,
           state: status?.state ?? "unknown",
           mode: s.mode ?? "redirect",
+          ...(s.disconnect ? { disconnect: true } : {}),
           // What stops this sign-in before it starts, in words (checked here, so the vendor's page never shows a bare refusal).
           // The same rule the Connect path applies (vendorOrigin): from here, can the vendor send the browser back?
-          preflight: s.mode !== "device" && s.httpsOnly && !vendorOrigin(String(req.headers.host ?? ""))
+          preflight: s.mode !== "device" && s.mode !== "qr" && s.httpsOnly && !vendorOrigin(String(req.headers.host ?? ""))
             ? httpsBoard
               ? `${s.label} sends you back only to ${httpsBoard.origin}. Open the board there to connect it.`
               : `${s.label} sends you back only to an https address, and this board has none yet. Give the board its https address (docs/setup.md, Tailscale), then connect from there.`
             : null,
           // The address the default sign-in ends on (pasted back below), and the domain one click returns to instead.
-          redirect: s.httpsOnly || s.mode === "device" ? null : `${SIGNIN_LOOPBACK}${s.callback}`,
+          redirect: s.httpsOnly || s.mode === "device" || s.mode === "qr" ? null : `${SIGNIN_LOOPBACK}${s.callback}`,
           oneClick: s.httpsOnly ? null : (httpsBoard?.hostname ?? null),
         };
       },
@@ -1753,7 +1754,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // When Tomorrow next rolls into Today: the next calendar day, except before days off.
         const today = localDate(opts.timezone);
         const rollsOn = nextWorkday(today, opts.workdays ?? WORKWEEK);
-        return { ...board, work, asOf: inv.read.as_of, incomplete: inv.incomplete, projects: inv.projects, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, timeFormat: timeFormat(), slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, spend, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status, offer, mode }) => ({ id, label, missing, stopped, status: status ?? null, offer, ...(mode === "device" ? { mode } : {}) })) };
+        return { ...board, work, asOf: inv.read.as_of, incomplete: inv.incomplete, projects: inv.projects, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, timeFormat: timeFormat(), slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, spend, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status, offer, mode, disconnect }) => ({ id, label, missing, stopped, status: status ?? null, offer, ...(mode === "device" || mode === "qr" ? { mode } : {}), ...(disconnect ? { disconnect: true as const } : {}) })) };
       }),
     },
     // Saved boards (views.ts): the signed-in account's own; a write at a stale rev is a 409 with the row as it is now (null: gone).
@@ -2809,7 +2810,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       },
     },
     ...(opts.accounts && opts.organisations?.length ? organisationRoutes({ orgs: opts.organisations, accounts: opts.accounts, store, onApplied: () => store.events.emit("connections") }) : []),
-    ...((opts.signIns ?? []).some((s) => s.mode === "device") ? deviceRoutes({ signIns: opts.signIns!, onSignedIn: connected }) : []),
+    ...((opts.signIns ?? []).some((s) => s.mode === "device" || s.mode === "qr" || s.disconnect) ? deviceRoutes({ signIns: opts.signIns!, onSignedIn: connected }) : []),
     // App admins (docs/design/access.md, Per-app roles): every shared app, its admins and default; name or remove one.
     ...(setupFlows?.routes ?? []),
     { method: "GET", path: /^\/api\/app-admins$/, handle: async (_m, _b, who) => opts.accounts!.call("app_admins", who) },
@@ -3001,8 +3002,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const origin = url.pathname === connect ? redirectOrigin(s, host, url.searchParams.has("oneclick")) : vendorOrigin(host);
     if (!origin) return signInFailed(res, s.id, `Couldn't connect ${name}: ${httpsBoard ? `sign in from ${httpsBoard.origin}` : `sign in from ${TUNNEL}`}`);
     try {
-      // A device sign-in has no redirect: its Connect dialog shows the code.
-      if (url.pathname === connect && s.mode === "device") {
+      // A device or QR sign-in has no redirect: its Connect dialog shows the code or the QR.
+      if (url.pathname === connect && (s.mode === "device" || s.mode === "qr")) {
         res.writeHead(302, { ...SECURITY_HEADERS, location: dialogOf(s.id), "cache-control": "no-store" }).end();
         return;
       }

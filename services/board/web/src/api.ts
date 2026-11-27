@@ -76,15 +76,26 @@ export interface SignInView {
   redirect: string | null;
   /** The board's https name a one-click sign-in returns to (a company may have to allow it first); null: none. */
   oneClick: string | null;
-  /** redirect: the vendor sends the browser back; device: a code typed on the vendor's page (DeviceSignIn in Connect.tsx). */
-  mode?: "redirect" | "device";
+  /** redirect: the vendor sends the browser back; device: a code typed on the vendor's page; qr: a link scanned in the vendor's app (DeviceSignIn in Connect.tsx). */
+  mode?: "redirect" | "device" | "qr";
+  /** Its service can revoke the sign-in at the vendor (Disconnect). */
+  disconnect?: true;
   /** What stops this sign-in before it starts, in words. */
   preflight?: string | null;
 }
 
 /** A device sign-in's code, for the person to type on the vendor's page; the board then follows it. */
-export interface DeviceCode { user_code: string; verification_uri: string; verification_uri_complete?: string; expires_in: number; interval: number }
-export interface DeviceProgress { state: "idle" | "pending" | "ok" | "expired" | "denied" | "cancelled" | "failed"; detail?: string }
+export type DeviceCode =
+  | { user_code: string; verification_uri: string; verification_uri_complete?: string; expires_in: number; interval: number }
+  | { qr: string; expires_in: number; interval: number };
+export interface DeviceProgress {
+  state: "idle" | "pending" | "secret" | "ok" | "expired" | "denied" | "cancelled" | "failed";
+  detail?: string;
+  /** The current link while pending; it refreshes. */
+  qr?: string;
+  /** While state is secret: one transient value the service asks for (a password). */
+  secret?: { label: string; hint?: string };
+}
 
 /** Organisations that run internal apps (GET /api/organisations): the connections each fills, and the one the email suggests. */
 export interface Organisations {
@@ -163,7 +174,7 @@ export interface SetupFlowView {
   /** Who else may need to approve. */
   admin?: string;
   /** Its sign-in is a device code (Connect opens the code dialog). */
-  signin_mode?: "device";
+  signin_mode?: "device" | "qr";
   advanced?: AdvancedFlowView;
   /** With an advanced flow: the basic option's short name and what it gives (the page's two option cards). */
   label?: string;
@@ -317,6 +328,8 @@ export const api = {
   signInFinish: (id: string, url: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/finish`, { url }),
   deviceStart: (id: string) => call<DeviceCode>("POST", `/api/sign-ins/${encodeURIComponent(id)}/device`, {}),
   deviceProgress: (id: string) => call<DeviceProgress>("GET", `/api/sign-ins/${encodeURIComponent(id)}/device`),
+  deviceSecret: (id: string, value: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/device/secret`, { value }),
+  disconnect: (id: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/disconnect`, {}),
   deviceCancel: (id: string) => call<{ ok: boolean }>("POST", `/api/sign-ins/${encodeURIComponent(id)}/device/cancel`, {}),
   googleFinish: (url: string) => call<{ ok: boolean }>("POST", "/api/google/finish", { url }),
   organisations: () => call<Organisations>("GET", "/api/organisations"),

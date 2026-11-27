@@ -7,6 +7,7 @@
 // answers task search with keyword hits only, or fails it (its degraded notes). ?email=<address> signs the mock owner in as it;
 // ?org=1 lists an organisation with its own Google app. The Google flow is a short sample of modules/google/module.yaml's `ways`. ?slack=none|signin|org|full|old sets the
 // Slack setup page's state (nothing yet, sign-in only, an organisation's sign-in, sign-in and bot, a bot app that predates the manifest).
+// ?qr=missing|ok sets the sample QR sign-in (a sign-in by scanning a code, with a password step, and Disconnect once signed in).
 // ?sessions=full|fresh|off|error sets the Sessions page (live and ended ones, a fresh install's empty list, the module off, the kernel down);
 // ?term=up|down|flaky sets whether a session's terminal and web view answer; ?slowSessions=<ms> delays only the Sessions list.
 import { readFileSync } from "node:fs";
@@ -30,7 +31,7 @@ const MODEL_CATALOG = ([
   ["z-ai/glm-5.3", "Z.ai: GLM 5.3", 25, 202752, 0.4, 1.5, 1, 1], ["z-ai/glm-5.2", "Z.ai: GLM 5.2", 80, 202752, 0.4, 1.5, 1, 1], ["moonshotai/kimi-k3.1-pro", "MoonshotAI: Kimi K3.1 Pro", 30, 262144, 0.6, 2.5, 1, 1], ["moonshotai/kimi-k3", "MoonshotAI: Kimi K3", 120, 262144, 0.6, 2.5, 1, 1],
   ["meta-llama/llama-4.5-70b-instruct", "Meta: Llama 4.5 70B Instruct", 100, 131072, 0.15, 0.4, 1, 0], ["meta-llama/llama-4.5-8b-instruct", "Meta: Llama 4.5 8B Instruct", 100, 131072, 0.03, 0.06, 0, 0], ["qwen/qwen3.6-coder", "Qwen: Qwen3.6 Coder", 50, 262144, 0.2, 0.9, 1, 0], ["mistralai/mistral-large-3", "Mistral: Mistral Large 3", 110, 131072, 2, 6, 1, 0], ["x-ai/grok-5", "xAI: Grok 5", 45, 256000, 3, 15, 1, 1], ["minimax/minimax-m3", "MiniMax: M3", 35, 1000000, 0.3, 1.2, 1, 1],
 ] as [string, string, number, number, number, number, number, number][]).map(([id, name, d, context, i, o, tools, reasoning]) => ({ id, name, provider: id.replace(/^~/, "").split("/")[0], created: Math.floor(now / 1000) - d * 86400, context, in: i, cached_in: null, out: o, tools: !!tools, reasoning: !!reasoning }));
-const mock = { slowSessions: 0, sessions: "full", term: "up", welcome: false, empty: false, slow: 0, search: "ok", email: "alex@example.com", org: false, slack: "none", connected: false, key: false };
+const mock = { slowSessions: 0, sessions: "full", term: "up", welcome: false, empty: false, slow: 0, search: "ok", email: "alex@example.com", org: false, slack: "none", connected: false, key: false, qr: "missing", qrStep: 0 };
 
 // The kernel's task state (src/task-state.ts) as the board reads it: one row per task, every reason somewhere below.
 const A = (who: string, why: string, ref = "x") => ({ who, why, ref });
@@ -424,6 +425,7 @@ const connections = () => ({
     { name: "google_workspace", module: "google", kind: "connection", transport: "http", tools: { read: 14, write: 6 }, grants: [{ agent: "chief-of-staff", name: "Aiden", access: "write", tools: 20 }], setup: "google", probe: { ok: true, checkedAt: ago(2) }, signIn: null, google: { accounts: [{ email: "alex@example.com", primary: true, state: "ok", since: ago(5000) }] } },
     { name: "slack", module: "open-loops", kind: "connection", transport: "http", tools: { read: 9, write: 3 }, grants: [{ agent: "open-loops", name: "Tess", access: "read", tools: 9 }], setup: null, probe: { ok: true, checkedAt: ago(2) }, signIn: { state: "ok", configured: true, since: ago(9000) } },
     { name: "github", module: "engineering", kind: "connection", transport: "http", tools: { read: 22, write: 11 }, grants: [], setup: null, probe: { ok: false, status: 401, detail: "Token expired", checkedAt: ago(2) }, signIn: { state: "expired", configured: true, since: ago(60) } },
+    { name: "chatapp", module: "chatapp", kind: "connection", transport: "http", tools: { read: 4, write: 1 }, grants: [], setup: null, probe: null, signIn: { state: mock.qr, configured: true, since: ago(60), mode: "qr", disconnect: true } },
     { name: "jira", module: "engineering", kind: "connection", transport: "http", tools: { read: 7, write: 2 }, grants: [], setup: null, probe: null, signIn: { state: "missing", configured: false, since: ago(60) } },
     { name: "paperclip_tasks", module: "core", kind: "connection", transport: "stdio", tools: { read: 5, write: 5 }, grants: [], setup: null, probe: null, signIn: null },
   ],
@@ -728,6 +730,12 @@ function route(method: string, url: URL): [number, unknown] {
     if (lastBody.trial !== false && !hireMock.trials.has(ref)) hireMock.trials.set(ref, Date.now());
     return [200, { resumed: ["inbox-scan", "open-loops-sweep"], trials: lastBody.trial === false ? [] : ["inbox-lookback"] }];
   }
+  // The sample QR sign-in: start, then each poll walks pending (a fresh link) -> secret -> ok (after a secret other than "wrong").
+  if (method === "POST" && p === "/api/sign-ins/chatapp/device") return (mock.qrStep = 0, [200, { qr: "chat://login?token=start", expires_in: 30, interval: 2 }]);
+  if (method === "POST" && p === "/api/sign-ins/chatapp/device/secret") return lastBody.value === "wrong" ? [400, { error: "That password is not right. Try again." }] : (mock.qrStep = 99, [200, { ok: true }]);
+  if (method === "POST" && p === "/api/sign-ins/chatapp/disconnect") return (mock.qr = "missing", [200, { ok: true }]);
+  if (method === "GET" && p === "/api/sign-ins/chatapp/device") { const n = mock.qrStep++; return [200, n >= 99 ? (mock.qr = "ok", { state: "ok" }) : n < 3 ? { state: "pending", qr: `chat://login?token=poll${n}` } : { state: "secret", secret: { label: "Two-step verification password", hint: "your first pet" } }]; }
+  if (method === "GET" && p === "/api/sign-ins/chatapp") return [200, { label: "Chat app", connect: "/chatapp/connect", configured: true, asks: false, fields: [], scopes: null, state: mock.qr, redirect: null, oneClick: null, mode: "qr" }];
   if (method === "POST" && p === "/api/notify/test") return [200, { sent: true }];
   if (method === "POST" && p === "/api/welcome/finish") return (mock.welcome = false, hireMock.finishedAt = Date.now(), [200, { ok: true }]);
   if (method === "POST" && /^\/api\/setup-flows\/[^/]+\/dismiss$/.test(p)) return (hireMock.dismissed.add(p.split("/")[3]!), [200, { ok: true }]);
@@ -853,6 +861,7 @@ createServer((req, res) => {
     if (url.searchParams.has("many")) homeMock.many = url.searchParams.get("many") === "1";
     if (url.searchParams.has("nocal")) homeMock.nocal = url.searchParams.get("nocal") === "1";
     if (url.searchParams.has("quiet")) homeMock.quiet = url.searchParams.get("quiet") === "1";
+    if (url.searchParams.has("qr")) mock.qr = url.searchParams.get("qr") ?? "missing";
     if (url.searchParams.has("slack")) mock.slack = url.searchParams.get("slack") ?? "none";
     return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(mock));
   }

@@ -145,3 +145,4 @@
 .org-chosen small { font-size: var(--text-sm); color: var(--muted); }
 .org-mark { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: var(--radius-md); font-weight: 700; color: var(--accent-text); background: var(--accent); }
 .setup-own-app { font-size: var(--text-sm); justify-self: start; }
+.devsign-qr { justify-self: center; width: min(240px, 100%); height: auto; aspect-ratio: 1; }

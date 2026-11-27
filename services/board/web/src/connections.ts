@@ -38,7 +38,9 @@ export interface SignIn {
   /** Connect offers a choice of scopes: the picker comes first, and a Reconnect reads "Change access". */
   offer?: boolean;
   /** A device sign-in (a code typed on the vendor's page): Connect opens its dialog, never a tab. */
-  mode?: "device";
+  mode?: "device" | "qr";
+  /** Its service can revoke the sign-in at the vendor: the connection's dialog offers Disconnect. */
+  disconnect?: true;
   /** Not set up yet: the per-install values Connect asks for first. */
   fields?: { secret: string; label: string; pattern: string; help?: string }[];
 }

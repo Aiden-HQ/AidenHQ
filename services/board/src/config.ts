@@ -100,17 +100,17 @@ export interface SetupField { secret: string; label: string; pattern: string; he
  * A board.signins contribution (modules/board/schemas/signins.json), with the proxy's base URL and its auth token. `fields`: the
  * per-install values its Connect asks for first.
  */
-export interface SignInPoint { id: string; label: string; connect: string; callback: string; mode: "redirect" | "device"; httpsOnly: boolean; missing: string; stopped: string; fields: SetupField[]; url: string; token: string }
+export interface SignInPoint { id: string; label: string; connect: string; callback: string; mode: "redirect" | "device" | "qr"; disconnect: boolean; httpsOnly: boolean; missing: string; stopped: string; fields: SetupField[]; url: string; token: string }
 
 /** The compiled board.signins: each needs its module's `<id>_auth_token` mounted on the board, or it is off. */
 export function signInPoints(file: string, secrets: string): SignInPoint[] {
-  const list: { id: string; module: string; label: string; status_url: string; connect_url: string; callback: string; mode?: "redirect" | "device"; https_only?: boolean; missing: string; stopped: string; fields?: SetupField[] }[] = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).signins ?? []) : [];
+  const list: { id: string; module: string; label: string; status_url: string; connect_url: string; callback: string; mode?: "redirect" | "device" | "qr"; disconnect?: boolean; https_only?: boolean; missing: string; stopped: string; fields?: SetupField[] }[] = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).signins ?? []) : [];
   return list.flatMap((s) => {
     // Only its own token (<id>_auth_token goes to status_url) and paths: /<id>/connect, /<id>/callback or one bare /callback.
     if (s.id !== s.module) throw new Error(`board.signins ${s.id}: contributed by ${s.module}; a module's sign-in id is its own name`);
     if (s.id === "google" || s.connect_url !== `/${s.id}/connect` || ![`/${s.id}/callback`, "/callback"].includes(s.callback) || list.filter((x) => x.callback === s.callback).length > 1) throw new Error(`board.signins ${s.id}: its paths must be /${s.id}/connect and /${s.id}/callback (or one module's /callback)`);
     const auth = signIn(`${secrets}/${s.id}_auth_token`, s.status_url.slice(0, -"/status".length).replace(/\/auth$/, ""));
-    return auth ? [{ id: s.id, label: s.label, connect: s.connect_url, callback: s.callback, mode: s.mode ?? "redirect", httpsOnly: Boolean(s.https_only), missing: s.missing, stopped: s.stopped, fields: s.fields ?? [], ...auth }] : [];
+    return auth ? [{ id: s.id, label: s.label, connect: s.connect_url, callback: s.callback, mode: s.mode ?? "redirect", disconnect: Boolean(s.disconnect), httpsOnly: Boolean(s.https_only), missing: s.missing, stopped: s.stopped, fields: s.fields ?? [], ...auth }] : [];
   });
 }
 

@@ -1,11 +1,10 @@
 // A module's guided setup at #/setup/<module>, rendered from its board.setup_flows declaration: why and effort, the steps (with
 // the board's address and the sign-in's exact redirect, each copyable) and the vendor's console link, one paste field per
 // secret, then the sign-in's Connect button or a pairing code, as numbered stages. Nothing here knows which module it is.
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import qrcode from "qrcode-generator";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { HttpStatusError, SignInRequired, api, type SetupChoice, type SetupFlowView } from "./api";
 import { OrganisationPicker } from "./Organisation";
-import { ConnectButton } from "./Connect";
+import { ConnectButton, QrCode } from "./Connect";
 import { forgetFlows } from "./SetupButton";
 import { SetupPaths } from "./SetupPaths";
 import { useEvents } from "./events";
@@ -609,24 +608,5 @@ export function SecretFields({ module, fields, present, done, elsewhere, reload,
         </button>
       </div>
     </>
-  );
-}
-
-/** A link as a QR code (a phone's camera opens it), drawn as one SVG path from the encoder's modules. */
-function QrCode({ text, label }: { text: string; label: string }) {
-  const { size, d } = useMemo(() => {
-    const qr = qrcode(0, "M");
-    qr.addData(text);
-    qr.make();
-    const count = qr.getModuleCount();
-    let path = "";
-    for (let r = 0; r < count; r++) for (let c = 0; c < count; c++) if (qr.isDark(r, c)) path += `M${c + 4} ${r + 4}h1v1h-1z`;
-    return { size: count + 8, d: path };
-  }, [text]);
-  return (
-    <svg className="setup-qr" viewBox={`0 0 ${size} ${size}`} role="img" aria-label={label} shapeRendering="crispEdges">
-      <rect width={size} height={size} fill="#fff" />
-      <path d={d} fill="#000" />
-    </svg>
   );
 }

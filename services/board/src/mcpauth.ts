@@ -108,7 +108,7 @@ export class McpAuth {
     }
   }
 
-  /** A device sign-in (signins `mode: device`): the code to show; the proxy then waits for the token itself. */
+  /** A device sign-in (signins `mode: device` or `qr`): the code (or QR link) to show; the proxy then waits for the token itself. */
   deviceStart() {
     return this.call<DeviceCode>("POST", "/auth/device");
   }
@@ -122,12 +122,32 @@ export class McpAuth {
   async deviceCancel(): Promise<void> {
     await this.call<{ ok: true }>("POST", "/auth/device/cancel");
   }
+
+  /** The one transient secret a qr sign-in asked for (a password): passed on, never kept. A wrong value throws the proxy's words. */
+  async deviceSecret(value: string): Promise<void> {
+    await this.call<{ ok: true }>("POST", "/auth/device/secret", { value });
+  }
+
+  /** Revokes the sign-in at the vendor (signins `disconnect`). */
+  async disconnect(): Promise<void> {
+    await this.call<{ ok: true }>("POST", "/auth/disconnect", {});
+    this.cached = undefined;
+  }
 }
 
 /** What a sign-in's test says (`fix`: "Connect", "Reconnect", "Paste a new token"). */
 export type AuthCheck = { ok: true } | { ok: false; message: string; fix?: string };
-export interface DeviceCode { user_code: string; verification_uri: string; verification_uri_complete?: string; expires_in: number; interval: number }
-export interface DeviceState { state: "idle" | "pending" | "ok" | "expired" | "denied" | "cancelled" | "failed"; detail?: string }
+export type DeviceCode =
+  | { user_code: string; verification_uri: string; verification_uri_complete?: string; expires_in: number; interval: number }
+  | { qr: string; expires_in: number; interval: number };
+export interface DeviceState {
+  state: "idle" | "pending" | "secret" | "ok" | "expired" | "denied" | "cancelled" | "failed";
+  detail?: string;
+  /** The link to show as a QR while pending; it refreshes. */
+  qr?: string;
+  /** While state is secret: what the proxy asks for. */
+  secret?: { label: string; hint?: string };
+}
 
 /** OAuth's error codes (RFC 6749 §4.1.2.1, and the vendors' own common ones) in words: what happened, and what to do. */
 const OAUTH_WORDS: Record<string, string> = {
