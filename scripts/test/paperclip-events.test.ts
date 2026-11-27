@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -15,7 +15,7 @@ test("the events plugin reinstalls when a shipped file changes, not when the tre
   const calls: string[] = [];
   const api = async (method: string, path: string) => {
     calls.push(`${method} ${path}`);
-    return { json: method === "GET" ? [{ id: "p1", pluginKey: "aidenhq.events", status: "ready" }] : {} };
+    return { json: method === "GET" ? [{ id: "p1", pluginKey: "aidenhq.events", status: "ready", version: JSON.parse(readFileSync(join(pluginDir, "package.json"), "utf8")).version }] : {} };
   };
   const run = () => ensureEventsPlugin({ api, step: () => {}, pluginDir, stampFile });
   await run();

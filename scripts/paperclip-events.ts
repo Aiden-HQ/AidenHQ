@@ -1,6 +1,7 @@
 // The kernel's Paperclip plugin (services/paperclip-events): Paperclip's task events reach the kernel's wake inbox, and its
 // `post` action lets the kernel write as an agent. Installed from its read-only mount, and reinstalled when the hash of its
-// files differs from the one stamped at the last install (the manifest version is only a label), or when it errored. Each agent's own Paperclip key is the kernel's to call that action with (kernel/src/outcomes.ts).
+// files differs from the one stamped at the last install, when Paperclip's installed version differs from package.json (a rollback
+// replaced it), or when it errored. The version is a label; the hash decides for changed files. Each agent's own Paperclip key is the kernel's to call that action with (kernel/src/outcomes.ts).
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -25,7 +26,8 @@ export async function ensureEventsPlugin({ api, step, pluginDir, stampFile }: { 
   const plugins = (await api("GET", "/api/plugins")).json;
   const mine = (Array.isArray(plugins) ? plugins : plugins.plugins ?? []).find((p: { pluginKey: string }) => p.pluginKey === PLUGIN_KEY);
   const stamped = existsSync(stampFile) ? readFileSync(stampFile, "utf8").trim() : "";
-  if (mine && stamped === hash && mine.status !== "error") return;
+  const version = JSON.parse(readFileSync(join(pluginDir, "package.json"), "utf8")).version;
+  if (mine && stamped === hash && mine.version === version && mine.status !== "error") return;
   if (mine) await api("DELETE", `/api/plugins/${mine.id}`);
   await api("POST", "/api/plugins/install", { packageName: PLUGIN_PATH, isLocalPath: true });
   writeFileSync(stampFile, hash);
