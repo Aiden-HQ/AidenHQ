@@ -73,9 +73,21 @@ done
   printf 'MD5Sum:\n %s %s main/binary-amd64/Packages\n' "$(md5sum "$P" | cut -d' ' -f1)" "$(stat -c %s "$P")"
   printf 'SHA256:\n %s %s main/binary-amd64/Packages\n' "$(sha256sum "$P" | cut -d' ' -f1)" "$(stat -c %s "$P")"
 } > "$R/repo/dists/noble/Release"
-printf 'deb [trusted=yes] file:%s/repo noble main\n' "$R" > /etc/apt/sources.list.d/smoke.list
-# The image's own archives are not this test's business: the private repository is the only source, so the run is offline and the
-# same every day. The sandbox user is root because the container is already root and has no `_apt` account to drop to.
+# The private repository is served over loopback HTTP rather than read as `file:`, because apt answers a `file:` source with a
+# `0 B` download and this test needs the real size of a real download. `--network none` still leaves `lo` up, so this is the only
+# network the container has: nothing leaves it, and the run is the same offline every day.
+perl /smoke/serve.pl "$R/repo" 8099 >/dev/null 2>&1 &
+SERVER=$!
+trap 'kill "$SERVER" 2>/dev/null || true' EXIT
+i=0
+until perl -MIO::Socket::INET -e 'exit(IO::Socket::INET->new(PeerAddr=>"127.0.0.1",PeerPort=>8099,Proto=>"tcp") ? 0 : 1)' 2>/dev/null; do
+  i=$((i + 1))
+  [ "$i" -lt 50 ] || { echo "the loopback repository did not come up" >&2; exit 1; }
+  sleep 0.1
+done
+printf 'deb [trusted=yes] http://127.0.0.1:8099 noble main\n' > /etc/apt/sources.list.d/smoke.list
+# The image's own archives are not this test's business: the private repository is the only source. The sandbox user is root
+# because the container is already root and has no `_apt` account to drop to.
 mv /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources.disabled 2>/dev/null || true
 printf 'APT::Sandbox::User "root";\n' > /etc/apt/apt.conf.d/00-smoke-sandbox
 
@@ -93,6 +105,12 @@ printf 'local edit\n' > "/etc/$PKG.conf"
 
 say "simulate"
 sh -c "$SIMULATE"
+
+say "estimate"
+# The space a run needs is the exact list's own download size. apt prints `Need to get …` for a real install, but not for `-s`:
+# its simulation stops before the download summary. `--print-uris` runs the same resolution over the same list and prints the
+# summary without fetching anything, so this is the same number the module reads from a real install's own output.
+sh -c "$ESTIMATE"
 
 say "install"
 sh -c "$INSTALL" > "$R/install.log" 2>&1

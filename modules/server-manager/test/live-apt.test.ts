@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import {
-  classify, parseHolds, parsePolicy, parseSimulation, simulationProblems, UPDATE_ARGV, installCommand,
+  classify, downloadEstimate, parseHolds, parsePolicy, parseSimulation, simulationProblems, UPDATE_ARGV, installCommand,
 } from "../service/src/apt.ts";
 import { hashOf, verifyPatch, type PatchArgs } from "../service/src/execute.ts";
 import { commandWordOk, quoteWords } from "../service/src/ssh.ts";
@@ -28,6 +28,7 @@ const PINNED = "smoke-pkg=2.0";
 const NEWER = "3.0";
 
 const script = readFileSync(new URL("./live/apt-smoke.sh", import.meta.url), "utf8");
+const server = readFileSync(new URL("./live/serve.pl", import.meta.url), "utf8");
 
 function runtime(): string | undefined {
   for (const bin of ["docker", "podman"]) {
@@ -63,24 +64,29 @@ test("§14 live smoke: the exact UPDATE_ARGV and installCommand run against real
   const update = [...UPDATE_ARGV];
   const simulate = installCommand([PINNED], true);
   const install = installCommand([PINNED]);
-  for (const word of [...update, ...simulate, ...install]) assert.ok(commandWordOk(word), `the transport accepts ${JSON.stringify(word)}`);
+  // The module's exact install words with one added: `apt-get --print-uris install …` resolves the same list and prints the
+  // download summary without fetching anything. apt prints no summary for `-s`, so this is where a real estimate comes from.
+  const estimate = install.flatMap((w) => (w === "apt-get" ? [w, "--print-uris"] : [w]));
+  for (const word of [...update, ...simulate, ...install, ...estimate]) assert.ok(commandWordOk(word), `the transport accepts ${JSON.stringify(word)}`);
 
   const dir = mkdtempSync(join(tmpdir(), "sm-live-apt-"));
   try {
     writeFileSync(join(dir, "apt-smoke.sh"), script, { mode: 0o755 });
+    writeFileSync(join(dir, "serve.pl"), server, { mode: 0o755 });
     const r = spawnSync(bin!, [
       "run", "--rm", "--network", "none", "--platform", "linux/amd64",
       "-v", `${dir}:/smoke:ro`,
       "-e", `UPDATE=${line(update)}`,
       "-e", `SIMULATE=${line(simulate)}`,
       "-e", `INSTALL=${line(install)}`,
+      "-e", `ESTIMATE=${line(estimate)}`,
       IMAGE, "sh", "/smoke/apt-smoke.sh",
     ], { encoding: "utf8", timeout: 140_000, maxBuffer: 8 << 20 });
     const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
     assert.equal(r.status, 0, `the container ran every command (exit ${r.status}):\n${out}`);
 
     // 1. `apt-get update` under the exact UPDATE_ARGV: the refresh ran and the private repository's index was read.
-    assert.match(section(out, "update"), /Reading package lists|Get:\d+ file:/, "apt-get update ran under UPDATE_ARGV");
+    assert.match(section(out, "update"), /Reading package lists|Get:\d+ http:\/\/127\.0\.0\.1:8099/, "apt-get update ran under UPDATE_ARGV and read the private repository's index");
 
     // 2. The seed install, and the local conffile edit the upgrade must keep.
     assert.match(section(out, "sudo-stand-in"), /sudo-stand-in-ready/, "the container's root stands in for `sudo -n`, so the module's words run unchanged");
@@ -90,6 +96,20 @@ test("§14 live smoke: the exact UPDATE_ARGV and installCommand run against real
     const sim = section(out, "simulate");
     assert.match(sim, /^Inst smoke-pkg \[1\.0\] \(2\.0 /m, "the real simulation names the exact move");
     assert.deepEqual(simulationProblems(parseSimulation(sim), [PINNED]), [], "parseSimulation finds nothing outside the approved list");
+    // The run's space gate (§11.3) needs the download size of this exact list. Real apt prints no `Need to get` line for `-s`: it
+    // stops before the download summary. That is a fact about apt, and it is why the module's own read of the `-s` output finds no
+    // estimate — the defect reported separately, not fixed here. The test asserts both halves against real apt: the `-s` output
+    // carries no estimate, and the gate refuses on it; and the same list resolved with `--print-uris` (which prints the summary
+    // without fetching) does carry one, which the gate accepts. The package is served over loopback HTTP because a `file:` source
+    // answers `0 B`.
+    assert.equal(downloadEstimate(sim), null, "a real `-s` simulation carries no download estimate, so the module's own read of it finds none");
+    const estimateText = section(out, "estimate");
+    // apt prints `Need to get 0 B/670 B of archives.` when part of the list is already in its cache, and the total after the slash
+    // is what the run has to fetch. Read that one, through the module's own parser.
+    const need = /Need to get [^\n]* of archives\./.exec(estimateText)?.[0] ?? "";
+    const total = need.includes("/") ? `Need to get ${need.slice(need.indexOf("/") + 1)}` : need;
+    const downloaded = downloadEstimate(total);
+    assert.ok(downloaded != null && downloaded > 0, `real apt reports a positive download size for the exact list (got ${downloaded}):\n${estimateText}`);
 
     // 4. The install: the package moved to the pinned version even though a newer one exists, the payload moved with it, and the
     //    local conffile survived — which is what the two Dpkg::Options words are for.
@@ -118,12 +138,17 @@ test("§14 live smoke: the exact UPDATE_ARGV and installCommand run against real
     assert.match(auditBroken, /smoke-broken/, "the half-configured package is what dpkg --audit reports");
     const rec: PatchArgs = { machine: "smoke", mode: "security", reboot_policy: "auto", fingerprint: "", packages: [PINNED], hash: hashOf([{ name: "smoke-pkg", version: "2.0" }]) };
     const fresh = {
-      list: [{ name: "smoke-pkg", version: "2.0" }], hash: rec.hash, downloaded_bytes: 0,
+      list: [{ name: "smoke-pkg", version: "2.0" }], hash: rec.hash, downloaded_bytes: downloaded,
       disk: { root_free_gb: 20, boot_free_gb: null }, simulation: sim, installed: new Map([["smoke-pkg", "1.0"]]),
       holds: [], unattended_upgrades: false, reboot_needed: false,
     };
+    // What the module's own read yields on real apt: no estimate, so the gate refuses rather than guess the space. This is the
+    // defect the separate fix addresses; the test records it rather than papering over it with a made-up zero.
+    const refused = verifyPatch(rec, { ...fresh, downloaded_bytes: downloadEstimate(sim), audit: auditClean });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.ok === false ? refused.code : "", "disk_unknown", "the gate refuses when apt's `-s` output carries no estimate");
     const clean = verifyPatch(rec, { ...fresh, audit: auditClean });
-    assert.deepEqual(clean, { ok: true }, "the clean container's audit passes the run's own gate");
+    assert.deepEqual(clean, { ok: true }, "given a real estimate for the exact list, the clean container passes the run's own gate");
     const broken = verifyPatch(rec, { ...fresh, audit: auditBroken });
     assert.equal(broken.ok, false);
     assert.equal(broken.ok === false ? broken.code : "", "dpkg_broken", "the run refuses a host whose dpkg --audit is not empty");
