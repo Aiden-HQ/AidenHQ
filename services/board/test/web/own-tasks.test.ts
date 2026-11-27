@@ -18,7 +18,7 @@ describe("tasks lists", () => {
 
   it("puts what needs the owner or is blocked under Waiting on you, and counts what is open", () => {
     const now = new Date().toISOString();
-    const g = delegatedOf([w("1", "working"), w("2", "needs_you"), w("3", "blocked"), w("4", "waiting"), w("5", "done", { closedAt: now }), w("6", "done", { closedAt: "2020-01-01T00:00:00Z" }), { ...w("7", "working"), assignee: "me" }], "UTC");
+    const g = delegatedOf([w("1", "working"), w("2", "needs_you"), w("3", "blocked"), w("4", "waiting"), w("5", "done", { closedAt: now }), w("6", "done", { closedAt: "2020-01-01T00:00:00Z" }), { ...w("7", "working"), assignee: "me" }], );
     expect(Object.fromEntries(Object.entries(g).map(([k, v]) => [k, v.map((x) => x.id)]))).toEqual({ working: ["1"], waiting: ["2", "3"], queued: ["4"], done: ["5"] });
     expect(delegatedCount(g)).toBe(4);
   });

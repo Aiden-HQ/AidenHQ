@@ -46,14 +46,9 @@ export function upcomingGroups(mine: Buckets, board: Pick<Board, "timezone" | "r
   return undated.length ? [...groups, { label: "Coming up", cards: undated }] : groups;
 }
 
-/** The icon a task's source gets, and the name beside it: the label that says where it came from, else the board itself. */
-export const SOURCES: Record<string, { name: string; kind: "chat" | "mail" | "calendar" | "pr" | "doc" }> = {
-  "needs-response": { name: "Reply", kind: "chat" },
-  email: { name: "Email", kind: "mail" },
-  "meeting-action": { name: "Meeting", kind: "calendar" },
-  "needs-review": { name: "Review", kind: "pr" },
-  engineer: { name: "Code", kind: "pr" },
-};
+/** The icon a task's source gets: the labels that say where a task came from (util SOURCE_NAMES), each with a kind. */
+const KINDS: Record<string, "chat" | "mail" | "calendar" | "pr" | "doc"> = { "needs-response": "chat", email: "mail", "meeting-action": "calendar", "needs-review": "pr", engineer: "pr" };
+export const SOURCES = Object.fromEntries(Object.entries(SOURCE_NAMES).map(([label, name]) => [label, { name, kind: KINDS[label] ?? "doc" }])) as Record<string, { name: string; kind: "chat" | "mail" | "calendar" | "pr" | "doc" }>;
 export function sourceOf(c: Card): { name: string; kind: "chat" | "mail" | "calendar" | "pr" | "doc"; label?: string } {
   const l = c.labels.find((x) => SOURCES[x.name]);
   return l ? { ...SOURCES[l.name]!, label: l.name } : { name: "Board", kind: "doc" };
@@ -88,15 +83,16 @@ export const DELEGATED: readonly { id: DelegatedGroup; name: string }[] = [
  * (both are his to act on); the rest are queued; finished ones show for the day (a search shows every close it found). One function: the tab's count is the first
  * three groups.
  */
-export function delegatedOf(work: WorkCard[], timezone: string, anyDay = false): Record<DelegatedGroup, WorkCard[]> {
+export function delegatedOf(work: WorkCard[], anyDay = false, agentsOnly = true): Record<DelegatedGroup, WorkCard[]> {
   const out: Record<DelegatedGroup, WorkCard[]> = { working: [], waiting: [], queued: [], done: [] };
-  const today = todayIn(timezone);
+  const today = new Date().toDateString();
   for (const c of work) {
-    if (!c.assignee || c.assignee === "me") continue;
+    // A saved board that picked Unassigned or You keeps those tasks.
+    if (agentsOnly && (!c.assignee || c.assignee === "me")) continue;
     const lane = laneOf(c);
     if (c.closedAt || lane === "done") {
-      // A search lists every close it found, not only today's.
-      if (anyDay || (c.closedAt && todayIn(timezone, new Date(c.closedAt)) === today)) out.done.push(c);
+      // The viewer's day, as the times on the rows are; a search lists every close it found.
+      if (anyDay || (c.closedAt && new Date(c.closedAt).toDateString() === today)) out.done.push(c);
     } else out[lane === "working" ? "working" : lane === "needs_you" || lane === "blocked" ? "waiting" : "queued"].push(c);
   }
   return out;
@@ -107,7 +103,7 @@ const cap = (s: string) => (s ? s[0]!.toUpperCase() + s.slice(1) : s);
 /** What a delegated task says it is doing: the kernel's own words for its state (the question it asked, the card that waits, the stage). */
 export function progressOf(c: WorkCard): string {
   const s = c.state;
-  if (!s) return "No reported state";
+  if (!s) return c.status === "done" || c.closedAt ? "Done" : "No reported state";
   if (laneOf(c) === "needs_you") {
     const a = s.attention.find((x) => x.who === "owner");
     if (a?.why === "card") return "Approval card ready";

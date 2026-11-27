@@ -17,6 +17,8 @@ export function RowDrawer({ rowId, onClose, head, foot, className, children }: {
       const layers = document.querySelectorAll(".drawer-backdrop, dialog[open], .palette-backdrop");
       if (layers[layers.length - 1] !== mine.parentElement) return;
       if (e.key === "Tab") {
+        // A menu opened from the drawer (portaled to the page) keeps its own Tab order.
+        if (document.activeElement?.closest(".popover")) return;
         // Focus stays in this drawer while it is the topmost one.
         const f = [...mine.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])")];
         const first = f[0], last = f[f.length - 1];

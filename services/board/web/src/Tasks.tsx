@@ -32,7 +32,8 @@ export interface TasksProps {
   /** The drawer changed something: read the board again. */
   onChanged: () => void;
   toast: (text: string) => void;
-  /** A search is on and older closed matches remain: reads the next page. */
+  /** A search is on: the completed tasks it found (Mine), and a way to read older ones. */
+  closed?: Card[];
   moreDone?: () => void;
 }
 
@@ -76,6 +77,7 @@ function blocksOf(p: TasksProps, allNew: boolean): Block[] {
     }));
   }
   const tag = (id: Section, glyph: Glyph) => (card: Card): Item => ({ card, glyph, group: id, mine: true });
+  const closed = p.closed ?? [];
   const of = (id: Section) => SECTIONS.find((s) => s.id === id)!.buckets.flatMap((b) => p.mine[b]);
   const news = of("new");
   return [
@@ -83,6 +85,7 @@ function blocksOf(p: TasksProps, allNew: boolean): Block[] {
     { id: "today", name: "Today", glyph: "today", edge: EDGE.today, count: of("today").length, groups: [{ items: of("today").map(tag("today", "today")) }] },
     { id: "upcoming", name: "Upcoming", glyph: "upcoming", edge: EDGE.upcoming, count: of("upcoming").length, groups: upcomingGroups(p.mine, p.board).map((g) => ({ label: g.label, items: g.cards.map(tag("upcoming", "upcoming")) })) },
     { id: "later", name: "Later", glyph: "later", edge: EDGE.later, count: of("later").length, groups: [{ items: of("later").map(tag("later", "later")) }] },
+    ...(closed.length || p.moreDone ? [{ id: "done", name: "Done", glyph: "done" as const, edge: EDGE.done, count: closed.length, groups: [{ items: closed.map((card): Item => ({ card, glyph: "done", group: "done", mine: false })) }] }] : []),
   ];
 }
 
@@ -99,7 +102,7 @@ function timeOf(it: Item, board: Board): string {
 }
 
 /** Later's three places: Tomorrow, Next week and Someday. */
-function LaterMenu({ timezone, onTomorrow, onWeek, onSomeday, size }: { timezone: string; onTomorrow: () => void; onWeek: (date: string) => void; onSomeday: () => void; size?: "sm" }) {
+function LaterMenu({ timezone, tomorrow, onTomorrow, onWeek, onSomeday, size }: { timezone: string; /** The date the Tomorrow bucket rolls into Today (the next workday). */ tomorrow: string; onTomorrow: () => void; onWeek: (date: string) => void; onSomeday: () => void; size?: "sm" }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
   const today = todayIn(timezone);
@@ -113,7 +116,7 @@ function LaterMenu({ timezone, onTomorrow, onWeek, onSomeday, size }: { timezone
       </button>
       {open && (
         <Popover anchor={ref.current} onClose={() => setOpen(false)}>
-          <button role="menuitem" onClick={pick(onTomorrow)}><span>Tomorrow</span><span className="menu-hint">{hint(addDay(today))}</span></button>
+          <button role="menuitem" onClick={pick(onTomorrow)}><span>Tomorrow</span><span className="menu-hint">{hint(tomorrow)}</span></button>
           <button role="menuitem" onClick={pick(() => onWeek(week))}><span>Next week</span><span className="menu-hint">{hint(week)}</span></button>
           <button role="menuitem" onClick={pick(onSomeday)}><span>Someday</span></button>
         </Popover>
@@ -121,7 +124,6 @@ function LaterMenu({ timezone, onTomorrow, onWeek, onSomeday, size }: { timezone
     </div>
   );
 }
-const addDay = (d: string) => new Date(Date.parse(`${d}T12:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
 
 export function TasksList(p: TasksProps) {
   const { board } = p;
@@ -129,7 +131,7 @@ export function TasksList(p: TasksProps) {
   const [allNew, setAllNew] = useState(false);
   const [at, setAt] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
-  const blocks = useMemo(() => blocksOf(p, allNew), [p.tab, p.mine, p.delegated, p.narrowed, p.board.rollsOn, allNew]);
+  const blocks = useMemo(() => blocksOf(p, allNew), [p.tab, p.mine, p.delegated, p.closed, p.moreDone, p.narrowed, p.board.rollsOn, allNew]);
   // Every row on screen in order: what J and K walk and the drawer steps through.
   const rows = useMemo(() => blocks.flatMap((b) => (collapsed.has(b.id) ? [] : b.groups.flatMap((g) => g.items)).slice(0, b.cap ?? Infinity)), [blocks, collapsed]);
   const cardOf = (id: string | null) => rows.find((r) => r.card.id === id);
@@ -161,7 +163,7 @@ export function TasksList(p: TasksProps) {
       if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
       const el = e.target as HTMLElement;
       if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable) return;
-      if (document.querySelector("dialog[open], .palette-backdrop, .drawer:not(.tasks-drawer)")) return;
+      if (document.querySelector("dialog[open], .palette-backdrop, .drawer-backdrop:not(:has(.tasks-drawer))")) return;
       const k = e.key;
       const cur = cardOf(current(el));
       if (k === "j" || k === "ArrowDown") return e.preventDefault(), step(1);
@@ -193,7 +195,7 @@ export function TasksList(p: TasksProps) {
     const acts = it.mine && (
       <>
         <Button size="sm" onClick={() => p.onDone(c)}><Icon name="check" size={14} /> Done</Button>
-        <LaterMenu size="sm" timezone={board.timezone} onTomorrow={() => p.onMove(c, "tomorrow")} onWeek={(d) => p.onSnooze(c, d)} onSomeday={() => p.onMove(c, "backlog")} />
+        <LaterMenu size="sm" timezone={board.timezone} tomorrow={board.rollsOn} onTomorrow={() => p.onMove(c, "tomorrow")} onWeek={(d) => p.onSnooze(c, d)} onSomeday={() => p.onMove(c, "backlog")} />
         <Button size="sm" onClick={() => p.onDismiss(c)}>Dismiss</Button>
       </>
     );
@@ -286,9 +288,9 @@ function ProjectChip({ name }: { name: string }) {
 /** Pairs "Filed by Intake": the monogram and the name, or nothing. */
 const Who = ({ a }: { a?: Assignee }) => (a ? <span className="tk-who"><Monogram name={a.name} size={20} />{shortName(a)}</span> : null);
 
-type Event = { at: string; who: string; text: string; id: string };
+type Event = { at: string; who: string; by?: string; text: string; id: string };
 const eventsOf = (issue: IssueView): Event[] => [
-  ...issue.comments.map((c: CommentView): Event => ({ id: c.id, at: c.createdAt, who: c.author.kind === "me" ? "You" : c.author.name, text: c.body })),
+  ...issue.comments.map((c: CommentView): Event => ({ id: c.id, at: c.createdAt, who: c.author.kind === "me" ? "You" : c.author.name, by: c.by, text: c.body })),
   ...issue.milestones.map((m: Milestone, i): Event => ({ id: `m${i}`, at: m.at, who: "", text: m.text })),
 ].sort((a, b) => a.at.localeCompare(b.at));
 
@@ -424,13 +426,13 @@ function TaskDrawer({ item, board, mergeTargets, onClose, onDone, onDismiss, onM
                   {events.map((e) => (
                     <li key={e.id}>
                       {e.who && <Monogram name={e.who} size={20} />}
-                      <div><span className="tk-etext">{e.who && <b>{e.who} </b>}{e.text}</span><small>{when(e.at)}</small></div>
+                      <div><span className="tk-etext">{e.who && <b>{e.who}{e.by ? ` · by ${e.by}` : ""} </b>}{e.text}</span><small>{when(e.at)}</small></div>
                     </li>
                   ))}
                   {!events.length && <li className="tk-none">No activity yet.</li>}
                 </ol>
                 <form className="tk-cmt" onSubmit={(e) => (e.preventDefault(), void send())}>
-                  <textarea rows={1} value={text} placeholder="Write a comment" aria-label="Write a comment" onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && (e.preventDefault(), void send())} />
+                  <textarea rows={1} readOnly={sending} value={text} placeholder="Write a comment" aria-label="Write a comment" onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && (e.preventDefault(), void send())} />
                   <button type="submit" className="icon-btn" aria-label="Send" disabled={sending || !text.trim()}><Icon name="send" size={16} /></button>
                 </form>
               </section>

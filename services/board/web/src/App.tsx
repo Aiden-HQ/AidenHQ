@@ -874,7 +874,7 @@ export function App() {
   };
   const work = tb.tab === "work";
   const day = tb.tab === "day";
-  const tabCounts = { mine: mineCount(mine!), work: delegatedCount(delegatedOf(board.work, board.timezone)) };
+  const tabCounts = { mine: mineCount(mine!), work: delegatedCount(delegatedOf(board.work)) };
   // The cards the filter menu counts over: the layout's own, unfiltered.
   const filterCards: Card[] = work ? board.work : [...BUCKETS.flatMap((b) => items[b]), ...board.recurring, ...board.done];
   // While a search is on, Done also holds the matching tasks closed before its 48 hours (the board doesn't hold those).
@@ -882,8 +882,10 @@ export function App() {
   const searching = !!query.trim() && found.hits !== undefined;
   const held = new Set([...board.work, ...board.done].map((c) => c.id));
   const older = searching ? found.done.filter((c) => !held.has(c.id)) : [];
-  const workCards = applyFilters([...board.work, ...older], tb.filters, found.hits);
-  const delegatedShown = delegatedOf(workCards, board.timezone, searching);
+  // Delegated's Agent dropdown is who holds the task (the row's agent); a saved board's chip also matches the agents on its sub-tasks.
+  const { agent: holders, ...beside } = tb.filters;
+  const workCards = tb.view || !holders?.length ? applyFilters([...board.work, ...older], tb.filters, found.hits) : applyFilters([...board.work, ...older], beside, found.hits).filter((c) => holders.includes(c.assignee ?? ""));
+  const delegatedShown = delegatedOf(workCards, searching, !tb.view);
   const doneCards = applyFilters([...board.done, ...older.filter((c) => c.mine !== false && !c.recent)], tb.filters, found.hits);
   // My day's Done column: when asked for, or while a search answer has matches there.
   const doneColumn = showDone || (searching && (doneCards.length > 0 || found.hasMore));
@@ -941,6 +943,7 @@ export function App() {
             <BoardTabs tb={tb} ready={!!session?.account} mobile={false} saveSignal={saveOpen} counts={tabCounts} />
             {(mineTab || work) && !tb.view && <TaskFilters filters={tb.filters} onChange={tb.setFilters} board={board} />}
             <span className="spacer" />
+            {work && !tb.view && <SaveButton tb={tb} onSave={() => setSaveOpen((n) => n + 1)} />}
             {(mineTab || work) && <TaskKeys />}
             {work && <AsOf board={board} stale={!!error} />}
             <div className={`search${found.busy ? " busy" : ""}`}>
@@ -980,7 +983,7 @@ export function App() {
             {work && <AsOf board={board} stale={!!error} />}
           </div>
           {(mineTab || work) && !tb.view ? (
-            <div className="tt-row"><TaskFilters filters={tb.filters} onChange={tb.setFilters} board={board} /></div>
+            <div className="tt-row"><TaskFilters filters={tb.filters} onChange={tb.setFilters} board={board} />{work && <SaveButton tb={tb} onSave={() => setSaveOpen((n) => n + 1)} />}</div>
           ) : (
             <div className="tt-row">
               <FilterSheet tb={tb} board={board} cards={filterCards} />
@@ -1010,7 +1013,7 @@ export function App() {
 
       <ErrorBoundary resetKey={`${view}:${JSON.stringify(route)}`}>
       {view === "home" && page.kind === "welcome" && <Onboarding session={session} onSignIn={signInNeeded} />}
-      {view === "home" && page.kind !== "welcome" && <HomeView card={page.kind === "home" ? page.card : undefined} session={session} go={go} onSignIn={signInNeeded} toast={toast} mobile={mobile} timezone={board.timezone} front={route.kind === "home"} day={{ today: mine!.today, triage: mine!.triage.length, week: mine!.tomorrow.length + mine!.later.length, projects: board.projects, open: () => (tb.setTab("mine"), setQuery("")) }} onDone={markDone} />}
+      {view === "home" && page.kind !== "welcome" && <HomeView card={page.kind === "home" ? page.card : undefined} session={session} go={go} onSignIn={signInNeeded} toast={toast} mobile={mobile} timezone={board.timezone} front={route.kind === "home"} day={{ today: mine!.today, triage: mine!.triage.length, week: mine!.tomorrow.length + mine!.later.length, projects: board.projects, open: () => (tb.setTab("mine"), tb.setFilters({})) }} onDone={markDone} />}
       {view === "team" && page.kind === "teammate" && <Suspense fallback={<PageLoading />}><TeammateView key={page.key} agentKey={page.key} chat={page.chat} text={page.text} crew={mates} faces={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} mobile={mobile} /></Suspense>}
       {view === "team" && page.kind === "hire" && <Suspense fallback={<PageLoading />}><HireView key={page.setup ?? page.install ?? ""} setup={page.setup} install={page.install} chat={page.chat} owner={session?.account?.owner === true} onSignIn={signInNeeded} /></Suspense>}
       {view === "team" && page.kind !== "teammate" && page.kind !== "hire" && <Suspense fallback={<PageLoading />}><TeamView go={go} onSignIn={signInNeeded} /></Suspense>}
@@ -1041,7 +1044,8 @@ export function App() {
           onMerge={(c, into) => void mergeCard(c, into)}
           onChanged={() => void refresh(true)}
           toast={toast}
-          moreDone={work && found.hasMore ? found.more : undefined}
+          closed={mineTab && searching ? doneCards : undefined}
+          moreDone={searching && found.hasMore ? found.more : undefined}
         />
       )}
       {view === "tasks" && day && (
