@@ -1,6 +1,6 @@
-// scripts/verify-security.sh runs on the host, so its code checks (the secret scan and the pinned gate code) can drift
-// from the code they pin without CI noticing. Its static parts run here: the Repository section and the pinned checks up
-// to the live engine probe.
+// scripts/verify-security.sh runs on the host, so its static checks can drift from the modules they read without CI noticing.
+// They run here: the secret scan, the vendor connections' tag rule, the GitHub guard's allowlists, the reviewer's code list,
+// Primer's write floors and the engines' web-search probe.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -21,11 +21,10 @@ test("verify-security's code checks pass on this checkout", () => {
     `repo=${JSON.stringify(repo)}; cd "$repo"`,
     'pass() { echo "ok    $1"; }; fail() { echo "FAIL  $1"; }',
     slice(/^echo "Repository"/, /^echo "Capabilities/),
-    slice(/^rm_="modules\//, /^# engine@1:/),
     // The vendor connections' tag rule and the GitHub guard's allowlists read the modules' manifests and sources, so they
     // run here too: a connection that grows a tool or a route fails CI, not a host.
-    slice(/^# Vendor connections pass/, /^vp="kernel/),
-    slice(/^# GitHub: the user's gh token/, /^# The code host \(codehost-github\) merges/),
+    slice(/^# Vendor connections pass/, /^for a in config/),
+    slice(/^# GitHub: the user's gh token/, /^# C3-final/),
   ].join("\n");
   const r = spawnSync("bash", ["-c", script], { encoding: "utf8", maxBuffer: 16 << 20 });
   const out = r.stdout.split("\n");
