@@ -399,9 +399,10 @@ export function createService(o: Options) {
     return { s, dir };
   }
 
-  // GitHub's checks on a commit as plan.ts reads them: { name, kind, rank, ok, pending, skipped } each. The name is only matched
-  // (the gate check `ci-required`, merge-gate.ts productMergeEligible), never shown: the card counts checks. `kind` and `rank`
-  // let the gate keep each name's newest judgement (merge-gate.ts headChecks), so a cancelled run an edit superseded never blocks.
+  // GitHub's checks on a commit as plan.ts reads them: { name, kind, rank, status, ok, success, pending, skipped } each. The name is
+  // only matched (the gate check `ci-required`, merge-gate.ts), never shown: the card counts checks. `kind` and `rank` let the gate
+  // keep each name's newest judgement (merge-gate.ts headChecks), so a cancelled run an edit superseded never blocks, and `status`
+  // (the conclusion upper-cased) lets it tell a gate that judged the head from one that skipped or was cancelled on it (gateJudged).
   // Every page is read; if GitHub reports more than could be read, one check stays pending: missing evidence never passes.
   const rankOf = (rank: number | undefined) => (rank !== undefined ? { rank } : {});
   async function checksAt(s: ReturnType<typeof slugOf>, sha: string) {
@@ -422,8 +423,8 @@ export function createService(o: Options) {
     const unread = runs.complete && status.complete ? [] : [{ pending: true, skipped: false, ok: false }];
     return [
       ...unread,
-      ...runs.items.map((r: any) => ({ name: String(r.name ?? ""), kind: "run" as const, ...rankOf(contextRank(r)), pending: r.status !== "completed", skipped: r.conclusion === "skipped", ok: r.status === "completed" && ["success", "skipped", "neutral"].includes(r.conclusion), success: r.status === "completed" && r.conclusion === "success" })),
-      ...status.items.map((x: any) => ({ name: String(x.context ?? ""), kind: "status" as const, ...rankOf(contextRank(x)), pending: x.state === "pending", skipped: false, ok: x.state === "success", success: x.state === "success" })),
+      ...runs.items.map((r: any) => ({ name: String(r.name ?? ""), kind: "run" as const, ...rankOf(contextRank(r)), status: r.status === "completed" ? String(r.conclusion ?? "").toUpperCase() : undefined, pending: r.status !== "completed", skipped: r.conclusion === "skipped", ok: r.status === "completed" && ["success", "skipped", "neutral"].includes(r.conclusion), success: r.status === "completed" && r.conclusion === "success" })),
+      ...status.items.map((x: any) => ({ name: String(x.context ?? ""), kind: "status" as const, ...rankOf(contextRank(x)), status: String(x.state ?? "").toUpperCase(), pending: x.state === "pending", skipped: false, ok: x.state === "success", success: x.state === "success" })),
     ];
   }
   // The commits this code host pushed, each as "<repo, lowercase> <sha>": a head is the runner's own only in the repo it was
