@@ -158,11 +158,13 @@ export class Maintainer {
 
   /** `repos` is the parsed list, or why it couldn't be parsed: then every tool refuses with that reason. */
   constructor(
-    private readonly gh: Pick<GitHubAccess, "rest">,
+    private readonly gh: Pick<GitHubAccess, "rest" | "actorFor">,
     private readonly repos: MaintainedRepo[] | Error,
     private readonly terms: string[] = [],
-    /** Whether a GitHub object (`github:<repo>#<n>`) is in AidenHQ's records: the fleet acts as the owner's login. */
+    /** Whether a GitHub object (`github:<repo>#<n>`) is in AidenHQ's records: the fleet acts as the owner's login or the App. */
     private readonly ours: (ref: string) => Promise<boolean> = async () => false,
+    /** The instance's GitHub App id (read from GitHub), or undefined without one: its label events are the fleet's own. */
+    private readonly appId: () => Promise<number | undefined> = async () => undefined,
   ) {}
 
   private ref(r: MaintainedRepo, number: number) {
@@ -210,6 +212,10 @@ export class Maintainer {
    * is not a security boundary. A label with no actor is untrusted.
    */
   private async trustedEvent(e: GhTimelineEvent, r: MaintainedRepo): Promise<boolean> {
+    // The fleet's own label, made as the App, is trusted as one made as the owner's login is, except the build label: that is the
+    // owner's own word on GitHub, and no tool of the fleet's adds it.
+    const via = e.performed_via_github_app?.id;
+    if (via != null && Number(via) === (await this.appId())) return !named(String(e.label?.name ?? ""), BUILD_LABEL);
     const login = e.actor?.login;
     if (!login) return false;
     const role = await this.role(r.owner, r.name, login);
@@ -488,7 +494,7 @@ export class Maintainer {
 
   /** One already-scrubbed comment as the owner. */
   private async postComment(r: MaintainedRepo, number: number, text: string) {
-    const res = await this.gh.rest("POST", `/repos/${r.owner}/${r.name}/issues/${number}/comments`, { body: text });
+    const res = await this.gh.rest("POST", `/repos/${r.owner}/${r.name}/issues/${number}/comments`, { body: text }, { actor: await this.gh.actorFor({ repo: r.repo }, "issue") });
     // The status rides on the error: a 5xx may still have created the comment (a gateway answered, not GitHub), so it is not a refusal.
     if (res.status !== 201) throw Object.assign(new Error(`GitHub refused the comment (${res.status} ${res.body?.message ?? ""})`.trim()), { status: res.status });
     return {
@@ -515,12 +521,12 @@ export class Maintainer {
     const out = (changed: boolean) => ({ repo: r.repo, number, label: which, action, changed,  });
     if (action === "add") {
       if (present) return out(false);
-      const res = await this.gh.rest("POST", `/repos/${r.owner}/${r.name}/issues/${number}/labels`, { labels: [which] });
+      const res = await this.gh.rest("POST", `/repos/${r.owner}/${r.name}/issues/${number}/labels`, { labels: [which] }, { actor: await this.gh.actorFor({ repo: r.repo }, "issue") });
       if (res.status !== 200) throw new Error(`GitHub refused the label (${res.status} ${res.body?.message ?? ""})`.trim());
       return out(true);
     }
     if (!present) return out(false);
-    const res = await this.gh.rest("DELETE", `/repos/${r.owner}/${r.name}/issues/${number}/labels/${encodeURIComponent(which)}`);
+    const res = await this.gh.rest("DELETE", `/repos/${r.owner}/${r.name}/issues/${number}/labels/${encodeURIComponent(which)}`, undefined, { actor: await this.gh.actorFor({ repo: r.repo }, "issue") });
     if (res.status !== 200) throw new Error(`GitHub refused the label removal (${res.status} ${res.body?.message ?? ""})`.trim());
     return out(true);
   }
@@ -820,7 +826,7 @@ export class Maintainer {
       };
     let res: Awaited<ReturnType<GitHubAccess["rest"]>>;
     try {
-      res = await this.gh.rest("PATCH", `/repos/${r.owner}/${r.name}/issues/${number}`, body);
+      res = await this.gh.rest("PATCH", `/repos/${r.owner}/${r.name}/issues/${number}`, body, { actor: await this.gh.actorFor({ repo: r.repo }, "issue") });
     } catch (e) {
       // The need stays typed (its cause and fields, and the kernel's needs_owner routing), with the note's outcome added to its
       // text. A retry is safe whatever reaches the agent: the record above keeps the note from being posted again.

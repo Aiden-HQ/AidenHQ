@@ -95,7 +95,7 @@ export function upstreamReport(
 
 export class Projects {
   private accounts = new Map<string, { user: boolean; projects: boolean }>();
-  constructor(private readonly access: Pick<GitHubAccess, "rest" | "graphql">) {}
+  constructor(private readonly access: Pick<GitHubAccess, "rest" | "graphql" | "actorFor">) {}
 
   /** The repo's issues whose body carries the fingerprint (GitHub search is fuzzy: each hit is checked). */
   private async byFingerprint(owner: string, repo: string, fingerprint: string, open: boolean) {
@@ -116,9 +116,10 @@ export class Projects {
     const all = await this.byFingerprint(owner, repo, input.fingerprint, false);
     const hit = all.find((i) => i.state === "open") ?? all.sort((a, b) => b.number - a.number)[0];
     const signed = withFooter(input.body, agent);
+    const actor = await this.access.actorFor({ repo: `${owner}/${repo}` }, "issue");
     const r = hit
-      ? await this.access.rest("POST", `/repos/${owner}/${repo}/issues/${hit.number}/comments`, { body: signed })
-      : await this.access.rest("POST", `/repos/${owner}/${repo}/issues`, { title: input.title, body: `${signed}\n\n${input.fingerprint}` });
+      ? await actor.rest("POST", `/repos/${owner}/${repo}/issues/${hit.number}/comments`, { body: signed })
+      : await actor.rest("POST", `/repos/${owner}/${repo}/issues`, { title: input.title, body: `${signed}\n\n${input.fingerprint}` });
     if (r.status !== 201) throw new Error(`GitHub refused it (${r.status} ${r.body?.message ?? ""})`.trim());
     return { deduplicated: Boolean(hit), number: hit?.number ?? (r.body.number as number), state: hit?.state ?? "open", url: r.body.html_url as string, ...(hit ? { comment: r.body.id as number } : {}) };
   }

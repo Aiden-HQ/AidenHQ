@@ -1,14 +1,14 @@
 // Code review's posting (docs/design/code-review.md "Posting"), run for a kernel write record the AI reviewer approved: the
 // code-review module's executor calls `preview` (what the card shows) and `execute` (what is posted) through github-mcp's
-// /internal/review routes. Every write of a review goes through one writer (`writer`, spec 2026-11-22-github-app-review-writer):
-// the owner's optional GitHub App where it is installed on the PR's base repo, else the owner (the one sign-in); reads stay the
-// owner's. Each text is signed with the AidenHQ footer. A review is only ever a COMMENT (no GitHub approval or change request: on
+// /internal/review routes. Each write goes as the actor client.ts's actorFor picks for its op on the PR's base repo
+// (docs/design/github-identity.md): the instance's GitHub App where it is installed with the op's permissions, else the owner. Each text is signed with the AidenHQ footer. A review is only ever a COMMENT (no GitHub approval or change request: on
 // a gated repo the merge queue asks code review's verdict itself); the commit status `aidenhq/review` only mirrors that verdict.
-// A thread is Aiden's own when its first comment carries our finding marker and is by the owner or the App: model text can't
+// A thread is Aiden's own when its first comment carries our finding marker and is by the owner or the App (its live login, read
+// from GitHub): model text can't
 // write a marker (review-render.ts escapes `<`). Every request goes through github.ts's `guard`.
 import type { z } from "zod";
 import { withFooter } from "./aidenhq-sdk/attribution.js";
-import type { GitHubAccess } from "./client.js";
+import type { GitHubAccess, Op } from "./client.js";
 import type { GitHubApp } from "./github-app.js";
 import { GitHub, GitHubRefused, RESOLVE_MAX, objectRef, reviewCommentId, type Ref } from "./github.js";
 import {
@@ -19,9 +19,9 @@ import {
 /** The card's details are cut at this many characters by the kernel: a review that can't be shown whole is refused. */
 const CARD_MAX = 79_000;
 
-/** Who posts: the owner's login, or the App's (its slug; GitHub names its bot `<slug>[bot]` on REST and `<slug>` on GraphQL). */
+/** Who posts: the owner's login, or the App's bot (GitHub names it `<slug>[bot]` on REST and `<slug>` on GraphQL). */
 export type Who = { login: string; bot: boolean; identity: "owner" | "app" };
-/** The one review writer: its client (every write of a review) and who it posts as. */
+/** One write attempt's client (bound to its actor) and who that is. */
 export type Writer = { gh: GitHub; who: Who };
 /** An author as GitHub names it: REST `user` (`type` User or Bot) or GraphQL `author` (`__typename`). */
 type Author = { login?: string; type?: string; __typename?: string } | null | undefined;
@@ -39,7 +39,7 @@ export interface Thread {
   finding: string | null;
   /** The first comment's id (what the code-review service records as its own thread). */
   comment: number;
-  /** The first comment carries a finding marker and is by the owner or code review's App: Aiden's own thread. */
+  /** The first comment carries a finding marker and is by the owner or AidenHQ's GitHub App: Aiden's own thread. */
   ours: boolean;
   author: string;
   /** The first comment's text, cut (data: a stranger's, or another reviewer's). */
@@ -102,12 +102,10 @@ export class ReviewPoster {
   private readonly replaced = new Map<string, number>();
   constructor(
     private readonly gh: GitHub,
-    private readonly access: Pick<GitHubAccess, "identity">,
+    private readonly access: Pick<GitHubAccess, "identity" | "actorFor">,
     private readonly onFailure?: (err: unknown) => void,
-    /** The owner's optional GitHub App (github-app.ts); without it every review posts as the owner. */
-    private readonly app?: GitHubApp,
-    /** Each writer chosen, by repo (the board card's "posts as" rows). */
-    private readonly onWriter?: (repo: string, identity: Who["identity"]) => void,
+    /** The instance's optional GitHub App (github-app.ts): who its bot is, for the threads it started. */
+    private readonly app?: Pick<GitHubApp, "identity">,
   ) {}
 
   /** The owner (a typed need when GitHub isn't connected). */
@@ -115,24 +113,17 @@ export class ReviewPoster {
     return { login: (await this.access.identity()).login, bot: false, identity: "owner" };
   }
 
-  /**
-   * The one review writer for `repo` (the PR's base repo): the App's installation where the App is installed there, else the
-   * owner. Only an App that isn't set up, or GitHub's 404 for its installation, picks the owner: any other failure of the App
-   * (its key, a suspension, a rate limit) throws, so a review never moves to the owner's account because the App broke.
-   */
-  async writer(repo: string): Promise<Writer> {
-    const installation = this.app ? await this.app.installation(repo) : null;
-    const w: Writer = installation === null
-      ? { gh: this.gh, who: await this.owner() }
-      : { gh: this.gh.as({ key: `app:${installation}`, token: (fresh) => this.app!.token(installation, fresh), wrote: (refusal) => this.app!.wrote(refusal) }), who: { login: this.app!.slug()!, bot: true, identity: "app" } };
-    this.onWriter?.(repo, w.who.identity);
-    return w;
+  /** One write attempt on `repo` (the PR's base repo) for `op`: its actor (actorFor) bound to a client, and who that is. */
+  private async attempt(repo: string, op: Op): Promise<Writer> {
+    const actor = await this.access.actorFor({ repo }, op);
+    const { login } = await actor.identity();
+    return { gh: this.gh.with(actor), who: { login: norm(login), bot: actor.kind === "app", identity: actor.kind } };
   }
 
-  /** Who may own a thread: the owner, and the App while it is set up. */
+  /** Who may own a thread: the owner, and the App's bot while an App is set up (also threads it started before a switch). */
   private async ourIdentities(): Promise<Who[]> {
-    const slug = this.app?.slug();
-    return [await this.owner(), ...(slug ? [{ login: slug, bot: true, identity: "app" as const }] : [])];
+    const bot = await this.app?.identity();
+    return [await this.owner(), ...(bot ? [{ login: norm(bot.login), bot: true, identity: "app" as const }] : [])];
   }
 
   /**
@@ -183,7 +174,7 @@ export class ReviewPoster {
       if (!t) skipped.push({ thread: id, why: missing });
       else if (!t.ours) skipped.push({ thread: id, why: "not a thread code review recorded as its own" });
       else if (t.resolved) skipped.push({ thread: id, why: "already resolved" });
-      else if (!t.can_resolve) skipped.push({ thread: id, why: `GitHub doesn't let ${w.who.identity === "app" ? "code review's App" : "the owner"} resolve it` });
+      else if (!t.can_resolve) skipped.push({ thread: id, why: `GitHub doesn't let ${w.who.identity === "app" ? "AidenHQ's GitHub App" : "the owner"} resolve it` });
       else open.push(id);
     }
     // One request for all of them; only the ones GitHub resolved are reported.
@@ -277,7 +268,7 @@ export class ReviewPoster {
         facts: {
           target: `${a.repo}#${a.pr} @ ${a.head.slice(0, 7)}`,
           sentence: `Set the commit status ${STATUS_CONTEXT} on ${a.repo}#${a.pr} to ${s.state}.`,
-          changes: `One commit status on ${a.head.slice(0, 12)}, as code review's GitHub identity (its App where installed, else the owner): code review's merge verdict mirrored, in fixed words.`,
+          changes: `One commit status on ${a.head.slice(0, 12)}, as AidenHQ's GitHub App where it is installed with the permission, else as the owner: code review's merge verdict mirrored, in fixed words.`,
           details: `${s.state}: ${s.description}`,
         },
         targets: { [`${a.repo}#${a.pr}`]: { repo: a.repo, ref: `pull/${a.pr}`, commit: a.head, base_sha: null } },
@@ -289,7 +280,7 @@ export class ReviewPoster {
         facts: {
           target: `${a.repo}#${a.pr} @ ${a.head.slice(0, 7)}`,
           sentence: `Reply on a code review finding's thread on ${a.repo}#${a.pr}.`,
-          changes: "One reply on Aiden's own review thread, as code review's GitHub identity, signed by AidenHQ: the agent's answer to the finding (fixed, disputed, by design or won't fix, and why).",
+          changes: "One reply on Aiden's own review thread, as AidenHQ's GitHub App where it is installed with the permission (else the owner), signed by AidenHQ: the agent's answer to the finding (fixed, disputed, by design or won't fix, and why).",
           details: a.body,
         },
         targets: { [`${a.repo}#${a.pr}`]: { repo: a.repo, ref: `pull/${a.pr}`, commit: a.head, base_sha: null } },
@@ -301,7 +292,7 @@ export class ReviewPoster {
         facts: {
           target: `${n.repo}#${n.pr} @ ${n.head.slice(0, 7)}`,
           sentence: `Update Aiden's review notice on ${n.repo}#${n.pr}: ${n.phase}${n.reason ? ` (${n.reason})` : ""}.`,
-          changes: "Edits Aiden's one acknowledgement comment on the pull request, as code review's GitHub identity (its App where installed, else the owner), signed by AidenHQ. The words are fixed; no model text.",
+          changes: "Edits Aiden's one acknowledgement comment on the pull request, as AidenHQ's GitHub App where it is installed with the permission, else as the owner, signed by AidenHQ. The words are fixed; no model text.",
           details: renderNotice(n),
         },
         targets: { [`${n.repo}#${n.pr}`]: { repo: n.repo, ref: `pull/${n.pr}`, commit: n.head, base_sha: null } },
@@ -316,7 +307,7 @@ export class ReviewPoster {
       facts: {
         target: `${r.repo}#${r.pr} @ ${r.head.slice(0, 7)}`,
         sentence: `Post Aiden's review of ${r.repo}#${r.pr} (${comboText(r)}: ${c.important} important, ${c.nit} nit, ${c.pre_existing} pre-existing).`,
-        changes: `A GitHub review with ${comments.length} inline comment${comments.length === 1 ? "" : "s"} (one thread per important finding, on its line, the nearest diff line or its file; nits and pre-existing findings stay on the board, counted in the summary), as code review's GitHub identity (its App where installed, else the owner), signed by AidenHQ.${a.resolve.length ? ` It resolves ${a.resolve.length} of its own earlier thread(s).` : ""} A comment review, never a GitHub approval or change request.`,
+        changes: `A GitHub review with ${comments.length} inline comment${comments.length === 1 ? "" : "s"} (one thread per important finding, on its line, the nearest diff line or its file; nits and pre-existing findings stay on the board, counted in the summary), as AidenHQ's GitHub App where it is installed with the permission, else as the owner, signed by AidenHQ.${a.resolve.length ? ` It resolves ${a.resolve.length} of its own earlier thread(s).` : ""} A comment review, never a GitHub approval or change request.`,
         details,
       },
       // The head alone: a review is of one commit, so its base moving (another merge landed) never makes it stale. Other
@@ -335,7 +326,7 @@ export class ReviewPoster {
   /** The reply goes only on a thread that is Aiden's own (its first comment carries our marker, by the posting identity), as code review's writer. */
   private async reply(a: ReplyArgs): Promise<{ ok: boolean; text: string; objects: string[] }> {
     const ref = { ...split(a.repo), number: a.pr };
-    const w = await this.writer(a.repo);
+    const w = await this.attempt(a.repo, "pr");
     await this.pull(ref);
     if (!(await this.threads(ref)).some((t) => t.comment === a.comment && t.ours)) throw new GitHubRefused(`comment ${a.comment} isn't the first comment of one of Aiden's own review threads on ${a.repo}#${a.pr}`);
     const r = await w.gh.request<{ id: number; html_url: string }>("POST", `${api(ref)}/pulls/${ref.number}/comments/${a.comment}/replies`, { body: { body: withFooter(`<!-- aidenhq-mirror -->\n${plain(a.body, 2000)}`, AGENT) } });
@@ -344,7 +335,7 @@ export class ReviewPoster {
 
   private async notice(n: NoticeArgs): Promise<{ ok: boolean; text: string; objects: string[] }> {
     const ref = { ...split(n.repo), number: n.pr };
-    const w = await this.writer(n.repo);
+    const w = await this.attempt(n.repo, "issue");
     await this.pull(ref);
     const ack = await this.ack(ref, renderNotice(n), w, n.ack);
     return { ok: true, text: JSON.stringify({ identity: w.who.identity, login: w.who.login, ack: ack.url, ack_id: ack.id }), objects: [ack.object] };
@@ -353,7 +344,7 @@ export class ReviewPoster {
   /** The commit status `aidenhq/review` on the head: code review's verdict mirrored (the service writes only on a change). */
   private async status(a: StatusArgs): Promise<{ ok: boolean; text: string; objects: string[] }> {
     const ref = { ...split(a.repo), number: a.pr };
-    const w = await this.writer(a.repo);
+    const w = await this.attempt(a.repo, "status");
     const s = renderStatus(a);
     // The latest status of this context on the commit: the same state and words write nothing.
     const now = await this.gh.request<{ statuses?: { context: string; state: string; description: string | null; target_url?: string | null; creator?: Author }[] }>("GET", `${api(ref)}/commits/${a.head}/status`, { query: { per_page: 100 } });
@@ -376,7 +367,7 @@ export class ReviewPoster {
   private async post(a: PostArgs): Promise<{ ok: boolean; text: string; objects: string[] }> {
     const r = a.review;
     const ref = { ...split(r.repo), number: r.pr };
-    const w = await this.writer(r.repo);
+    const w = await this.attempt(r.repo, "pr");
     const who = w.who;
     const pr = await this.pull(ref);
     // This run's review, looked up before anything else it needs: a create whose answer was lost (a timeout, a gateway that
