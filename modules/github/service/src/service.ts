@@ -1228,14 +1228,14 @@ export function createService(o: Options) {
   /**
    * What a push onto an adopted PR becomes on GitHub: the box's commits from `from` to `to` must sit on the head's own first-parent
    * chain, and at most one of them may merge, and only the base's current tip (`baseTip`). Without a merge it is one signed
-   * commit; with one, the merge is GitHub's (mergeSigned): `pre` is its first parent, the head-chain commit it merged into.
+   * commit; with one (straight on the head), the whole push is one merge commit GitHub signs (mergeSigned).
    */
-  async function signedPlan(dir: string, from: string, to: string, base: string, baseTip: string): Promise<{ refused: string } | { message: string; merge?: { pre: string; base: string } }> {
+  async function signedPlan(dir: string, from: string, to: string, base: string, baseTip: string): Promise<{ refused: string } | { message: string; merge?: { base: string } }> {
     if (!(await git(dir, ["merge-base", "--is-ancestor", from, to]).then(() => true, () => false))) return { refused: `ship-scope: \`${to.slice(0, 12)}\` doesn't build on the PR's head \`${from.slice(0, 12)}\`` };
     const list = (await git(dir, ["rev-list", "--reverse", "--first-parent", `${from}..${to}`])).split("\n").filter(Boolean);
     if (!list.length || list.length > 20) return { refused: `ship-scope: ${list.length} commits to write (1 to 20)` };
     let expected = from;
-    let merge: { pre: string; base: string } | undefined;
+    let merge: { base: string } | undefined;
     for (const c of list) {
       const [, first, ...others] = (await git(dir, ["rev-list", "--parents", "-n", "1", c])).split(" ");
       if (first !== expected) return { refused: `ship-scope: \`${c.slice(0, 12)}\` builds on \`${String(first).slice(0, 12)}\`, not the head's own chain \`${expected.slice(0, 12)}\`: not replayed` };
@@ -1245,7 +1245,7 @@ export function createService(o: Options) {
       // The merge comes first, straight on the head: the whole push is then one merge commit of the head and the base's tip
       // (mergeSigned), the push's own changes in its tree.
       if (first !== from) return { refused: `ship-scope: \`${c.slice(0, 12)}\` merges \`${base}\` after other commits: merge \`${base}\` first, straight on the PR's head, then commit the fix` };
-      merge = { pre: first!, base: others[0]! };
+      merge = { base: others[0]! };
     }
     // The messages of the commits written, on the head's first-parent chain: never the base's own commits a merge brings in.
     const log = async (range: string) => (await git(dir, ["log", "--reverse", "--first-parent", "--format=%B", range])).trim();
@@ -1415,8 +1415,7 @@ export function createService(o: Options) {
     const tip = await tipOf(at);
     if (tip === sha) return { sha };
     if (tip && tip !== m.head) return { text: `ship-head-moved: ${at.url} moved while writing (it is at \`${tip.slice(0, 12)}\`, not \`${m.head.slice(0, 12)}\`): nothing was pushed; read it again.` };
-    // GitHub's generic execution error (its answer to a stale lease too) with the branch still at the head: an error, asked again.
-    if (!tip || /something went wrong/i.test(why)) throw fail(502, `GitHub didn't move ${at.url}'s branch: ${why.slice(0, 200)}`);
+    if (!tip) throw fail(502, `GitHub refused moving ${at.url}'s branch and its head couldn't be read: ${why.slice(0, 200)}`);
     return { text: refusedPush(at, `GitHub refused moving the branch to the merge: ${why}`) };
   }
 
