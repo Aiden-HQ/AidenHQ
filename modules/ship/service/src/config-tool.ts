@@ -79,7 +79,7 @@ export function addRepo(d: { raw: Dict; scope: Scope; maintainerRepos: unknown[]
   // A repo the Maintainer already lists (or the fleet covers) keeps its entry and duties: only what is missing is added.
   const listed = covers(repo, d.scope);
   const changes: Dict[] = [
-    ...(listed ? [] : [{ kind: "setting", key: "maintainer_repos", value: [...d.maintainerRepos, { repo, fixes: false }] }]),
+    ...(listed ? [] : [{ kind: "setting", key: "maintainer_repos", value: [...d.maintainerRepos, { repo, fixes: false, triage: "off" }] }]),
     { kind: "setting", key: "ship", value: (({ paused: _p, ...ship }) => ship)(value) },
   ];
   return { changes, summary: [`${repo}: added to ship (${listed ? "already listed" : "listed for the Maintainer"}; code review is turned on from the Reviews page), then ${summary[0]!.slice(repo.length + 2)}`] };

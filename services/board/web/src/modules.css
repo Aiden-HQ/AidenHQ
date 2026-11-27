@@ -77,9 +77,10 @@
    The frame keeps the board's color-scheme (inherited): when it differs from the one the view sets, the browser paints an
    opaque backdrop behind the view, a grey box whose edges the view's content then touches. */
 .mv-frame { display: block; width: 100%; min-height: 160px; border: 0; background: transparent; }
-.mv-proposal { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; padding: var(--sp-3) var(--sp-4); border: 1px solid var(--accent); border-radius: var(--radius); background: var(--accent-soft); }
+/* Sticky, so the one Save stays in reach while the owner edits further down a module's page. */
+.mv-proposal { position: sticky; top: var(--sp-2); z-index: 5; box-shadow: var(--shadow-lg); display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; padding: var(--sp-3) var(--sp-4); border: 1px solid var(--accent); border-radius: var(--radius); background: var(--accent-soft); }
 .mv-proposal-text { display: grid; gap: var(--sp-1); flex: 1 1 320px; min-width: 0; font-size: var(--text-body); }
-.mv-proposal-text pre { margin: 0; max-height: 40vh; overflow: auto; font-family: var(--mono); font-size: var(--text-xs); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.mv-proposal-text pre { margin: 0; max-height: 24vh; overflow: auto; font-family: var(--mono); font-size: var(--text-xs); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .mv-proposal-actions { display: flex; gap: var(--sp-2); }
 .mv-said { margin: 0; color: var(--muted); font-size: var(--text-sm); }
 .mv-broken { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; padding: var(--sp-4); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }

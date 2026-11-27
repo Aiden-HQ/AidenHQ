@@ -61,8 +61,8 @@ routines:
     description: |
       Today is {{date}}. Work each maintained repo by its own settings (the `settings` of `github_issue_list`), as "Each run — the daily run"
       in your instructions says: the open labelled issues that have no open labelled-issue task; where `triage` is `new+backlog`, the open issues
-      that carry no fix label yet, judged by the skill `triage`; the open ones checked by the skill `resolved-check`; where `needs_info_close_days`
-      or `stale_issues` is set, the issues waiting on their reporter or gone quiet. One verdict per issue, each write its own tool call.
+      that carry no fix label yet, judged by the skill `triage`; the open ones checked by the skill `resolved-check`; where `no_reply_days`
+      or `inactive_issue_days` is set, the issues waiting on their reporter or gone quiet. One verdict per issue, each write its own tool call.
       Close this task with one verdict line per issue you considered.
     concurrency: skip_if_active
     schedules:

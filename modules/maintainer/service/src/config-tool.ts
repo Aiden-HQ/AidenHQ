@@ -2,12 +2,12 @@
 // `maintainer_config` reads each maintained repo's settings, `maintainer_configure` proposes one change.
 // The change is the owner's own call: it comes back as a typed settings change for the board to show and file on his Save
 // (structuredContent._aidenhq.settings_change), the same as ship's. Nothing is filed here.
-import { CLOSE_REASONS, DEPENDABOT, EXEMPT_LABELS, PRESETS, PRESET_NAMES, TRIAGE, TRUST_ROLES, parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
+import { ACTIONS, DEPENDABOT, INACTIVE_GRACE_DAYS, TRIAGE, TRUST_ROLES, parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
 import type { Tool } from "./mcp.ts";
 
 type Dict = Record<string, unknown>;
 /** The entry fields the page edits (everything but `repo`, which is the Ship page's to add); parseRepos checks each value. */
-export const FIELDS = ["fix_label", "trusted", "fixes", "features", "dependabot", "contributor_prs", "stale_days", "preset", "triage", "triage_cap_per_author_day", "triage_labels", "close", "needs_info_close_days", "stale_issues", "resolved_check"] as const;
+export const FIELDS = ["fixes", "triage", "features", "dependabot", "quiet_pr_days", "actions", "no_reply_days", "inactive_issue_days", "fix_label", "trusted", "protected_labels"] as const;
 
 /** maintainer_repos as the instance holds it: its entries, a bare "owner/name" or a map. */
 export function rawRepos(text: string): Dict[] {
@@ -30,17 +30,18 @@ export function applyRepoChange(list: Dict[], c: { fields?: Record<string, Dict>
     for (const k of Object.keys(fields)) if (!(FIELDS as readonly string[]).includes(k)) throw new Error(`fields: ${FIELDS.join(", ")}`);
     if (at(repo) < 0) throw new Error(`${repo} isn't listed: add it from the Ship page`);
     value = value.map((e) => { if (String(e.repo).toLowerCase() !== repo.toLowerCase()) return e; const m: Dict = { ...e, ...fields }; for (const k of FIELDS) if (m[k] === null) delete m[k]; return m; });
-    summary.push(`${repo}: ${Object.entries(fields).map(([k, v]) => v === null ? `${k} back to default` : `${k} ${JSON.stringify(v)}`).join(", ")}`);
+    if (Object.keys(fields).length) summary.push(`${repo}: ${Object.entries(fields).map(([k, v]) => v === null ? `${k} back to default` : `${k} ${JSON.stringify(v)}`).join(", ")}`);
   }
-  if (!summary.length) throw new Error("say what to change: fields, or a repo to remove");
+  if (!c.fields && !c.remove) throw new Error("say what to change: fields, or a repo to remove");
+  if (!summary.length) summary.push("no changes");
   parseRepos(JSON.stringify(value)); // the whole list checked as the github module will read it
   return { value, summary };
 }
 
-/** What every field is when an entry says nothing, and what each preset sets: the page shows them as "Default". */
+/** What every field is when an entry says nothing, and the choices the page offers. */
 export function defaults() {
   const { repo: _r, owner: _o, name: _n, ...base } = parseRepos("x/y")[0]!;
-  return { base, dependabot: DEPENDABOT, presets: PRESETS, preset_names: PRESET_NAMES, triage: TRIAGE, close: CLOSE_REASONS, roles: TRUST_ROLES, exempt_labels: EXEMPT_LABELS };
+  return { base, dependabot: DEPENDABOT, triage: TRIAGE, actions: ACTIONS, roles: TRUST_ROLES, inactive_grace_days: INACTIVE_GRACE_DAYS };
 }
 
 export function configTools(d: { repos: () => string; ship: () => boolean }): Tool[] {
@@ -48,7 +49,7 @@ export function configTools(d: { repos: () => string; ship: () => boolean }): To
   return [
     {
       name: "maintainer_config",
-      description: "What the Maintainer does on each repo in maintainer_repos: the entry as the instance sets it (`set`), what applies (`effective`: preset, fixes, features, triage and its per-author cap, what triage may label and close, waiting-on-reporter and stale-issue days, the resolved-check limit, Dependabot, contributor PRs), and the defaults (`defaults`).",
+      description: "What the Maintainer does on each repo in maintainer_repos: the entry as the instance sets it (`set`), what applies (`effective`: fixes, triage, features, Dependabot, quiet PR days, what each verdict does, no-reply and inactive-issue days, fix label, trusted roles, protected labels), and the defaults (`defaults`).",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       run: async (_a, who) => {
         ownerOnly(who.kind);

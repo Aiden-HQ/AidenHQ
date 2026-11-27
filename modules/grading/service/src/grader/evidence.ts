@@ -749,7 +749,7 @@ export function appEvidence(app: any, name: string | undefined): any {
  * A GitHub issue ("owner/name#number") as evidence: its state and how it closed (GitHub's own closer, or the Maintainer's one
  * `Fixed by <owner>/<repo>#<n> (merge <sha>)` line), its labels, and whether the PR it names is merged at that sha, each read by
  * code. The newest comments go fenced as ISSUE_COMMENTS (strangers' words, data), each with its author's association so an owner's
- * word shows. An open issue is evidence too: its criteria are unmet, and the task goes back. deps.issue(repo, n), deps.pr(repo, n).
+ * word shows. An open issue is evidence too: the rubric decides whether its labels and verdict comment resolve it. deps.issue(repo, n), deps.pr(repo, n).
  */
 export async function issueEvidence(ref: string, deps: any): Promise<any> {
   const [, repo = "", n = ""] = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(ref) ?? [];
@@ -765,7 +765,9 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
   // Only a line posted at or after the issue's latest reopen belongs to this closure: an earlier close-and-reopen cycle's doesn't.
   const reopened = Date.parse(i.reopenedEvents?.nodes?.[0]?.createdAt ?? "") || 0;
   const FIXED_BY = /^Fixed by ([\w.-]+\/[\w.-]+)#(\d+) \(merge ([0-9a-f]{40})\)\s*$/gm;
-  const lines = i.state === "CLOSED" ? comments.filter((c) => owned(c) && Date.parse(c.createdAt) >= reopened).flatMap((c) => [...String(c.body ?? "").matchAll(FIXED_BY)].map((m) => ({ c, repo: m[1]!, number: Number(m[2]), sha: m[3]! }))) : [];
+  // The line counts on an open issue too: under the `label` and `comment` actions the verdict leaves the issue open, and the
+  // rubric accepts it only for a PR merged at that sha, so its own lookup is made below whatever the state.
+  const lines = comments.filter((c) => owned(c) && Date.parse(c.createdAt) >= reopened).flatMap((c) => [...String(c.body ?? "").matchAll(FIXED_BY)].map((m) => ({ c, repo: m[1]!, number: Number(m[2]), sha: m[3]! })));
   // Anyone with close rights can close an issue: a close counts only through a merged PR that GitHub records as its closer ("Fixes
   // owner/repo#N", in this repo or another), or that line.
   const by = closedBy(i)?.pull_request;
@@ -796,7 +798,7 @@ export async function issueEvidence(ref: string, deps: any): Promise<any> {
     }
   }
   const text = comments.slice(-5).map((c) => `--- ${c.author?.login ?? "ghost"} (${c.authorAssociation}) ${c.createdAt} ---\n${String(c.body ?? "").slice(0, 2000)}`).join("\n\n");
-  const closed = i.state === "CLOSED" ? `${trusted ? "" : "untrusted:"}${keywordPr ? `kw${keywordPr.number}:` : ""}${i.stateReason}:${i.closedAt}:${merges.map((m) => m.slice(0, 12)).join(",")}+${hash(lines.map((l) => `${l.repo}#${l.number}@${l.sha}`).join("\n"))}` : "open";
+  const closed = i.state === "CLOSED" ? `${trusted ? "" : "untrusted:"}${keywordPr ? `kw${keywordPr.number}:` : ""}${i.stateReason}:${i.closedAt}:${merges.map((m) => m.slice(0, 12)).join(",")}+${hash(lines.map((l) => `${l.repo}#${l.number}@${l.sha}`).join("\n"))}` : `open${merges.length ? `+${merges.map((m) => m.slice(0, 12)).join(",")}` : ""}`;
   return { version: `${ref}@${closed}`.slice(0, 200), facts, data: { ISSUE_COMMENTS: text || "(none)" } };
 }
 

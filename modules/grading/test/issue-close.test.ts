@@ -74,3 +74,15 @@ test("a not-planned or duplicate close counts only on the exact reason line, nea
   assert.equal(await counts(at("Not fixing: x"), quick), false);
   assert.equal(await counts(at("Not fixing: x", "2026-11-19T10:05:30Z"), quick), true);
 });
+
+test("an open issue left by a `fixed` verdict counts only on the same merged-at-sha check", async () => {
+  const open = { state: "OPEN", stateReason: null, closedAt: null, closedEvents: { nodes: [] }, labels: { nodes: [{ name: "fixed" }] } };
+  const counted = await run({ ...open, comments: { nodes: [said(line())] } });
+  assert.match(text(counted), /acme\/app\/pull\/9 merged at b{40}: merged at/);
+  assert.match(counted.version, /@open\+b{12}$/);
+  // A wrong PR, an unmerged one, or none at all leaves it unresolved.
+  assert.match(text(await run({ ...open, comments: { nodes: [said("Duplicate of acme/app#3")] } })), /^acme\/app#7: open;/);
+  assert.doesNotMatch(text(await run({ ...open, comments: { nodes: [said("Duplicate of acme/app#3")] } })), /open\+/);
+  assert.match(text(await run({ ...open, comments: { nodes: [said(line())] } }, () => ({ state: "OPEN" }))), /open, not merged/);
+  assert.match(text(await run({ ...open, comments: { nodes: [said(line(9, "d".repeat(40)))] } })), /not that sha/);
+});

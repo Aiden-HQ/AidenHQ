@@ -102,7 +102,7 @@ const loop = startLoop({
 followFeed(loop, { feed: (after) => kernel.call("GET", `/v1/events/log?connection=github&limit=200${after === undefined ? "" : `&after=${after}`}`), paused: () => paused() || !token(), log });
 log("ship watch loop", { repos: [...repos].map(([r, v]) => `${r}:${v.duties}:${v.dependabot ?? "all"}`) });
 
-// The contributor_prs pass (contributor.ts): its one state value in data/contributor-prs.json, checked every five minutes (at most
+// The quiet-PR pass (contributor.ts): its one state value in data/contributor-prs.json, checked every five minutes (at most
 // hourly reads).
 const prFile = join(dataDir, "contributor-prs.json");
 const prStore = {

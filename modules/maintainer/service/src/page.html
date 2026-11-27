@@ -2,163 +2,194 @@
 <!-- The Maintainer's Fleet page: an MCP Apps view (text/html;profile=mcp-app) the maintainer connection serves as ui://maintainer/page.
      Its own parts only: the shared kit (services/shared/page-kit.css and .js) is inlined where the markers sit (mcp.ts pageHtml).
      Calls only maintainer_config and maintainer_configure; maintainer_configure only proposes (the board files it on the owner's Save).
-     docs/design/board-ui.md "Modules". -->
+     Layout rules: modules/AGENTS.md "Settings pages". -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 /*kit:css*/
-  :root { --c-quiet: #6b7a90; --c-triage: #5b7cfa; --c-full: #12a679; }
-  @media (prefers-color-scheme: dark) { :root { --c-quiet: #94a3b8; --c-triage: #8ba3ff; --c-full: #3ccf9f; } }
-  .bar { display: flex; align-items: center; gap: 10px; padding: 0 2px; }
-  .bar b { font-size: 14px; font-weight: 600; }
-  .bar .grow { flex: 1; }
-  .rows { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr)); align-items: start; }
-  .rc { --tint: var(--c-quiet); border-left: 3px solid var(--tint); }
-  .rc.p-triage { --tint: var(--c-triage); } .rc.p-full { --tint: var(--c-full); }
-  .rc.open { grid-column: 1 / -1; }
-  .rc.unsaved { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
-  .rc .head { flex-wrap: wrap; }
-  .rn { font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
-  .rn i { font-style: normal; font-weight: 400; color: var(--soft); margin-left: 8px; font-size: 12px; }
-  .acts { display: flex; align-items: center; gap: 10px; }
-  .preset { display: flex; align-items: center; gap: 6px; color: var(--soft); font-size: 12px; }
-  .preset select { width: auto; min-width: 92px; border-color: color-mix(in srgb, var(--tint) 60%, var(--line)); background: color-mix(in srgb, var(--tint) 10%, var(--color-background-primary, Canvas)); }
-  .sum { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 210px)); gap: 10px 22px; padding: 10px 14px 12px; }
-  .cell { display: grid; gap: 5px; align-content: start; justify-items: start; min-width: 0; }
-  .cell .lab { display: block; }
-  .cell select { width: 100%; }
-  .cell small { color: var(--soft); font-size: 11.5px; }
-  .gist { padding: 0 14px 10px; color: var(--soft); font-size: 12.5px; }
-  .gist b { color: var(--color-text-primary, CanvasText); font-weight: 560; }
-  .drawer { grid-template-columns: repeat(auto-fill, minmax(260px, 340px)); gap: 12px 28px; }
-  .drawer .fld .row2 { display: flex; align-items: center; gap: 8px; min-height: 28px; }
-  .drawer .fld input[type=text] { max-width: 220px; }
-  .drawer .fld .meta { min-height: 0; }
-  .more { display: flex; align-items: center; justify-content: space-between; padding: 6px 14px; border-top: 1px solid var(--line); }
-  .guide { padding: 12px 14px; display: grid; gap: 4px; }
-  .guide b { font-weight: 600; }
-  @media (max-width: 560px) { .sum { grid-template-columns: 1fr 1fr; } .drawer { grid-template-columns: 1fr; } .rows { grid-template-columns: 1fr; } }
+  .wrap { width: 100%; max-width: 1360px; display: grid; gap: 14px; }
+  .mc { --ctl: 340px; }
+  .mc .top { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px 14px; padding: 14px 20px; background: var(--color-background-secondary, transparent); }
+  .mc.open .top { border-bottom: 1px solid var(--line); }
+  .mc .who { display: grid; gap: 3px; min-width: 0; }
+  .mc .name { font-weight: 600; font-size: 14.5px; overflow-wrap: anywhere; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .mc .sum { color: var(--soft); font-size: 13px; }
+  .mc .acts { display: flex; gap: 8px; }
+  .sec { padding: 0 20px; }
+  .sec + .sec { border-top: 1px solid var(--line); }
+  .sech { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 14px 0 4px; }
+  .sech h3 { margin: 0; font-size: 11.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--soft); }
+  .sech small { color: var(--soft); font-size: 12px; }
+  .srow { display: grid; grid-template-columns: 200px minmax(0, 1fr) var(--ctl); gap: 6px 24px; align-items: center; padding: 10px 0; border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+  .sech + .srow { border-top: 0; }
+  .st { font-weight: 560; font-size: 13.5px; }
+  .sd { display: grid; gap: 6px; min-width: 0; color: var(--soft); font-size: 13px; line-height: 1.45; }
+  .sd code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 0 4px; border-radius: 4px; background: color-mix(in srgb, var(--line) 22%, transparent); color: var(--color-text-primary, CanvasText); }
+  .days { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .days input { width: 64px; text-align: right; }
+  .days input[aria-invalid=true] { border-color: var(--color-text-danger, red); }
+  .ctl { width: var(--ctl); min-width: 0; }
+  .ctl .seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); width: 100%; padding: 3px; gap: 3px; border-radius: 8px; }
+  .ctl .seg button { height: 30px; padding: 0 6px; font-size: 13px; border-radius: 6px; overflow: hidden; text-overflow: ellipsis; }
+  .ctl .seg button[aria-checked=true] { --tone: var(--accent); }
+  .ctl input[type=text] { height: 32px; }
+  .ctl .checks { height: 32px; }
+  .adv { width: 100%; height: 48px; padding: 0; display: flex; justify-content: space-between; align-items: center; border: 0; border-radius: 0; background: none; box-shadow: none; font-weight: 560; }
+  .adv:not(:disabled):hover { background: none; box-shadow: none; }
+  .adv span { color: var(--soft); font-weight: 400; font-size: 12.5px; white-space: normal; text-align: right; }
+  .sec.last { padding-bottom: 8px; }
+  .mc.seen { animation: none; }
+  .tag.edit { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+  @media (max-width: 1000px) { .mc { --ctl: 100%; } .srow { grid-template-columns: minmax(0, 1fr); gap: 4px; } .ctl { margin-top: 6px; } }
+  @media (max-width: 520px) { .sec, .mc .top { padding-left: 14px; padding-right: 14px; } .sech small { display: none; } .adv span { display: none; } }
 </style>
 </head>
 <body>
-<p class="intro">The Maintainer looks after the GitHub repos you list. An issue reaches it when someone adds the repo's fix label (<code>agent-fix</code> by default): it checks the report is real, hands the fix to an engineer and follows it to a merged PR that closes the issue. A preset sets how much more it does on a repo, and every setting below it can be changed for that repo alone.</p>
-<div class="bar"><b>Repos</b> <small id="count"></small><span class="grow"></span><button type="button" id="refresh" title="Reload the saved settings. Your proposed edits stay until you Save or Discard in the bar above.">Refresh</button></div>
-<div class="rows" id="rows"><div class="card"><div class="empty">Loading the repos…</div></div></div>
+<div class="wrap">
+<p class="intro">What the Maintainer does on each repo you list. Everything it does on GitHub comes with a comment saying why. Add a repo from the Ship page.</p>
+<div id="rows"><div class="card"><div class="empty">Loading the repos…</div></div></div>
 <div class="note" id="note" role="status"></div>
+</div>
 <script>
 /*kit:js*/
   const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-  const open = new Set();
   let cfg = { repos: [], defaults: null };
-  // The edits the owner hasn't saved yet, one proposal for the page: { repo: { field: value | null } } (null: back to the default).
-  let pending = {};
-  let lastGood = {};
-  const PRESET_TEXT = { quiet: "Works the issues labelled for a fix, and nothing else. The default.", triage: "Also triages each new issue from someone outside within a minute of its filing.", full: "Triages each new issue and the backlog, labels feature requests and builds the ones you mark agent-build." };
-  const ROLES = { admin: "Repo admins (you, as the account owner).", maintain: "Maintainers.", write: "Anyone with write access." };
-  const TRIAGES = { off: "Only issues carrying the fix label are worked.", new: "Each new issue from someone outside is triaged within minutes of its filing.", "new+backlog": "Each new issue, and the open issues nobody triaged, in the daily run." };
-  const DEPS = { off: "Dependabot PRs are left alone.", failing: "An engineer takes only the bumps whose checks fail; green ones are not touched here.", all: "An engineer takes every bump once its checks finish." };
-  const CLOSES = { duplicate: "The same symptom or request as another issue.", invalid: "Not a defect or a request: a question, a usage problem, another project's behaviour.", empty: "Still an empty body or untouched template after one request for details and a week of silence.", incorrect: "The code disproves what the report claims." };
+  // One local draft per repo (its whole effective settings); the page proposes every repo's draft at once, and the board's bar saves it.
+  let drafts = {}, lastGood = { drafts: {}, removing: null }, sentRev = 0, removing = null, openRepo = null, drawn = false;
+  const advOpen = new Set();
+  const saved = (repo) => cfg.repos.find((r) => r.repo === repo).effective;
+  const draft = (repo) => (drafts[repo] ??= structuredClone(saved(repo)));
+  const dirty = (repo) => repo in drafts && !eq(drafts[repo], saved(repo));
+  // What a Close needs a number for, and the number it starts from.
+  const SUGGEST = { no_reply_days: 14, inactive_issue_days: 60, quiet_pr_days: 7 };
 
-  // The values a repo shows: its own entry with the pending edits laid over, and, for what it doesn't set, the default (the preset's, for features and triage).
-  const setOf = (r) => { const m = { ...r.set }; for (const [k, v] of Object.entries(pending[r.repo] ?? {})) v === null ? delete m[k] : (m[k] = v); return m; };
-  const dflt = (m, k) => { const D = cfg.defaults, p = D.presets[m.preset ?? "quiet"]; return k in p ? p[k] : D.base[k]; };
-  // An object field (quiet issues, the resolved check) shows what the entry sets over its own defaults.
-  const FILL = (k) => k === "stale_issues" ? cfg.defaults.stale : k === "resolved_check" ? cfg.defaults.base.resolved_check : null;
-  const val = (r, k) => { const m = setOf(r); const v = k in m && m[k] !== null ? m[k] : dflt(m, k); return v && FILL(k) && !Array.isArray(v) ? { ...FILL(k), ...v } : v; };
-  const over = (r, k) => { const m = setOf(r); return k in m && !eq(m[k], dflt(m, k)); };
-  const shownDefault = (v, k) => k === "resolved_check" ? `${v.max_closes} closes, skips ${v.exempt_labels.join(", ")}` : v === null ? "none" : Array.isArray(v) ? (v.length ? v.join(", ") : "none") : typeof v === "boolean" ? (v ? "on" : "off") : typeof v === "object" ? Object.entries(v).map(([a, b]) => `${a} ${Array.isArray(b) ? b.join("/") : b}`).join(", ") : String(v);
-
-  async function propose(repo, patch, live) {
-    const next = { ...pending, [repo]: { ...(pending[repo] ?? {}), ...patch } };
-    pending = next; // at once, so a second edit before the answer comes back keeps this one
-    if (!live) render();
-    await inOrder(async () => { try { proposed(await tool("maintainer_configure", { edits: { repos: next } })); lastGood = next; } catch (e) { if (live) say(`${e.message} Correct the value to go on.`, true); else { pending = lastGood; render(); say(`${e.message} The edit was dropped.`, true); } } });
+  // The proposal: each changed field (a field back at its default is null, so the entry stays as short as it can).
+  function edits() {
+    const base = cfg.defaults.base, out = {};
+    for (const r of cfg.repos) {
+      if (r.repo === removing || !dirty(r.repo)) continue;
+      const d = drafts[r.repo], s = saved(r.repo), e = {};
+      for (const k of Object.keys(d)) if (k !== "repo" && !eq(d[k], s[k])) e[k] = eq(d[k], base[k]) ? null : d[k];
+      out[r.repo] = e;
+    }
+    return out;
   }
-  const set = (r, k, v, live) => propose(r.repo, { [k]: v }, live);
-  const reset = (r, k) => set(r, k, null);
+  // `live` is a control proposing as the owner types: it updates the draft and the proposal without a redraw, so the caret
+  // and a half-typed entry stay put (the kit's chips and text editors pass it on their input handlers).
+  function propose(live) {
+    const repos = edits();
+    // Always propose, an unchanged draft included, so the board's bar holds exactly what the page shows; a refused draft goes back to the last one proposed.
+    const sent = { drafts: structuredClone(drafts), removing }, rev = ++sentRev;
+    inOrder(async () => {
+      try { await tool("maintainer_configure", { edits: { repos }, ...(sent.removing ? { remove: sent.removing } : {}) }); lastGood = sent; say(Object.keys(repos).length || sent.removing ? "Changes are proposed: Save in the bar above applies them." : ""); }
+      catch (e) { if (rev === sentRev) { drafts = structuredClone(lastGood.drafts); removing = lastGood.removing; redraw(); } say(e.message, true); }
+    });
+  }
+  const change = (repo, patch, live) => { Object.assign(draft(repo), patch); if (!live) soon(redraw); propose(live); };
 
-  // One drawer field: a help label, its control, then Default and the overridden mark with Reset.
-  const field = (r, k, label, text, ctl, more = {}, onReset = () => reset(r, k)) => {
-    const d = dflt(setOf(r), k), o = over(r, k);
-    return fld(label, text, more, ctl, h("span", { className: "dflt", textContent: `Default: ${shownDefault(d, k)}` }), o ? h("span", { className: "ovr", textContent: "Overridden" }) : null, o ? linkBtn("Reset to default", onReset) : null);
+  // A row: name | one-line description (and the day field when it applies) | the control, flush right at one width.
+  const srow = (title, desc, ctl, extra) => h("div", { className: "srow" }, h("div", { className: "st", textContent: title }), h("div", { className: "sd" }, h("span", {}, ...desc), extra ?? null), h("div", { className: "ctl" }, ctl));
+  const code = (t) => h("code", { textContent: t });
+  const seg = (repo, key, opts, value, set) => {
+    const titles = Object.fromEntries(opts), byLabel = Object.fromEntries(opts.map(([v, l]) => [l, v]));
+    const el = editor({ kind: "seg", label: key, f: `${repo}|${key}`, value: titles[String(value)], values: opts.map(([, l]) => l), set: (l) => set(byLabel[l]) });
+    return el;
   };
-  const sw = (r, k, label, text, extra) => { const on = !!val(r, k), b = toggle(on, `${label} on ${r.repo}`, () => set(r, k, !on)); b.classList.toggle("unsaved", k in (pending[r.repo] ?? {})); return b; };
-  const num = (r, k, label, ph) => { const ed = editor({ kind: "num", label: `${label} (${r.repo})`, f: `${r.repo}|${k}`, value: val(r, k) === null ? "" : String(val(r, k)), set: (v, live) => set(r, k, v, live) }); ed.placeholder = ph; return ed; };
+  const daysField = (repo, key, label) => {
+    const v = draft(repo)[key];
+    const inp = h("input", { type: "text", inputMode: "numeric", value: String(v ?? ""), ariaLabel: `${label} days (${repo})`, autocomplete: "off" });
+    inp.dataset.f = `${repo}|${key}:days`;
+    // Propose as the owner types (the board's Save submits the latest proposal), not only on blur: a number typed and then saved
+    // without leaving the field must be the one saved. An invalid value changes nothing until the field is left.
+    let typing;
+    // A live edit updates the draft and the proposal without a redraw, so the caret stays where the owner is typing.
+    inp.addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => { const n = Number(inp.value.trim()); if (Number.isInteger(n) && n >= 1) change(repo, { [key]: n }, true); }, 200); });
+    inp.addEventListener("change", () => { clearTimeout(typing); const n = Number(inp.value.trim()); if (Number.isInteger(n) && n >= 1) return change(repo, { [key]: n }); inp.value = String(draft(repo)[key] ?? ""); say("Days are a whole number, 1 or more.", true); });
+    return h("label", { className: "days" }, label, inp, "days");
+  };
+  const closeRow = (repo, key, title, desc, dayLabel) => {
+    const on = draft(repo)[key] !== null;
+    return srow(title, desc, seg(repo, key, [["off", "Leave open"], ["close", "Close"]], on ? "close" : "off", (v) => change(repo, { [key]: v === "close" ? (saved(repo)[key] ?? SUGGEST[key]) : null })), on ? daysField(repo, key, dayLabel) : null);
+  };
 
-  function drawer(r) {
-    const D = cfg.defaults;
-    const stale = val(r, "stale_issues"), rc = val(r, "resolved_check");
-    const exempt = (k, cur, apply) => { const ed = editor({ kind: "list", label: `Exempt labels (${r.repo}, ${k})`, f: `${r.repo}|${k}.exempt`, value: cur, set: (v, live) => apply(v, live) }); return ed; };
-    const rcSet = (patch, live) => set(r, "resolved_check", { ...rc, ...patch }, live);
-    const staleDefault = D.stale;
-    const staleSet = (patch, live) => set(r, "stale_issues", { ...(stale ?? staleDefault), ...patch }, live);
-    const trusted = val(r, "trusted");
-    return h("div", { className: "drawer", id: `drawer-${r.repo}` },
-      h("div", { className: "grp", textContent: "Fixing" }),
-      field(r, "fix_label", "Fix label", "The label that asks for a fix on this repo. An issue carrying it is checked and worked, when Fix issues is on.", editor({ kind: "text", label: `Fix label (${r.repo})`, f: `${r.repo}|fix_label`, value: val(r, "fix_label"), set: (v, live) => set(r, "fix_label", v === "" ? null : v, live) })),
-      field(r, "trusted", "Trusted roles", "Who may vouch for a label: a label added by a collaborator with one of these roles counts. A stranger's label never does.", editor({ kind: "checks", label: `Trusted roles (${r.repo})`, f: `${r.repo}|trusted`, value: trusted, values: D.roles, titles: ROLES, set: (v, live) => v.length ? set(r, "trusted", v, live) : say("Keep at least one role.", true) }), { options: ROLES, current: "" }),
-      h("div", { className: "grp", textContent: "Triage" }),
-      field(r, "triage_cap_per_author_day", "Triage runs per author a day", "The most new issues from one outside author triaged in a day (members and collaborators have no limit). Past it, the rest wait for a free slot or the daily run. An issue that proves real (it gets the fix label or feature-request) doesn't count, so a tester's real reports are all triaged.", num(r, "triage_cap_per_author_day", "Triage runs per author", "5")),
-      field(r, "triage_labels", "Triage may label", "Whether a triage verdict may add labels (the fix label, feature-request). Off, a verdict is a comment alone.", h("div", { className: "row2" }, sw(r, "triage_labels", "Triage may label"), h("span", { className: "soft", textContent: val(r, "triage_labels") ? "Adds labels" : "Comments only" }))),
-      field(r, "close", "Triage may close", "The only reasons triage may close an issue for. Any other verdict is a comment and the issue stays open.", editor({ kind: "checks", label: `Triage may close (${r.repo})`, f: `${r.repo}|close`, value: val(r, "close"), values: D.close, titles: CLOSES, set: (v, live) => set(r, "close", v, live) }), { options: CLOSES, current: "" }),
-      h("div", { className: "grp", textContent: "Waiting on the reporter" }),
-      field(r, "needs_info_close_days", "Close after days without a reply", "Days an issue is left open after the Maintainer asked its reporter for details, before it is closed as not planned. Blank never closes it.", num(r, "needs_info_close_days", "Days without a reply", "never")),
-      h("div", { className: "grp", textContent: "Quiet issues" }),
-      field(r, "stale_issues", "Close quiet issues", "Issues only, never PRs. An issue with no activity for the quiet days gets one notice, and closes as not planned if still quiet after the grace days. Off leaves quiet issues open.", h("div", { className: "row2" }, toggle(!!stale, `Close quiet issues on ${r.repo}`, () => set(r, "stale_issues", stale ? null : staleDefault)), h("span", { className: "soft", textContent: stale ? "On" : "Off" }))),
-      ...(stale ? [
-        fld("Quiet days", "Days without activity before the notice.", {}, editor({ kind: "num", label: `Quiet days (${r.repo})`, f: `${r.repo}|stale.days`, value: String(stale.days), set: (v, live) => v >= 1 ? staleSet({ days: v }, live) : live || say("Quiet days: 1 or more.", true) })),
-        fld("Grace days", "Days after the notice before the close.", {}, editor({ kind: "num", label: `Grace days (${r.repo})`, f: `${r.repo}|stale.grace`, value: String(stale.grace_days), set: (v, live) => v >= 1 ? staleSet({ grace_days: v }, live) : live || say("Grace days: 1 or more.", true) })),
-        fld("Exempt labels", "Issues carrying any of these labels are never nudged or closed. One per line.", {}, exempt("stale", stale.exempt_labels, (v, live) => staleSet({ exempt_labels: v }, live))),
-      ] : []),
-      h("div", { className: "grp", textContent: "Already-fixed check" }),
-      field(r, "resolved_check", "Closes per daily run", "The daily sweep closes issues that recently merged work already fixed, citing the commit. This is the most it closes in one run; 0 switches the sweep off.", editor({ kind: "num", label: `Closes per run (${r.repo})`, f: `${r.repo}|rc.max`, value: String(rc.max_closes), set: (v, live) => v === null ? (live || rcSet({ max_closes: D.base.resolved_check.max_closes }, live)) : rcSet({ max_closes: v }, live) }), {}, () => rcSet({ max_closes: D.base.resolved_check.max_closes })),
-      fld("Exempt labels", "Issues carrying any of these labels are left alone by the sweep. One per line.", {}, exempt("resolved", rc.exempt_labels, (v, live) => rcSet({ exempt_labels: v }, live))),
-      h("div", { className: "grp", textContent: "Pull requests" }),
-      field(r, "stale_days", "Quiet PR days", "With Contributor PRs on: days without activity before a nudge, and again before the close. Drafts get double.", num(r, "stale_days", "Quiet PR days", "7")),
-    );
+  function summary(d) {
+    const bits = [];
+    if (d.fixes) bits.push("fixes labelled issues");
+    if (d.triage !== "off") bits.push(d.triage === "new" ? "triages new issues" : "triages new and existing issues");
+    if (d.features) bits.push("builds approved features");
+    const names = { duplicate: "duplicates", invalid: "invalid issues", fixed: "already fixed" };
+    for (const [act, verb] of [["close", "closes"], ["label", "labels"]]) { const l = Object.keys(names).filter((k) => d.actions[k] === act).map((k) => names[k]); if (l.length) bits.push(`${verb} ${l.join(", ")}`); }
+    if (d.no_reply_days) bits.push(`closes unanswered issues after ${d.no_reply_days} days`);
+    if (d.inactive_issue_days) bits.push(`closes inactive issues`);
+    if (d.quiet_pr_days) bits.push("closes quiet contributor PRs");
+    if (d.dependabot !== "off") bits.push(d.dependabot === "all" ? "takes every Dependabot update" : "fixes failing Dependabot updates");
+    const s = bits.join(" · ") || "lists the repo; nothing automatic";
+    return s[0].toUpperCase() + s.slice(1);
+  }
+
+  function body(repo) {
+    const d = draft(repo), D = cfg.defaults;
+    const act = (k, title, desc) => srow(title, desc, seg(repo, `actions.${k}`, [["comment", "Comment"], ["label", "Label"], ["close", "Close"]], d.actions[k], (v) => change(repo, { actions: { ...d.actions, [k]: v } })));
+    const onoff = [["false", "Off"], ["true", "On"]];
+    const fixLabel = h("input", { type: "text", value: d.fix_label, ariaLabel: `Fix label (${repo})`, autocomplete: "off", spellcheck: false });
+    fixLabel.dataset.f = `${repo}|fix_label`;
+    fixLabel.addEventListener("change", () => change(repo, { fix_label: fixLabel.value.trim() || D.base.fix_label }));
+    // One chip per label, so a label whose own name holds a comma (GitHub allows `release, planned`) stays one value.
+    const prot = editor({ kind: "chips", label: `Never close issues labelled (${repo})`, f: `${repo}|protected_labels`, value: d.protected_labels, placeholder: "Add a label, press Enter", set: (v, live) => change(repo, { protected_labels: v }, live) });
+    const roles = editor({ kind: "checks", label: `Who may approve (${repo})`, f: `${repo}|trusted`, value: d.trusted, values: D.roles, set: (v) => v.length ? change(repo, { trusted: v }) : say("Keep at least one role.", true) });
+    const adv = advOpen.has(repo);
+    const advBtn = h("button", { type: "button", className: "adv" }, h("b", { textContent: "Advanced" }), h("span", { textContent: adv ? "Hide" : "Fix label · who may approve · never-close labels" }));
+    advBtn.setAttribute("aria-expanded", String(adv));
+    advBtn.addEventListener("click", () => { adv ? advOpen.delete(repo) : advOpen.add(repo); redraw(); });
+    const sec = (title, hint, ...rows) => h("div", { className: "sec" }, h("div", { className: "sech" }, h("h3", { textContent: title }), hint ? h("small", { textContent: hint }) : null), ...rows);
+    return [
+      sec("Issues", null,
+        srow("Fix labelled issues", ["Issues a trusted collaborator labels ", code(d.fix_label), " are checked, fixed, and closed by the merged PR."], seg(repo, "fixes", onoff, d.fixes, (v) => change(repo, { fixes: v === "true" }))),
+        srow("Triage unlabelled issues", ["Reads each issue and gives one verdict: label it for a fix (where Fix labelled issues is on), ask for details, or one of the outcomes below."], seg(repo, "triage", [["off", "Off"], ["new", "New"], ["new+backlog", "New + existing"]], d.triage, (v) => change(repo, { triage: v }))),
+        srow("Feature requests", ["Labels requests ", code("feature-request"), " and builds the ones you approve with ", code("agent-build"), "."], seg(repo, "features", onoff, d.features, (v) => change(repo, { features: v === "true" })))),
+      sec("When triage finds", "Label adds a GitHub label and leaves it open",
+        act("duplicate", "A duplicate", ["The same problem or request as another issue. Label adds ", code("duplicate"), "."]),
+        act("invalid", "Not a bug or request", ["A question, a usage problem, or a claim the code disproves. Label adds ", code("invalid"), ". Another project's own bug stays open."]),
+        act("fixed", "Already fixed", ["Merged work already fixes it; the comment cites the commit. Label adds ", code("fixed"), "."])),
+      sec("Cleanup", null,
+        closeRow(repo, "no_reply_days", "No reply to a question", ["Asked the reporter for details and heard nothing. Covers empty reports too."], "Close after"),
+        closeRow(repo, "inactive_issue_days", "Inactive issues", [`One notice first, then closed ${D.inactive_grace_days} days later if still quiet.`], "Notice after"),
+        closeRow(repo, "quiet_pr_days", "Inactive contributor PRs", ["A nudge, then closed after the same wait again. Drafts wait twice as long."], "Nudge after")),
+      sec("Pull requests", null,
+        srow("Dependabot updates", ["Which dependency bumps an engineer takes through to a merge."], seg(repo, "dependabot", [["off", "Off"], ["failing", "Failing checks"], ["all", "All"]], d.dependabot, (v) => change(repo, { dependabot: v })))),
+      h("div", { className: "sec last" }, advBtn, ...(adv ? [
+        srow("Fix label", ["The label that asks for a fix."], fixLabel),
+        srow("Who may approve with a label", ["A label from anyone else is ignored."], roles),
+        srow("Never close issues labelled", ["Skipped by every automatic close. Add one label at a time."], prot),
+      ] : [])),
+    ];
+  }
+
+  function card(r) {
+    const repo = r.repo, open = openRepo === repo, d = draft(repo), gone = removing === repo;
+    const tags = [dirty(repo) ? h("span", { className: "tag edit", textContent: "Edited" }) : null, gone ? h("span", { className: "tag failed", textContent: "Removed on Save" }) : null];
+    const btn = (text, fn, cls = "") => { const b = h("button", { type: "button", textContent: text, className: cls }); b.addEventListener("click", fn); return b; };
+    const acts = gone ? [btn("Keep", () => { removing = null; redraw(); propose(); })]
+      : open ? [btn("Remove", () => { removing = repo; redraw(); propose(); })]
+      : [btn("Edit", () => { openRepo = repo; redraw(); })];
+    const top = h("div", { className: "top" }, h("div", { className: "who" }, h("div", { className: "name" }, h("span", { textContent: repo }), ...tags.filter(Boolean)), h("div", { className: "sum", textContent: summary(d) })), h("div", { className: "acts" }, ...acts));
+    return h("div", { className: `card mc${open && !gone ? " open" : ""}${drawn ? " seen" : ""}` }, top, ...(open && !gone ? body(repo) : []));
   }
 
   const redraw = () => keepFocus(draw);
-  function render() { soon(redraw); }
-  function card(r) {
-    const preset = val(r, "preset"), unsaved = r.repo in pending;
-    const pe = editor({ kind: "select", label: `Preset (${r.repo})`, f: `${r.repo}|preset`, value: preset, values: cfg.defaults.preset_names, titles: PRESET_TEXT, set: (v) => set(r, "preset", v === "quiet" ? null : v) });
-    const remove = h("button", { type: "button", textContent: "Remove", ariaLabel: `Remove ${r.repo}` });
-    remove.addEventListener("click", async () => { try { const x = await tool("maintainer_configure", { remove: r.repo }); pending = lastGood = {}; proposed(x); render(); } catch (e) { say(e.message, true); } });
-    const tog = linkBtn("Settings", () => { open.has(r.repo) ? open.delete(r.repo) : open.add(r.repo); render(); });
-    tog.className = "link toggle"; tog.setAttribute("aria-expanded", String(open.has(r.repo))); tog.setAttribute("aria-controls", `drawer-${r.repo}`);
-    // A headline field the entry sets itself can go back to following the preset.
-    const cell = (k, label, text, ctl) => h("div", { className: "cell" }, h("span", { className: "lab" }, help(label, text)), ctl, (k === "features" || k === "triage") && k in setOf(r) ? linkBtn("Use preset default", () => reset(r, k)) : null);
-    const tri = editor({ kind: "select", label: `Triage (${r.repo})`, f: `${r.repo}|triage`, value: val(r, "triage"), values: cfg.defaults.triage, titles: TRIAGES, set: (v) => set(r, "triage", v === dflt(setOf(r), "triage") ? null : v) });
-    const dep = editor({ kind: "select", label: `Dependabot (${r.repo})`, f: `${r.repo}|dependabot`, value: val(r, "dependabot"), values: cfg.defaults.dependabot, titles: DEPS, set: (v) => set(r, "dependabot", v === dflt(setOf(r), "dependabot") ? null : v) });
-    const lab = val(r, "fix_label");
-    const gist = [val(r, "fixes") ? `Works issues labelled <b>${esc(lab)}</b>` : "Leaves fix-labelled issues alone", val(r, "triage") === "off" ? "no triage" : `triage ${esc(val(r, "triage"))} (up to ${val(r, "triage_cap_per_author_day")} per author a day)`, ...(val(r, "close").length ? [`may close ${esc(val(r, "close").join(", "))}`] : []), ...(val(r, "stale_issues") ? [`closes issues quiet ${val(r, "stale_issues").days}+ days`] : [])].join("; ");
-    const body = h("div", { className: `card rc p-${preset}${unsaved ? " unsaved" : ""}${open.has(r.repo) ? " open" : ""}` },
-      h("div", { className: "head" }, h("div", { className: "rn" }, r.repo, h("i", { textContent: `label ${lab}` })), h("div", { className: "acts" }, h("div", { className: "preset" }, help("Preset", "A starting point for what the Maintainer does on this repo. A field you set yourself keeps its value when the preset changes.", { options: PRESET_TEXT, current: preset }), pe), tog, remove)),
-      h("div", { className: "sum" },
-        cell("fixes", "Fix issues", "Checks each issue carrying the fix label, hands the fix to an engineer and follows it to a merged PR that closes the issue. Labelled issues are worked only while this is on.", sw(r, "fixes", "Fix issues")),
-        cell("features", "Features", "Labels feature requests and builds the ones you mark agent-build.", sw(r, "features", "Features")),
-        cell("triage", "Triage", "Whether the Maintainer also looks at issues nobody labelled.", tri),
-        cell("dependabot", "Dependabot", "Which Dependabot dependency-update PRs on this repo an engineer takes and sees through to a merge.", dep),
-        cell("contributor_prs", "Contributor PRs", "Nudges, then closes, a person's PR that has gone quiet.", sw(r, "contributor_prs", "Contributor PRs"))),
-      h("div", { className: "gist", innerHTML: `${gist}.` }),
-      open.has(r.repo) ? drawer(r) : null);
-    return body;
-  }
-  const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-
   function draw() {
     closeHelp();
-    $("count").textContent = cfg.repos.length ? `${cfg.repos.length}` : "";
-    $("rows").replaceChildren(...(cfg.repos.length ? cfg.repos.map(card) : [h("div", { className: "card" }, h("div", { className: "empty" }, h("b", { textContent: "No repos yet. " }), "Add one from the Ship page (Add repo); if the page is missing, add the Ship module under Fleet, Modules first. Then choose a preset and the rules for it here."))]));
+    if (!cfg.repos.length) return $("rows").replaceChildren(h("div", { className: "card" }, h("div", { className: "empty" }, h("b", { textContent: "No repos yet. " }), "Add one from the Ship page (Add repo); if the page is missing, add the Ship module under Fleet, Modules first. Then choose what the Maintainer does on it here.")));
+    if (!cfg.repos.some((r) => r.repo === openRepo)) openRepo = cfg.repos[0].repo;
+    $("rows").replaceChildren(h("div", { className: "wrap" }, ...cfg.repos.map(card)));
+    drawn = true;
   }
 
   async function load() {
-    try { cfg = await tool("maintainer_config", {}); cfg.defaults.stale = { days: 60, grace_days: 14, exempt_labels: cfg.defaults.exempt_labels }; render(); } catch (e) { say(e.message, true); }
+    try { cfg = await tool("maintainer_config", {}); drafts = {}; lastGood = { drafts: {}, removing: null }; removing = null; draw(); } catch (e) { say(e.message, true); }
   }
-  $("refresh").addEventListener("click", () => { say(""); load(); });
   start("maintainer", load);
 </script>
 </body>
