@@ -1,22 +1,43 @@
 // The kernel's Paperclip plugin (services/paperclip-events): Paperclip's task events reach the kernel's wake inbox, and its
-// `post` action lets the kernel write as an agent. Installed from its read-only mount, and reinstalled when its version
-// changes or it errored. Each agent's own Paperclip key is the kernel's to call that action with (kernel/src/outcomes.ts).
+// `post` action lets the kernel write as an agent. Installed from its read-only mount, and reinstalled when its directory's
+// content changes, when it errored, or when it is absent: Paperclip's GET /api/plugins reports only the manifest's version,
+// and post.js has changed without a bump before (evidence/source scopes, #1958), so the version string alone misses it.
+// Each agent's own Paperclip key is the kernel's to call that action with (kernel/src/outcomes.ts).
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
+import { dirHash } from "./dir-hash.ts";
 import { mapLimit } from "./modules.ts";
 import type { Api } from "./record-agent.ts";
 
 const PLUGIN_PATH = "/opt/aidenhq-events";
 const PLUGIN_KEY = "aidenhq.events";
 
-export async function ensureEventsPlugin({ api, step, version }: { api: Api; step: (msg: string) => void; version: string }) {
+/** The plugin's version: manifest.js and package.json must agree (manifest.js's own comment), because setup keys the plugin
+ * record on it; a mismatch fails setup here rather than installing a plugin that never updates. */
+export async function pluginVersion(pluginDir: string) {
+  const version = JSON.parse(readFileSync(join(pluginDir, "package.json"), "utf8")).version;
+  const manifest = (await import(pathToFileURL(join(pluginDir, "manifest.js")).href)).default;
+  if (manifest?.version !== version) throw new Error(`${join(pluginDir, "manifest.js")} says version ${JSON.stringify(manifest?.version)} but package.json says ${JSON.stringify(version)}: keep them equal`);
+  return version as string;
+}
+
+/** Installs the plugin from `pluginDir` unless Paperclip has it at `version`, without an error, and with the content
+ * `stateFile` records: the directory hash of the last install, kept across applies since Paperclip can't report it.
+ * `stateFile` may point into a directory that does not exist yet. */
+export async function ensureEventsPlugin({ api, step, pluginDir, stateFile }: { api: Api; step: (msg: string) => void; pluginDir: string; stateFile: string }) {
+  const version = await pluginVersion(pluginDir);
+  const hash = dirHash(pluginDir);
+  const installed = existsSync(stateFile) ? readFileSync(stateFile, "utf8").trim() : "";
   const plugins = (await api("GET", "/api/plugins")).json;
   const mine = (Array.isArray(plugins) ? plugins : plugins.plugins ?? []).find((p: { pluginKey: string }) => p.pluginKey === PLUGIN_KEY);
-  if (mine && mine.version === version && mine.status !== "error") return;
+  if (mine && mine.version === version && mine.status !== "error" && installed === hash) return;
   if (mine) await api("DELETE", `/api/plugins/${mine.id}`);
   await api("POST", "/api/plugins/install", { packageName: PLUGIN_PATH, isLocalPath: true });
-  step(`Installed the kernel's Paperclip plugin ${version}`);
+  mkdirSync(dirname(stateFile), { recursive: true });
+  writeFileSync(stateFile, hash);
+  step(`Installed the kernel's Paperclip plugin ${version} (${hash.slice(0, 12)})`);
 }
 
 /**

@@ -2,8 +2,9 @@
 // This file holds what compile needs: image tags by content hash, config/computers.json (read by the launcher), and the
 // handbook section of a crew agent with its own `image:`.
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+
+import { dirHash } from "./dir-hash.ts";
 
 /** The images, and the image each builds FROM (services/computer/images/<name>/Dockerfile). `browser` is the one browser image
  * (agent-browser and its pinned Chrome): every computer builds on it and apps-mcp renders its views in it, so it is always built. */
@@ -13,19 +14,6 @@ export interface ComputerAgent { image?: string | null; profile?: string; enable
 
 /** The images an agent may name. */
 const AGENT_IMAGES = ["agent-base", "engineer", "session"];
-
-function dirHash(dir: string) {
-  const h = createHash("sha256");
-  const walk = (d: string) => {
-    for (const n of readdirSync(d).sort()) {
-      const p = join(d, n);
-      if (statSync(p).isDirectory()) walk(p);
-      else h.update(`${p.slice(dir.length)}\0`).update(readFileSync(p)).update("\0");
-    }
-  };
-  walk(dir);
-  return h.digest("hex");
-}
 
 /** name → docker tag, by content hash (an image's hash covers the one it builds FROM), for the named images and their bases. */
 export function imageTags(productDir: string, names: string[]) {
