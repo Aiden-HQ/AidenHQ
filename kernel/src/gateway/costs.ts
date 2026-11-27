@@ -123,8 +123,10 @@ const ids = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typ
 /** The reports (POST /v1/costs/<name>, the board's key): each reads the rollup on one snapshot (the gateway's), a few grouped passes. */
 export function costReports(db: DatabaseSync, snapshot: <T>(f: () => T) => T) {
   const all = (sql: string, ...args: (string | number)[]) => db.prepare(sql).all(...args) as Record<string, unknown>[];
+  /** A window's buckets (empty when it ends where it starts); a range must hold one at least. */
+  const bounds = (b: Body) => [key(b.from), key(b.to, true)] as const;
   const range = (b: Body) => {
-    const from = key(b.from), to = key(b.to, true);
+    const [from, to] = bounds(b);
     if (to <= from) throw new RangeError("to must be after from");
     return [from, to] as const;
   };
@@ -149,7 +151,7 @@ export function costReports(db: DatabaseSync, snapshot: <T>(f: () => T) => T) {
       if (!Number.isInteger(offset) || offset % 15 || Math.abs(offset) > 14 * 60) throw new RangeError("offset is a multiple of 15 minutes from UTC");
       const hour = b.bucket === "hour";
       const t = offset ? `strftime('${hour ? "%Y-%m-%dT%H" : "%Y-%m-%d"}', t, '${offset} minutes')` : `substr(t, 1, ${hour ? 13 : 10})`;
-      const windows = (Array.isArray(b.windows) ? b.windows : []).slice(0, 20).map((w) => range({ from: (w as unknown[])[0], to: (w as unknown[])[1] }));
+      const windows = (Array.isArray(b.windows) ? b.windows : []).slice(0, 20).map((w) => bounds({ from: (w as unknown[])[0], to: (w as unknown[])[1] }));
       const order = range({ from: (b.order as unknown[] | undefined)?.[0], to: (b.order as unknown[] | undefined)?.[1] });
       const top = Math.min(Math.max(Math.floor(Number(b.top) || 0), 0), 500), loop = Math.max(Math.floor(Number(b.loop) || 0), 1);
       return snapshot(() => {

@@ -91,15 +91,16 @@ export function ledgerRange(q: URLSearchParams, now = Date.now()): LedgerRange {
   const rawFrom = q.get("from") ? Date.parse(q.get("from")!) : rawTo - 7 * DAY;
   if (!Number.isFinite(rawFrom) || !Number.isFinite(rawTo)) throw new BadRequest("from and to are ISO dates");
   if (rawTo <= rawFrom) throw new BadRequest("to must be after from");
-  if (rawTo - rawFrom > MAX_SPAN) throw new BadRequest("a range spans at most 62 days (the usage kept)");
-  const from = floor(rawFrom), to = ceil(rawTo);
-  const bucket = (q.get("bucket") ?? (to - from <= 2 * DAY ? "hour" : "day")) as Bucket;
+  // The limits hold for the span asked for; the snapped one may be a quarter hour longer.
+  const span = rawTo - rawFrom;
+  if (span > MAX_SPAN) throw new BadRequest("a range spans at most 62 days (the usage kept)");
+  const bucket = (q.get("bucket") ?? (span <= 2 * DAY ? "hour" : "day")) as Bucket;
   if (bucket !== "hour" && bucket !== "day") throw new BadRequest("bucket is hour or day");
-  if (bucket === "hour" && to - from > 7 * DAY) throw new BadRequest("hourly buckets cover at most 7 days");
+  if (bucket === "hour" && span > 7 * DAY) throw new BadRequest("hourly buckets cover at most 7 days");
   const offset = Number(q.get("offset") ?? 0);
   // Every real timezone is a whole quarter hour from UTC, so the viewer's hours and days are whole buckets.
   if (!Number.isInteger(offset) || offset % 15 || Math.abs(offset) > 14 * 60) throw new BadRequest("offset is a whole number of quarter hours from UTC, in minutes");
-  return { from: new Date(from).toISOString(), to: new Date(to).toISOString(), bucket, offset };
+  return { from: new Date(floor(rawFrom)).toISOString(), to: new Date(ceil(rawTo)).toISOString(), bucket, offset };
 }
 
 /** What the ledger shows of a task. */
