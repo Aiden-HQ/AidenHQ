@@ -3,10 +3,15 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
+import { describe, test as nodeTest } from "node:test";
 import { fileURLToPath } from "node:url";
+
+// Every test has its own temp dir, fake PATH and lock file, so they run side by side (this suite is the slowest one): the
+// tests are collected here and registered in one concurrent suite at the end, after the helpers below are defined.
+const tests = [];
+const test = (...args) => { tests.push(args); };
 
 const NOT_LINUX = process.platform !== "linux" && "ops/security-sbom.sh needs bash 4 (declare -A); macOS ships bash 3.2";
 
@@ -2342,4 +2347,8 @@ test("security-sbom: an app checkout with no git of its own still scans and reco
   assert.notEqual(line[1], "-", `the checkout reached syft: ${line[2]}`);
   assert.equal(line[3], "", "no tree is named for a checkout that is not its own repo");
   assert.match(syft(calls, "app:roadmap-keeper").line, new RegExp(`-v ${src}:/src:ro`));
+});
+
+describe("security-sbom", { concurrency: Math.max(4, availableParallelism()) }, () => {
+  for (const args of tests) nodeTest(...args);
 });
