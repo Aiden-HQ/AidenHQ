@@ -70,9 +70,22 @@ the gate, with the app's own Access audience and roles, once `settings.edge.prev
 **Warehouse.** A shared Postgres app (`modules/warehouse`) that sources and apps ingest into, with a read-only role for
 consumers.
 
-**AidenHQ MCP.** The board's `/mcp` lets the owner's own Claude or Codex manage the instance with the same typed
-actions as the board. The kernel is its OAuth authorization server (`/oauth2/*` on the admin origin); every call
-carries a signed-in admin's token, and writes still go through the tiered write gates.
+**AidenHQ MCP.** The board's `/mcp` (stateless Streamable HTTP, bearer-only, never cookies) lets an admin's own Claude or Codex
+manage the instance with the same typed actions as the board ([setup](setup.md#manage-aidenhq-from-your-claude); the token
+type, open OAuth routes and decide rule are in [access](design/access.md#the-aidenhq-mcp)).
+
+- **Tools** (`services/board/src/mcp-tools.ts`): few, named for outcomes, each a thin adapter over the board's own route handlers,
+  called in process inside the board's request context with the signed-in account and `via: mcp`, so the board and the MCP never
+  drift. Reads: `status` (start here: what needs the owner now), `tasks`, `get_task`, `approvals`, `fleet`, `modules`, `connect`
+  (the board link that signs a service in; secrets and vendor OAuth never pass through the model), `apps`, `costs`, `teammates`.
+  Writes: `ask` (message Aiden or an agent; waits up to `wait_seconds`, 20 by default, 50 at most, then says to read it later with
+  `get_task`), `create_task`, `update_task`, `decide` (cards by id plus the digest read), `change_settings` (every typed settings
+  change; returns at once with the record id, tier and state), `update`, plus the onboarding tools. Each module page adds an
+  opener tool and the page's own tools (MCP Apps).
+- **Results** are short text plus `structuredContent` with an `outputSchema`; agent-authored and external text is fenced as data.
+  Read tools carry `readOnlyHint`; writes keep their tiers, and `WRITE_TOOLS` re-checks the bearer with the kernel on every write.
+- **Clients per exposure mode:** Claude Code and Codex CLI work in every mode; Claude Desktop and claude.ai connectors call from
+  Anthropic's cloud and need `public` ([table](setup.md#manage-aidenhq-from-your-claude)).
 
 **Board.** The owner's daily surface (`services/board`): today's tasks, chats with agents, the Approvals page,
 connections, apps and the fleet. Approvals are kernel records that the board only reads and shows: the exact request, one tap by a signed-in admin or from

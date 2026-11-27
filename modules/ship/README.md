@@ -7,7 +7,7 @@ repo) and every repo in `maintainer_repos`. One `ship` setting holds per-repo en
 default, and `full`), every knob a per-repo setting with no floor in code (`null` caps are unlimited).
 
 Its watch loop reads a repo's open PRs (one list read) when the github module's change feed reports a change there (a PR
-opened, pushed, labelled, reviewed or closed, a check or status finished, main moved), and again after 5 minutes while a PR it
+opened, pushed, labelled, reviewed or closed, a check or status finished, main moved), and again after 1 minute while a PR it
 works can move with GitHub quiet (its task's state, a merge's outcome, a wedged check run). It runs every PR through one engine (`round()`). A PR
 the code host opened for a task is adopted when first seen and owned by that task; any other PR is a hand-off: a member's `ship`
 label or `/ship` comment adopts it. For either, ship repairs a conflict (its no-model repair first), has GitHub update a branch
@@ -19,6 +19,38 @@ push resumes it. Checks whose jobs never started, and check runs wedged after th
 also closes a cancelled, superseded or finished task's leftover PR, files a Dependabot PR's task, and has the Maintainer nudge,
 then close, a quiet contributor PR on repos with `quiet_pr_days` set. The pause stops all of it, merges already filed included.
 The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui://ship/page`) is where it is set: Add repo (a draft panel: the name, a start from Defaults, Cautious, Full or a copy of a listed repo, and the same settings editor; a repo that starts from Defaults follows later changes to them) and, per repo, on or off, preset, which PRs to adopt (`handoff`), `by_tier` (per risk tier: whether the App approves and whether ship merges), a global pause, and the holds. The module's settings are for the advanced options only.
+
+## How a PR moves
+
+- **Adoption.** A PR the code host opened for a task is adopted at first sight, owned by that task. Any other PR needs a member
+  with write access: a `ship` label or a `/ship` comment (never a bot or the App), or `handoff: all`. Each trigger is consumed
+  once; a hold or hand-back is sticky until a newer trigger starts a new generation. The Engineer task (`ship:<repo>/<n>:<generation>`,
+  role `platform-engineer`) is filed when a round first needs it, with fixed text, never the PR's words. Cancelling it ends the
+  adoption and leaves the PR open.
+- **Forks.** A fork is worked only after a member's trigger, which also asks code review for its review. The trigger covers the
+  head it was given and ship's own commits; any other new commit holds it until handed off again. Ship pushes to a fork only
+  where the author allows maintainer edits; otherwise the PR holds.
+- **One decision per pass.** Merge-gate's `decide` returns `wait`, `repair`, `fix_ci`, `fix_review`, `approve`, `enqueue`,
+  `merge`, `done`, `stall` or `fail`, and each writer re-decides right before it writes. Nothing moves on a draft, a `ship:stop`
+  label, a person assigned to the PR, or a hold.
+- **Repair.** The repo's own `actions` (slash commands, workflows) run first, then GitHub's update-branch, then on a conflict
+  the `ship-repair` check job: a credential-free box merges the base in, takes the base side of generated paths and lockfiles,
+  runs the discovered generator (`.gitattributes` `linguist-generated`, known lockfiles, generated-file headers; the `generated`
+  setting overrides) and returns the files, which github commits as the App. A leftover conflict or a failed generator wakes the
+  Engineer once per head. A stacked PR waits on the PR it stands on, then github's `retarget` moves it to the default branch.
+- **Fixes.** The task is woken for red required checks (a failure that is red on the base too is a wait), unanswered review
+  findings and members' unanswered review comments, one wake at a time in the same session. A model fix touching a `protected`
+  path puts the PR on hold; the deterministic repair may still regenerate lockfiles.
+- **Approval and merge.** Where the target branch's rules or code review's gate require it, the App approves the exact head when
+  the head's risk tier has `approve: on`, code review's pass stands on it and checks are green (`observe` writes what it would
+  do in the report); an App approval from another head or policy is dismissed. Then ship files `github.merge`, or
+  `github.enqueue` where the branch has a merge queue (a queue removal maps to `fix_ci`, `repair`, one re-enqueue or a hold).
+  Every write is a kernel record bound to the head, tiered in code; github refuses it when the head moved or ship is paused.
+  The task closes once the PR reads merged.
+- **Report.** One comment per PR (marker `<!-- aidenhq-ship -->`), edited in place, written by code in fixed sentences: posted
+  when a person must act, or once to acknowledge a member's hand-off.
+- **Hold.** Past a cap, or on a step the settings exclude, the PR goes on hold with the reason; a member's PR gets its author
+  assigned. A new head clears a stalled hold.
 
 ## Connect
 

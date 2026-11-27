@@ -33,6 +33,35 @@ Two connections. Destructive tools are reviewed and need a grant naming them.
 - Warehouse source `src_github` (issues, project items, changes).
 - Settings include `upstream` (`issues` by default, or `off`), `release_window_minutes` (60), `maintainer_repos`, `github_fleet_org` and `github_orgs`.
 
+## The change feed
+
+The `github` service is the one timer-driven reader of GitHub (`service/src/feed.ts`). Other modules and routines get
+events instead of polling.
+
+- **Reads.** Per watched repo (the repos the code host manages plus every subscriber's resources), conditional REST reads
+  (ETags; a `304` is free): open PRs, issues, issue events, conversation and review comments, the default branch, and per head
+  its check runs, statuses and reviews. A repo is read 15 s after a change, then at doubling intervals up to 60 s; settled
+  heads every 5 minutes. A secondary rate limit pauses the whole scheduler. The `src_github` sync and Flow's churn and
+  backfill run on the same scheduler, never ahead of a repo's pass.
+- **Events.** Each diff becomes a typed event named like GitHub's webhooks: `pull_request.{opened,synchronize,
+  ready_for_review,converted_to_draft,edited,closed,reopened,labeled,unlabeled}`, `issues.{opened,labeled,unlabeled,closed,
+  reopened}`, `issue_comment.created`, `pull_request_review_comment.created`, `pull_request_review.submitted`,
+  `check_run.completed`, `status`, `push` and `github.resync`. Everything a consumer keys on is in a small flat `data` object
+  (head, number, state, `author_kind`, `member`); a stranger's words are `text`, clipped at 2,000 characters.
+- **Durable.** A pass saves snapshots, cursors and the new events (an outbox) in one atomic write (`/cache/feed.json`), then sends
+  them to the kernel (`POST /v1/events`) oldest first; no answer or `5xx` retries next pass, a refusal (`422`) is dropped and
+  recorded. A repo's first read, or one whose state was lost, emits only `github.resync`: each consumer re-reads that repo.
+- **Delivery.** The kernel appends events that a module subscribes to into `event_log` (kept 3 days) beside routines' own
+  delivery. A module declares `subscribes: github: { kinds, resources }` in its `module.yaml` (the declaration is the grant;
+  `resources` is a setting path or `"*"`) and reads `GET /v1/events/log?connection=github&after=<seq>` with its own committed
+  cursor, at least once; `gap: true` means retention passed its cursor, and it re-reads from the source. Code review, ship,
+  the Maintainer and design subscribe; routines subscribe through `events:` as before. In-process, Flow's facts and the release
+  train take the same events.
+- **Health.** The feed records `src_meta.ingest_run` runs (`github_feed`, one per repo every 5 minutes, failed on a loss or a
+  stalled outbox); the Fleet Steward flags a stale feed and, from `GET /v1/events/readers`, a subscriber behind with events waiting.
+
+Reads an event triggers (one PR, one issue's label timeline) and the merge queue's read of a PR it is merging remain.
+
 ## New installs
 
 In the default bundle. Until you connect, a banner says the agents can't use GitHub, and the fleet's repos stay on this

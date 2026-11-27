@@ -32,7 +32,7 @@ state folder on every start:
 - **Connections, as code.** The engine declares `tools: code`: no MCP server is configured. The kernel generates the job's
   granted tools as typed files in the state folder (`aidenhq-tools/`, `job.json` `tools`), and their index is an instruction
   beside `AGENTS.md`; the agent calls them from scripts through the kernel proxy
-  ([code mode](../../docs/superpowers/specs/2026-11-25-session-code-mode-design.md)).
+  ([code mode](../../docs/design/sessions.md#code-mode-tools-as-files)).
 - **Plugins.** `plugins.json` (below), loaded from the image's `/opt/opencode/node_modules`.
 - **Skills and instructions.** The kernel places the agent's `skills/` and `AGENTS.md` in the state folder, which is
   `OPENCODE_CONFIG_DIR`: opencode lists the skills (name and description) and loads `AGENTS.md` through `instructions`.
