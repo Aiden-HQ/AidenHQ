@@ -362,6 +362,17 @@ test("a fix_ci whose only red check is the PR title wakes the task to retitle it
   assert.doesNotMatch(code.woke[0].text, /aidenhq ship title/);
 });
 
+test("the fix wake names the repo's protected paths, and only when it has some", async (t) => {
+  const full = await rig(t, { settings: () => PRESETS.full });
+  full.set([full.agentPr(7, titleOnlyPr(7, ["policy", "test"]))]);
+  await full.watch.tick(); await full.watch.tick();
+  assert.doesNotMatch(full.woke[0].text, /Protected paths/);
+  const some = await rig(t, { settings: () => ({ ...PRESETS.full, protected: [".github/**", "**/CODEOWNERS"] }) });
+  some.set([some.agentPr(7, titleOnlyPr(7, ["policy", "test"]))]);
+  await some.watch.tick(); await some.watch.tick();
+  assert.match(some.woke[0].text, /Protected paths: \.github\/\*\*, \*\*\/CODEOWNERS\./);
+});
+
 test("a metadata-only wake does not spend the head's CI round: a real red check at the same head still wakes the commit fix", async (t) => {
   const c = await rig(t, { job: titleJob() });
   c.set([c.agentPr(12, titleOnlyPr(12))]);

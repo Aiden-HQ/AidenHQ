@@ -65,5 +65,5 @@ read with `github_pr_threads` and `github_issue_read`). Each gets an answer; the
   reason on the task in one line and stop. Ship holds the PR with GitHub's reason and assigns a person, who takes it from
   there.
 - Get green by fixing the code. A check, test or lint rule stays as strict as you found it.
-- A fix that needs a protected path (lockfiles, `.github/**`, test and lint config, CODEOWNERS): stop and say so on the task.
-  Ship holds the PR for a person.
+- When the wake lists protected paths and the fix needs one of them: stop and say so on the task. Ship holds the PR for a
+  person. With no list in the wake, any path is fair game.
