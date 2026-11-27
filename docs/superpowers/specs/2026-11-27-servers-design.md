@@ -89,13 +89,15 @@ only thing in the fleet that holds a server's private key or talks to a server.
   | `server_manager_check` | `read` **and** `named` | the page, and any agent granted it by name (a key and a private host, so `read` alone must not hand it out) |
   | `server_manager_config` | `read` | the page, the agent |
   | `server_manager_status` | `read` | the page, the agent |
-  | `server_manager_patch` | `write`, routed into `server-manager.patch` | the page (the owner's own filing); the agent has no grant |
-  | `server_manager_reboot` | `write`, routed into `server-manager.reboot` | the page; the agent has no grant |
+  | `server_manager_patch` | `write`, filed as `server-manager.patch` by the service | the page (the owner's own filing); the agent has no grant |
+  | `server_manager_reboot` | `write`, filed as `server-manager.reboot` by the service | the page; the agent has no grant |
   | `server_manager_host_key_reset` | `write` | the page only; never granted to any agent |
 
-  A tool routed into a write kind goes through that kind's record, tier and executor, which is why the page's "install
-  now" and a scheduled run are the same path. `server_manager_check` is deliberately not routed into a kind: it is a
-  read (§6).
+  A page tool is called by the view directly, so it cannot be one a write kind routes (compile refuses a page listing a
+  routed tool). Instead each write kind declares `tools: []`, and the module's own service files the record itself — the
+  kernel lets a module file its own kinds — so the page's "install now", a scheduled run and the agent's own path all
+  file the same `server-manager.patch` record and go through the same tier, executor and audit trail.
+  `server_manager_check` is not any kind's tool: it is a read (§6).
 - `providers.executor`: `{ url: http://server-manager-ssh:8103/aidenhq/v1/executor, auth: server_manager_service_key }`.
 - `writes:` two kinds (§6).
 - `settings:` `servers_machines` (a list, `entry: name`), the one setting (§9). It carries a comment above it in
@@ -348,10 +350,10 @@ plain-language summaries, Advanced collapsed.
   `mode: security` or `mode: full`.
 - **The page's tools**, and who else holds each: `server_manager_config` and `server_manager_status` (read; the agent
   holds both), `server_manager_check` (read, `named`; the agent holds it by name), `server_manager_patch` and
-  `server_manager_reboot` (write, routed into their kinds; the page only — the agent has no grant, so a patch always
-  comes from a schedule or the owner's click), and `server_manager_host_key_reset` (write; the page only, never any
-  agent). The two the page calls that are the owner's own action verify the caller is the owner's signed-in session,
-  not an agent's assertion, the way Ship's and Maintainer's config tools do.
+  `server_manager_reboot` (write, filed by the service as their kinds; the page only — the agent has no grant, so a
+  patch always comes from a schedule or the owner's click), and `server_manager_host_key_reset` (write; the page only,
+  never any agent). The two the page calls that are the owner's own action verify the caller is the owner's signed-in
+  session, not an agent's assertion, the way Ship's and Maintainer's config tools do.
 - **Settings:** `servers_machines`, an `entry:` list, is the whole per-machine configuration; one page save is one
   settings change, as `settings-changes.md` wants. Its entries, exactly:
 
@@ -581,7 +583,9 @@ A second pass, on that follow-up's own review, found three more: the field decla
 `key` kind would have fallen back to 300 characters and refused a real key; the board's page-secret route caps every
 value at 300 and trims every field but a `password`, so it would have refused the key and stripped its trailing newline
 before the kernel saw either; and one sentence in §7 still gave a false reason (a request cap of 1000) for raising the
-kernel's limit, when the cap is 4000 with a key set.
+kernel's limit, when the cap is 4000 with a key set. And a third pass, mine, found that the page could not list the
+patch and reboot tools at all: a view cannot call a tool a write kind routes, so those kinds declare no routed tools
+and the service files its own records.
 
 **Left to the build, not to the review:** the page's icon and order, the exact wording of a failed run's report, and
 whether `expected_fingerprint` should ever default to anything but empty. All three are in §17.
