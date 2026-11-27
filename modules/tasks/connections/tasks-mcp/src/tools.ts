@@ -2087,13 +2087,13 @@ Object.assign(TOOLS, {
   },
   fleet_control: {
     description:
-      "Admin: run a routine now, or pause/resume an agent or a routine, only on the owner's explicit request, with their exact words as `quote`: the board refuses unless `quote` (12+ characters) is verbatim in the owner's own recent comment on this task, outside any forwarded/fenced block, names the target and asks for the action. Deploying an app is its maintainer's app_deploy (a stateful app's deploy goes to the AI reviewer first). The Chief of Staff can't be paused. Config, schedule or agent changes are delegated, not done here.",
+      "Admin: run a routine now, or pause/resume an agent or a routine, only on the owner's explicit request, with their exact words as `quote`: the board refuses unless `quote` (12+ characters) is verbatim in the owner's own recent comment on this task (or, in a chat they just opened, their first message), outside any forwarded/fenced block, names the target and asks for the action. Deploying an app is its maintainer's app_deploy (a stateful app's deploy goes to the AI reviewer first). The Chief of Staff can't be paused. Config, schedule or agent changes are delegated, not done here.",
     inputSchema: {
       type: "object",
       properties: {
         action: { type: "string", enum: ACTIONS },
         target: { type: "string", description: "agent name or routine title, as the owner said it (see fleet_status, fleet_catalog)" },
-        quote: { type: "string", description: "The owner's exact words requesting this, copied from their comment" },
+        quote: { type: "string", description: "The owner's exact words requesting this, copied from their comment or opening message" },
       },
       required: ["action", "target", "quote"],
       additionalProperties: false,
