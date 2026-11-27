@@ -227,6 +227,8 @@ test("legacy lists stay closed: links, root secrets and host variables may only 
   // Task search left the kernel for the warehouse module (2026-11-23): its service writes src_tasks and calls the model
   // gateway as a source writer, the same link and key as every other writer until 3g.
   was.links.warehouse = ["sources"];
+  // The Telegram module (2026-11-27) is a new sign-in module with a src_ writer: the board and warehouse links hubspot has, until 3g.
+  was.links.telegram = ["board", "sources"];
   was.secrets.warehouse = ["gateway_source_key"];
   const within = (now, before) => Object.entries(now).every(([m, l]) => l.every((x) => (before[m] ?? before[split[m]] ?? []).includes(x)));
   assert.ok(within(Object.fromEntries(Object.entries(LEGACY_LINKS).map(([m, v]) => [m, v.to])), was.links));
