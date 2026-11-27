@@ -101,6 +101,14 @@ echo "  ok    paperclip http (127.0.0.1:3100)"
 [ -f "$CTRL/flaky" ] && echo "  FAIL  flaky probe  red before the apply too"
 # What scripts/healthcheck.sh says when the unit's ExecStart names another checkout (scripts/test/healthcheck.test.ts).
 [ -f "$CTRL/mismatch" ] && echo "  FAIL  host metrics timer runs the applied checkout  the unit runs /old/ops/host-metrics.sh, not $PWD/ops/host-metrics.sh"
+# ctrl/new-module-stuck: a module service this apply starts (no baseline line) is never healthy; ctrl/new-module-ok: it
+# turns healthy on the second probe, the way a container takes a moment to start (WOR-14006).
+# Only after the switch: before it the module's service is not in the model at all, so the baseline has no line for it.
+if [ -f "$CTRL/new-module-stuck" ] && [ -f "$CTRL/switched" ]; then echo "  FAIL  module service ssh  server-manager: running starting"; fi
+if [ -f "$CTRL/new-module-ok" ] && [ -f "$CTRL/switched" ]; then
+  n="$(cat "$CTRL/new-module-probes" 2>/dev/null || echo 0)"; echo $((n + 1)) > "$CTRL/new-module-probes"
+  [ "$n" -ge 1 ] && echo "  ok    module service ssh" || echo "  FAIL  module service ssh  server-manager: running starting"
+fi
 echo "  skip  ops-mcp (meetings module not installed)"
 # What is applied decides (data/applied-product), as on a host the running services do, never the checkout alone.
 if [ -f "$CTRL/break" ] && git cat-file -e "$(cat data/applied-product 2>/dev/null || echo none)":BAD_HEALTH 2>/dev/null; then
@@ -113,6 +121,7 @@ echo "  ok    kernel (10.231.0.1:3130)"
 `,
   // With ctrl/block the step waits (blocked) until ctrl/release, then lets later applies through: an apply to kill mid-compose.
   "ops/compose-recreate.sh": `#!/usr/bin/env bash
+touch "$CTRL/switched"
 echo recreate >> "$CALLS"
 [ -f "$CTRL/badrevert" ] && { echo "compose: recreate failed in the revert"; exit 1; }
 if [ -f "$CTRL/block" ]; then touch "$CTRL/blocked"; while [ ! -f "$CTRL/release" ]; do sleep 0.1; done; rm -f "$CTRL/block"; fi
@@ -1344,3 +1353,26 @@ function hostMetricsScript(unit, home) {
   const exec = /^ExecStart=(.*)$/m.exec(readFileSync(unit, "utf8"))[1];
   return exec.replace(/\$\{(\w+)\}/g, (_, k) => env[k] ?? "").split(/\s+/).at(-1);
 }
+
+// WOR-14006: server-manager landed with its container never probed, so "enabled" was all anyone knew. A module service an
+// apply starts has no line in the health baseline, so its failure is neither a regression nor a pass: it must gate the
+// generation itself, and a container that is only still starting must get the deadline rather than fail at the first probe.
+test("a module service this apply starts and that never gets healthy fails the generation", async () => {
+  const w = world();
+  writeFileSync(w.d("ctrl/new-module-stuck"), "");
+  const r = await w.run();
+  assert.notEqual(r.status, 0, r.out);
+  const g = w.gens().find((x) => x.health === "failed");
+  assert.ok(g, r.out);
+  assert.match(g.reason, /module services this apply started are not healthy: module service ssh  server-manager: running starting/, g.reason);
+});
+
+test("a module service this apply starts is waited on: healthy on its second probe, the generation is good", async () => {
+  const w = world();
+  writeFileSync(w.d("ctrl/new-module-ok"), "");
+  const r = await w.run();
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /health: waiting on module service ssh  server-manager: running starting/, r.out);
+  assert.equal(w.gens().at(-1).health, "good", r.out);
+  assert.equal(Number(readFileSync(w.d("ctrl/new-module-probes"), "utf8")), 2, "probed twice before passing");
+});

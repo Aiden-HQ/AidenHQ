@@ -44,7 +44,34 @@ done
 [ -n "\${port:-}" ] && [ -f "$HEALTHZ/$port" ] || exit 7
 cat "$HEALTHZ/$port"
 `);
-  writeFileSync(join(dir, "bin/docker"), "#!/usr/bin/env bash\nexit 0\n");
+  // `docker compose config` serves the module model in MODULES (absent: none), and `docker inspect` the state a service's
+  // container reports in STATE (`<service>=<running> <health>`), so the module-service probe can be exercised without Docker.
+  writeFileSync(join(dir, "state"), "");
+  writeFileSync(join(dir, "modules.json"), "");
+  writeFileSync(join(dir, "bin/docker"), `#!/usr/bin/env bash
+if [ "$1" = compose ]; then
+  [ -f "$MODULES" ] && { cat "$MODULES"; exit 0; }
+  exit 1
+fi
+if [ "$1" = ps ]; then
+  label=""; running=""; for a in "$@"; do
+    case "$a" in
+      label=aidenhq.service=*) label="\${a#label=aidenhq.service=}";;
+      -q) ;;
+      *) [ "$a" = "-aq" ] && running="\${a%-aq}" ;;
+    esac
+  done
+  state="$(sed -n "s|^$label=||p" "$STATE" 2>/dev/null | head -1)"
+  [ -n "$state" ] || exit 0
+  case "$state" in running*) echo "id-$label" ;; *) [ -n "$running" ] || echo "id-$label" ;; esac
+  exit 0
+fi
+if [ "$1" = inspect ]; then
+  svc="\${4#id-}"; sed -n "s|^$svc=||p" "$STATE" 2>/dev/null | head -1
+  exit 0
+fi
+exit 0
+`);
   for (const f of ["systemctl", "curl", "docker"]) chmodSync(join(dir, "bin", f), 0o755);
   return dir;
 }
@@ -53,7 +80,7 @@ function run(dir) {
   return new Promise((resolve) => {
     execFile("bash", [join(dir, "scripts/healthcheck.sh")], {
       cwd: dir,
-      env: { ...process.env, PATH: `${join(dir, "bin")}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: join(dir, "home"), EXECSTART: join(dir, "execstart"), AIDENHQ_SECRETS_DIR: join(dir, "secrets"), HEALTHZ: join(dir, "healthz") },
+      env: { ...process.env, PATH: `${join(dir, "bin")}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: join(dir, "home"), EXECSTART: join(dir, "execstart"), AIDENHQ_SECRETS_DIR: join(dir, "secrets"), HEALTHZ: join(dir, "healthz"), MODULES: join(dir, "modules.json"), STATE: join(dir, "state") },
     }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}` }));
   });
 }
@@ -164,4 +191,62 @@ test("an ops-mcp vault that is not configured is skipped, never a failed check",
   assert.match(r.out, /^  skip  ops-mcp vault_available/m, r.out);
   assert.match(r.out, /^  skip  ops-mcp vault_writable/m, r.out);
   assert.doesNotMatch(r.out, /^  FAIL  ops-mcp vault/m, r.out);
+});
+
+// The module-service probe (WOR-14006): a module turned on must not land "container up, nobody knows if it answers". The
+// model is `docker compose config`'s (MODULES), the verdict Docker's own HEALTHCHECK (STATE), so a module whose image
+// declares none is listed, never failed, and an `on_demand` service (a profile) is not a service the host runs.
+const moduleModel = (entries) => JSON.stringify({ services: Object.fromEntries(entries.map(([label, mod, extra = {}]) => [
+  `${mod}-${label}`, { image: `${mod}-${label}:local`, labels: { "aidenhq.module": mod, "aidenhq.service": label }, healthcheck: { test: ["CMD", "node", "-e", "x"] }, ...extra },
+])) }) + "\n";
+
+test("a module service whose container is running and healthy passes", async () => {
+  const dir = checkout();
+  writeFileSync(join(dir, "modules.json"), moduleModel([["ssh", "server-manager"]]));
+  writeFileSync(join(dir, "state"), "ssh=running healthy\n");
+  const r = await run(dir);
+  assert.match(r.out, /^  ok    module service ssh$/m, r.out);
+  assert.doesNotMatch(r.out, /^  FAIL  module service/m, r.out);
+});
+
+test("a module service whose container is unhealthy fails, naming it and its module", async () => {
+  const dir = checkout();
+  writeFileSync(join(dir, "modules.json"), moduleModel([["ssh", "server-manager"]]));
+  writeFileSync(join(dir, "state"), "ssh=running unhealthy\n");
+  const r = await run(dir);
+  assert.match(r.out, /^  FAIL  module service ssh  server-manager: running unhealthy$/m, r.out);
+  assert.match(r.out, /check\(s\) failed\.$/m, r.out);
+});
+
+test("a module service with no container at all fails: an enabled module's service that never started is not 'up'", async () => {
+  const dir = checkout();
+  writeFileSync(join(dir, "modules.json"), moduleModel([["server-manager-ssh", "server-manager"]]));
+  const r = await run(dir);
+  assert.match(r.out, /^  FAIL  module service .+  server-manager: no container$/m, r.out);
+});
+
+test("a module service whose image declares no health check is listed, never failed", async () => {
+  // It cannot be judged from here: the probe reports a service that answers nothing, it does not invent a contract for one
+  // whose image declares none (and failing those would roll back every apply that adds one).
+  const dir = checkout();
+  writeFileSync(join(dir, "modules.json"), moduleModel([["db", "primer"]]));
+  writeFileSync(join(dir, "state"), "db=running none\n");
+  const r = await run(dir);
+  assert.match(r.out, /^  skip  module service .+ \(primer: its image declares no health check\)$/m, r.out);
+  assert.doesNotMatch(r.out, /^  FAIL  module service/m, r.out);
+});
+
+test("an on_demand service (a compose profile) is not probed: the host never starts one", async () => {
+  const dir = checkout();
+  writeFileSync(join(dir, "modules.json"), moduleModel([["runner", "ci", { profiles: ["ci"] }]]));
+  const r = await run(dir);
+  assert.doesNotMatch(r.out, /^  (ok|FAIL|skip)  module service (runner|ci-runner)/m, r.out);
+});
+
+test("a compose model that cannot be read skips the probe rather than failing every service", async () => {
+  const dir = checkout();
+  writeFileSync(join(dir, "modules.json"), "__unreadable__");
+  const r = await run(dir);
+  assert.match(r.out, /^  skip  module services \(the compiled compose could not be read\)$/m, r.out);
+  assert.doesNotMatch(r.out, /^  FAIL  module service/m, r.out);
 });
