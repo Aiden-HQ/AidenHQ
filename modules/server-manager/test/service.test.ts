@@ -103,12 +103,32 @@ test("a malformed value never reaches a tool: the machine list stays empty when 
 
 test("the three write tools are the owner's own actions: an agent's call is refused before anything runs", async () => {
   // §9: a patch, a reboot and a host-key reset verify the caller came from the owner's signed-in session, not an agent's
-  // assertion. The view route sends kind: "owner" with no agent; an agent's call carries its key.
+  // assertion. The view route sends kind: "owner" with no agent; an agent's call carries its key. An agent is refused before the
+  // service even looks at the machine or files anything.
+  const filed: { kind: string; args: Record<string, unknown>; machine: string }[] = [];
+  const tools = configTools({
+    machines: () => machines, status,
+    filing: { file: async (kind, args, machine) => { filed.push({ kind, args, machine }); return { id: "k-0123456789abcdef", tier: 0, state: "claimed" }; } },
+  });
+  const handle = createMcp("server-manager", tools, []);
+  const call = (m: unknown, who = owner) => handle(m as never, who as never) as Promise<any>;
+  const argsOf: Record<string, Record<string, unknown>> = { server_manager_patch: { machine: "vm-one", mode: "security" }, server_manager_reboot: { machine: "vm-one" }, server_manager_host_key_reset: { machine: "vm-one", fingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } };
   for (const name of ["server_manager_patch", "server_manager_reboot", "server_manager_host_key_reset"]) {
-    const refused = await call({ jsonrpc: "2.0", id: 20, method: "tools/call", params: { name, arguments: {} } }, agent);
+    const refused = await call({ jsonrpc: "2.0", id: 20, method: "tools/call", params: { name, arguments: argsOf[name] } }, agent);
     assert.equal(refused.result.isError, true, `${name} refuses an agent`);
     assert.match(refused.result.content[0].text, /the owner's/);
-    const own = await call({ jsonrpc: "2.0", id: 21, method: "tools/call", params: { name, arguments: {} } }, owner);
-    assert.match(own.result.content[0].text, /next change/, "the owner reaches the tool itself (which lands in the next change)");
   }
+  assert.deepEqual(filed, [], "an agent's call files nothing");
+  // The owner's own click files the record: the same kind a schedule files, naming the machine (never a command).
+  const patch = await call({ jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "server_manager_patch", arguments: { machine: "vm-one", mode: "security" } } });
+  assert.equal(JSON.parse(patch.result.content[0].text).filed.tier, 0);
+  const reboot = await call({ jsonrpc: "2.0", id: 22, method: "tools/call", params: { name: "server_manager_reboot", arguments: { machine: "vm-one" } } });
+  assert.equal(JSON.parse(reboot.result.content[0].text).filed.id, "k-0123456789abcdef");
+  assert.deepEqual(filed.map((f) => [f.kind, f.machine]), [["server-manager.patch", "vm-one"], ["server-manager.reboot", "vm-one"]]);
+  // Nothing a click sends becomes a command: the tool reads only the machine and the mode, and what it files carries those two
+  // (a schema the kernel checks refuses any other field; here the extra word never leaves this function).
+  const before = filed.length;
+  await call({ jsonrpc: "2.0", id: 23, method: "tools/call", params: { name: "server_manager_patch", arguments: { machine: "vm-one", mode: "security", command: "id" } } });
+  assert.equal(filed.length, before + 1);
+  assert.deepEqual(filed.at(-1)!.args, { machine: "vm-one", mode: "security" }, "only the machine and the mode are filed; no command ever is");
 });

@@ -353,7 +353,10 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
       const seen = new Set<number>();
       const missed: Td.message[] = [];
       let from = 0;
+      let stalled = false;
       for (;;) {
+        // From 0 the newest page; then strictly older than the oldest seen (offset 0 starts below from_message_id). A page with
+        // nothing new is asked once more before it counts as the end (TDLib answers from its local copy first).
         const page = await td.invoke<Td.messages>({ _: "getChatHistory", chat_id: id, from_message_id: from, offset: 0, limit: 100, only_local: false });
         const msgs = page.messages.filter((m): m is Td.message => !!m);
         let fresh = 0;
@@ -366,8 +369,14 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
           if (m.id <= cp || m.date < floor) reached = true;
           else missed.push(m);
         }
-        // TDLib may answer with fewer than `limit`: page on until the checkpoint, the window's edge or an empty page.
-        if (reached || fresh === 0) break;
+        // TDLib may answer with fewer than `limit`: page on until the checkpoint or the window's edge.
+        if (reached) break;
+        if (fresh === 0) {
+          if (stalled) break;
+          stalled = true;
+          continue;
+        }
+        stalled = false;
         from = Math.min(...msgs.map((m) => m.id));
       }
       missed.sort((a, b) => a.id - b.id);

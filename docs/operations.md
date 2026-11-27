@@ -139,6 +139,10 @@ It is idempotent. The Engineer runs it for you after you approve a change.
 - Paperclip's console listens on `127.0.0.1:3100` only: in `public` and `local` mode (and `tailscale`) reach it over an SSH
   tunnel, `ssh -N -L 3100:127.0.0.1:3100 <you>@<host>`, then `http://localhost:3100` (setup.md step 6).
 - `scripts/healthcheck.sh`: read-only check of Paperclip, the board and each service; prints `ok` or `FAIL` per check.
+  It also takes every enabled module's own service from the compiled compose, checked as `<module>/<service>` (two modules
+  may both declare `api`): a container that is not running, or whose image declares a health check and reports
+  `unhealthy`, is a `FAIL` (a service whose image declares none is listed as `skip`). The apply waits on a module service
+  it starts for the first time, so a module turned on cannot land with a container nobody checked.
 - `scripts/verify-security.sh`: mechanical checks of the security criteria (token scoping, read-only endpoints,
   exposure). Run with the stack up.
 - The board's Apps tab lists each app's health; the DevOps Engineer owns an unhealthy app and pages the owner only when

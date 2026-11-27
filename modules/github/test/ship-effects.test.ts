@@ -117,8 +117,8 @@ async function setup(t, { generation = 2, queue = {}, asyncMerge = { put: () => 
   let duringRepair;
   // A write GitHub refuses for its own reasons (a repository rule), never a moved head: the branch reads back at the expected head.
   let refuseRef = false;
-  // GitHub's signed commits (createCommitOnBranch inputs) and update-branch calls, as sent.
-  const signed = [], updates = [];
+  // GitHub's signed commits (createCommitOnBranch inputs), as sent.
+  const signed = [];
   const writes = githubWrites(() => origin, { signed: signedBranches, refuse: () => (refuseRef ? "Repository rule violations found\n\nCommits must have verified signatures.\n\n" : undefined) });
   const kernel = await listen(async (req, res) => {
     let body = "";
@@ -139,13 +139,13 @@ async function setup(t, { generation = 2, queue = {}, asyncMerge = { put: () => 
   const bare = (args) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: origin, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).trim();
   const gh = async (method, path, body, as) => {
     calls.push({ method, path, body, ...(as ? { as } : {}) });
-    const git = (args, o = {}) => execFileSync("git", args, { cwd: origin, encoding: "utf8", ...o, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_COMMITTER_NAME: "GitHub", GIT_COMMITTER_EMAIL: "noreply@github.com", GIT_AUTHOR_NAME: "owner1", GIT_AUTHOR_EMAIL: "owner1@example.com", ...o.env } }).trim();
-    // GitHub's signed commit (createCommitOnBranch) and refs over the bare origin (fake-github-writes.ts). `refuseRef` is a repository
-    // rule refusing it.
+    // GitHub's signed commit (createCommitOnBranch), git data and refs over the bare origin (fake-github-writes.ts), signed where the
+    // App makes it. `refuseRef` is a repository rule refusing it. The PR's head follows its branch.
     if (path === "/graphql" && body.query.includes("createCommitOnBranch")) signed.push(body.variables.input);
-    const wrote = writes(method, path, body);
+    const wrote = writes(method, path, body, as);
     if (wrote) {
       if (path === "/graphql" && wrote.body.data?.createCommitOnBranch && body.variables.input.branch.branchName === "contrib") pr.head = wrote.body.data.createCommitOnBranch.commit.oid;
+      if (path === "/graphql" && wrote.body.data?.updateRefs) for (const u of body.variables.input.refUpdates) if (u.name === "refs/heads/contrib") pr.head = u.afterOid;
       return wrote;
     }
     // The asynchronous merge REST API: the one way into the queue.
@@ -180,23 +180,6 @@ async function setup(t, { generation = 2, queue = {}, asyncMerge = { put: () => 
     if (method === "GET" && path === `/repos/${REPO}/pulls/7/files?per_page=100`) return { status: 200, body: [{ filename: "b.txt" }] };
     if (method === "GET" && path.startsWith(`/repos/${REPO}/pulls/7/reviews`)) return { status: 200, body: [{ id: 50, user: { login: "acme-app[bot]", id: 900 }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 51, user: { login: "owner1", id: 1 }, state: "APPROVED", commit_id: "e".repeat(40) }, { id: 99, user: { login: "acme-app[bot]", id: 900 }, state: "APPROVED", commit_id: pr.head }] };
     if (method === "PUT" && /\/dismissals$/.test(path)) return { status: 200, body: {} };
-    // GitHub's update-branch: its own merge commit of the base into the head, only without a conflict, bound to expected_head_sha.
-    // PR #8 is the task's own on `lease`.
-    const upd = method === "PUT" && new RegExp(`^/repos/${REPO}/pulls/(7|8)/update-branch$`).exec(path);
-    if (upd) {
-      const branch = upd[1] === "7" ? "contrib" : "lease";
-      updates.push(body);
-      if (refuseRef) return { status: 422, body: { message: "Repository rule violations found" } };
-      const cur = git(["rev-parse", `refs/heads/${branch}`]);
-      if (body.expected_head_sha !== cur) return { status: 422, body: { message: "expected head sha didn't match current head ref." } };
-      const tip = git(["rev-parse", "refs/heads/main"]);
-      let tree;
-      try { tree = git(["merge-tree", "--write-tree", cur, tip]).split("\n")[0]; } catch { return { status: 422, body: { message: "merge conflict between base and head" } }; }
-      const sha = git(["commit-tree", tree, "-p", cur, "-p", tip, "-m", `Merge branch 'main' into ${branch}`]);
-      git(["update-ref", `refs/heads/${branch}`, sha]);
-      if (branch === "contrib") pr.head = sha;
-      return { status: 202, body: { message: "Updating pull request branch." } };
-    }
     if (method === "GET" && path.startsWith(`/repos/${REPO}/compare/`)) return { status: 200, body: { merge_base_commit: { sha: main } } };
     return { status: 404, body: { message: "fake GitHub: no route" } };
   };
@@ -244,7 +227,7 @@ async function setup(t, { generation = 2, queue = {}, asyncMerge = { put: () => 
     for (let i = 0; i < 300 && outcomes.length === n; i++) await new Promise((r) => setTimeout(r, 10));
     return outcomes[n];
   };
-  return { memberPr, root, ws, origin, base, c1, cacheDir: join(root, "cache"), fileToDir, fix, main, H, F, pr, queue, calls, call, run, adoption, handoffHead, handle, checks, repairResult, signed, updates, duringRepair: (fn) => { duringRepair = fn; }, refuseRef: (v) => { refuseRef = v; } };
+  return { memberPr, root, ws, origin, base, c1, cacheDir: join(root, "cache"), fileToDir, fix, main, H, F, pr, queue, calls, call, run, adoption, handoffHead, handle, checks, repairResult, signed, duringRepair: (fn) => { duringRepair = fn; }, refuseRef: (v) => { refuseRef = v; } };
 }
 
 test("a push onto an adopted PR's branch is one commit GitHub makes and signs, bound to the head it expects; a contributor's push in between wins", async (t) => {
@@ -298,9 +281,9 @@ test("a push onto an adopted PR's branch is one commit GitHub makes and signs, b
   assert.match(ok.text, / as owner1 \(commits GitHub signs\)\.$/);
 });
 
-test("a push that merges the base after a conflict lands as GitHub's own merge between two signed commits: the base's side, then the resolution", async (t) => {
-  const { ws, origin, c1, pr, run, signed, updates } = await setup(t);
-  // main adds `b.txt` too, so it conflicts with the PR's own `b.txt` (add/add).
+/** A fixer's push that merges main (which moved on and adds `b.txt` too, an add/add conflict with the PR's own) into the head,
+ * resolves `b.txt`, then commits one more fix on top: its bundle, main's tip, and the box commit. */
+function conflictedMerge(ws, origin) {
   const mainMove = join(dirname(ws), "main-move");
   sh(dirname(ws), "clone", "--quiet", "-b", "main", origin, mainMove);
   writeFileSync(join(mainMove, "b.txt"), "b from main\n");
@@ -309,11 +292,10 @@ test("a push that merges the base after a conflict lands as GitHub's own merge b
   sh(mainMove, "commit", "--quiet", "-m", "main moves");
   sh(mainMove, "push", "--quiet", origin, "main");
   const tip = sh(mainMove, "rev-parse", "HEAD");
-  // The fixer merges the base into the PR's head and resolves the conflict, then commits one more fix on top.
   const fixer = join(dirname(ws), "fixer");
   sh(dirname(ws), "clone", "--quiet", "-b", "contrib", origin, fixer);
   try { sh(fixer, "merge", "--quiet", "--no-edit", "origin/main"); } catch {}
-  writeFileSync(join(fixer, "b.txt"), "resolved\n");
+  writeFileSync(join(fixer, "b.txt"), "resolved: b and b from main\n");
   sh(fixer, "add", "b.txt");
   sh(fixer, "commit", "--quiet", "--no-edit");
   writeFileSync(join(fixer, "c.txt"), "after the merge\n");
@@ -322,24 +304,64 @@ test("a push that merges the base after a conflict lands as GitHub's own merge b
   const done = sh(fixer, "rev-parse", "HEAD");
   sh(fixer, "update-ref", `refs/aidenhq/publish/${done}`, done);
   sh(fixer, "bundle", "create", "--quiet", join(dirname(ws), ".aidenhq", "bundles", `${done}.bundle`), `refs/aidenhq/publish/${done}`);
+  return { tip, fixer, done };
+}
+
+test("a push that merges the base after a conflict lands as one merge commit GitHub signs: parents the head and the base's tip, the resolution's tree, both sides kept", async (t) => {
+  const { ws, origin, c1, pr, run, calls, signed } = await setup(t, { appOps: ["pr", "push"] });
+  const { tip, fixer, done } = conflictedMerge(ws, origin);
   const ok = await run("k-00000000000000aa", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: done }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 });
   assert.equal(ok.ok, true, ok.text);
-  // Three steps, every commit GitHub's own: the base's side of `b.txt` on c1, GitHub's merge of main's tip, the resolution on top.
-  assert.equal(signed.length, 2, JSON.stringify(signed.map((x) => x.message)));
-  assert.equal(signed[0].expectedHeadOid, c1);
-  assert.deepEqual(signed[0].fileChanges.additions.map((f) => [f.path, Buffer.from(f.contents, "base64").toString()]), [["b.txt", "b from main\n"]]);
-  assert.equal(updates.length, 1);
-  const merge = sh(origin, "rev-parse", "refs/heads/contrib^");
-  assert.equal(sh(origin, "rev-parse", `${merge}^2`), tip, "GitHub's merge of the base's tip");
-  assert.equal(sh(origin, "rev-parse", `${merge}^1^`), c1, "on top of the base's side, on top of the head");
-  assert.equal(signed[1].expectedHeadOid, merge);
-  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^{tree}"), sh(fixer, "rev-parse", `${done}^{tree}`), "the branch ends at the fixer's exact tree");
-  assert.equal(sh(origin, "show", "refs/heads/contrib:b.txt"), "resolved");
-  assert.equal(pr.head, sh(origin, "rev-parse", "refs/heads/contrib"));
+  const head = sh(origin, "rev-parse", "refs/heads/contrib");
+  // One commit on the head, no intermediate one: its parents exactly the head and main's tip, its tree the fixer's own.
+  assert.equal(sh(origin, "rev-list", "--count", "--first-parent", `${c1}..${head}`), "1", "one commit on the head");
+  assert.equal(sh(origin, "rev-list", "--parents", "-n", "1", head), `${head} ${c1} ${tip}`);
+  assert.equal(sh(origin, "rev-parse", `${head}^{tree}`), sh(fixer, "rev-parse", `${done}^{tree}`), "the branch holds the fixer's exact tree");
+  // The conflicted file holds the resolution (never the base's side alone), the base's own change and the fix are both there.
+  assert.equal(sh(origin, "show", `${head}:b.txt`), "resolved: b and b from main");
+  assert.equal(sh(origin, "show", `${head}:m.txt`), "m");
+  assert.equal(sh(origin, "show", `${head}:c.txt`), "after the merge");
+  assert.match(sh(origin, "log", "-1", "--format=%B", head), /Merge remote-tracking branch 'origin\/main' into contrib[\s\S]*fix: after the merge/);
+  // GitHub's own commit, verified, as the App: one commit write, one fast-forward of the branch, no createCommitOnBranch.
+  const commits = calls.filter((c) => c.method === "POST" && c.path === `/repos/${REPO}/git/commits`);
+  assert.deepEqual(commits.map((c) => [c.as, c.body.parents, c.body.author, c.body.committer]), [["app", [c1, tip], undefined, undefined]]);
+  assert.deepEqual(calls.filter((c) => c.path === "/graphql" && String(c.body?.query).includes("updateRefs")).map((c) => [c.as, c.body.variables.input.refUpdates]), [["app", [{ name: "refs/heads/contrib", beforeOid: c1, afterOid: head }]]], "the branch moves bound to the head exactly");
+  assert.equal(signed.length, 0);
+  assert.equal(calls.filter((c) => /update-branch/.test(c.path)).length, 0);
+  assert.equal(pr.head, head);
+});
+
+test("a base merge whose commit GitHub didn't sign (the owner's sign-in) is refused, and the branch stays", async (t) => {
+  const { ws, origin, c1, run, calls } = await setup(t);
+  const { done } = conflictedMerge(ws, origin);
+  const args = { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: done }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 };
+  // The owner's sign-in: GitHub makes the commit but doesn't sign it, so it is never written.
+  const unsigned = await run("k-00000000000000ac", "github.push", args);
+  assert.equal(unsigned.ok, false);
+  assert.match(unsigned.text, /^ship-refused: .*GitHub didn't sign the merge commit \(unsigned\).*Nothing was pushed/, unsigned.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "the branch is unchanged");
+  assert.equal(calls.filter((c) => c.path === "/graphql" && String(c.body?.query).includes("updateRefs")).length, 0, "no ref write");
+});
+
+test("a base merge whose branch moved before the ref update is ship-head-moved, and the contributor's push stays", async (t) => {
+  const { ws, origin, c1, run } = await setup(t, { appOps: ["pr", "push"] });
+  const { done } = conflictedMerge(ws, origin);
+  // A contributor pushes after the read: GitHub's PR still says c1 (it lags), so only the ref update's lease on c1 catches it.
+  const scratch = `${ws}-contrib`;
+  sh(dirname(ws), "clone", "--quiet", "-b", "contrib", origin, scratch);
+  writeFileSync(join(scratch, "d.txt"), "d\n");
+  sh(scratch, "add", "d.txt");
+  sh(scratch, "commit", "--quiet", "-m", "contributor again");
+  sh(scratch, "push", "--quiet", origin, "contrib");
+  const theirs = sh(scratch, "rev-parse", "HEAD");
+  const r = await run("k-00000000000000ad", "github.push", { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: done }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 });
+  assert.equal(r.ok, false);
+  assert.match(r.text, /^ship-head-moved: .* moved while writing .*nothing was pushed/, r.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), theirs, "the contributor's push is never overwritten");
 });
 
 test("a push whose box commit is a merge made on the base is refused, never replayed onto the PR head", async (t) => {
-  const { ws, origin, c1, run, signed, updates } = await setup(t);
+  const { ws, origin, c1, run, signed, calls } = await setup(t);
   // The fixer merged the PR branch into a checkout of the updated base: the merge's first parent is the base tip, not the PR
   // head. Writing it would build the base's commits on the PR head and land a tree that drops the head's own files.
   const mainMove = join(dirname(ws), "main-move");
@@ -360,7 +382,7 @@ test("a push whose box commit is a merge made on the base is refused, never repl
   assert.equal(r.ok, false, r.text);
   assert.match(r.text, /^ship-scope: .*not replayed/);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), before, "the branch is untouched");
-  assert.equal(signed.length + updates.length, 0, "nothing is written");
+  assert.equal(signed.length + calls.filter((c) => c.method !== "GET" && c.path.includes("/git/")).length, 0, "nothing is written");
 });
 
 test("a stalled adoption's push is the one write that resumes it: the plan and the effect let it land, every other write stays refused", async (t) => {
@@ -814,8 +836,8 @@ test("with no App on the repo, approve is refused as needing a human; nothing is
   assert.equal(calls.filter((c) => c.method !== "GET" && c.path !== "/graphql").length, 0);
 });
 
-test("ship's repair: github runs ship's check job, GitHub merges the base and the kept files land on top, every commit GitHub's own; leftovers and a fork without edits write nothing", async (t) => {
-  const { origin, ws, c1, main, pr, call, run, checks, repairResult, updates } = await setup(t, { baseAhead: true });
+test("ship's repair: github runs ship's check job, and the merge of the base with the kept files is one commit GitHub signs; leftovers and a fork without edits write nothing", async (t) => {
+  const { origin, ws, c1, main, pr, call, run, checks, repairResult } = await setup(t, { baseAhead: true, appOps: ["pr", "push"] });
   const args = { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt"], commands: [{ dir: ".", cmd: "make gen" }] } };
   const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.repair", args, requester: SHIP, task: "t1" });
   assert.equal(plan.status, 200, JSON.stringify(plan.json));
@@ -825,12 +847,11 @@ test("ship's repair: github runs ship's check job, GitHub merges the base and th
   const ok = await run("k-00000000000000c1", "github.repair", args);
   assert.equal(ok.ok, true, ok.text);
   assert.deepEqual(checks[0], { repo: REPO, head: c1, run: "ship-repair", spec: { base: main, merge_base: sh(origin, "merge-base", c1, main), base_ref: "main", plan: JSON.stringify(args.plan), attempt: "1" } });
-  // The conflicted generated file's base side first (a commit GitHub makes), then GitHub's update-branch bound to that commit.
-  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^^1^"), c1);
-  assert.deepEqual(updates, [{ expected_head_sha: sh(origin, "rev-parse", "refs/heads/contrib^^1") }], "GitHub's update-branch, bound to the head it wrote");
-  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^^2"), main);
+  // One merge commit of the head and main's tip: the regenerated file, and main's own change beside it.
+  assert.equal(sh(origin, "rev-list", "--parents", "-n", "1", "refs/heads/contrib").split(" ").slice(1).join(" "), `${c1} ${main}`);
   assert.equal(sh(origin, "show", "refs/heads/contrib:gen.txt"), "regenerated");
-  assert.equal(sh(origin, "log", "-1", "--format=%cn", "refs/heads/contrib"), "GitHub", "a commit GitHub made and signs");
+  assert.equal(sh(origin, "show", "refs/heads/contrib:m.txt"), "m");
+  assert.equal(sh(origin, "log", "-1", "--format=%s%n%cn", "refs/heads/contrib"), "Regenerate the generated files after merging main\nGitHub", "a commit GitHub made and signs");
 
   // Conflicts no generator rewrites (main moved on again): the outcome lists them and the branch stays.
   pr.head = sh(origin, "rev-parse", "refs/heads/contrib");
@@ -902,14 +923,16 @@ test("a fork that allows maintainer edits: the fix and the repair are pushed to 
   assert.equal(sh(fork, "show", "refs/heads/contrib:b.txt"), "b", "the contributor's own file stays");
 });
 
-test("ship's repair over a path that is a file at the head and a directory in the base lands GitHub's merge with the directory", async (t) => {
-  const { origin, c1, main, run, signed } = await setup(t, { toolsDir: true, baseAhead: true });
+test("ship's repair over a path that is a file at the head and a directory in the base lands the merge with the directory", async (t) => {
+  const { origin, c1, main, run, calls } = await setup(t, { toolsDir: true, baseAhead: true, appOps: ["pr", "push"] });
   assert.equal(sh(origin, "cat-file", "-t", "refs/heads/contrib:tools"), "blob", "the head holds `tools` as a file");
   const r = await run("k-00000000000000a1", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt"] } });
   assert.equal(r.ok, true, r.text);
-  assert.deepEqual(signed.at(-1).fileChanges.additions.map((f) => f.path), ["gen.txt"], "only the kept file is written on top of GitHub's merge");
-  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^^1^"), c1);
-  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^^2"), main);
+  // Only the kept file's content goes up; the base's own entries are named by the objects GitHub holds.
+  const entries = calls.filter((c) => c.method === "POST" && c.path === `/repos/${REPO}/git/trees`).flatMap((c) => c.body.tree);
+  assert.deepEqual(entries.filter((e) => e.content !== undefined).map((e) => e.path), ["gen.txt"]);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^1"), c1);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^2"), main);
   assert.equal(sh(origin, "cat-file", "-t", "refs/heads/contrib:tools/run"), "blob", "`tools` is the directory main made it");
 });
 
@@ -919,11 +942,11 @@ test("ship's repair over a path that is a file at the head and a directory in th
 
 
 test("ship's repair GitHub's rules refuse is ship-refused with GitHub's words, and nothing is written", async (t) => {
-  const { origin, c1, run, refuseRef } = await setup(t, { baseAhead: true });
+  const { origin, c1, run, refuseRef } = await setup(t, { baseAhead: true, appOps: ["pr", "push"] });
   refuseRef(true);
   const r = await run("k-00000000000000a2", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt"] } });
   assert.equal(r.ok, false);
-  assert.match(r.text, /^ship-refused: the push to .* didn't go through .*: GitHub refused it: Repository rule violations found.*\. Nothing was pushed; ship holds the PR/, r.text);
+  assert.match(r.text, /^ship-refused: the push to .* didn't go through .*: GitHub refused moving the branch to the merge: Repository rule violations found.*\. Nothing was pushed; ship holds the PR/, r.text);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1);
 });
 
@@ -1244,8 +1267,8 @@ test("on a signature-required branch a publish is GitHub's own commit of the box
   assert.equal(sh(origin, "rev-parse", "refs/heads/main^"), main);
 });
 
-test("on a signature-required branch, a republish of a branch rebased onto the base's new tip has GitHub merge that tip in first, so the PR's diff stays the task's own", async (t) => {
-  const { ws, origin, F, main, run, updates } = await setup(t, { signedBranches: () => true });
+test("on a signature-required branch, a republish of a branch rebased onto the base's new tip is one signed merge of that tip, so the PR's diff stays the task's own", async (t) => {
+  const { ws, origin, F, main, run } = await setup(t, { signedBranches: () => true, appOps: ["pr", "push"] });
   // The base moves on after the task published `lease` at F (PR #8), and the box rebases its branch onto the new tip.
   sh(ws, "checkout", "--quiet", "-b", "moved", main);
   writeFileSync(join(ws, "m.txt"), "m\n");
@@ -1263,7 +1286,7 @@ test("on a signature-required branch, a republish of a branch rebased onto the b
   const P = sh(origin, "rev-parse", "refs/heads/lease");
   assert.equal(sh(origin, "rev-parse", `${P}^{tree}`), sh(ws, "rev-parse", `${R}^{tree}`), "the box commit's tree");
   assert.equal(sh(origin, "merge-base", P, "main"), M, "the PR's diff is read from the new tip: none of the base's changes in it");
-  assert.equal(updates.length, 1, "GitHub's own merge of the tip");
+  assert.equal(sh(origin, "rev-list", "--parents", "-n", "1", P), `${P} ${F} ${M}`, "one merge of the published head and the tip");
   assert.match(r.text, new RegExp(`pull/8 at \`${P}\``), "the outcome names GitHub's head");
 });
 
@@ -1354,7 +1377,7 @@ test("a retitle outside the fleet's own repos is refused when the title names ou
 
 test("where the App is installed with every permission each write goes as the App (a git push, a signed commit, a PR, a merge); ship's approve skips a PR the App opened", async (t) => {
   const tokens = [];
-  const { ws, origin, H, c1, pr, run, calls } = await setup(t, { appOps: ["push", "pr", "merge", "issue", "update_branch", "dequeue"], appTokens: tokens, signedBranches: (_slug, branch) => branch === "signed" });
+  const { ws, origin, H, c1, pr, run, calls } = await setup(t, { appOps: ["push", "pr", "merge", "issue", "dequeue"], appTokens: tokens, signedBranches: (_slug, branch) => branch === "signed" });
   // A git push and the PR it opens: the push's token and the REST write are the App's.
   sh(ws, "checkout", "--quiet", "-b", "fresh", H);
   const opened = await run("k-0000000000000a01", "github.pr", { workspace: "TASK-1", only: [{ repo: REPO, branch: "fresh", sha: H }], text: { title: "fix: a thing", body: "Why." } });

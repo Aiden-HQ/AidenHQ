@@ -98,7 +98,7 @@ function blocksOf(p: TasksProps, open: Set<string>): Block[] {
 const clock = (iso: string) => new Date(iso).toLocaleTimeString(undefined, clockOpts());
 
 /** The one time column of a row: how long ago for New and delegated work, a clock time for today's activity, else how long ago. */
-function timeOf(it: Item, board: Board): string {
+function timeOf(it: Item): string {
   const c = it.card as WorkCard;
   if (!it.mine) return it.group === "done" && c.closedAt ? (new Date(c.closedAt).toDateString() === new Date().toDateString() ? clock(c.closedAt) : when(c.closedAt)) : agoLabel(c.activityAt);
   if (it.group === "new") return ago(c.createdAt);
@@ -225,7 +225,7 @@ export function TasksList(p: TasksProps) {
           <span className={`tk-ctx${wait || it.group === "waiting" ? " warn" : ""}`}>{ctx}</span>
           <span className="tk-chip">{board.projects?.find((x) => x.id === c.projectId) && <ProjectChip name={board.projects.find((x) => x.id === c.projectId)!.name} />}</span>
           <span className="tk-by">{agent && <><Monogram name={agent.name} size={18} /><span className="tk-byn">{shortName(agent)}</span></>}</span>
-          <span className="tk-when">{timeOf(it, board)}</span>
+          <span className="tk-when">{timeOf(it)}</span>
         </>
       ),
       actions: acts || undefined,

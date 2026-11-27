@@ -668,7 +668,7 @@ const OPEN_COMMENTS = 2;
 
 type Entry = { at: string } & ({ comment: CommentView } | { milestone: Milestone });
 
-function Thread({ issue, board, agent, prefix, title = "Activity" }: { issue: IssueView; board: Board; agent?: Assignee; prefix: string; title?: string }) {
+function Thread({ issue, board, prefix, title = "Activity" }: { issue: IssueView; board: Board; agent?: Assignee; prefix: string; title?: string }) {
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   // Comments and the task's recorded milestones, oldest first; only comments fold (a milestone is already one line).
   const entries: Entry[] = [...issue.comments.map((comment) => ({ at: comment.createdAt, comment })), ...issue.milestones.map((milestone) => ({ at: milestone.at, milestone }))].sort((a, b) => a.at.localeCompare(b.at));

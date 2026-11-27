@@ -25,6 +25,8 @@ export const READ = {
   diskBoot: ["df", "-Pk", "/boot"],
   bootId: ["cat", "/proc/sys/kernel/random/boot_id"],
   aptConfig: ["apt-config", "dump"],
+  // The ESM-apps packages the suite test cannot see (§5); not on every host, so a missing tool is simply no answer.
+  securityStatus: ["ubuntu-security-status", "--format", "json"],
 } as const;
 
 /** `df -Pk / /boot` as free space per mount (POSIX output: `Filesystem 1024-blocks Used Available Capacity Mounted on`). */
@@ -52,7 +54,12 @@ const FAILED = "failed";
 /** A failure's row state, from the transport's own words (the reason strings ssh.ts produces, never a shell's output). */
 export function stateOfError(e: unknown): { state: string; detail: string } {
   const name = (e as { name?: string })?.name;
-  if (name === "HostKeyChanged") return { state: "host-key-changed", detail: String((e as Error).message ?? e).slice(0, 300) };
+  if (name === "HostKeyChanged") {
+    // The presented key is carried as a field, not left to a regex over a truncated message: it is what §10's re-pin names.
+    const seen = (e as { seen?: string }).seen;
+    const detail = seen ? `the host presented ${seen}: nothing ran` : String((e as Error).message ?? e).slice(0, 300);
+    return { state: "host-key-changed", detail };
+  }
   const msg = String((e as Error)?.message ?? e);
   if (/login refused/i.test(msg)) return { state: "login-refused", detail: msg.slice(0, 300) };
   if (/no-passwordless-sudo/i.test(msg)) return { state: "no-passwordless-sudo", detail: msg.slice(0, 300) };
@@ -90,7 +97,7 @@ export async function readHost(c: Connection, pin?: { fingerprint: string; first
     const aptConfig = await c.exec([...READ.aptConfig], TIMEOUTS.read);
     const ua = await c.probe(["systemctl", "is-enabled", "unattended-upgrades"]);
     const uaOn = unattendedUpgradesOn(parseAptConfig(aptConfig.stdout), ua.stdout);
-    const securityStatus = await c.probe(["ubuntu-security-status", "--format", "json"]);
+    const securityStatus = await c.probe([...READ.securityStatus]);
     const disk = { root_free_gb: parseDf(dfRoot.stdout).root_free_gb, boot_free_gb: parseDf(dfBoot.stdout).boot_free_gb };
     const r = readoutFromChecked({
       os: os.stdout,
@@ -136,10 +143,21 @@ function readoutFromChecked(i: {
   return { ok: true, readout: r };
 }
 
+/** The fingerprint a failed read saw, when the failure was the host presenting a different key (§10): the page offers a re-pin
+ *  only with a key the owner was actually shown, and never from an ssh message's text. */
+export function fingerprintOf(checked: { state: string; detail: string }): string | null {
+  if (checked.state !== "host-key-changed") return null;
+  const m = /presented (SHA256:[A-Za-z0-9+/]{43})/.exec(checked.detail);
+  return m ? m[1]! : null;
+}
+
 /** One machine's row, ready for the page's store and the warehouse: counts, disk and times, never a package list. */
 export function rowOf(machine: Machine, checked: Checked, at: string): StatusRow {
   if (!checked.ok) {
-    return { name: machine.name, distro: null, state: checked.state, pending: null, security: null, security_known: null, reboot_needed: null, disk: null, updated_at: at };
+    // A changed key's row keeps the fingerprint the host presented, which is what the page offers to re-pin (§10): without it the
+    // recovery the owner is shown has nothing safe to name.
+    const seen = fingerprintOf(checked);
+    return { name: machine.name, distro: null, state: checked.state, pending: null, security: null, security_known: null, reboot_needed: null, disk: null, ...(seen ? { fingerprint: seen } : {}), updated_at: at };
   }
   const r = checked.readout;
   return {

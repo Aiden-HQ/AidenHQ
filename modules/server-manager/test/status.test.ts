@@ -12,7 +12,7 @@ import { configTools } from "../service/src/tools.ts";
 import { createMcp } from "../service/src/mcp.ts";
 import { parseOsRelease, readoutFrom } from "../service/src/apt.ts";
 import type { Machine } from "../service/src/config.ts";
-import type { Keys } from "../service/src/ssh.ts";
+import { HostKeyChanged, type Keys } from "../service/src/ssh.ts";
 
 const dir = fileURLToPath(new URL("./fixtures/", import.meta.url));
 // As in ssh.test.ts: the banner is assembled at run time so no literal here is a key-shaped string.
@@ -54,6 +54,17 @@ test("a successful check's row carries counts, disk and the time, and no package
   assert.equal(pub.root_free_gb, 18.4);
   assert.match(String(pub.security_note), /backported/);
   for (const secret of ["vm-one-key", "PRIVATE KEY", "libc6"]) assert.ok(!JSON.stringify(pub).includes(secret), `the published row never carries ${secret}`);
+});
+
+test("§10 a changed host key's row keeps the fingerprint the host presented, which is what the page offers to re-pin", () => {
+  const seen = "SHA256:" + "B".repeat(43);
+  const row = rowOf(machine, { ok: false, state: "host-key-changed", detail: `the host key of vm-one changed since it was pinned (pinned SHA256:${"A".repeat(43)}, host presented ${seen}): nothing ran` }, "2026-11-27T10:00:00Z");
+  assert.equal(row.fingerprint, seen, "the row names the presented key, not the pin");
+  // The published warehouse row still carries no fingerprint (it is not one of its columns): the page's store is the only holder.
+  assert.ok(!JSON.stringify(publishRow(machine, { ok: false, state: "host-key-changed", detail: "host presented " + seen }, "2026-11-27T10:00:00Z")).includes(seen));
+  // The real error carries the key as a field, so a long machine name in the message can never truncate it away.
+  const err = new HostKeyChanged("a".repeat(250), "SHA256:" + "A".repeat(43), seen);
+  assert.equal(rowOf(machine, { ...stateOfError(err) }, "2026-11-27T10:00:00Z").fingerprint, seen);
 });
 
 test("a failure's row keeps the state and says nothing else; its detail never reaches the shared row", () => {

@@ -7,6 +7,7 @@
 // Origin is `Ubuntu` or `Debian` and never ends that way, so Origin is not the test. Cross-checked with
 // `ubuntu-security-status --format json` where the host has it, which also reports ESM-apps packages the suite test can't see.
 // Honest limit, said in every report: a fix backported into a normal archive is not flagged as security.
+import { createHash } from "node:crypto";
 
 /** The families this build speaks. Anything else is `unsupported`, with no probing and no best-effort. */
 export type Family = "ubuntu-lts" | "debian-stable";
@@ -244,4 +245,176 @@ export function readoutFrom(i: { os: OsRelease; policy: string; simulated?: stri
     unattended_upgrades: i.unattendedUpgrades,
     security_note: "a fix backported into a normal archive is not counted as a security update",
   };
+}
+
+// ---- The write half (§5 `plan` and `install`, §11's rules): an exact `name=version` list, its hash, the simulation that proves
+// ---- the list is the whole change, and the safety reads around it. Every value here comes from a read of the host; nothing a
+// ---- request wrote reaches an argument list.
+
+/** One package to install: the name apt knows and the exact candidate version the last read showed. */
+export interface Planned {
+  name: string;
+  version: string;
+}
+
+/** A `name=version` word as §11 builds it: a package name apt accepts, `=`, and a version apt accepts. */
+export const PACKAGE_WORD = /^[a-z0-9][a-z0-9+.-]{0,199}=[A-Za-z0-9.+~:-]{1,200}$/;
+
+export const word = (p: Planned) => `${p.name}=${p.version}`;
+
+/** The record's package set: `security` is the subset whose candidate is from a security suite; `full` is every upgradable one. */
+export function exactList(upgradable: Upgradable[], security: string[], mode: "security" | "full"): Planned[] {
+  const pick = mode === "security" ? new Set(security) : undefined;
+  return upgradable
+    .filter((p) => !pick || pick.has(p.name))
+    .map((p) => ({ name: p.name, version: p.version }))
+    .sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));
+}
+
+/** The hash a record carries: over the whole sorted `name=version` list, so it changes when anything in the set does. */
+export function listHash(list: string[]): string {
+  return createHash("sha256").update([...list].sort().join("\n")).digest("hex");
+}
+
+/** The install (§11.1-2): `--only-upgrade`, never `upgrade` or `dist-upgrade`, non-interactive, the lock waited out. */
+export function installArgv(list: string[], simulate = false): string[] {
+  return [
+    "apt-get", ...(simulate ? ["-s"] : []), "install", "--only-upgrade", "-y",
+    "-o", "DPkg::Lock::Timeout=600",
+    "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold",
+    ...list,
+  ];
+}
+
+/**
+ * The two lock guards §11.9 asks for, together: apt waits for the dpkg lock up to its own timeout, and `flock` holds the same
+ * lock's file for the whole call, so a concurrent unattended-upgrades run is waited out rather than raced. `flock -w 600` is the
+ * same bound as the timeout: past it the run fails as a lock timeout, never hangs.
+ */
+export const LOCKED = ["flock", "-w", "600", "-x", "/var/lib/dpkg/lock-frontend"];
+
+/**
+ * The words a host runs for an install: `sudo -n` (never a prompt: a host without passwordless sudo fails as
+ * no-passwordless-sudo, §4), `flock` on the dpkg lock (§11.9), then the one non-interactive environment apt is given (§11.2). The
+ * core after them is `installArgv`'s; `sudo` precedes `flock` because the lock file is root's.
+ */
+export const installCommand = (list: string[], simulate = false) => ["sudo", "-n", ...LOCKED, "env", "DEBIAN_FRONTEND=noninteractive", ...installArgv(list, simulate)];
+
+/** `apt-get update`, the same two lock guards as the install so a concurrent unattended-upgrades run is waited out (§11.9). */
+export const UPDATE_ARGV = ["sudo", "-n", ...LOCKED, "apt-get", "update", "-o", "DPkg::Lock::Timeout=600"];
+
+/** The read a run re-derives the plan from: what apt says it would upgrade now, after the refresh. */
+export const SIMULATE_UPGRADE = ["apt-get", "-s", "upgrade", "-o", "DPkg::Lock::Timeout=600"];
+
+/** A simulation's one line of change: what apt said it would do, to which package. */
+export interface SimLine {
+  action: "install" | "upgrade" | "downgrade" | "remove";
+  name: string;
+  version?: string;
+}
+
+/**
+ * `apt-get -s install --only-upgrade …`. Two sources of truth, both read: the summary blocks (`The following NEW packages will be
+ * installed:`, `… will be REMOVED:`, `… will be DOWNGRADED:`, `… will be upgraded:`) and the per-package `Inst`/`Remv`/`Purg`
+ * lines. A package in the first three blocks, or an `Inst`/`Remv` outside the list, is a plan that is not what it claimed.
+ */
+export function parseSimulation(text: string): SimLine[] {
+  const out: SimLine[] = [];
+  // apt's headers put the adjective in different places (`The following NEW packages will be installed:`, `The following packages
+  // will be REMOVED:`), so the verb decides and the noun is free.
+  const block = /^The following (?:[A-Z]+ )?packages will be (installed|upgraded|removed|downgraded):/i;
+  const names = (s: string) => s.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+  let pending: SimLine["action"] | undefined;
+  for (const raw of text.split("\n")) {
+    const line = raw.trimEnd();
+    const head = block.exec(line);
+    if (head) {
+      const v = head[1]!.toLowerCase();
+      pending = v === "installed" ? "install" : v === "upgraded" ? "upgrade" : v === "removed" ? "remove" : v === "downgraded" ? "downgrade" : undefined;
+      for (const n of names(line.slice(head[0].length))) out.push({ action: pending!, name: n });
+      if (line.trim().endsWith(":")) continue;
+      if (line.trim().endsWith(".")) pending = undefined;
+      continue;
+    }
+    // A wrapped list line under a header: package names only, until a blank or a sentence.
+    if (pending && /^[a-z0-9][a-z0-9+.:-]*(\s+[a-z0-9][a-z0-9+.:-]*)*$/.test(line.trim())) {
+      for (const n of names(line)) out.push({ action: pending, name: n });
+      continue;
+    }
+    pending = undefined;
+    // `Inst name [old] (new suite [arch])` — the per-package line, and the only place the version is spelled.
+    const inst = /^Inst (\S+) \[[^\]]*\] \((\S+)/.exec(line.trim());
+    if (inst) { out.push({ action: "upgrade", name: inst[1]!, version: inst[2]!.replace(/,$/, "") }); continue; }
+    const instNew = /^Inst (\S+) \((\S+)/.exec(line.trim());
+    if (instNew) { out.push({ action: "install", name: instNew[1]!, version: instNew[2]!.replace(/,$/, "") }); continue; }
+    const rem = /^(?:Remv|Purg) (\S+)/.exec(line.trim());
+    if (rem) out.push({ action: "remove", name: rem[1]! });
+  }
+  return out;
+}
+
+/**
+ * What the simulation says is outside the approved list (§11.1): any install, removal or downgrade at all, and any upgrade whose
+ * package is not in the list or whose version is not the one the list names. Empty means the list is the whole change.
+ */
+export function simulationProblems(lines: SimLine[], list: string[]): string[] {
+  const want = new Map(list.map((w) => { const i = w.indexOf("="); return [w.slice(0, i), w.slice(i + 1)]; }));
+  const out = new Set<string>();
+  for (const l of lines) {
+    if (l.action === "install") out.add(`${l.name} would be installed, and it is not on the list`);
+    else if (l.action === "remove") out.add(`${l.name} would be removed`);
+    else if (l.action === "downgrade") out.add(`${l.name} would be downgraded`);
+    else if (!want.has(l.name)) out.add(`${l.name} would be upgraded, and it is not on the list`);
+    else if (l.version && want.get(l.name) !== l.version) out.add(`${l.name} would go to ${l.version}, not ${want.get(l.name)}`);
+  }
+  return [...out].sort();
+}
+
+/** `Need to get 12.3 MB of archives.` as bytes, or `null` when the text carries no estimate (§11.3: unavailable ≠ zero). */
+export function downloadEstimate(text: string): number | null {
+  // apt groups thousands with a comma (`Need to get 900,000 kB of archives.`), so a comma is part of the number, not a break.
+  const m = /Need to get ([0-9][0-9,.]*)\s*(B|kB|MB|GB)/i.exec(text);
+  if (!m) return null;
+  const n = Number(m[1]!.replace(/,/g, ""));
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n * ({ B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 } as Record<string, number>)[m[2]!.toUpperCase()]!);
+}
+
+/** The estimate as bytes, 0 when the text carries none (callers that only add it up). */
+export const parseDownloadBytes = (text: string): number => downloadEstimate(text) ?? 0;
+
+/** The space a run needs: the larger of 1 GB and twice the download estimate, in GB. */
+export const neededGb = (downloadBytes: number) => Math.max(1, (downloadBytes / 1024 ** 3) * 2);
+
+/**
+ * §11.3, both mounts: free space on `/` and on `/boot` must each be at least `needed`. A mount the host did not answer (`/boot`
+ * part of `/` on most cloud images) is not a refusal — there is no second filesystem to fill. Returns the numbers, so a refusal
+ * reports them.
+ */
+export function diskVerdict(disk: { root_free_gb: number | null; boot_free_gb: number | null }, downloadBytes: number): { ok: true; needed: number } | { ok: false; needed: number; reason: string } {
+  const needed = neededGb(downloadBytes);
+  const low = (["root", "boot"] as const).filter((k) => { const v = disk[`${k}_free_gb`]; return v != null && v < needed; });
+  if (!low.length) return { ok: true, needed };
+  const said = low.map((k) => `${disk[`${k}_free_gb`]} GB free on ${k === "root" ? "/" : "/boot"}`).join(", ");
+  return { ok: false, needed, reason: `not enough space: ${said}, and this run needs ${Math.round(needed * 100) / 100} GB (the larger of 1 GB and twice the ${Math.round((downloadBytes / 1024 ** 2) * 10) / 10} MB download)` };
+}
+
+/**
+ * §11.6, the release guard: a `libc6` major.minor change or a `base-files` leading version change is a codename jump, not a patch,
+ * so the run stops and reports rather than install it. `installed` is what the policy table says is installed now.
+ */
+export function releaseJumps(list: Planned[], installed: Map<string, string | undefined>): string[] {
+  const out: string[] = [];
+  for (const p of list) {
+    const was = installed.get(p.name);
+    if (!was) continue;
+    if (p.name === "libc6") {
+      const a = /^(\d+)\.(\d+)/.exec(was), b = /^(\d+)\.(\d+)/.exec(p.version);
+      if (a && b && (a[1] !== b[1] || a[2] !== b[2])) out.push(`libc6 ${was} → ${p.version}`);
+    } else if (p.name === "base-files") {
+      const a = /^(\d+)/.exec(was), b = /^(\d+)/.exec(p.version);
+      if (a && b && a[1] !== b[1]) out.push(`base-files ${was} → ${p.version}`);
+    }
+  }
+  return out;
 }

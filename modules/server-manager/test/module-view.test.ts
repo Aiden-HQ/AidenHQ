@@ -87,10 +87,40 @@ test("each machine's state line carries disk on / and /boot beside pending, secu
   assert.match(html, /st\.disk\.boot_free_gb < 1 \? "needs"/);
 });
 
-test("check now is the read path's one action: it calls server_manager_check and files nothing", () => {
+test("check now is a read: it calls server_manager_check and files nothing", () => {
   assert.ok(html.includes('tool("server_manager_check"'), "the page calls the check");
   assert.match(html, /"Check now"/);
   assert.match(html, /checking\.has\(name\)/, "a check in flight is not started twice");
-  // The page never asks for a record: no other write tool is called from this slice's buttons.
-  for (const t of ["server_manager_patch", "server_manager_reboot", "server_manager_host_key_reset"]) assert.ok(!html.includes(`tool("${t}"`), `the page does not call ${t} yet`);
+  // The check is the read tool: it carries no record, so its call is the read name and nothing else.
+  assert.ok(!/server_manager_check", \{[^}]*record/.test(html), "the check call carries no record");
+});
+
+test("the page's write actions file the typed kinds, never a command: patch, reboot, and a re-pin only on a changed key", () => {
+  // §9: install security now and full update now file the same server-manager.patch a schedule would, with mode security or full;
+  // the reboot files server-manager.reboot; and the re-pin is offered only while the machine is host-key-changed, with the
+  // fingerprint the page was shown (§10), so a stale click cannot pin a third key.
+  assert.ok(html.includes('tool("server_manager_patch"'), "the page files a patch");
+  assert.ok(html.includes('tool("server_manager_reboot"'), "the page files a reboot");
+  assert.ok(html.includes('tool("server_manager_host_key_reset"'), "the page offers a re-pin");
+  for (const label of ["Install security now", "Full update now", "Re-pin the key shown", "Reboot"]) assert.ok(html.includes(`"${label}"`), `the page has a ${label} button`);
+  assert.match(html, /patchNow\(name, "security"\)/);
+  assert.match(html, /patchNow\(name, "full"\)/);
+  assert.match(html, /st\.state === "host-key-changed" && st\.fingerprint/, "the re-pin is offered only with a fingerprint the page was shown");
+  assert.match(html, /repinNow\(name, st\.fingerprint\)/);
+  // §10: the fingerprint is on the card, in the state line, before the button — on a reload the earlier check's message is gone, so a
+  // click that accepted an unseen key would be the whole defect.
+  assert.match(html, /presented \$\{st\.fingerprint\}/, "the state line names the fingerprint the host presented");
+  // The fingerprint renders in the card's state line, which the card draws before its action buttons: the owner reads the key
+  // beside the button, never after accepting it.
+  const stateLine = html.indexOf("const stTags = st ?");
+  const actions = html.indexOf("h(\"div\", { className: \"acts\" }");
+  assert.ok(stateLine > 0 && actions > stateLine, "the state line is built and drawn before the actions");
+  assert.ok(html.slice(stateLine, actions).includes("presented ${st.fingerprint}"), "the fingerprint is in that state line");
+  // The action is a `const` read by `acts`: declared after it, the first collapsed machine would throw and blank the page.
+  assert.ok(html.indexOf("const repinAct") < html.indexOf("...(repinAct ? [repinAct] : [])"), "the re-pin is declared before the list that reads it");
+  // Nothing the page sends is a shell word: the only arguments are a machine name, a mode and a fingerprint.
+  assert.ok(!/command|argv|shell/i.test(html), "the page sends no command, argv or shell word");
+  // The buttons read the machine's last readout, so it is declared before the closure that draws them: a `const` used above its
+  // own declaration throws on the first render, and the page would be blank for every machine.
+  assert.ok(html.indexOf("const st = stateOf[name];") < html.indexOf("const writeActs = ()"), "the readout is declared before the actions that read it");
 });

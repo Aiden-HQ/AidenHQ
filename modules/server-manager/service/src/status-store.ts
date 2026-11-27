@@ -16,6 +16,8 @@ export interface StatusRow {
   security_known: boolean | null;
   reboot_needed: boolean | null;
   disk: { root_free_gb: number | null; boot_free_gb: number | null } | null;
+  /** The host key the last read saw, when it changed (§10): what the page offers to re-pin, never an address or a key. */
+  fingerprint?: string | null;
   updated_at: string | null;
 }
 
