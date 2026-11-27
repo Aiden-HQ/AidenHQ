@@ -749,6 +749,6 @@ test("the timer's builder prune caps the cache at the shared ceiling in both fla
     const r = d.run("ops/prune-docker-builder.sh", { PATH: "/usr/bin:/bin" }, flag);
     assert.equal(r.status, 0, r.out);
   }
-  assert.match(d.calls(), /^builder prune -f --max-used-space 40GB$/m);
-  assert.match(d.calls(), /^builder prune -f --keep-storage 40GB$/m);
+  assert.match(d.calls(), /^builder prune -af --max-used-space 40GB$/m);
+  assert.match(d.calls(), /^builder prune -af --keep-storage 40GB$/m);
 });
