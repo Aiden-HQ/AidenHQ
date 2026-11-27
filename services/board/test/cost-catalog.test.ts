@@ -3,8 +3,7 @@
 import { describe, expect, it } from "vitest";
 import http from "node:http";
 import { ledgerSummary, ledgerRange } from "../src/cost-ledger.js";
-import { modelCatalogCached } from "../src/costs.js";
-import { Store } from "../src/store.js";
+import { modelCatalogCached, type CostReport } from "../src/costs.js";
 
 const DELAY_MS = 400;
 const row = { id: "openai/gpt-sol", name: "GPT Sol", provider: "openai", created: 0, context: 0, output: 0, in: 2, cached_in: 0.2, out: 1, tools: false, reasoning: false };
@@ -29,10 +28,12 @@ describe("the catalog behind the cache savings", () => {
   });
 
   it("the ledger's savings are null without a catalog and count cached tokens at list prices with one", async () => {
-    const store = new Store(":memory:");
     const now = Date.now();
-    store.addUsage({ key: "k", at: new Date(now - 3_600_000).toISOString(), agentId: "ag1", component: "Chat", model: "openrouter/openai/gpt-sol", input: 1_000_000, cached: 1_000_000, output: 0, costUsd: 1, kind: "agent", status: "ok" });
-    const deps = { store, agents: async () => [], key: async () => "no key on this board", spend: async () => null };
+    // The kernel's summary report with one call in the range.
+    const group = { model: "openrouter/openai/gpt-sol", lane: "agent", agentId: "ag1", usd: 1, calls: 1, input: 1_000_000, cached: 1_000_000, output: 0, errors: 0, interrupted: 0, msSum: 0, msN: 0 };
+    const summary = { earliest: null, groups: [group], series: [], windows: Array.from({ length: 9 }, () => ({ usd: 0, calls: 0 })), modelOrder: [], tasks: { count: 0, usd: 0, top: [] }, failed: [], loops: [] };
+    const report = (async () => summary) as unknown as CostReport;
+    const deps = { report, agents: async () => [], key: async () => "no key on this board", spend: async () => null };
     const range = ledgerRange(new URLSearchParams(), now);
     const without = await ledgerSummary({ ...deps, catalog: () => null }, range, now);
     expect(without.insights.cache.cached).toBe(1_000_000);

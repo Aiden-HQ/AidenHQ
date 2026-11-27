@@ -275,7 +275,7 @@ services:
       - clickhouse_auth_token # ClickHouse sign-in state and sign-in only; not the MCP token
       - computer_progress_token # the launcher's /progress only: an agent computer's session log for the live view
       - computer_session_key # the launcher's /session/<lease>/… only: a session's terminal and web view, for the task's creator
-      - gateway_board_key # the board's key on the kernel: Paperclip (/v1/cp/read, /v1/cp/owner: it holds no Paperclip key), the model gateway's /usage and caps, record lists, and its sign-in (/v1/auth)
+      - gateway_board_key # the board's key on the kernel: Paperclip (/v1/cp/read, /v1/cp/owner: it holds no Paperclip key), the model gateway's cost reports (/v1/costs) and caps, record lists, and its sign-in (/v1/auth)
     ports:
       # LAN listener; loopback-only unless .env sets BOARD_LAN_BIND=0.0.0.0 (e.g. with BOARD_LAN_PORT=80).
       - "${BOARD_LAN_BIND:-127.0.0.1}:${BOARD_LAN_PORT:-3121}:3121"

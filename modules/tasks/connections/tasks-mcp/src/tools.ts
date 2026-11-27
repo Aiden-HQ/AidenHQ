@@ -2071,7 +2071,7 @@ Object.assign(TOOLS, {
     run: ({ window }: Args = {}) => fleet("status", window ? { window } : {}),
   },
   fleet_costs: {
-    description: "Read-only token usage per agent per day (UTC) from the board's usage ledger (the model gateway's calls): runs, input/cached/output tokens, costCents. `runs` counts gateway model calls, not agent jobs (one job can make several). costCents sums only the calls OpenRouter priced, rounded to the cent: calls it gave no cost add nothing, and 0 does not mean free. Rely on tokens and runs for volume.",
+    description: "Read-only token usage per agent per day (UTC) from the model gateway's ledger (its calls, as the kernel's cost reports sum them): runs, input/cached/output tokens, costCents. `runs` counts gateway model calls, not agent jobs (one job can make several). costCents sums only the calls OpenRouter priced, rounded to the cent: calls it gave no cost add nothing, and 0 does not mean free. Rely on tokens and runs for volume.",
     inputSchema: { type: "object", properties: { days: { type: "number", description: "default 7, max 31" } }, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
     run: ({ days }: Args) => fleet("costs", days === undefined ? {} : { days: Number(days) }),

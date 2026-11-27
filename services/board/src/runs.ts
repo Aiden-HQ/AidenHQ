@@ -1,12 +1,12 @@
 // The run page (GET /api/runs/:id): one kernel job (every agent run is one) as a trace. Read-only; joins
 //   - the kernel's job (GET /v1/work?job=, kernel/src/work.ts): state, times, why it ended, the engine's token count, its plan,
 //     steps and last words,
-//   - the usage ledger rows that name the job as their run (the model gateway stamps a job's calls with its id),
+//   - the model gateway's ledger rows that name the job as their run (it stamps a job's calls with its id; the kernel's calls report),
 //   - the rev (a ledger row's, else config/grants/revs.jsonl: the last line at or before the start) and the agent's run cap.
 // Everything the agent produced (steps, words) is untrusted: clipped here, shown as plain text.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { UsageRecord } from "./store.js";
+import type { CostReport } from "./costs.js";
 import type { AgentJob } from "./timeline.js";
 
 /** A kernel job as GET /v1/work?job= gives it (a task's jobs carry the first eight fields). */
@@ -167,7 +167,26 @@ export interface RunView {
   timeline: TraceEvent[];
   ledger: { rows: LedgerRow[]; usd: number | null };
 }
-export type LedgerRow = Pick<UsageRecord, "at" | "kind" | "model" | "input" | "cached" | "output" | "costUsd" | "ms" | "status" | "component"> & { runKey: string | null };
+/** One model call of a run, as the kernel's calls report gives it (an unsettled call's amount is a hold: no cost). */
+export interface RunCall {
+  key: string;
+  at: string;
+  component: string;
+  model: string;
+  input: number;
+  cached: number;
+  output: number;
+  costUsd: number | null;
+  agentId: string | null;
+  runKey: string | null;
+  runId: string | null;
+  issueId: string | null;
+  rev: string | null;
+  kind: string | null;
+  ms: number | null;
+  status: string | null;
+}
+export type LedgerRow = Pick<RunCall, "at" | "kind" | "model" | "input" | "cached" | "output" | "costUsd" | "ms" | "status" | "component"> & { runKey: string | null };
 
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s);
 
@@ -195,7 +214,7 @@ function findSha(revsJsonl: string, agentId: string, rev: string, field: "produc
   return sha;
 }
 
-export function buildRun(job: KernelJob, rows: UsageRecord[], revsJsonl: string): RunView {
+export function buildRun(job: KernelJob, rows: RunCall[], revsJsonl: string): RunView {
   const withRev = rows.find((r) => r.rev);
   const line = withRev ? null : revAt(revsJsonl, job.agent, job.started_at);
   const priced = rows.filter((r) => r.costUsd != null);
@@ -230,7 +249,7 @@ export function buildRun(job: KernelJob, rows: UsageRecord[], revsJsonl: string)
 
 export interface RunsDeps {
   work: Pick<Work, "job">;
-  store: { usageOfRun(runId: string): UsageRecord[] };
+  report: CostReport;
   /** config/grants/grants.json: revs.jsonl sits beside it. */
   grantsFile?: string;
 }
@@ -248,6 +267,6 @@ export function makeRuns(d: RunsDeps) {
     const job = await d.work.job(id);
     if (!job) return null;
     const revs = read(d.grantsFile ? join(d.grantsFile, "..", "revs.jsonl") : undefined);
-    return buildRun(job, d.store.usageOfRun(job.id), revs);
+    return buildRun(job, await d.report<RunCall[]>("calls", { run: job.id }), revs);
   };
 }

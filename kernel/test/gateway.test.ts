@@ -73,7 +73,8 @@ test("gateway: attribution, billed cost, the task cap, the delegator told once, 
     const res = await fetch(front.url + path, { method: "POST", headers: { authorization: `Bearer ${cred}`, "content-type": "application/json" }, body: JSON.stringify({ model, models, stream: true, messages: [] }) });
     return { status: res.status, text: await res.text() };
   };
-  const usage = async (since = "") => (await (await fetch(`${front.url}/usage`, { method: "POST", headers: { authorization: "Bearer gw-board" }, body: JSON.stringify({ since }) })).json()).records;
+  // The ledger's settled and cut-off calls, oldest first (in-flight reservations aside).
+  const usage = async () => gw.db.prepare("SELECT key, at, agent_id AS agentId, component, model, input, cached, output, cost_usd AS costUsd, run_key AS runKey, run_id AS runId, issue_id AS issueId, rev, kind, ms, status FROM calls WHERE status != 'reserved' ORDER BY at, key").all();
 
   // A kernel job: billed, attributed to its agent, run (the job) and task, with the rev; the real key goes upstream, ZDR forced.
   const r1 = await call(jobToken("ag1", "run1"));
@@ -222,9 +223,10 @@ test("gateway: the install's day and month limits count every call, every caller
   assert.equal((await call(job())).status, 200);
   assert.equal((await call(reviewer())).status, 200);
   assert.deepEqual(await spend(), { day: "2026-11-18", month: "2026-11", install: { day: { spent: 0.06, cap: 0.05 }, month: { spent: 0.06, cap: 0.2 } }, agents: [{ agent_id: "ag1", spent: 0.03 }] });
-  // A kernel job's calls name the job as their run: the run page's join.
-  const [jobCall] = (await (await fetch(`${front.url}/usage`, { method: "POST", headers: { authorization: "Bearer gw-board" }, body: "{}" })).json()).records.filter((r) => r.agentId === "ag1");
-  assert.equal(jobCall.runId, "j-0123456789abcdef");
+  // A kernel job's calls name the job as their run: the run page's join (the calls report, the board's key only).
+  const runCalls = (key) => fetch(`${front.url}/v1/costs/calls`, { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ run: "j-0123456789abcdef" }) });
+  assert.equal((await runCalls("nope")).status, 401);
+  assert.deepEqual((await (await runCalls("gw-board")).json()).map((r) => [r.agentId, r.runId]), [["ag1", "j-0123456789abcdef"]]);
   assert.equal((await fetch(`${front.url}/v1/spend/summary`, { headers: { authorization: "Bearer nope" } })).status, 401);
   // The model picker's catalog: the list the gateway already holds, for the board's key only.
   assert.equal((await fetch(`${front.url}/v1/models/catalog`, { headers: { authorization: "Bearer nope" } })).status, 401);

@@ -724,7 +724,7 @@ if docker network inspect aidenhq-ci >/dev/null 2>&1 && docker image inspect aid
       if [ "$CI_ON" = true ]; then
         [ "$(code $gw/health)" = 200 ] || echo "the CI listener does not answer"
         [ "$(code -X POST -H "Authorization: Bearer xxxxxxxx" -d "{}" $gw/api/v1/chat/completions)" = 401 ] || echo "the CI listener took another credential"
-        [ "$(code -X POST -d "{}" $gw/usage)" = 404 ] || echo "the CI listener serves /usage"
+        [ "$(code -X POST -d "{}" $gw/v1/costs/summary)" = 404 ] || echo "the CI listener serves the cost reports"
         [ "$(code -X POST -H "Authorization: Bearer x.y.z" $gw/ci/token)" = 401 ] || echo "the CI listener issued a token for a forged OIDC token"
       fi
       for t in $TARGETS; do (timeout 2 bash -c "exec 3<>/dev/tcp/${t%:*}/${t##*:}" 2>/dev/null && echo "reaches $t") & done

@@ -9,7 +9,6 @@ import { ownerAlert, startNotify } from "./notify.js";
 import { createGrading } from "./grading.js";
 import { createViewHost, pagePoints, readPoints } from "./module-views.js";
 import { loadConfig } from "./config.js";
-import { pullUsage } from "./costs.js";
 import { McpAuth } from "./mcpauth.js";
 import { GoogleAuth } from "./google.js";
 import { Paperclip } from "./paperclip.js";
@@ -72,9 +71,6 @@ setInterval(appWatch, 2 * 60_000).unref();
 setInterval(() => void reapRecurring(paperclip, store, log).catch((err) => log.warn({ err: String(err).slice(0, 300) }, "recurring check failed")), 60_000).unref();
 // Schedules from before routines become routines once (recurring.ts); until it succeeds the old rows stay.
 void convertLegacyRecurring(paperclip, store, cfg.timezone, log).catch((err) => log.warn({ err: String(err).slice(0, 300) }, "recurring tasks not converted yet"));
-// The Costs tab: model calls with what OpenRouter billed for each, from the model gateway (kernel/src/gateway), agent
-// computers' included (the launcher forwards their calls there).
-pullUsage(cfg.gateway, store, log, 60_000, "gateway_usage_pulled_at");
 
 const google = cfg.google && new GoogleAuth(cfg.google.url, cfg.google.token, log);
 // The modules' sign-ins through their MCP proxies (board.signins).
