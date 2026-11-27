@@ -25,7 +25,7 @@ import { AddAgentSchema, BadRequest, BRIEF_LABEL, CreateSchema, HandOverSchema, 
 import { FOR_OTHERS, RELAY_MARKER, closedIssue, crewOf, deliveredFrom, deliveredText, foldedChildren, fromMarker, handOverText, mentionedAgents, withHandle, partsToClose, summaryOf, waitsOnItsOwn, type DeliveredFrom } from "./crew.js";
 import { AccountError, forwardedProto, type AccountSession, type KernelAuth } from "./kernel-auth.js";
 import { INLINE_TYPES, MAX_UPLOAD_BODY, UploadSchema, decode, fileType, fileViews, isPdf, pdfText, safeName } from "./files.js";
-import { ControlSchema, CostsSchema, RelaySchema, OpenChatSchema, Refused, holdsRole, agentIdByKey, requireAgentCaller, setRoutinePaused, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
+import { ControlSchema, CostsSchema, RelaySchema, OpenChatSchema, Refused, holdsRole, agentIdByKey, requireAgentCaller, setRoutinePaused, appsApi, assertMeantTask, boundedFleetStatus, fleetControl, fleetCosts, fleetStatus, recordedOpening, CHAT_OPENING, relayableWords, requireAgent, requireFleetRole } from "./fleet.js";
 import { metricsText } from "./monitoring.js";
 import { isLive, kernelRecords, shownWait, type Approval, type Records, type SettingsCredential } from "./records.js";
 import { gatherFacts, scorecard, statusSummary } from "./fleet-stats.js";
@@ -68,7 +68,6 @@ import { AsideSchema, askGateway, asideMessages, lineageTotal, modelOf, stillSet
 
 /** One module sign-in (board.signins), with its proxy client. */
 /** The board's record of a chat's opening message (store meta key prefix + the chat's id). */
-const CHAT_OPENING = "chat-opening:";
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 export interface SignIn { id: string; label: string; connect: string; callback: string; mode?: "redirect" | "device"; httpsOnly?: boolean; missing: string; stopped: string; fields: SetupField[]; auth: McpAuth }
 
@@ -630,7 +629,12 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   const viewer = () => perRequest.getStore()?.session?.accountId ?? "operator";
   /** The big pages' last good responses (swr.ts), per account; anything the board or Paperclip changes makes the next read look again. */
   const swr = new Swr();
-  store.events.listen((name) => name !== "progress" && swr.touch());
+  store.events.listen((name) => {
+    if (name === "progress") return;
+    // The board's own placement changed (possibly through another app on this store): a read under way would still show the old one.
+    if (name === "board") swr.forget("board:");
+    swr.touch();
+  });
   /** Runs a route; a write (or anything that failed halfway) makes the pages read again, whichever way the route was reached. */
   const handled = async (route: { handle: (m: RegExpMatchArray, body: unknown, url: URL, req: IncomingMessage) => Promise<unknown> }, method: string | undefined, m: RegExpMatchArray, body: unknown, url: URL, req: IncomingMessage) => {
     try {
@@ -990,15 +994,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     log.info({ issue: issue.identifier, agent: agent.name }, "chat started");
     return { identifier: issue.identifier, id: issue.id, message: `${issue.id}:opening` };
   }
-  /** A board chat's opening message, as the board recorded it when the owner started the chat: a comment of his, id = the chat's id. */
-  const openingOf = (chat: Issue, me: string): Comment | undefined => {
-    const raw = store.meta(`${CHAT_OPENING}${chat.id}`);
-    if (!raw) return undefined;
-    const { sha, length, createdAt } = JSON.parse(raw) as { sha: string; length: number; createdAt: string };
-    const description = String(chat.description ?? "");
-    if (sha256(description) !== sha) throw new Refused("refused: the chat's opening message was edited since the owner wrote it; ask the owner again");
-    return { id: chat.id, body: description.slice(0, length), authorType: "user", authorUserId: me, createdAt } as Comment;
-  };
+  const openingOf = (chat: Issue, me: string) => recordedOpening(store, chat, me);
   /** A message of the owner's on one of the chief of staff's open `chat` tasks: the chat's own id names its opening, any other id a comment on it. */
   async function chiefChatMessage(cosId: string, commentId: string, me: string): Promise<{ chat: Issue; comment: Comment }> {
     const chats = (await pc.openIssues()).filter((i) => i.assigneeAgentId === cosId && (i.labels ?? []).some((l) => l.name === "chat"));
@@ -1209,6 +1205,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const { issue } = await editableIssue(ref);
     const result = scheduleMove(store, issue, parse(ScheduleSchema, body), opts.timezone, by);
     log.info({ issue: issue.identifier, scheduled: result.scheduled, movedNow: result.movedNow }, "move scheduled");
+    store.events.emit("board");
+    store.events.emit("tasks", issue.id);
     return { identifier: issue.identifier, ...result };
   }
 
@@ -1230,6 +1228,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     if ((store.placements().get(issue.id)?.bucket ?? "triage") !== "triage" || store.schedules().has(issue.id)) throw new HttpError(409, `${issue.identifier} is already placed: the owner's move stands`);
     const result = scheduleMove(store, issue, input, opts.timezone, agent.name || "an agent");
     log.info({ issue: issue.identifier, placed: input.reason }, "task placed");
+    store.events.emit("board");
+    store.events.emit("tasks", issue.id);
     return { identifier: issue.identifier, ...result };
   }
 

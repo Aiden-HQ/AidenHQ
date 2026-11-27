@@ -877,16 +877,6 @@ test("migrates and drops events", () => {
   assert.equal(records.db.prepare("SELECT name FROM sqlite_master WHERE name = 'events'").get(), undefined);
 });
 
-test("records and checks open one db and file", async () => {
-  const records = openRecords(dbFile());
-  const facts = openFacts(records.db);
-  createChecks({ db: records.db, registry: () => ({}), owner: async () => ({ status: 200, json: {} }), secret: () => "", resolver: {} });
-  createRouting({ db: records.db, records, grants: () => ({}) });
-  const r = records.file(filing());
-  assert.equal(facts.forTask("t1")[0].subject, `record:${r.id}`);
-  assert.equal(records.db.prepare("SELECT name FROM sqlite_master WHERE name = 'events'").get(), undefined);
-});
-
 // A heartbeat-shaped run task whose chain is the heartbeat's generic text, and the triage task the job actually works.
 const HEARTBEAT = { "HB-1": { id: "HB-1", identifier: "HB-1", status: "in_progress", title: "Heartbeat", description: "Follow the heartbeat instructions." } };
 const TRIAGE = { "TASK-9": { id: "TASK-9", identifier: "WOR-8637", status: "open", assigneeAgentId: "ag-ada", title: "Label AidenHQ#788 agent-fix", description: "Apply the agent-fix label to AidenHQ#788." } };

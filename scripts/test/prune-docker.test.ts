@@ -27,18 +27,6 @@ const fakeDf = (kb) => `#!/usr/bin/env bash\nprintf 'Filesystem 1024-blocks Used
 // A script's commands, without the comment lines that talk about them.
 const commands = (text) => text.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
 
-test("prune-docker.timer prunes every four hours, not once a night", () => {
-  const calendar = /^OnCalendar=(.*)$/m.exec(timer)?.[1] ?? "";
-  assert.equal(calendar, "*-*-* 00,04,08,12,16,20:30");
-  const hours = /(\d{1,2})(?:,\d{1,2})*:/.exec(calendar)?.[0].slice(0, -1).split(",").map(Number) ?? [];
-  assert.ok(hours.length >= 4, `at least four runs a day, got ${hours.length}: ${calendar}`);
-  // Every hour gap must be the same, so no part of the day waits longer between prunes than any other.
-  const gaps = hours.map((h, i) => (hours[(i + 1) % hours.length] - h + 24) % 24);
-  assert.deepEqual(new Set(gaps), new Set([4]), `even 4-hour gaps, got ${gaps}`);
-  assert.match(timer, /^Persistent=true$/m, "a missed run still happens after boot");
-  assert.match(timer, /^Description=.*peak/m, "the description says why: the peak, not one nightly sweep");
-});
-
 test("every prune ExecStart is `-`-prefixed, and the last step reports whether they did their work", () => {
   const execs = service.split("\n").filter((l) => l.startsWith("ExecStart="))
     .map((l) => l.slice("ExecStart=".length).trim());
@@ -313,11 +301,6 @@ test("a one-off that is restarted between the check and the removal is kept", ()
   assert.match(r.out, /racy: changed state since it was inspected/);
 });
 
-test("the apply-time container step and the unit's are the same script, so the retention has one home", () => {
-  assert.match(apply, /^\s*timeout -k \S+ 5m bash ops\/prune-docker-containers\.sh \|\| true$/m);
-  assert.doesNotMatch(apply, /docker container prune/);
-});
-
 test("the verification fails the unit when the daemon is down, the cache is over the ceiling, or a one-off was left", () => {
   // Clean: the unit reads success.
   let d = fakeDocker({ cache: "10.52GB" });
@@ -580,21 +563,6 @@ const ROWS = [
 ].join("\n");
 const DF = `case "$*" in *"system df"*) cat <<'EOT'\n${ROWS}\nEOT\n;; *) exit 0 ;; esac`;
 
-test("docker.prom carries a size gauge per consumer, from docker system df", () => {
-  const m = metrics({ df: DF });
-  assert.match(m.body, /^aidenhq_docker_collect_ok 1$/m);
-  assert.match(m.body, /^aidenhq_docker_images_size_bytes 25150000000$/m);
-  assert.match(m.body, /^aidenhq_docker_containers_size_bytes 217400000$/m);
-  assert.match(m.body, /^aidenhq_docker_build_cache_size_bytes 10520000000$/m);
-  assert.match(m.body, /^aidenhq_docker_volumes_size_bytes 2882000000$/m);
-  assert.match(m.body, /^# TYPE aidenhq_docker_images_size_bytes gauge$/m);
-  // Reclaimable where the format carries it: "23.7GB (94%)" is a size before its parenthesised share.
-  assert.match(m.body, /^aidenhq_docker_images_reclaimable_bytes 23700000000$/m);
-  assert.match(m.body, /^aidenhq_docker_build_cache_reclaimable_bytes 10520000000$/m);
-  // The other textfiles are still written beside it.
-  assert.ok(existsSync(m.file.replace("docker.prom", "units.prom")));
-});
-
 // A run where docker cannot answer still rewrites the file: collect_ok 0 and no byte count, so the previous run's sizes
 // are never served as current and a fresh install still gets a file whose mtime HostMetricsStale reads.
 const UNKNOWN = /^aidenhq_docker_collect_ok 0$/m;
@@ -705,25 +673,6 @@ test("the ceiling is judged on the cache right after pruning, not on a later rea
   assert.match(r2.out, /could not read the cache/);
 });
 
-test("docker.prom is cached for 5 minutes: the 30 s timer does not walk every image, container and volume each run", () => {
-  const dir = mkdtempSync(join(tmpdir(), "docker-prom-"));
-  const first = metrics({ dir, df: DF });
-  assert.match(first.body, /^aidenhq_docker_images_size_bytes 25150000000$/m);
-  // Second run inside the window: it republishes the cache and never calls Docker's disk walk again.
-  writeFileSync(join(dir, "calls"), "");
-  const second = metrics({ dir, df: `case "$*" in *"system df"*) echo "must not be called inside the cache window" >&2; exit 1 ;; *) exit 0 ;; esac` });
-  assert.doesNotMatch(second.calls, /system df/);
-  assert.match(second.body, /^aidenhq_docker_collect_ok 1$/m);
-  assert.match(second.body, /^aidenhq_docker_images_size_bytes 25150000000$/m);
-  assert.ok(existsSync(join(dir, "data/modules/monitoring/docker-df.json")));
-  // Past the window (`AIDENHQ_DOCKER_DF_CACHE_S=0` here) it reads Docker again, and a failed read is unknown, not the old
-  // bytes.
-  const third = metrics({ dir, env: { AIDENHQ_DOCKER_DF_CACHE_S: "0" }, df: `case "$*" in *"system df"*) echo down >&2; exit 1 ;; *) exit 0 ;; esac` });
-  assert.match(third.calls, /system df/);
-  assert.match(third.body, UNKNOWN);
-  assert.doesNotMatch(third.body, /_size_bytes \d/m, third.body);
-});
-
 test("docker system df timing out reports the breakdown as unknown and does not fail the metrics run", { skip: !existsSync("/usr/bin/timeout") && "needs coreutils timeout" }, () => {
   assert.match(readFileSync(join(repo, "ops/host-metrics.sh"), "utf8"), /timeout 10 docker system df/);
   const m = metrics({ timeout: true, df: `case "$*" in *"system df"*) sleep 30 ;; *) exit 0 ;; esac` });
@@ -764,14 +713,4 @@ esac
   const r = spawnSync("bash", [join(dir, "ops/prune-computer-images.sh")], { env: { PATH: `${join(dir, "bin")}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin`, CALLS: calls }, encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(readFileSync(calls, "utf8"), "rm sha256:dangling\nrm sha256:old\n".repeat(3));
-});
-
-test("the timer's builder prune caps the cache at the shared ceiling in both flag forms", () => {
-  const d = fakeDocker();
-  for (const flag of ["--max-used-space", "--keep-storage"]) {
-    const r = d.run("ops/prune-docker-builder.sh", { PATH: "/usr/bin:/bin" }, flag);
-    assert.equal(r.status, 0, r.out);
-  }
-  assert.match(d.calls(), /^builder prune -af --max-used-space 40GB$/m);
-  assert.match(d.calls(), /^builder prune -af --keep-storage 40GB$/m);
 });

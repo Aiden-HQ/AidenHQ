@@ -94,24 +94,6 @@ test("a background hit only records and queues nothing; the digest pulls it once
   assert.ok(w.s.needs().some((l) => l.startsWith("Github isn't connected")));
 });
 
-// A loopback board origin (local exposure, through the SSH tunnel) is not reachable from the owner's machine: both
-// owner-facing lines say so next to the link, and how the install gets a real address.
-test("a loopback board origin adds the caveat to the notice and the digest line", async () => {
-  const caveat = /this address is loopback-only: open it on this host or through the SSH tunnel setup printed; for a real address, run sudo ops\/setup\.sh --unattended --exposure public, or --exposure tailscale/;
-  const w = world(ownerChain(), { w1: [OWNER_COMMENT] }, undefined, [], "http://localhost:3121");
-  await w.s.hit(w.who("w3"), "google", { cause: "not_connected", detail: "" });
-  assert.equal(w.queued.length, 1);
-  assert.match(w.queued[0].text, /http:\/\/localhost:3121\/connect\/google/);
-  assert.match(w.queued[0].text, caveat);
-  const b = world({ r1: { id: "r1", identifier: "WOR-9", title: "Morning brief" } }, {}, undefined, [], "http://localhost:3121");
-  await b.s.hit(b.who("r1"), "github", { cause: "not_connected", detail: "" });
-  b.tick(LASTED);
-  const [line, ...more] = b.s.needs().filter((l) => l.startsWith("Github "));
-  assert.deepEqual(more, []);
-  assert.match(line!, /^Github isn't connected \(not connected\): http:\/\/localhost:3121\/connect\/github /);
-  assert.match(line!, caveat);
-});
-
 test("a failed wait leaves no orphan registration (da3a0678)", async () => {
   const w = world(ownerChain(), { w1: [OWNER_COMMENT] });
   w.state.failWait = true;

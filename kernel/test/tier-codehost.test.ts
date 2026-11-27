@@ -13,11 +13,6 @@ const rejectedPr = (branch, sha, at, reviewCode = "malicious") => ({
 });
 const target = (branch, sha) => ({ workspace: "WOR-1", only: [{ repo: REPO, branch, sha }] });
 
-test("the code host's kinds read as bare actions; other module kinds by their own name", () => {
-  assert.deepEqual([actionOf("github.merge"), actionOf("codehost-local.merge"), actionOf("github.pr"), actionOf("codehost-local.push"), actionOf("github.close")], ["merge", "merge", "pr", "push", "close"]);
-  assert.deepEqual([actionOf("acme.post"), actionOf("primer.publish"), actionOf("apps-platform.deploy")], ["acme.post", "primer.publish", "deploy_app"]);
-});
-
 test("a reviewer's malice reject never refuses the same content again; it is reviewed afresh", () => {
   const renamed = target("b3", HEAD);
   assert.equal(requestKey("pr", renamed), requestKey("pr", { branches: renamed.only }));

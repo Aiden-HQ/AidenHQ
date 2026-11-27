@@ -29,26 +29,32 @@ settings:
   # The channels a message tries, in order: the first one set up that delivers it gets it (the one the owner last wrote from
   # in a chat goes first). One that isn't installed or set up is skipped.
   notify_transports:
+    title: Message channels
     default: [ slack, channel-telegram ]
   # fyi messages (news to read later): send, or mute (they still show on the board's chat). Decisions, results and alerts
   # are never muted.
   notify_fyi:
+    title: FYI messages
     default: send
     values: [ send, mute ]
   # Attention control (decisions and alerts always pass; the chief of staff is never blocked or digested). The block list
   # and the digest always act (owner preferences). This sets the daily cap only: observe logs what it would block and lets
   # everything through (a new gate's first stage); enforce acts.
   notify_attention:
+    title: Attention control
     default: observe
     values: [ observe, enforce ]
   # Agent keys whose routine (done/fyi) messages are dropped. Empty: nobody is blocked.
   notify_blocked:
+    title: Muted agents
     default: []
   # Routine messages one agent may send per UTC day (decisions don't count).
   notify_daily_cap:
+    title: Daily message cap
     default: 40
   # Owner-local hours at which routine done/fyi messages from crew agents go out as one digest (they show on the board's chat at once).
   notify_digest_hours:
+    title: Digest hours
     default: [ 9, 13, 18 ]
 services:
   data: true

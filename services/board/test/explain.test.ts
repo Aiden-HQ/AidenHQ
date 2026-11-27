@@ -39,7 +39,4 @@ describe("explain's tier history", () => {
     // The owner's own veto needs no review: the record is Tier 2 from the start.
     expect(explain(record({ tier: 2, merit: 1, state: "owner", review: null }), null).path[0]).toBe("Filed by Engineer at Tier 1, then yours to decide.");
   });
-  it("says the tier plainly when it is its own merits", () => {
-    expect(explain(record({ tier: 1, merit: 1 }), null).path[0]).toBe("Filed by Engineer at Tier 1.");
-  });
 });

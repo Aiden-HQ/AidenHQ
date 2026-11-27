@@ -128,6 +128,7 @@ settings:
   # every tier the rules can select has a mandatory combo. on_push reviews only the new changes. Read by the service
   # (service/src/config.ts).
   code_review:
+    title: Reviewed repos
     type: object
     writers: [ reviewer-manager ]
     default:
