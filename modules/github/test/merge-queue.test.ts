@@ -1594,6 +1594,17 @@ test("an edit that skipped every job never turns a red head green, and an invali
   // A suite skipped by the run that tested the head is still a pass: only a newer edit's skips are dropped.
   const suiteSkipped = [run("modules (1)", "SKIPPED", 1), run("ci-required", "SUCCESS", 2)];
   assert.equal(decide(data(suiteSkipped), H).do, "merge");
+  // The edit's `ci-required` posts a real verdict, not a skip: the trigger cannot be "the newest gate skipped". Its skipped suite
+  // is still newer than the failure that run recorded, and must not become that name's newest result. The gate itself is red,
+  // as the workflow posts it when the suite failed, so both paths refuse the head.
+  const editWithRealGate = [run("packages (2)", "FAILURE", 1), run("ci-required", "FAILURE", 2), run("packages (2)", "SKIPPED", 3), run("ci-required", "FAILURE", 4)];
+  assert.equal(decide(data(editWithRealGate), H).do, "fail", "a newer skip never replaces an older failure of the same name");
+  assert.equal(decide(data(editWithRealGate), H, ship(editWithRealGate)).do, "fix_ci");
+  // Ship requires only the gate, so a green gate merges past a non-required red: the rule it is owed is that the skip still does
+  // not become the suite's newest result, which the queue above reads. The gate alone decides ship.
+  const gateGreenSuiteRed = [run("packages (2)", "FAILURE", 1), run("ci-required", "FAILURE", 2), run("packages (2)", "SKIPPED", 3), run("ci-required", "SUCCESS", 4)];
+  assert.equal(decide(data(gateGreenSuiteRed), H).do, "fail", "the queue still reads the suite's real failure");
+  assert.equal(decide(data(gateGreenSuiteRed), H, ship(gateGreenSuiteRed)).do, "merge", "ship answers to its required names only");
   // The cutoff is a check run's rank, never a commit status's timestamp (contextRank ranks the two differently): a successful
   // `ci-required` status must not lift the cutoff above the edit's skipped runs, or the failure it sits beside would hide.
   const withStatus = [run("ci-required", "FAILURE", 2), run("ci-required", "SKIPPED", 3)];

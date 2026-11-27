@@ -747,7 +747,9 @@ jobs:
     if: ${{ !cancelled() }}
     needs: [checks, policy, packages, modules, board, reviewer-eval]
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    # The edit step waits for the head's in-flight checks (up to 9 minutes); a shorter timeout would kill it and post a red
+    # that no suite caused.
+    timeout-minutes: 15
     permissions:
       contents: read
       checks: read
@@ -767,7 +769,7 @@ jobs:
             const { REPO, SHA, GITHUB_TOKEN } = process.env;
             const runs = [];
             for (let page = 1; ; page++) {
-              const res = await fetch(`https://api.github.com/repos/${REPO}/commits/${SHA}/check-runs?per_page=100&page=${page}`, { headers: { authorization: `Bearer ${GITHUB_TOKEN}`, accept: "application/vnd.github+json" } });
+              const res = await fetch(`https://api.github.com/repos/${REPO}/commits/${SHA}/check-runs?filter=all&per_page=100&page=${page}`, { headers: { authorization: `Bearer ${GITHUB_TOKEN}`, accept: "application/vnd.github+json" } });
               if (!res.ok) throw new Error(`reading the head checks failed: ${res.status}`);
               const body = await res.json();
               runs.push(...body.check_runs);
@@ -800,7 +802,7 @@ jobs:
             const read = async () => {
               const out = [];
               for (let page = 1; ; page++) {
-                const res = await fetch(`https://api.github.com/repos/${REPO}/commits/${SHA}/check-runs?per_page=100&page=${page}`, { headers: { authorization: `Bearer ${GITHUB_TOKEN}`, accept: "application/vnd.github+json" } });
+                const res = await fetch(`https://api.github.com/repos/${REPO}/commits/${SHA}/check-runs?filter=all&per_page=100&page=${page}`, { headers: { authorization: `Bearer ${GITHUB_TOKEN}`, accept: "application/vnd.github+json" } });
                 if (!res.ok) throw new Error(`reading the head checks failed: ${res.status}`);
                 const body = await res.json();
                 out.push(...body.check_runs);

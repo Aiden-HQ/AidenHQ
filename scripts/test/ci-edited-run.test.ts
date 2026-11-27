@@ -181,11 +181,17 @@ test("ci-required's gate still fails a genuinely failed suite and still passes s
 test("an edit's ci-required restates the head's real verdict: a fixed title clears it, a real failure stays red", async () => {
   // The edit path's own step, run as CI runs it: it reads the head's check runs from the API (one per name, newest by id, the
   // edit's own skips being newer and no failure of a suite the change did not touch) and posts the verdict. Never a skip.
-  const step = workflow().jobs["ci-required"]!.steps!.find((s) => s.run?.includes("check-runs?per_page=100"))!;
+  const step = workflow().jobs["ci-required"]!.steps!.find((s) => s.run?.includes("check-runs?filter=all"))!;
   const run = step.run!;
   // The script is a single-quoted `node -e '…'` argument: an apostrophe in it (a comment saying "head's") ends the quote and
   // makes bash fail on the next word, which reads as a red gate. It must parse.
   execFileSync("bash", ["-n", "-c", run], { stdio: "pipe" });
+  // GitHub's default is `filter=latest`, one run per name: the newest is the edit's skip, so the older failure it must judge is
+  // never returned. The read has to ask for all of them.
+  assert.match(run, /check-runs\?filter=all/, "the head read must include superseded runs");
+  assert.doesNotMatch(run, /check-runs\?per_page/, "never the filter=latest default");
+  // Every read in the step asks for all of them, the wait loop included.
+  for (const m of run.matchAll(/check-runs\?([^`\s&]*)/g)) assert.match(m[1]!, /^filter=all/, `a read without filter=all: ${m[0]}`);
   const at = (name: string, conclusion: string, id: number) => ({ id, name, status: "completed", conclusion });
   // A tiny GitHub: the head's check runs, newest `policy` from the edit; `ci-required` itself is never read back.
   const gate = (runs: ReturnType<typeof at>[], title = "success") => {

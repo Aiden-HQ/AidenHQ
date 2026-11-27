@@ -100,22 +100,35 @@ export function newestGateSkipped<T extends { name?: string; kind?: "run" | "sta
 }
 
 /**
- * The reports that judge a head, for a reader that decides on its checks. A run that planned no suite (`edited`, which only runs
- * `policy`) posts a `skipped` check for every job it did not run — and a job `if` skips is still a check GitHub counts as a pass.
- * Those reports are newer than the run that tested the head, so judging them would let a body edit read as green over a real
- * failure and hide it. Here a skip newer than the newest aggregate that judged the head is dropped; every other report stands,
- * the `policy` run an edit did make included. A run that judged the head keeps its own skips: a suite skipped there is a real
- * result (the change didn't touch it). An unranked report proves no order, so it is never dropped.
+ * The reports that judge a head, for a reader that decides on its checks. A run that plans no suite (`edited`) posts a
+ * `skipped` check for every job it did not run — and a job `if` skips is still a check GitHub counts as a pass. Those reports
+ * are newer than the run that tested the head, so judging them would let a body edit read as green over a real failure and
+ * hide it.
+ *
+ * Per name and kind: when the newest report is `skipped` and an older report of that same name judged something, the skip is
+ * dropped and the older result stands — it is the run that tested the code, and an edit's skip says nothing about it. Two runs
+ * on one head differ only in the event (an edit against a push or a re-run); within one run a path-filtered suite is skipped
+ * the same way both times, so an older judgement of the same name is the same tree's. A name whose only report is a skip keeps
+ * it: a suite skipped by the run that judged the head is a real result (the change didn't touch it). An unranked report proves
+ * no order, so it is never dropped. `cancelled` is left alone: latestChecks still reads it as a superseded run's red.
  */
 export function judgedOnHead<T extends { name?: string; kind?: "run" | "status"; rank?: number; status?: string | null }>(checks: T[]): T[] {
-  if (!newestGateSkipped(checks)) return checks;
-  // The cutoff is a check run's rank, compared only with check runs': a status's rank is its timestamp, a different domain
-  // (contextRank), and a timestamp compared against a database id would keep every skip of the edit's run.
-  const gates = checks.filter((c) => c.name === GATE_CHECK && (c.kind ?? "run") === "run" && !gateJudgedNothing(c) && typeof c.rank === "number");
-  const cut = gates.reduce<number | undefined>((a, c) => (a === undefined || (c.rank as number) > a ? (c.rank as number) : a), undefined);
-  // No check-run aggregate ever judged the head: nothing here is a pass, so only the reports that judged something stand.
-  if (cut === undefined) return checks.filter(judgedSomething);
-  return checks.filter((c) => judgedSomething(c) || (c.kind ?? "run") !== "run" || typeof c.rank !== "number" || c.rank <= cut);
+  const groups = new Map<string, T[]>();
+  for (const c of checks) {
+    if (typeof c.rank !== "number") continue;
+    const key = `${c.name ?? ""}\u0000${c.kind ?? "run"}`;
+    groups.set(key, [...(groups.get(key) ?? []), c]);
+  }
+  const drop = new Set<T>();
+  for (const group of groups.values()) {
+    const ranked = [...group].sort((a, b) => (b.rank as number) - (a.rank as number));
+    if (String(ranked[0]?.status ?? "").toUpperCase() !== "SKIPPED") continue;
+    // Drop the newest run of skips only when something older judged the name: then they are a later run's skips, not its result.
+    const firstJudged = ranked.findIndex((c) => judgedSomething(c));
+    if (firstJudged <= 0) continue;
+    for (const c of ranked.slice(0, firstJudged)) drop.add(c);
+  }
+  return drop.size ? checks.filter((c) => !drop.has(c)) : checks;
 }
 
 const IMAGE_FILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
