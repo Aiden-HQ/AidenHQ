@@ -138,7 +138,7 @@ const holdOf = (v: unknown): { hold: ShipHold } | undefined => {
   const { kind, reason } = (typeof v === "object" ? v : {}) as { kind?: unknown; reason?: unknown };
   return { hold: { kind: typeof kind === "string" && kind ? kind : "unknown", ...(typeof reason === "string" ? { reason: reason.slice(0, 300) } : {}) } };
 };
-/** Ship's final tier check before a write (risk tiers §7): what is about to happen and the PR as GitHub has it right now (head, base branch, author association). */
+/** Ship's final tier check before a write (docs/design/code-review.md, Risk tiers): what is about to happen and the PR as GitHub has it right now (head, base branch, author association). */
 export type ShipCheck = { do: "approve" | "merge"; head: string; base: string; association: string; /** The policy an approval was filed under. */ policy?: string };
 /** Ship's adoptions read from its service with this module's own token (`url`: compiled only when the ship module is on). */
 export function shipAdoptions(o: { url: string; key: () => string; fetchFn?: typeof fetch }): ShipAdoptions {
