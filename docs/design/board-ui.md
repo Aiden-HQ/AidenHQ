@@ -136,8 +136,9 @@ outside `tokens.css`, and no class the kit replaced (`web/legacy-classes.json`, 
 `Home.tsx`, one read (`GET /api/home`): Needs you (answers, approval cards and handed-back tasks, oldest first, answered in
 place as `DecisionRow`s), Since you last looked (what the team told the owner and what closed, grouped by teammate, top
 three and "All N"), Your world (who the owner waits on; today's calendar), Your team (teammates with news, and Hire a
-teammate) and one Idea. **A block with no source or no data is left out**, never shown empty; a fresh install sees
-"Nothing needs you." and the team row.
+teammate) and one Idea. **A block with no source or no data is left out**, never shown empty: Needs you too, and the
+greeting then says only "Good morning, <name>." (Needs you counts only what teammates ask, so it never claims "nothing").
+A fresh install sees the greeting, Next up and the team row.
 
 - **Keyboard** (`needs.ts`): J/K move through Needs you, Enter opens the detail pane, E does the row's main action (approve,
   the recommended option, mark done), S snoozes it. Enter, E and S wait until a row is picked; every key is off while

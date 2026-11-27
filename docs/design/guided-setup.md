@@ -174,7 +174,7 @@ screens in the board's shell (`Welcome.tsx`, built from the kit, a `Stepper` "St
 2. **Where should your team reach you?** Telegram, Slack DM (the `slack` flow's advanced part) or only this board, each
    flow inline; **Send a test** sends one fixed card through the picked transport only and shows its answer. Continue
    files `notify_transports` when it changed and finishes.
-3. **Home on day one:** Next up beside Needs you, and "More your team can do" below.
+3. **Home on day one:** Next up (beside Needs you once something needs the owner), and "More your team can do" below.
 
 **Through the owner MCP** (the install prompt finishes setup this way), each step is a tool on the same routes:
 `teammates` (the list and the one to start with), `change_settings` (turn its module on, rename it, `notify_transports`),
