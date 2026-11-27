@@ -130,6 +130,7 @@ function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionR
           {v.hint && <p className="st-hint">{v.hint}</p>}
           <SignInLines c={c} can={can.signIn} />
           {r.signIn?.state === "ok" && <TestSignIn id={r.name} />}
+          {r.signIn?.state === "ok" && r.signIn.disconnect && can.signIn && <DisconnectSignIn id={r.name} label={displayName(r.name)} />}
           {r.google?.accounts.some((a) => a.state === "ok") && <TestSignIn id={r.name} google />}
           {!connect && r.setup && v.status === "not_configured" && <p className="st-hint">{r.setup}</p>}
           <Facts r={r} />
@@ -137,6 +138,37 @@ function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionR
         </div>
       </Dialog>
     </>
+  );
+}
+
+/** Disconnect: revokes the sign-in at the vendor (a service that serves /auth/disconnect), after a confirm; reconnecting needs a new sign-in. */
+function DisconnectSignIn({ id, label }: { id: string; label: string }) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState("");
+  const confirm = () => {
+    setBusy(true);
+    setProblem("");
+    api.disconnect(id).then(() => setAsking(false), (e: Error) => setProblem(e.message)).finally(() => setBusy(false));
+  };
+  return (
+    <div className="st-test">
+      <Button size="sm" variant="quiet" onClick={() => setAsking(true)}>Disconnect</Button>
+      <Dialog
+        open={asking}
+        onClose={() => setAsking(false)}
+        title={`Disconnect ${label}`}
+        actions={
+          <>
+            <Button onClick={() => setAsking(false)}>Cancel</Button>
+            <Button variant="primary" disabled={busy} onClick={confirm}>{busy ? "Disconnecting…" : "Disconnect"}</Button>
+          </>
+        }
+      >
+        {problem && <Banner tone="danger">{problem}</Banner>}
+        <p>Disconnect {label}? This signs AidenHQ out at {label}; reconnecting needs a new sign-in.</p>
+      </Dialog>
+    </div>
   );
 }
 

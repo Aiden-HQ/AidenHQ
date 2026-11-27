@@ -496,7 +496,7 @@ export function GoogleBanner({ google }: { google: Board["google"] }) {
 /**
  * A banner when a service behind an MCP proxy (a module's board.signins) stopped accepting the sign-in, with Reconnect where it works (the board's https address, or loopback).
  */
-function SignInBanner({ name, path, status, offer, mode, canConnect, stopped }: { name: string; path: string; status: SignInStatus | null; offer?: boolean; mode?: "device"; canConnect: boolean; stopped: string }) {
+function SignInBanner({ name, path, status, offer, mode, canConnect, stopped }: { name: string; path: string; status: SignInStatus | null; offer?: boolean; mode?: "device" | "qr"; canConnect: boolean; stopped: string }) {
   // Only a sign-in that worked and stopped alarms; one never connected is calm, in Settings > Connections.
   if (!status?.configured || status.state !== "expired") return null;
   const since = new Date(status.since);
