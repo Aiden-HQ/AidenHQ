@@ -215,6 +215,11 @@ test("an edit's ci-required restates the head's real verdict: a fixed title clea
   // A failure only the aggregate shows (the fork reviewer-eval guard) is not cleared by an edit whose components are all green.
   assert.equal(await gate([at("policy", "success", 1), at("ci-required", "failure", 2), at("ci-required", "skipped", 3), at("policy", "success", 4)]), 1,
     "an aggregate failure no component shows stays red");
+  // The edit's own `ci-required` is already visible as in_progress while its step runs, and its id is the newest: it must not
+  // become the cutoff, or the edit's newer skips survive and hide the real failure they superseded.
+  assert.equal(await gate([at("packages (2)", "failure", 1), at("ci-required", "failure", 2), at("ci-required", "skipped", 3), at("packages (2)", "skipped", 4),
+    { ...at("ci-required", "success", 9), status: "in_progress", conclusion: null }]), 1,
+    "the running aggregate is not the cutoff");
   // A prior `policy` failure is only cleared by this edit running the whole job green on the same head: the job covers the
   // supply-chain vets too, so a title that passes while the job is red is not a title-only red.
   assert.equal(await gate([at("policy", "failure", 1), at("ci-required", "failure", 2), at("ci-required", "skipped", 3)], "failure"), 1,

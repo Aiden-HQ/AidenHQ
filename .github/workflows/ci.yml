@@ -776,7 +776,9 @@ jobs:
             // The run that actually judged the head is the newest `ci-required` that is not a skip; every skip newer than it
             // belongs to the edit (a job `if` skipped still posts a check, and GitHub counts it as a pass) and judges nothing.
             const gateRuns = runs.filter((r) => r.name === "ci-required");
-            const judgedGate = gateRuns.filter((r) => !["skipped", "cancelled"].includes(String(r.conclusion ?? "").toLowerCase()));
+            // Only a completed run judged the head: this step runs inside the edit own `ci-required`, which is already visible
+            // here as `in_progress` and must not become the cutoff (that would keep the edit skips and hide a real failure).
+            const judgedGate = gateRuns.filter((r) => r.status === "completed" && !["skipped", "cancelled"].includes(String(r.conclusion ?? "").toLowerCase()));
             const cut = judgedGate.reduce((a, r) => Math.max(a, r.id), 0);
             const newest = new Map();
             for (const r of runs) {
