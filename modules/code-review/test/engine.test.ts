@@ -1662,6 +1662,17 @@ test("a head the instance's own App opened is never pending on the caller's non-
   assert.equal(w.engine.verdict(REPO, 9, sha("9"), { association: "NONE" }).tier.state, "classified");
 });
 
+test("a private org member counted a member from write access is never pending on the caller's raw CONTRIBUTOR association", async () => {
+  const w = gatedWorld();
+  await w.tick(); w.later(1000);
+  w.pr(9, sha("9"), { author: "dana", association: "COLLABORATOR", elevated: true }); // the reader raised it: write access, membership private
+  await w.tick();
+  w.finish(0, NONE); await w.tick();
+  assert.equal(w.engine.verdict(REPO, 9, sha("9")).tier.state, "classified");
+  // The merge queue and ship read the raw CONTRIBUTOR: it can't contradict the elevated classification (it looped to pending, #1845).
+  assert.equal(w.engine.verdict(REPO, 9, sha("9"), { association: "CONTRIBUTOR" }).tier.state, "classified");
+});
+
 test("a classification stored under an older rule config schedules a re-read: a later tick resolves it with no PR event", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH] }] });
   await opened(w, 2, sha("2"));

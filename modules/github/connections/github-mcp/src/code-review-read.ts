@@ -9,8 +9,9 @@ export type PullRequest = {
   repo: string; number: number; head: string; base: string; base_ref: string; draft: boolean;
   fork: boolean; author: string; open: boolean; merged: boolean; url: string; title: string; body: string;
   /** GitHub's author_association (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, …), and whether the author is this instance's own
-   * App: what code review's risk tiers read the author kind from. */
-  association: string; own: boolean;
+   * App: what code review's risk tiers read the author kind from. `elevated`: the association was raised to COLLABORATOR because the
+   * author has write access (an org member whose membership is private reads CONTRIBUTOR through the App); no caller's raw read can confirm it. */
+  association: string; own: boolean; elevated?: true;
 };
 /** One file of a PR's own change (GitHub's files list, merge base to head). */
 export type PrFile = { path: string; previous?: string; additions: number; deletions: number };
@@ -22,6 +23,12 @@ export type Permission = "admin" | "maintain" | "write" | "triage" | "read" | "n
 const REPO = /^([A-Za-z0-9_.-]{1,100})\/([A-Za-z0-9_.-]{1,100})$/;
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const MAX_PAGES = 30;
+const MEMBER = ["OWNER", "MEMBER", "COLLABORATOR"];
+const WRITE: Permission[] = ["admin", "maintain", "write"];
+const ROLE_TTL = 10 * 60_000;
+const ROLE_FAILED_TTL = 60_000;
+/** The longest the permission reads hold a PR read: past it the raw associations go back (the reads keep running into the cache). */
+const ELEVATE_WAIT = 5_000;
 
 export function repoArg(v: string | null): string {
   const m = (v ?? "").match(REPO);
@@ -70,6 +77,7 @@ export type OpenPrs = (repo: string) => { n: number; head: string; base: string;
 
 export class CodeReviewReader {
   private feed?: OpenPrs;
+  private roles = new Map<string, { at: number; role: Permission | undefined }>();
   /** The change feed, once it runs (the code host's process starts it after this connection): the open list comes from it. */
   useFeed(f: OpenPrs): void { this.feed = f; }
 
@@ -92,22 +100,43 @@ export class CodeReviewReader {
     const snap = this.feed?.(repo.toLowerCase());
     if (snap) {
       const self = this.self()?.toLowerCase();
-      return snap.map((p) => ({
+      return this.elevate(snap.map((p) => ({
         repo: repo.toLowerCase(), number: p.n, head: p.head, base: p.base, base_ref: p.base_ref, draft: p.draft, fork: p.fork, author: p.author, open: true, merged: false, url: p.url,
         title: p.title.slice(0, 200), body: p.body.slice(0, 2000), association: p.association || "NONE", own: !!self && p.author.toLowerCase() === self,
-      }));
+      })));
     }
     const out: PullRequest[] = [];
     for (let page = 1; page <= MAX_PAGES; page++) {
       const rows = await this.github.request<GhPr[]>("GET", `/repos/${repo}/pulls`, { query: { state: "open", per_page: 100, page } });
       out.push(...rows.map((p) => shape(repo, p, this.self())));
-      if (rows.length < 100) return out;
+      if (rows.length < 100) return this.elevate(out);
     }
     throw new Error(`more than ${MAX_PAGES * 100} open pull requests in ${repo}`);
   }
 
   async get(repo: string, number: number): Promise<PullRequest> {
-    return shape(repo, await this.github.request<GhPr>("GET", `/repos/${repo}/pulls/${number}`), this.self());
+    return (await this.elevate([shape(repo, await this.github.request<GhPr>("GET", `/repos/${repo}/pulls/${number}`), this.self())]))[0]!;
+  }
+
+  /**
+   * An org member whose membership is private reads CONTRIBUTOR (or NONE) through the App, which can't see it, so code review would class
+   * the PR as an outsider's. A same-repo PR whose author has write access on the repo is a member's: its association reads COLLABORATOR.
+   * One permission read per distinct author, kept for ROLE_TTL; a failed or slow (ELEVATE_WAIT) read keeps the raw association (the stricter review).
+   */
+  private async elevate(prs: PullRequest[]): Promise<PullRequest[]> {
+    const todo = prs.filter((p) => !p.fork && !p.own && !MEMBER.includes(p.association.toUpperCase()) && LOGIN.test(p.author));
+    const reads = [...new Set(todo.map((p) => `${p.repo}\0${p.author.toLowerCase()}`))].map(async (k) => {
+      const hit = this.roles.get(k);
+      if (hit && Date.now() - hit.at < (hit.role ? ROLE_TTL : ROLE_FAILED_TTL)) return;
+      const [repo, login] = k.split("\0") as [string, string];
+      let role: Permission | undefined;
+      try { role = await this.permission(repo, login); } catch { role = undefined; }
+      this.roles.set(k, { at: Date.now(), role });
+    });
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([Promise.all(reads), new Promise((r) => { timer = setTimeout(r, ELEVATE_WAIT); })]);
+    clearTimeout(timer);
+    return prs.map((p) => todo.includes(p) && WRITE.includes(this.roles.get(`${p.repo}\0${p.author.toLowerCase()}`)?.role as Permission) ? { ...p, association: "COLLABORATOR", elevated: true } : p);
   }
 
   /**
@@ -126,7 +155,7 @@ export class CodeReviewReader {
     }
     const b = await this.github.request<GhPr>("GET", `/repos/${repo}/pulls/${number}`);
     if (b.head?.sha !== a.head?.sha || b.base?.sha !== a.base?.sha || b.base?.ref !== a.base?.ref || (n <= FILES_MAX && files.length !== n)) return { moved: true };
-    return { pr: shape(repo, b, this.self()), changed_files: n, files: n > FILES_MAX ? [] : files };
+    return { pr: (await this.elevate([shape(repo, b, this.self())]))[0]!, changed_files: n, files: n > FILES_MAX ? [] : files };
   }
 
   /** PR conversation comments created at or after `since`, oldest first; the cursor is the newest created_at seen (else `since`); at most MAX_PAGES pages a call. */

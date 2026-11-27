@@ -44,6 +44,8 @@ export type PullRequest = {
   title?: string; body?: string;
   /** GitHub's author_association, and whether the author is the instance's own App: the risk tier's author kind. */
   association?: string; own?: boolean;
+  /** The association was raised to COLLABORATOR from the author's write access (a private org member): a caller's raw read can't confirm it. */
+  elevated?: boolean;
 };
 /** One file of a PR's own change (merge base to head), for its risk tier. */
 export type PrFile = { path: string; previous?: string; additions: number; deletions: number };

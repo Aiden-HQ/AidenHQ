@@ -8,9 +8,12 @@ const pr = (number: number, headRepo: string | null) => ({
   number, state: "open", draft: false, html_url: `https://github.com/Acme/App/pull/${number}`, user: { login: "dev" },
   head: { sha: "h".repeat(40), repo: headRepo ? { full_name: headRepo } : null }, base: { sha: "b".repeat(40), ref: "main", repo: { full_name: "Acme/App" } },
 });
+let perms = 0;
 const gh = (async (input: URL | string) => {
   const u = new URL(String(input));
   if (u.pathname === "/repos/Acme/App/pulls") return Response.json([pr(1, "Acme/App"), pr(2, "stranger/App"), pr(3, null)]);
+  if (u.pathname === "/repos/Acme/App/pulls/6") return Response.json({ ...pr(6, "Acme/App"), user: { login: "priv" }, author_association: "CONTRIBUTOR" });
+  if (u.pathname.toLowerCase() === "/repos/acme/app/collaborators/priv/permission") { perms++; return Response.json({ permission: "write", role_name: "write" }); }
   if (u.pathname === "/repos/Acme/App/pulls/4") return Response.json({ ...pr(4, "Acme/App"), state: "closed", merged_at: "2026-01-04T00:00:00Z" });
   if (u.pathname === "/repos/Acme/App/issues/comments") return Response.json([
     { id: 9, body: "hi", created_at: "2026-01-02T00:00:00Z", html_url: "https://github.com/Acme/App/pull/1#issuecomment-9", issue_url: "https://api.github.com/repos/Acme/App/issues/1", user: { login: "dev" } },
@@ -82,4 +85,15 @@ it("a PR's change fingerprint: the same files and patches over another merge bas
   expect(await id("3")).not.toBe(await id("1"));
   expect(await id("4")).toBeNull();
   expect(await id("5")).toBeNull();
+});
+
+it("a same-repo CONTRIBUTOR with write access (a private org member) reads COLLABORATOR, one permission read per author; a fork or a failed read keeps the raw one", async () => {
+  const r = new CodeReviewReader(reader["github"]);
+  const get = async () => (await codeReviewRoute(r, "pr", new URLSearchParams({ repo: "Acme/App", number: "6" }))).body as { pr: { association: string; elevated?: boolean } };
+  expect((await get()).pr).toMatchObject({ association: "COLLABORATOR", elevated: true });
+  await get();
+  expect(perms).toBe(1);
+  // "dev" has no permission (404): the raw association stays and nothing is raised.
+  const prs = (await codeReviewRoute(r, "prs", new URLSearchParams({ repo: "Acme/App" }))).body as { prs: { association: string; elevated?: boolean }[] };
+  expect(prs.prs.map((p) => [p.association, p.elevated])).toEqual([["NONE", undefined], ["NONE", undefined], ["NONE", undefined]]);
 });
