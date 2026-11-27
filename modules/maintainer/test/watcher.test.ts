@@ -160,6 +160,42 @@ test("a skipped unlabelled opening is retried after its repo's bootstrap", async
   assert.deepEqual(w.triaged, [6], "the triage task is not filed twice");
 });
 
+test("a refused filing during a skip's bootstrap does not stop the row's later issues", async () => {
+  const w = world();
+  await w.look();
+  w.log.push(ev(1, "issues.labeled", { number: 7, label: "agent-fix" }), ev(2, "issues.labeled", { number: 8, label: "agent-fix" }));
+  w.ones["7:agent-fix"] = issue(7);
+  w.ones["8:agent-fix"] = issue(8);
+  const refuse = async (_r, i, kind) => {
+    if (i.number === 7) return false;
+    w.fired.push([i.number, kind ?? "fix"]);
+    return true;
+  };
+  for (let i = 0; i < 3; i++) await w.look({ fire: refuse });
+  assert.deepEqual(w.fired, [[8, "fix"]], "the later event is filed while the first is refused");
+  assert.deepEqual(w.state().skipped.map((s) => s.seq), [1]);
+  w.bootstrap = { repos: [{ repo: R, issues: [issue(7), issue(8)], builds: [], featured: [] }] };
+  assert.equal(await w.look({ fire: refuse }), 0, "the refused issue throws only after its row's later issue is filed");
+  assert.deepEqual(w.fired, [[8, "fix"]], "a fired issue is not filed twice");
+  assert.equal(w.state().feed.digest[R], undefined, "the row with a refused filing is read again");
+  assert.deepEqual(w.state().skipped.map((s) => s.seq), [1], "the skip stays visible until the row's bootstrap completes");
+  assert.equal(await w.look({ fire: refuse }), 0);
+  assert.deepEqual(w.fired, [[8, "fix"]], "a repeated bootstrap still does not duplicate the later issue");
+});
+
+test("a skipped member's openings are retried without the outside author's cap", async () => {
+  const w = world();
+  await w.look();
+  for (let n = 1; n <= 6; n++) w.log.push(ev(n, "issues.opened", { number: n, author_kind: "owner", member: true, created_at: new Date().toISOString() }, { author: "member", labels: [] }));
+  const triage = async () => false;
+  for (let i = 0; i < 3; i++) await w.look({ triage });
+  assert.deepEqual(w.state().repos[R.toLowerCase()].held.map((h) => [h.number, h.member]), [[1, true], [2, true], [3, true], [4, true], [5, true], [6, true]]);
+  assert.deepEqual(w.triaged, []);
+  assert.equal(await w.look(), 6, "every held member opening files, past the outside author's cap");
+  assert.deepEqual(w.triaged, [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(w.state().repos[R.toLowerCase()].held, []);
+});
+
 test("a feed gap, a resync and a changed repo setting each bootstrap again, and the filed issues are not filed twice", async () => {
   const w = world({ bootstrap: { repos: [{ repo: R, issues: [issue(3)] }] } });
   await w.look();

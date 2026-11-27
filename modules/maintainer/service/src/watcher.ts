@@ -88,8 +88,8 @@ interface RepoState {
   triaged?: number[];
   /** The triage runs fired in the last day, with their issue and its author: what the daily limits count (an issue that proves valid stops counting for its author). */
   recent?: { at: number; author: string; issue?: number }[];
-  /** Issues over their author's cap, kept until a slot frees (oldest first), dropped once labelled valid, closed or a day old (the daily run has them). */
-  held?: { number: number; author: string; created_at: string }[];
+  /** Issues over their author's cap, kept until a slot frees (oldest first), dropped once labelled valid, closed or a day old (the daily run has them). `member` is GitHub's own word, so a member is never capped. */
+  held?: { number: number; author: string; created_at: string; member?: boolean }[];
 }
 /** A handler failure kept across looks, keyed by the event's seq. */
 interface EventAttempt { attempts: number; error: string; at: number }
@@ -218,7 +218,7 @@ export async function maintainerPump(d: PumpDeps): Promise<number> {
           if (ev.kind === "issues.opened" && r.triage !== "off") {
             const st = of(r.repo);
             if (!(st.triaged ?? []).includes(number) && !(st.held ?? []).some((h) => h.number === number)) {
-              st.held = [...(st.held ?? []), { number, author: String(ev.author ?? "").toLowerCase(), created_at: String(ev.data?.created_at ?? new Date().toISOString()) }].slice(-KEEP);
+              st.held = [...(st.held ?? []), { number, author: String(ev.author ?? "").toLowerCase(), created_at: String(ev.data?.created_at ?? new Date().toISOString()), member: ev.data?.member === true }].slice(-KEEP);
             }
           }
           d.log.warn({ seq: ev.seq, kind: ev.kind, id: ev.id, resource: ev.resource, number, err: message }, `maintainer feed event skipped after ${EVENT_ATTEMPTS} looks; its repo is bootstrapped next look`);
@@ -249,11 +249,18 @@ export async function maintainerPump(d: PumpDeps): Promise<number> {
 async function bootRepo(d: PumpDeps, r: MaintainedRepo, row: BootstrapRow, st: RepoState): Promise<number> {
   if (row.error) throw new Error(`${r.repo}: ${row.error}`);
   let count = 0;
-  for (const i of row.issues ?? []) count += await file(d, r, i, "fix", st);
-  for (const i of row.builds ?? []) count += await file(d, r, i, "build", st);
+  // One refused filing must not stop the row's later issues: file each on its own and retry the row after.
+  const failed: string[] = [];
+  for (const i of row.issues ?? []) {
+    try { count += await file(d, r, i, "fix", st); } catch (e) { failed.push(errorText(e)); }
+  }
+  for (const i of row.builds ?? []) {
+    try { count += await file(d, r, i, "build", st); } catch (e) { failed.push(errorText(e)); }
+  }
   if (!r.features) st.featured = [];
   else if (row.featured && !row.incomplete) st.featured = keep(row.featured);
   if (row.incomplete) throw new Error(`${r.repo}: ${row.incomplete}`);
+  if (failed.length) throw new Error(`${r.repo}: ${failed.join("; ")}`);
   return count;
 }
 
@@ -350,12 +357,12 @@ async function releaseHeld(d: PumpDeps, r: MaintainedRepo, st: RepoState): Promi
   let count = 0;
   // With the backlog on, a held issue is the daily run's after a day; with `new` alone nothing else takes it, so it waits for a slot (or its close).
   for (const h of st.held.filter((x) => !valid.has(x.number) && (r.triage === "new" || Date.now() - Date.parse(x.created_at) < DAY))) {
-    if (recent.filter((x) => x.author === h.author && !valid.has(x.issue!)).length >= TRIAGE_CAP_PER_AUTHOR_DAY) held.push(h);
+    if (h.member !== true && recent.filter((x) => x.author === h.author && !valid.has(x.issue!)).length >= TRIAGE_CAP_PER_AUTHOR_DAY) held.push(h);
     else if (!(await d.triage(r.repo, h.number).catch(() => false))) {
       d.log.warn({ repo: r.repo, issue: h.number }, "maintainer triage task not filed; the next look retries it");
       held.push(h);
     } else {
-      recent.push({ at: Date.now(), author: h.author, issue: h.number });
+      if (h.member !== true) recent.push({ at: Date.now(), author: h.author, issue: h.number });
       st.triaged = keep([...(st.triaged ?? []), h.number]);
       count++;
     }
