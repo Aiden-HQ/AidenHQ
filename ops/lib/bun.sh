@@ -21,7 +21,7 @@ ensureBun() {
     # Downloaded and unpacked in a folder of its own, beside the target, then renamed into place: two installs at once never
     # touch each other's files.
     mkdir -p "$dir" && tmp="$(mktemp -d "$dir/.part.XXXXXX")" || return 1
-    if ! curl -fsSL --retry 3 -o "$tmp/$f" "https://github.com/oven-sh/bun/releases/download/bun-v1.4.5/$f"; then
+    if ! curl -fsSL --retry 3 --connect-timeout 20 --max-time 300 -o "$tmp/$f" "https://github.com/oven-sh/bun/releases/download/bun-v1.4.5/$f"; then
       rm -rf "$tmp"; echo "bun: downloading $f failed" >&2; return 1
     fi
     # The zip's one file named .../bun, inflated, written beside the target and renamed into place.
