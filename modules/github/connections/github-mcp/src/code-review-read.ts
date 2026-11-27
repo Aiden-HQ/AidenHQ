@@ -27,6 +27,8 @@ const MEMBER = ["OWNER", "MEMBER", "COLLABORATOR"];
 const WRITE: Permission[] = ["admin", "maintain", "write"];
 const ROLE_TTL = 10 * 60_000;
 const ROLE_FAILED_TTL = 60_000;
+/** The longest the permission reads hold a PR read: past it the raw associations go back (the reads keep running into the cache). */
+const ELEVATE_WAIT = 5_000;
 
 export function repoArg(v: string | null): string {
   const m = (v ?? "").match(REPO);
@@ -119,18 +121,21 @@ export class CodeReviewReader {
   /**
    * An org member whose membership is private reads CONTRIBUTOR (or NONE) through the App, which can't see it, so code review would class
    * the PR as an outsider's. A same-repo PR whose author has write access on the repo is a member's: its association reads COLLABORATOR.
-   * One permission read per distinct author, kept for ROLE_TTL; a failed read keeps the raw association (the stricter review).
+   * One permission read per distinct author, kept for ROLE_TTL; a failed or slow (ELEVATE_WAIT) read keeps the raw association (the stricter review).
    */
   private async elevate(prs: PullRequest[]): Promise<PullRequest[]> {
     const todo = prs.filter((p) => !p.fork && !p.own && !MEMBER.includes(p.association.toUpperCase()) && LOGIN.test(p.author));
-    await Promise.all([...new Set(todo.map((p) => `${p.repo}\0${p.author.toLowerCase()}`))].map(async (k) => {
+    const reads = [...new Set(todo.map((p) => `${p.repo}\0${p.author.toLowerCase()}`))].map(async (k) => {
       const hit = this.roles.get(k);
       if (hit && Date.now() - hit.at < (hit.role ? ROLE_TTL : ROLE_FAILED_TTL)) return;
       const [repo, login] = k.split("\0") as [string, string];
       let role: Permission | undefined;
       try { role = await this.permission(repo, login); } catch { role = undefined; }
       this.roles.set(k, { at: Date.now(), role });
-    }));
+    });
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([Promise.all(reads), new Promise((r) => { timer = setTimeout(r, ELEVATE_WAIT); })]);
+    clearTimeout(timer);
     return prs.map((p) => todo.includes(p) && WRITE.includes(this.roles.get(`${p.repo}\0${p.author.toLowerCase()}`)?.role as Permission) ? { ...p, association: "COLLABORATOR", elevated: true } : p);
   }
 
