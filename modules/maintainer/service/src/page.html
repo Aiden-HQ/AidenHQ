@@ -9,7 +9,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 /*kit:css*/
-  .wrap { width: 100%; max-width: 1360px; margin: 0 auto; display: grid; gap: 14px; }
+  .wrap { width: 100%; max-width: 1360px; display: grid; gap: 14px; }
   .mc { --ctl: 340px; }
   .mc .top { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px 14px; padding: 14px 20px; background: var(--color-background-secondary, transparent); }
   .mc.open .top { border-bottom: 1px solid var(--line); }
@@ -81,7 +81,7 @@
     // Always propose, an unchanged draft included, so the board's bar holds exactly what the page shows; a refused draft goes back to the last one proposed.
     const sent = { drafts: structuredClone(drafts), removing }, rev = ++sentRev;
     inOrder(async () => {
-      try { proposed(await tool("maintainer_configure", { edits: { repos }, ...(sent.removing ? { remove: sent.removing } : {}) })); lastGood = sent; }
+      try { await tool("maintainer_configure", { edits: { repos }, ...(sent.removing ? { remove: sent.removing } : {}) }); lastGood = sent; say(Object.keys(repos).length || sent.removing ? "Changes are proposed: Save in the bar above applies them." : ""); }
       catch (e) { if (rev === sentRev) { drafts = structuredClone(lastGood.drafts); removing = lastGood.removing; redraw(); } say(e.message, true); }
     });
   }
