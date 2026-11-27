@@ -14,18 +14,21 @@ export const MERGE = ["off", "ready"] as const;
 export const FIX = ["conflicts", "ci", "review"] as const;
 /** Which Dependabot PRs get an Engineer task: none, only the ones whose checks fail, or all of them. */
 export const DEPENDABOT = ["off", "failing", "all"] as const;
-/** The stages a repo's own commands and workflows run at (actions.ts): before ship's repair of a conflict, before it brings a
- * branch up to date, and before it merges. */
+/** The stages a repo's own workflows run at (actions.ts): before ship's repair of a conflict, before it brings a branch up to
+ * date, and before it merges. */
 export const STAGES = ["conflict", "behind", "before_merge"] as const;
-/** One step of a stage: the repo's own slash command, posted as a comment, or one of its workflows, dispatched on the PR's head. */
-export type ActionStep = { comment: string } | { workflow: string; inputs?: Record<string, string> };
+/** One step of a stage: one of the repo's workflows, dispatched on the repo's default branch; an input value's `{pr}` is the PR's number
+ * (how the workflow knows which PR). */
+export type ActionStep = { workflow: string; inputs?: Record<string, string> };
 
 export interface ShipSettings {
   /** Whether ship adopts and works this repo's PRs (the Fleet page's Enabled switch). */
   enabled: boolean;
   handoff: (typeof HANDOFF)[number];
   rebase: (typeof REBASE)[number];
-  generated: { globs: string[]; command: string } | null;
+  /** `ci`: the check (job) name in which the repo's own CI regenerates these paths, instead of a `command`: the repair takes their
+   * base side and runs no generator, and ship merges such a repair's head only once that check passed on it (rounds.ts). */
+  generated: { globs: string[]; command: string; ci?: string } | null;
   fix: (typeof FIX)[number][];
   protected: string[];
   caps: Caps;
@@ -34,6 +37,8 @@ export interface ShipSettings {
   /** A repo code review doesn't watch has no tier: this is its merge. */
   unwatched: { merge: (typeof MERGE)[number] };
   stop_label: string;
+  /** Automation accounts (GitHub logins, any case) whose comments ship never treats as a member's request (member-comments.ts). */
+  ignore_authors: string[];
   /** The repo's own commands and workflows per stage (actions.ts). An ordinary setting: they are the repo's own CI. */
   actions: Partial<Record<(typeof STAGES)[number], ActionStep[]>>;
   /** Dependabot PRs that get an Engineer task (loop.ts); a duty of its own: it runs whether or not `enabled` is. */
@@ -50,7 +55,7 @@ const CAUTIOUS: ShipSettings = {
   enabled: true, handoff: "label", rebase: "conflict", generated: null, fix: ["conflicts", "ci", "review"], protected: PROTECTED,
   caps: { wakes_per_head: 3, ci_rounds: 3, same_check_heads: 2, rounds: 30, usd: 5, requeue_on_timeout: 1 },
   by_tier: { skip: { approve: "off", merge: "ready" }, trivial: { approve: "on", merge: "ready" }, standard: { approve: "observe", merge: "ready" }, sensitive: { approve: "off", merge: "ready" } },
-  unwatched: { merge: "ready" }, stop_label: "ship:stop", actions: {}, dependabot: "off", quiet_pr_days: null,
+  unwatched: { merge: "ready" }, stop_label: "ship:stop", ignore_authors: [], actions: {}, dependabot: "off", quiet_pr_days: null,
 };
 const FULL: ShipSettings = {
   // Unguarded at ship's own policy layer. Host rules, human code-owner reviews and kernel authority still apply.
@@ -69,7 +74,7 @@ export const PRESETS: Record<"cautious" | "full", ShipSettings> = { cautious: CA
 const clone = <T>(v: T): T => structuredClone(v);
 
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
-export const FIELDS = ["preset", "enabled", "handoff", "rebase", "generated", "fix", "protected", "caps", "by_tier", "unwatched", "stop_label", "actions", "dependabot", "quiet_pr_days"];
+export const FIELDS = ["preset", "enabled", "handoff", "rebase", "generated", "fix", "protected", "caps", "by_tier", "unwatched", "stop_label", "ignore_authors", "actions", "dependabot", "quiet_pr_days"];
 const REPO = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
 
 /** The fleet's own repos (the agents org as `org/*`, the product repo): ship works them with no entry of their own. Any other
@@ -94,7 +99,7 @@ function resolve(preset: "cautious" | "full", over: Dict): ShipSettings {
     if (k === "caps" && isMap(v)) s.caps = { ...s.caps, ...(v as Partial<Caps>) };
     else if (k === "by_tier" && isMap(v)) for (const t of TIERS) s.by_tier[t] = { ...s.by_tier[t], ...(isMap(v[t]) ? v[t] : {}) } as ShipSettings["by_tier"][Tier];
     else if (k === "unwatched" && isMap(v)) s.unwatched = { ...s.unwatched, ...v } as ShipSettings["unwatched"];
-    else if (k === "generated") s.generated = isMap(v) ? { globs: (v.globs as string[]) ?? [], command: (v.command as string) ?? "" } : null;
+    else if (k === "generated") s.generated = isMap(v) ? { globs: (v.globs as string[]) ?? [], command: (v.command as string) ?? "", ...(typeof v.ci === "string" ? { ci: v.ci } : {}) } : null;
     else s[k] = v;
   }
   return s;
@@ -125,18 +130,22 @@ const oneOf = (errors: string[], at: string, v: unknown, list: readonly string[]
 const strings = (errors: string[], at: string, v: unknown) => { if (!Array.isArray(v) || v.some((x) => typeof x !== "string" || !x || x.length > 300)) errors.push(`${at}: a list of strings`); };
 const count = (errors: string[], at: string, v: unknown) => { if (v !== null && !(Number.isInteger(v) && (v as number) >= 0)) errors.push(`${at}: a whole number, or null for unlimited`); };
 
-// A step is the repo's own command, never free text: one slash command line (posted as is), or a workflow file name in
-// .github/workflows (it goes into an API path) with string inputs.
-const COMMAND = /^\/[\w-]{1,40}( [\w.:/=-]{1,60})?$/;
+// A step is one of the repo's workflows, never free text: a file name in .github/workflows (it goes into an API path) with string
+// inputs, whose one placeholder is `{pr}` (the PR's number). A workflow reports its run; a comment's bot doesn't, so there are no
+// comment steps.
 const WORKFLOW = /^[\w.-]{1,100}\.ya?ml$/;
-function stepError(x: unknown): string | undefined {
-  if (!isMap(x)) return "{ comment } or { workflow, inputs? }";
-  if ("comment" in x) return Object.keys(x).length === 1 && typeof x.comment === "string" && COMMAND.test(x.comment) ? undefined : "comment: one slash command, e.g. /rebase";
-  if (!("workflow" in x) || Object.keys(x).some((k) => !["workflow", "inputs"].includes(k))) return "{ comment } or { workflow, inputs? }";
+export function stepError(x: unknown): string | undefined {
+  if (isMap(x) && "comment" in x) return "comment steps are gone: use the repo's workflow, { workflow: file.yml, inputs? } (an input may say {pr})";
+  if (!isMap(x) || !("workflow" in x) || Object.keys(x).some((k) => !["workflow", "inputs"].includes(k))) return "{ workflow, inputs? }";
   if (typeof x.workflow !== "string" || !WORKFLOW.test(x.workflow)) return "workflow: a file name in .github/workflows, e.g. pr-rebase.yml";
   if ("inputs" in x && (!isMap(x.inputs) || Object.keys(x.inputs).length > 10 || Object.entries(x.inputs).some(([k, v]) => !/^[\w-]{1,50}$/.test(k) || typeof v !== "string" || v.length > 200))) return "inputs: up to 10 names with text values";
+  if ("inputs" in x && Object.values(x.inputs as Dict).some((v) => /[{}]/.test(String(v).replaceAll("{pr}", "")))) return "inputs: the only placeholder is {pr}";
+  // It runs on the default branch: an input naming the PR is the only way it knows which one.
+  if (!isMap(x.inputs) || !Object.values(x.inputs).some((v) => String(v).includes("{pr}"))) return "inputs: name the PR with {pr}, e.g. inputs: { pr: \"{pr}\" }";
   return undefined;
 }
+/** A GitHub login (a user's or a bot's `name[bot]`). */
+const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(\[bot\])?$/;
 
 /** The per-repo fields risk tiers replaced: refused with a message. */
 const OLD = ["approve", "merge", "safe"];
@@ -167,19 +176,24 @@ function checkEntry(errors: string[], at: string, e: unknown) {
   }
   if ("fix" in e) { strings(errors, `${at}.fix`, e.fix); if (Array.isArray(e.fix)) for (const f of e.fix) if (!FIX.includes(f)) errors.push(`${at}.fix: ${String(f).slice(0, 40)} (known: ${FIX.join(", ")})`); }
   if ("protected" in e) strings(errors, `${at}.protected`, e.protected);
+  if ("ignore_authors" in e && (!Array.isArray(e.ignore_authors) || e.ignore_authors.length > 50 || e.ignore_authors.some((x) => typeof x !== "string" || !LOGIN.test(x)))) errors.push(`${at}.ignore_authors: a list of up to 50 GitHub logins`);
   if ("stop_label" in e && (typeof e.stop_label !== "string" || !e.stop_label || e.stop_label.length > 50)) errors.push(`${at}.stop_label: a label name`);
   if ("generated" in e && e.generated !== null) {
     const g = e.generated;
-    if (!isMap(g) || Object.keys(g).some((k) => !["globs", "command"].includes(k))) errors.push(`${at}.generated: { globs, command }`);
-    else { strings(errors, `${at}.generated.globs`, g.globs ?? []); if (g.command !== undefined && (typeof g.command !== "string" || g.command.length > 500)) errors.push(`${at}.generated.command: text`); }
+    if (!isMap(g) || Object.keys(g).some((k) => !["globs", "command", "ci"].includes(k))) errors.push(`${at}.generated: { globs, command } or { globs, ci }`);
+    else {
+      strings(errors, `${at}.generated.globs`, g.globs ?? []);
+      if (g.command !== undefined && (typeof g.command !== "string" || g.command.length > 500)) errors.push(`${at}.generated.command: text (when the repo's CI regenerates these paths, set generated.ci to that check's name instead)`);
+      if (g.ci !== undefined && (typeof g.ci !== "string" || !/^[^`\r\n]{1,100}$/.test(g.ci))) errors.push(`${at}.generated.ci: the name of the check in which the repo's CI regenerates these paths`);
+      if (g.ci !== undefined && g.command) errors.push(`${at}.generated: a command or a ci check, not both`);
+    }
   }
   if ("actions" in e) {
     if (!isMap(e.actions)) errors.push(`${at}.actions: a map of stage to steps`);
     else for (const [stage, steps] of Object.entries(e.actions)) {
       if (!STAGES.includes(stage as never)) { errors.push(`${at}.actions.${stage.slice(0, 40)}: unknown stage (known: ${STAGES.join(", ")})`); continue; }
       if (!Array.isArray(steps) || steps.length > 5) { errors.push(`${at}.actions.${stage}: a list of up to 5 steps`); continue; }
-      // Before a merge only a workflow's run can say it passed: a comment's bot answers only with a new head.
-      steps.forEach((x, i) => { const m = stage === "before_merge" && isMap(x) && "comment" in x ? "before_merge takes workflow steps only" : stepError(x); if (m) errors.push(`${at}.actions.${stage}[${i}]: ${m}`); });
+      steps.forEach((x, i) => { const m = stepError(x); if (m) errors.push(`${at}.actions.${stage}[${i}]: ${m}`); });
     }
   }
   if ("caps" in e) {
@@ -240,7 +254,13 @@ export function loosens(before: unknown, after: unknown, scope: Scope = ALL): st
     if ((y.generated?.globs ?? []).some((g) => !(x.generated?.globs ?? []).includes(g))) add("generated.globs");
     // Back from an explicit list to discovery: the discovered paths may reach past the list, so that is a loosening too.
     if (x.generated && !y.generated) add("generated");
-    // A new step of the repo's own (a workflow it dispatches with the owner's credentials, a command it posts) is the owner's.
+    // `ci` (the repo's CI regenerates) is no loosening: the repair then runs nothing and writes only the base's own blobs on those
+    // paths, which the globs already bound, and such a head merges only once that check passed on it.
+    // A new ignored account: its comments no longer gate a merge (an agent could name a person), so it is the owner's. Dropping
+    // one is free.
+    const ignored = (l: string[]) => new Set(l.map((x) => x.toLowerCase()));
+    if ([...ignored(y.ignore_authors)].some((l) => !ignored(x.ignore_authors).has(l))) add("ignore_authors");
+    // A new step of the repo's own (a workflow it dispatches with the owner's credentials) is the owner's.
     const count = (l: ActionStep[] | undefined, v: string) => (l ?? []).filter((u) => JSON.stringify(u) === v).length;
     for (const st of STAGES) if ((y.actions[st] ?? []).some((v) => count(y.actions[st], JSON.stringify(v)) > count(x.actions[st], JSON.stringify(v)))) add(`actions.${st}`);
   };

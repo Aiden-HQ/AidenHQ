@@ -40,17 +40,19 @@ test("ship's GitHub calls: its token only, the loop's own calls only, on a repo 
   for (const path of ["/repos/acme/app/git/refs/heads/b1/git/refs/heads/x/../../../../../main", "/repos/acme/app/git/refs/heads/b1/../../../../../../other/repo/git/refs/heads/main", "/repos/acme/app/git/refs/heads/b1/%2e%2e/main", "/repos/acme/app/git/refs/heads/b1/./x"])
     assert.equal((await gh({ method: "DELETE", path })).status, 403, path);
   assert.equal((await gh({ method: "GET", path: "/repos/acme/app/pulls/1/../../../../other/repo/pulls/1" })).status, 403, "no dot segment on any call");
-  // The repo's own steps and discovery: the base tree and blobs, a workflow's dispatch (a ref and inputs only) and its runs.
+  // The repo's own steps and discovery: the base tree and blobs, a workflow's dispatch (a ref and inputs, always asking for its run) and that run.
   const B = "a".repeat(40);
   for (const [method, path, body] of [["GET", "/repos/acme/app/git/trees/main?recursive=1"], ["GET", `/repos/acme/app/git/blobs/${B}`],
-    ["POST", "/repos/acme/app/actions/workflows/pr-rebase.yml/dispatches", { ref: "b1", inputs: { pr: "1" } }],
-    ["GET", "/repos/acme/app/actions/workflows/pr-rebase.yml/runs?event=workflow_dispatch&created=%3E%3D2026-11-24T10%3A00%3A00Z&per_page=20"]])
+    ["POST", "/repos/acme/app/actions/workflows/pr-rebase.yml/dispatches", { ref: "main", inputs: { pr: "1" }, return_run_details: true }],
+    ["GET", "/repos/acme/app/actions/runs/42"], ["GET", `/repos/acme/app/commits/${B}/check-runs?check_name=regenerate%20files&per_page=100`]])
     assert.equal((await gh({ method, path, body })).status, 200, path);
   // A GET goes out with no body (fetch refuses a GET with one).
   assert.equal(sent[called.indexOf("GET /repos/acme/app/git/trees/main?recursive=1")], undefined, "a GET sends no body");
   // A branch with a slash in the cleanup query (head=owner:feat/x) is allowed: the query never changes the path.
   assert.equal((await gh({ method: "GET", path: "/repos/acme/app/pulls?state=open&head=acme%3Afeat%2Fx" })).status, 200, "encoded slash in the query");
-  for (const [method, path, body] of [["POST", "/repos/acme/app/actions/workflows/pr-rebase.yml/dispatches", { ref: "b1", extra: 1 }],
+  for (const [method, path, body] of [["POST", "/repos/acme/app/actions/workflows/pr-rebase.yml/dispatches", { ref: "b1", extra: 1, return_run_details: true }],
+    ["POST", "/repos/acme/app/actions/workflows/pr-rebase.yml/dispatches", { ref: "main", inputs: { pr: "1" } }],
+    ["GET", "/repos/acme/app/actions/workflows/pr-rebase.yml/runs?event=workflow_dispatch&per_page=20"],
     ["GET", "/repos/acme/app/git/trees/..?recursive=1"], ["GET", "/repos/acme/app/git/trees/%2e%2e?recursive=1"], ["GET", "/repos/acme/app/git/trees/a%2fb?recursive=1"],
     ["GET", "/repos/acme/app/actions/workflows/x.yml/runs?a=%5c"], ["POST", "/repos/acme/app/actions/workflows/../../../other/repo/actions/workflows/x.yml/dispatches", { ref: "b1" }],
     ["POST", "/repos/other/repo/actions/workflows/x.yml/dispatches", { ref: "b1" }]])
