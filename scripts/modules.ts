@@ -889,6 +889,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   settings.code_review_gated = reviewGated.watched.join(",");
   // Derived: whether the ship module is on, for the github module's adopted-PR writes (absent: every write naming an adoption is refused).
   settings.ship_enabled = enabled.includes("ship") ? "1" : "";
+  // Derived: the repos with a ship entry, for the Maintainer's Remove (an entry there is cleared from the Ship page, with the Maintainer's own).
+  settings.ship_repos = enabled.includes("ship") ? Object.keys(((settings.ship as { repos?: object } | undefined)?.repos) ?? {}).join(",") : "";
   // An old per-repo shape (approve, merge or safe) fails the compile before anything is written, never half-read (docs/design/code-review.md, Risk tiers).
   if (enabled.includes("ship") && oldShape(settings.ship).length) fail(`settings.ship: ${oldShape(settings.ship).join(", ")}: approve and merge are per tier now: by_tier.<tier>.approve / merge; safe is gone: code review's tier rules say what is small and safe`);
 

@@ -184,6 +184,7 @@
     const btn = (text, fn, cls = "") => { const b = h("button", { type: "button", textContent: text, className: cls }); b.addEventListener("click", fn); return b; };
     const acts = gone ? [btn("Keep", () => { removing = null; redraw(); propose(); })]
       : open && fresh ? [btn("Discard", () => { added = added.filter((x) => x !== repo); delete drafts[repo]; redraw(); propose(); })]
+      : open && r.ship ? [h("span", { className: "sum", textContent: "Has a Ship entry: remove it on the Ship page" })]
       : open ? [btn("Remove", () => { removing = repo; redraw(); propose(); })]
       : [btn("Edit", () => { openRepo = repo; redraw(); })];
     const top = h("div", { className: "top" }, h("div", { className: "who" }, h("div", { className: "name" }, h("span", { textContent: repo }), ...tags.filter(Boolean)), h("div", { className: "sum", textContent: summary(d) })), h("div", { className: "acts" }, ...acts));

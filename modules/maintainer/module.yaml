@@ -107,7 +107,7 @@ services:
         MAINTAINER_TOKEN_FILE: ${secrets.maintainer_token}
         MAINTAINER_SERVICE_KEY_FILE: ${secrets.maintainer_service_key}
         MAINTAINER_REPOS: "${settings.maintainer_repos}"
-        MAINTAINER_SHIP: "${settings.ship_enabled}" # set when Ship is on: it owns a listed repo's removal (its page clears all three entries)
+        MAINTAINER_SHIP_REPOS: "${settings.ship_repos}" # the repos with a ship entry: Ship's page owns their removal (it clears all three entries)
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
 generated_secrets:
   - maintainer_token
