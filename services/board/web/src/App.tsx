@@ -883,7 +883,7 @@ export function App() {
   const held = new Set([...board.work, ...board.done].map((c) => c.id));
   const older = searching ? found.done.filter((c) => !held.has(c.id)) : [];
   const workCards = applyFilters([...board.work, ...older], tb.filters, found.hits);
-  const delegatedShown = delegatedOf(workCards, board.timezone);
+  const delegatedShown = delegatedOf(workCards, board.timezone, searching);
   const doneCards = applyFilters([...board.done, ...older.filter((c) => c.mine !== false && !c.recent)], tb.filters, found.hits);
   // My day's Done column: when asked for, or while a search answer has matches there.
   const doneColumn = showDone || (searching && (doneCards.length > 0 || found.hasMore));
@@ -939,7 +939,7 @@ export function App() {
           <div className="tt-row">
             <h1>Tasks</h1>
             <BoardTabs tb={tb} ready={!!session?.account} mobile={false} saveSignal={saveOpen} counts={tabCounts} />
-            {(mineTab || work) && <TaskFilters filters={tb.filters} onChange={tb.setFilters} board={board} />}
+            {(mineTab || work) && !tb.view && <TaskFilters filters={tb.filters} onChange={tb.setFilters} board={board} />}
             <span className="spacer" />
             {(mineTab || work) && <TaskKeys />}
             {work && <AsOf board={board} stale={!!error} />}
@@ -961,7 +961,7 @@ export function App() {
               <PlusIcon /> New task
             </button>
           </div>
-          {mineTab || work ? (
+          {(mineTab || work) && !tb.view ? (
             found.note && <p className="search-note">{NOTE_TEXT[found.note]}</p>
           ) : (
             <div className="tt-row tt-filters">
@@ -979,7 +979,7 @@ export function App() {
             <BoardTabs tb={tb} ready={!!session?.account} mobile saveSignal={saveOpen} counts={tabCounts} />
             {work && <AsOf board={board} stale={!!error} />}
           </div>
-          {mineTab || work ? (
+          {(mineTab || work) && !tb.view ? (
             <div className="tt-row"><TaskFilters filters={tb.filters} onChange={tb.setFilters} board={board} /></div>
           ) : (
             <div className="tt-row">
@@ -1010,7 +1010,7 @@ export function App() {
 
       <ErrorBoundary resetKey={`${view}:${JSON.stringify(route)}`}>
       {view === "home" && page.kind === "welcome" && <Onboarding session={session} onSignIn={signInNeeded} />}
-      {view === "home" && page.kind !== "welcome" && <HomeView card={page.kind === "home" ? page.card : undefined} session={session} go={go} onSignIn={signInNeeded} toast={toast} mobile={mobile} timezone={board.timezone} front={route.kind === "home"} day={{ today: mine!.today, triage: mine!.triage.length, week: mine!.later.length, projects: board.projects, open: () => (tb.setTab("mine"), setQuery("")) }} onDone={markDone} />}
+      {view === "home" && page.kind !== "welcome" && <HomeView card={page.kind === "home" ? page.card : undefined} session={session} go={go} onSignIn={signInNeeded} toast={toast} mobile={mobile} timezone={board.timezone} front={route.kind === "home"} day={{ today: mine!.today, triage: mine!.triage.length, week: mine!.tomorrow.length + mine!.later.length, projects: board.projects, open: () => (tb.setTab("mine"), setQuery("")) }} onDone={markDone} />}
       {view === "team" && page.kind === "teammate" && <Suspense fallback={<PageLoading />}><TeammateView key={page.key} agentKey={page.key} chat={page.chat} text={page.text} crew={mates} faces={board.assignees} prefix={board.prefix} go={go} onSignIn={signInNeeded} toast={toast} mobile={mobile} /></Suspense>}
       {view === "team" && page.kind === "hire" && <Suspense fallback={<PageLoading />}><HireView key={page.setup ?? page.install ?? ""} setup={page.setup} install={page.install} chat={page.chat} owner={session?.account?.owner === true} onSignIn={signInNeeded} /></Suspense>}
       {view === "team" && page.kind !== "teammate" && page.kind !== "hire" && <Suspense fallback={<PageLoading />}><TeamView go={go} onSignIn={signInNeeded} /></Suspense>}
@@ -1041,6 +1041,7 @@ export function App() {
           onMerge={(c, into) => void mergeCard(c, into)}
           onChanged={() => void refresh(true)}
           toast={toast}
+          moreDone={work && found.hasMore ? found.more : undefined}
         />
       )}
       {view === "tasks" && day && (

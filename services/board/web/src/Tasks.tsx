@@ -32,6 +32,8 @@ export interface TasksProps {
   /** The drawer changed something: read the board again. */
   onChanged: () => void;
   toast: (text: string) => void;
+  /** A search is on and older closed matches remain: reads the next page. */
+  moreDone?: () => void;
 }
 
 type Glyph = "new" | "today" | "upcoming" | "later" | "working" | "waiting" | "queued" | "done";
@@ -84,16 +86,16 @@ function blocksOf(p: TasksProps, allNew: boolean): Block[] {
   ];
 }
 
-const clock = (iso: string, timeZone: string) => new Date(iso).toLocaleTimeString(undefined, { ...clockOpts(), timeZone });
+const clock = (iso: string) => new Date(iso).toLocaleTimeString(undefined, clockOpts());
 
 /** The one time column of a row: how long ago for New and delegated work, a clock time for today's activity, else how long ago. */
 function timeOf(it: Item, board: Board): string {
   const c = it.card as WorkCard;
-  if (!it.mine) return it.group === "done" && c.closedAt ? clock(c.closedAt, board.timezone) : agoLabel(c.activityAt);
+  if (!it.mine) return it.group === "done" && c.closedAt ? clock(c.closedAt) : agoLabel(c.activityAt);
   if (it.group === "new") return ago(c.createdAt);
   if (c.carried) return `Carried ${c.carried}d`;
   if (it.group === "later" && !c.scheduled) return "Someday";
-  return todayIn(board.timezone, new Date(c.activityAt)) === todayIn(board.timezone) ? clock(c.activityAt, board.timezone) : ago(c.activityAt);
+  return new Date(c.activityAt).toDateString() === new Date().toDateString() ? clock(c.activityAt) : ago(c.activityAt);
 }
 
 /** Later's three places: Tomorrow, Next week and Someday. */
@@ -136,8 +138,10 @@ export function TasksList(p: TasksProps) {
   useEffect(() => void (open && !openItem && setOpen(null)), [open, openItem]);
   useEffect(() => void (at && !cardOf(at) && setAt(null)), [at, rows]);
 
+  /** The task the keys act on: the open drawer's, else the row holding focus, else the one J/K picked. */
+  const current = (el: Element) => open ?? el.closest<HTMLElement>("[data-row]")?.dataset.row ?? at;
   const step = useCallback((delta: number) => {
-    const cur = rows.findIndex((r) => r.card.id === (open ?? at));
+    const cur = rows.findIndex((r) => r.card.id === (open ?? (document.activeElement as HTMLElement | null)?.closest<HTMLElement>("[data-row]")?.dataset.row ?? at));
     const next = rows[Math.min(rows.length - 1, Math.max(0, cur < 0 ? (delta > 0 ? 0 : rows.length - 1) : cur + delta))];
     if (!next) return;
     setAt(next.card.id);
@@ -154,7 +158,7 @@ export function TasksList(p: TasksProps) {
       if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable) return;
       if (document.querySelector("dialog[open], .palette-backdrop, .drawer:not(.tasks-drawer)")) return;
       const k = e.key;
-      const cur = cardOf(open ?? at);
+      const cur = cardOf(current(el));
       if (k === "j" || k === "ArrowDown") return e.preventDefault(), step(1);
       if (k === "k" || k === "ArrowUp") return e.preventDefault(), step(-1);
       if (!cur) return;
@@ -242,6 +246,7 @@ export function TasksList(p: TasksProps) {
                     </div>
                   ) : null;
                 })}
+                {b.id === "done" && p.moreDone && <button type="button" className="tk-more" onClick={p.moreDone}>Show more</button>}
                 {b.cap && b.count > b.cap && <button type="button" className="tk-more" onClick={() => setAllNew(true)}>Show all {b.count}</button>}
                 {allNew && b.id === "new" && b.count > NEW_ROWS && !p.narrowed && <button type="button" className="tk-more" onClick={() => setAllNew(false)}>Show fewer</button>}
               </>
@@ -306,7 +311,9 @@ function TaskDrawer({ item, board, mergeTargets, onClose, onDone, onDismiss, onM
     if (!text.trim() || sending) return;
     setSending(true);
     try {
-      setIssue(await api.comment(card.identifier, text));
+      const v = await api.comment(card.identifier, text);
+      setIssue(v);
+      if (v.movedTo) toast(`Sent to ${v.movedTo}`);
       setText("");
       onChanged();
     } catch (e) {
@@ -448,7 +455,7 @@ export function TaskFilters({ filters, onChange, board }: { filters: Filters; on
   return (
     <div className="tk-filters">
       {sel("project", "Project", (board.projects ?? []).map((x): [string, string] => [x.id, x.name]))}
-      {sel("label", "Source", board.labels.filter((l) => SOURCES[l.name]).map((l): [string, string] => [l.id, SOURCES[l.name]!.name]))}
+      {sel("label", "Source", board.labels.filter((l) => SOURCES[l.name] || filters.label?.includes(l.id)).map((l): [string, string] => [l.id, SOURCES[l.name]?.name ?? l.name]))}
       {sel("agent", "Agent", board.assignees.filter((a) => a.kind !== "me").map((a): [string, string] => [a.key, shortName(a)]))}
     </div>
   );

@@ -53,9 +53,6 @@
   .tk-chip .tk-proj { max-width: 5.5rem; }
   .tk-when { min-width: 0; margin-top: 1px; }
   .tk-card .ui-digest-actions { display: none; }
-  .tk-filters { flex: 1 1 100%; min-width: 0; }
-  .tk-sel { flex: 1 1 0; min-width: 0; }
-  .tk-sel select { width: 100%; max-width: none; padding-left: 8px; padding-right: 22px; }
   .tk-wdot { display: inline-block; flex: none; width: 7px; height: 7px; margin-left: 7px; border-radius: 50%; background: var(--warn); vertical-align: middle; }
 }
 
@@ -68,6 +65,11 @@
 .tk-sel svg { position: absolute; right: 8px; pointer-events: none; color: var(--muted); }
 .tk-keys { display: none; align-items: center; gap: 6px; color: var(--faint); font-size: var(--text-sm); white-space: nowrap; }
 .tk-keys .ui-kbd { margin-left: 4px; }
+@media (max-width: 600px) {
+  .tk-filters { flex: 1 1 100%; min-width: 0; }
+  .tk-sel { flex: 1 1 0; min-width: 0; }
+  .tk-sel select { width: 100%; max-width: none; padding-left: 8px; padding-right: 22px; }
+}
 @media (min-width: 1600px) and (hover: hover) { .tk-keys { display: inline-flex; } }
 
 /* The drawer (ui/RowDrawer.tsx): a head, the title, the actions, five facts, then the source and subtasks beside the activity. */

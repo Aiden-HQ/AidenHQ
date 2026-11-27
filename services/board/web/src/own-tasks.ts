@@ -85,17 +85,18 @@ export const DELEGATED: readonly { id: DelegatedGroup; name: string }[] = [
 
 /**
  * The tasks assigned to agents by the kernel's lane: working; Waiting on you holds what needs the owner and what is blocked
- * (both are his to act on); the rest are queued; finished ones show for the day. One function: the tab's count is the first
+ * (both are his to act on); the rest are queued; finished ones show for the day (a search shows every close it found). One function: the tab's count is the first
  * three groups.
  */
-export function delegatedOf(work: WorkCard[], timezone: string): Record<DelegatedGroup, WorkCard[]> {
+export function delegatedOf(work: WorkCard[], timezone: string, anyDay = false): Record<DelegatedGroup, WorkCard[]> {
   const out: Record<DelegatedGroup, WorkCard[]> = { working: [], waiting: [], queued: [], done: [] };
   const today = todayIn(timezone);
   for (const c of work) {
     if (!c.assignee || c.assignee === "me") continue;
     const lane = laneOf(c);
     if (c.closedAt || lane === "done") {
-      if (c.closedAt && todayIn(timezone, new Date(c.closedAt)) === today) out.done.push(c);
+      // A search lists every close it found, not only today's.
+      if (anyDay || (c.closedAt && todayIn(timezone, new Date(c.closedAt)) === today)) out.done.push(c);
     } else out[lane === "working" ? "working" : lane === "needs_you" || lane === "blocked" ? "waiting" : "queued"].push(c);
   }
   return out;
