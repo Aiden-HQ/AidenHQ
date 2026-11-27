@@ -100,7 +100,7 @@ forwards to `POST /v1/routing/<op>` with the Steward job's caller assertion; the
 never from the request.
 
 - **Evidence** (`routing_evidence`): the previous UTC day's decisions from `team_routes`, each with outcomes the kernel
-  recorded: task status and completion time, reopen wakes and finish-gate reopens such as the grader's. Never task text.
+  recorded: task status and completion time, reopen wakes. Never task text.
 - **Replay** (`routing_replay`): code re-runs each decision's candidate snapshot (`team_routes.snapshot`) with the proposed
   weights or repos.
 - **Scope**: members' `repos` and `teams.<t>.routing.weights` on existing teams and members, within the one team schema

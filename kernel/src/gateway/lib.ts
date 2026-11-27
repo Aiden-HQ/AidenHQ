@@ -838,8 +838,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
    * Tells the owner once per limit, period and value (a restart included), or a task's delegator once per task and value; a
    * failed notice never fails the refusal.
    */
-  async function tell(who: { agentId: string | null; issueId: string | null }, over: Limit) {
+  async function tell(who: { agentId: string | null; issueId: string | null; kind?: string }, over: Limit) {
     const task = over.scope === "task";
+    // A rubric check after close is housekeeping: a task cap refusing it is recorded on the check, never told to anyone.
+    if (task && who.kind === "grader") return;
     const to = task ? (tellDelegator && who.issueId ? (text: string) => tellDelegator(who.issueId!, text) : undefined) : notifyOwner;
     const key = [over.scope, task ? "task" : "install", over.subject, over.cap] as const;
     try {

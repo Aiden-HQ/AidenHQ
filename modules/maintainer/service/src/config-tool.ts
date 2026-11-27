@@ -2,11 +2,11 @@
 // `maintainer_config` reads each maintained repo's settings, `maintainer_configure` proposes one change.
 // The change is the owner's own call: it comes back as a typed settings change for the board to show and file on his Save
 // (structuredContent._aidenhq.settings_change), the same as ship's. Nothing is filed here.
-import { ACTIONS, DEPENDABOT, INACTIVE_GRACE_DAYS, TRIAGE, TRUST_ROLES, parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
+import { ACTIONS, DEPENDABOT, addListed, INACTIVE_GRACE_DAYS, TRIAGE, TRUST_ROLES, parseRepos } from "./aidenhq-sdk/maintained-repos.ts";
 import type { Tool } from "./mcp.ts";
 
 type Dict = Record<string, unknown>;
-/** The entry fields the page edits (everything but `repo`, which is the Ship page's to add); parseRepos checks each value. */
+/** The entry fields the page edits (everything but `repo`, which `add` sets); parseRepos checks each value. */
 export const FIELDS = ["fixes", "triage", "features", "dependabot", "quiet_pr_days", "actions", "no_reply_days", "inactive_issue_days", "fix_label", "trusted", "protected_labels"] as const;
 
 /** maintainer_repos as the instance holds it: its entries, a bare "owner/name" or a map. */
@@ -17,22 +17,23 @@ export function rawRepos(text: string): Dict[] {
   return list.map((e) => (typeof e === "string" ? { repo: e } : { ...(e as Dict) }));
 }
 
-/** The list after field changes ({ repo: { field: value | null } }, null back to the default), or a repo removed. Only a listed repo changes: adding is the Ship page's one change. Throws with the reason. */
-export function applyRepoChange(list: Dict[], c: { fields?: Record<string, Dict>; remove?: string }): { value: Dict[]; summary: string[] } {
-  const at = (repo: string) => list.findIndex((e) => String(e.repo).toLowerCase() === repo.toLowerCase());
+/** The list after field changes ({ repo: { field: value | null } }, null back to the default), a repo added (every default; the same addListed Ship's Add repo calls), or a repo removed. Only a listed repo changes. Throws with the reason. */
+export function applyRepoChange(list: Dict[], c: { fields?: Record<string, Dict>; remove?: string; add?: string[] }): { value: Dict[]; summary: string[] } {
   let value = list;
+  const at = (repo: string) => value.findIndex((e) => String(e.repo).toLowerCase() === repo.toLowerCase());
   const summary: string[] = [];
+  for (const repo of c.add ?? []) { value = addListed(value, repo) as Dict[]; summary.push(`${repo}: added to the Maintainer`); }
   if (c.remove) {
     if (at(c.remove) < 0) throw new Error(`${c.remove} isn't listed`);
-    value = list.filter((_, i) => i !== at(c.remove!)); summary.push(`${c.remove}: removed from the Maintainer`);
+    value = value.filter((_, i) => i !== at(c.remove!)); summary.push(`${c.remove}: removed from the Maintainer`);
   }
   for (const [repo, fields] of Object.entries(c.fields ?? {})) {
     for (const k of Object.keys(fields)) if (!(FIELDS as readonly string[]).includes(k)) throw new Error(`fields: ${FIELDS.join(", ")}`);
-    if (at(repo) < 0) throw new Error(`${repo} isn't listed: add it from the Ship page`);
+    if (at(repo) < 0) throw new Error(`${repo} isn't listed: add it first`);
     value = value.map((e) => { if (String(e.repo).toLowerCase() !== repo.toLowerCase()) return e; const m: Dict = { ...e, ...fields }; for (const k of FIELDS) if (m[k] === null) delete m[k]; return m; });
     if (Object.keys(fields).length) summary.push(`${repo}: ${Object.entries(fields).map(([k, v]) => v === null ? `${k} back to default` : `${k} ${JSON.stringify(v)}`).join(", ")}`);
   }
-  if (!c.fields && !c.remove) throw new Error("say what to change: fields, or a repo to remove");
+  if (!c.fields && !c.remove && !c.add?.length) throw new Error("say what to change: fields, a repo to add or a repo to remove");
   if (!summary.length) summary.push("no changes");
   parseRepos(JSON.stringify(value)); // the whole list checked as the github module will read it
   return { value, summary };
@@ -44,7 +45,8 @@ export function defaults() {
   return { base, dependabot: DEPENDABOT, triage: TRIAGE, actions: ACTIONS, roles: TRUST_ROLES, inactive_grace_days: INACTIVE_GRACE_DAYS };
 }
 
-export function configTools(d: { repos: () => string; ship: () => boolean }): Tool[] {
+export function configTools(d: { repos: () => string; shipRepos: () => string }): Tool[] {
+  const onShip = (repo: string) => d.shipRepos().split(",").some((x) => x.trim().toLowerCase() === repo.toLowerCase());
   const ownerOnly = (kind?: string) => { if (kind !== "owner") throw new Error("the Maintainer's repos and settings are the owner's: they set them from the Fleet page"); };
   return [
     {
@@ -54,19 +56,19 @@ export function configTools(d: { repos: () => string; ship: () => boolean }): To
       run: async (_a, who) => {
         ownerOnly(who.kind);
         const set = rawRepos(d.repos());
-        return { repos: parseRepos(d.repos()).map(({ owner: _o, name: _n, ...effective }, i) => ({ repo: effective.repo, set: Object.fromEntries(Object.entries(set[i]!).filter(([k]) => k !== "repo")), effective })), defaults: defaults() };
+        return { repos: parseRepos(d.repos()).map(({ owner: _o, name: _n, ...effective }, i) => ({ repo: effective.repo, set: Object.fromEntries(Object.entries(set[i]!).filter(([k]) => k !== "repo")), ship: onShip(effective.repo), effective })), defaults: defaults() };
       },
     },
     {
       name: "maintainer_configure",
-      description: `Propose changes to the Maintainer's setup, as one typed settings change: { edits: { repos: { <repo>: { <field>: <value> | null } } } } (null puts a field back to its default; fields: ${FIELDS.join(", ")}), or { remove: <repo> } (a repo Ship also covers is removed from the Ship page, which clears both). Only listed repos change: adding one is the Ship page's. The owner saves the change from the Fleet page.`,
-      inputSchema: { type: "object", properties: { edits: { type: "object" }, remove: { type: "string" } }, additionalProperties: false },
+      description: `Propose changes to the Maintainer's setup, as one typed settings change: { edits: { repos: { <repo>: { <field>: <value> | null } } } } (null puts a field back to its default; fields: ${FIELDS.join(", ")}), { add: [<owner/name>, …] } (lists new repos with the Maintainer's defaults), or { remove: <repo> } (a repo with a Ship entry is removed from the Ship page, which clears both). Only listed repos change. The owner saves the change from the Fleet page.`,
+      inputSchema: { type: "object", properties: { edits: { type: "object" }, add: { type: "array", items: { type: "string" } }, remove: { type: "string" } }, additionalProperties: false },
       run: async (a, who) => {
         ownerOnly(who.kind);
         const edits = (a.edits ?? {}) as { repos?: Record<string, Dict> };
-        if (typeof a.remove === "string" && d.ship()) throw new Error(`${a.remove}: with Ship on, remove a repo from the Ship page: it clears the Maintainer, code review and ship entries together`);
-        if (!edits.repos && typeof a.remove !== "string") throw new Error("say what to change");
-        const r = applyRepoChange(rawRepos(d.repos()), { fields: edits.repos, remove: typeof a.remove === "string" ? a.remove : undefined });
+        if (typeof a.remove === "string" && onShip(a.remove)) throw new Error(`${a.remove}: it has a Ship entry, so remove it from the Ship page: it clears the Maintainer, code review and ship entries together`);
+        if (!edits.repos && typeof a.remove !== "string" && !Array.isArray(a.add)) throw new Error("say what to change");
+        const r = applyRepoChange(rawRepos(d.repos()), { fields: edits.repos, remove: typeof a.remove === "string" ? a.remove : undefined, add: Array.isArray(a.add) ? a.add.map((x) => String(x).trim()) : undefined });
         return { changes: r.summary, _aidenhq: { settings_change: [{ kind: "setting", key: "maintainer_repos", value: r.value }] } };
       },
     },

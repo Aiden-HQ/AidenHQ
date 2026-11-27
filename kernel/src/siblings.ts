@@ -1,5 +1,4 @@
-// Names an agent chose (a branch, a path, a commit), encoded so they can't emit markup or prose into a rendered block
-// (grader-note.ts). The AI reviewer no longer reads the task's merged sibling PRs (owner, 2026-11-22: malice only).
+// Names an agent chose (a branch, a path, a commit), encoded so they can't emit markup or prose into a rendered block. The AI reviewer no longer reads the task's merged sibling PRs (owner, 2026-11-22: malice only).
 
 /**
  * Percent-encodes every character outside the kind's allowlist, so a PR-controlled name can never emit `<`, `>`, whitespace,

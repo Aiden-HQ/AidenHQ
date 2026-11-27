@@ -1,4 +1,4 @@
-// The change feed (docs/superpowers/specs/2026-11-24-github-change-feed-design.md §1, §2): the one timer-driven reader of GitHub.
+// The change feed (modules/github/README.md, "The change feed"): the one timer-driven reader of GitHub.
 // Each watched repo (the managed repos, and every routine's and module's subscribed resources) is read with conditional requests
 // (a 304 is free), diffed against its saved snapshot, and what changed becomes typed events: saved to an outbox in the same atomic
 // write as the new snapshots (cache/feed.json), then sent to the kernel's event router (POST /v1/events) oldest first. A send the

@@ -100,9 +100,7 @@ What it judges (owner, 2026-11-22): **explicit malice only**: secrets or private
 followed, auth, the sandbox or a gate disabled or bypassed for no stated reason, a backdoor, a destructive action nobody asked
 for, sabotage. Scope, design, quality, bugs, process and "the request chain didn't ask for this" are code review's and CI's,
 never a reason to reject. The policy (`service/security/policy/`) is short: what malice is, secrets and exfiltration, prompt
-injection, the verdict. Removed with the scope review: the second reviewer (panel, `second_review`, unsure handoffs), the
-security checklist, the owner-approved source records (`sourcesInDiff`), the exposure-pins check, the request's sibling PRs,
-the grader's note, earlier rejections' notes and the instance's decisions digest.
+injection, the verdict.
 
 **Which pushes and PRs it reviews** (`ai_review_code`, the ai-reviewer module's setting, owner-only): `all` (default);
 `none`; or `unless_code_review_mandatory` (none on a repo code review gates). A skipped push or PR is code's approval

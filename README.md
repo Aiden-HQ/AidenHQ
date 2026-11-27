@@ -18,7 +18,7 @@ Install it on a fresh Ubuntu or Debian server or a Mac: see [aidenhq.ai/install]
 | Block | What it is |
 |---|---|
 | **Chief of staff (Aiden)** | The one agent you talk to. Turns chat and forwards into tasks, delegates, chases, sends the daily brief, relays your approvals word for word. |
-| **Crews** | Specialist agents on schedules and events. Core: Aiden, Researcher, DevOps Engineer, Agent Architect, Fleet Steward, Engineer. Modules add the rest (Follow-up Tracker with its Slack and inbox scouts, Meeting Librarian, Security Watch, ...). Each is a `module.yaml` entry plus a handbook (`modules/<m>/agents/<key>/AGENTS.md`); your own agents are local modules in your instance repo. |
+| **Crews** | Specialist agents on schedules and events. Aiden, the Researcher, the DevOps Engineer, the Agent Architect, the Fleet Steward and Engineers, with the rest added by modules (the follow-up chaser, meeting notes, Security Watch, ...). Each is a `module.yaml` entry plus a handbook (`modules/<m>/agents/<key>/AGENTS.md`); your own agents are local modules in your instance repo. |
 | **Control plane** | [Paperclip](https://github.com/paperclipai/paperclip): tasks, routines, approvals, run history. Paperclip runs nothing: the kernel runs every agent as a job in an agent computer, on Codex via OpenRouter. |
 | **Shared connections** | MCP servers any agent can be granted: Google Workspace, Slack, Glean, Jira, GitHub, Primer, tasks, apps (Grafana and ClickHouse are Engineer-only). Each optional one is a module (`modules/<m>/connections/`). Tools are tagged read or write; every call is checked against the agent's grants. |
 | **Code host** | `github` (its code host part, on your one GitHub sign-in): the only holder of your GitHub token; pushes, PRs and merges are approval records tiered in code, and other modules get typed operations through the kernel. Coding jobs run in agent computers. |
@@ -62,10 +62,9 @@ override them):
 
 | Role | Default model |
 |---|---|
-| Aiden and most agents | `~deepseek/deepseek-flash-latest` (high effort) |
-| Agent Architect (its handbooks are what the other agents run on) | `~deepseek/deepseek-flash-latest` at `max` effort |
+| Aiden, the Agent Architect and most agents | `~deepseek/deepseek-flash-latest` (high effort) |
 | UI/UX Designer (mockups) | `~deepseek/deepseek-flash-latest` at high effort |
-| UI Reviewer (screenshot reviews of UI PRs) | `~openai/gpt-luna-latest` at medium effort |
+| UI Reviewer (screenshot reviews of UI PRs) | `~openai/gpt-sol-latest` at medium effort |
 | Red Teamer (fewer refusals on offensive security work) | `~z-ai/glm-flash-latest` (high effort) |
 | Advisor (`advisor_ask`, and `aidenhq advise` for Engineers: a second opinion at a decision point) | `~openai/gpt-sol-latest` |
 | Engineers (coding jobs in agent computers) | `~deepseek/deepseek-flash-latest`, with a picker of others in `modules/engineering/module.yaml` |
@@ -86,9 +85,7 @@ under `modules/` (the agents, connections, apps, engines and channels; MIT by fo
 names a kernel and the modules it was tested with. Third-party modules load from their own repositories (`marketplaces:`
 in `instance.yaml`). Releases and the installer live in
 [aidenhq-distro](https://github.com/Aiden-HQ/aidenhq-distro): its `releases/<release>.json` manifests pin one product sha
-and the prebuilt image digests; the default module set is the `bundle` in this repo's `modules/marketplace.json`. (The official modules lived in
-[aidenhq-modules](https://github.com/Aiden-HQ/aidenhq-modules) from 2026-11-16 to 2026-11-18; it takes no new changes.)
-
+and the prebuilt image digests; the default module set is the `bundle` in this repo's `modules/marketplace.json`. 
 Your configuration lives in a separate private **instance repo**: `instance.yaml` (pinned `product:` commit, `modules`,
 `marketplaces`, `settings`, limited `overrides`), `apps.yaml` and `agents/`. To enable a module, add it to `modules:` in
 `instance.yaml` and apply. See [docs/configuration.md](docs/configuration.md).
@@ -111,7 +108,7 @@ Your configuration lives in a separate private **instance repo**: `instance.yaml
 | [docs/USAGE.md](docs/USAGE.md) | How to use it day to day |
 | [docs/setup.md](docs/setup.md) | Manual setup, step by step, and reference: connections, shared access |
 | [docs/configuration.md](docs/configuration.md) | Modules, the instance repo, settings, grants, the compile pipeline |
-| [docs/modules.md](docs/modules.md) | The kernel contract a module author builds against: file, list and close tasks |
+| [docs/modules.md](docs/modules.md) | The kernel contract a module author builds against: tasks, wakes, jobs and typed code host operations |
 | [docs/architecture.md](docs/architecture.md) | Components, data flow and trust boundaries |
 | [docs/core-components.md](docs/core-components.md) | Our core components and what each adds over Paperclip |
 | [docs/operations.md](docs/operations.md) | Apply, upgrade, rollback, health, backups, pruning, debugging |

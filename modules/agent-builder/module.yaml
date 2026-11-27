@@ -28,11 +28,12 @@ agents:
       slack?: [ slack_search_public_and_private, slack_search_channels, slack_search_users, slack_read_channel, slack_read_thread, slack_read_user_profile ]
       github?: read
       google_workspace?: [ calendar_list_events, calendar_search_events, calendar_get_event, drive_list_recent_files, drive_search_files, drive_read_file, gmail_search, gmail_read_thread, docs_read ]
-      # The design review on Primer (skills design-doc, primer.primer-docs): reads, publishing the doc and its versions, and
-      # thread replies. No live edits: people's edits and comments wake it, its own never do.
-      primer?: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_get_document_comments, primer_list_documents, primer_find_document, primer_get_doc, primer_create_document, primer_add_version, primer_reply_to_thread ]
+      # The design review on Primer (skills design-doc, primer.primer-docs; compile checks the skill's tools are all granted): reads,
+      # publishing the doc and its versions, thread replies, and its own suggestions (list, withdraw) and live-block edits.
+      # People's edits and comments wake it, its own never do.
+      primer?: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_get_document_comments, primer_list_documents, primer_find_document, primer_get_doc, primer_create_document, primer_add_version, primer_reply_to_thread, primer_list_suggestions, primer_withdraw_suggestion, primer_apply_ops ]
       ops_mcp?: [ obsidian_search, obsidian_read, obsidian_read_document_map, voice_note_read, knowledge_list, knowledge_index, knowledge_search, knowledge_read ]
-      paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, fleet_catalog, task_delegate, task_amend_rubric, task_comment, task_handoff, task_block, task_cancel, task_finish ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, fleet_catalog, task_delegate, task_comment, task_handoff, task_block, task_cancel, task_finish ]
     heartbeat: true
     # architect: the tasks it files may run on the product line (kernel admission's platform filers).
     # repo-checkout: the instance repo's agents/ and handbooks, read-only, once the Architect has a computer (`image:`).

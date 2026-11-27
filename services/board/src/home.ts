@@ -23,7 +23,8 @@ export type NeedRow =
   | { id: string; kind: "answer"; teammate: FaceRef; since: string; task: TaskRef; question: string; detail?: string; options: string[]; questions: Question[]; waitSince: string }
   | { id: string; kind: "approval"; teammate: FaceRef; since: string; task: TaskRef | null; question: string; card: object }
   | { id: string; kind: "open"; teammate: FaceRef; since: string; task: TaskRef; question: string; reply?: Reply };
-export type SinceItem = { teammate: FaceRef; text: string; at: string; task: string | null; kind: "done" | "fyi" | "digest" | "closed" };
+/** `reopen`: an owner task its filing agent closed on evidence (skill owner-triage): the row offers one-tap Reopen. */
+export type SinceItem = { teammate: FaceRef; text: string; at: string; task: string | null; kind: "done" | "fyi" | "digest" | "closed"; reopen?: true };
 export type Home = {
   as_of: string;
   since_from: string;
@@ -34,7 +35,7 @@ export type Home = {
   since: { groups: { teammate: FaceRef; latest: SinceItem; count: number }[]; items: SinceItem[]; total: number } | null;
   world: {
     waiting_on: { id: string; identifier: string; title: string; age_days: number; quiet_days: number }[] | null;
-    today: { timezone: string; events: { id: string; start: string; title: string; all_day: boolean; prep?: string }[] } | null;
+    today: { timezone: string; events: { id: string; start: string; title: string; all_day: boolean; url?: string; prep?: string }[] } | null;
   };
   team: { teammate: FaceRef; line: string }[];
 };
@@ -190,7 +191,7 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
     // An agent's own task, or an owner task its filer closed on evidence (label auto-closed, skill owner-triage).
     const by = i.assigneeAgentId ?? (labelled(i, "auto-closed") ? i.createdByAgentId : null);
     if (!at || at < since_from || !by || labelled(i, "chat")) continue;
-    items.push({ teammate: face(keyOfAgent(by)), text: `${i.completedAt ? "Done" : "Cancelled"}: ${i.title}`, at, task: i.identifier, kind: "closed" });
+    items.push({ teammate: face(keyOfAgent(by)), text: `${i.completedAt ? "Done" : "Cancelled"}: ${i.title}`, at, task: i.identifier, kind: "closed", ...(i.assigneeAgentId ? {} : { reopen: true as const }) });
   }
   items.sort((a, b) => b.at.localeCompare(a.at));
   const seenTask = new Set<string>();
@@ -266,8 +267,8 @@ async function calendarToday(d: HomeDeps, nowMs: number): Promise<Home["world"][
   let value: Home["world"]["today"] = null;
   if (d.views) {
     try {
-      const r = (await d.views.read("calendar_today", {})) as { timezone: string; events: { id: string; start: string; title: string; all_day: boolean }[] };
-      value = r.events.length ? { timezone: r.timezone, events: r.events.map(({ id, start, title, all_day }) => ({ id, start, title, all_day })) } : null;
+      const r = (await d.views.read("calendar_today", {})) as { timezone: string; events: { id: string; start: string; title: string; all_day: boolean; url?: string }[] };
+      value = r.events.length ? { timezone: r.timezone, events: r.events.map(({ id, start, title, all_day, url }) => ({ id, start, title, all_day, ...(url && /^https?:\/\//i.test(url) ? { url } : {}) })) } : null;
     } catch (err) {
       if ((err as { status?: number }).status !== 404) d.log.warn({ err: String((err as Error).message ?? err).slice(0, 300) }, "home: today's calendar isn't readable");
     }

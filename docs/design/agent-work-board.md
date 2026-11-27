@@ -1,7 +1,7 @@
 # Agent work board (Tasks page, second layout and saved views)
 
-Status: built (owner-approved direction: extend the Tasks page, no separate board). Follow-ups built: projects that fill
-themselves in, the single-approval route, richer waiting and scheduled cards (below).
+Built on the Tasks page (no separate board); projects that fill themselves in, the single-approval route and richer waiting
+and scheduled cards are below.
 
 ## Why
 
@@ -39,7 +39,7 @@ from the primary `reason` (which a running job or a higher-ranked wait can mask)
 All 22 reasons land in exactly one lane. A blocker a queued job or another wait outranks still needs a name on the card, so the
 row also carries `blocker` (`task:<id>`) whenever a blocked obligation is open, whatever the primary reason. `lane` is part of the shared wire type: the board's copy (`services/board/src/task-state.ts`,
 `web/src/types.ts`, "change them together") gains it, and the filter, the lane, the swimlane and every count read it. A task with no
-kernel row shows in Idle with "No reported state". `web/src/lanes.ts` does not exist.
+kernel row shows in Idle with "No reported state".
 
 ## Data flow
 
@@ -171,7 +171,7 @@ resolved from the `attention` entry or the state, and each a link to what it nam
 | Waiting | blue dot and the kernel's words (`stateWords`: "AI review", "CI checks", "an answer from Research Lead") |
 | Blocked | red callout "Failed: <how the job ended>" (opens the run), or "Blocked by WOR-7744" (opens that task); a chat run that ended with no reply (`fail` ref `no_reply`, no job) is "Failed: Run ended without a reply", opening the task's drawer (its activity) |
 | Idle | grey dot and why ("Backlog", "Scheduled for tomorrow 08:00", "Your task", "No reported state") |
-| Done | quiet title, "Done, graded pass" or "Stopped" |
+| Done | quiet title, "Done" or "Stopped" |
 
 One card, one accent: the callout colour is the only saturated area on a card, so a column scans by colour.
 
@@ -273,9 +273,9 @@ with one reason, and each card is decided on its own against the digest it showe
 Deciding: the board's `POST /api/approvals/:id/decide {digest, decision, reason}` forwards the signed-in admin's board session to the
 kernel's `POST /v1/owner/decide` with `{board: <session token>}` beside the MCP bearer: the kernel checks the session
 (`uiSession("board")`, a ready admin, as for a settings save) and decides as `account:<id>` via `board`. The route needs an Origin
-header besides the board's JSON, board-header and same-origin checks. The kernel's approval pages are gone: `/`, `/approvals` and
-`/approvals/<id>` on its admin listener redirect to the board (the board is reachable in every exposure mode wherever the admin
-listener is: public, tailscale, cloudflare and the local tunnel), and no card is decided by a kernel form any more. Telegram decides
+header besides the board's JSON, board-header and same-origin checks. The kernel's `/`, `/approvals` and
+`/approvals/<id>` on its admin listener redirect to the board (reachable in every exposure mode wherever the admin
+listener is), and no card is decided by a kernel form. Telegram decides
 by its own channel tokens (taps and typed replies), never through a kernel page.
 
 ### Richer waiting and scheduled cards

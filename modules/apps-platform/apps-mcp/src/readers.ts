@@ -1,5 +1,5 @@
-// Who may read an app's grading evidence from apps-mcp (/internal/deploys, /internal/view): a module's own token that the
-// kernel's GET /v1/whoami says is a module holding role apps.read (declared by this module, requested by grading). Never the
+// Who may read apps-mcp's internal reads (/internal/sources, /quality, /open-prs): a module's own token that the kernel's
+// GET /v1/whoami says is a module holding role apps.read (declared by this module, requested by the Fleet Steward). Never the
 // internal token, which deploys. Fails closed: a kernel that can't be asked is a refusal.
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
@@ -14,7 +14,7 @@ export const bearerIs = (req: IncomingMessage, token: string): boolean => {
 };
 
 /** The caller's module when it may read, else the status to refuse with (401 unknown, 403 known but not a module holding
- * apps.read). A route that varies what it returns by caller (the grader's larger snapshot) keys on the verified module here. */
+ * apps.read). A route that varies what it returns by caller (sources' detail) keys on the verified module here. */
 export function appsReaderIdentity(kernelUrl: string, fetchFn: typeof fetch = fetch) {
   return async (req: IncomingMessage): Promise<{ module: string } | 401 | 403> => {
     if (!bearer(req)) return 401;

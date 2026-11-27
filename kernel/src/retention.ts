@@ -2,7 +2,7 @@
 // Paperclip's run history and activity log are pruned (Paperclip prunes neither). One daily timer; small batches, each its own
 // transaction on the kernel's one connection, so the event loop is never held for long.
 //   records  finished (not review, owner, approved, claimed), by updated_at (each move sets it, so it is the terminal move):
-//            card.details -> an explicit note (card.expired; an apply's stays: it is the grader's evidence), context -> NULL, args -> its small keys. The veto key (connection,
+//            card.details -> an explicit note (card.expired; an apply's stays: the approval history shows what was applied), context -> NULL, args -> its small keys. The veto key (connection,
 //            tool), the PRs a write names (prs, only, repo, head...) are small and stay; `paths` is filled from the diff first
 //            (work.ts reads it), the summary lines of the card, the outcome and the reviewer's note stay.
 //   jobs     finished (not admitted, running), by ended: full_prompt -> NULL (only a running job resumes from it: jobs.ts
@@ -85,7 +85,7 @@ export async function clearFinished(db: DatabaseSync, { now = Date.now(), stoppi
       const work = () => {
         for (const r of rows) {
           if (table === "records") {
-            // An apply's diff is the grader's evidence (work.ts, modules/grading) whenever the task is graded: its card stays (about 1 MB in all).
+            // An apply's diff stays in its approval history: what the owner or the reviewer approved (about 1 MB in all).
             const card = r.kind === "kernel.apply" ? { card: r.card, paths: [] } : keptCard(r.card), args = keptArgs(r.args);
             out.bytes += size(r.card, r.args, r.context) - size(card.card, args);
             update.run(card.card, args, card.paths.length && !r.paths ? JSON.stringify(card.paths) : null, now, r.id);

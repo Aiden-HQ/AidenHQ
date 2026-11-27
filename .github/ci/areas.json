@@ -39,7 +39,7 @@
     {"name": "modules/github", "secs": 15, "job": "modules", "run": "npm test", "paths": ["modules/github", "kernel/src", "kernel/sdk", "kernel/test/helpers.ts", "kernel/package-lock.json", "modules/engineering"]},
     {"name": "modules/codehost-local", "secs": 1, "job": "modules", "run": "npm test", "paths": ["modules/codehost-local", "kernel/src", "kernel/sdk/src", "modules/github"]},
     {"name": "modules/platform", "secs": 1, "job": "modules", "run": "npm test", "paths": ["modules/platform", "modules"]},
-    {"name": "modules/grading", "secs": 4, "job": "modules", "run": "npm test", "paths": ["modules/grading", "kernel/src", "ops/grades-move.ts"]},
+    {"name": "modules/grading", "secs": 4, "job": "modules", "run": "npm test", "paths": ["modules/grading"]},
     {"name": "modules/ship", "secs": 1, "job": "modules", "run": "npm test", "paths": ["modules/ship", "modules/github/service/src/merge-gate.ts", "modules/github/service/src/aidenhq-sdk/checks.ts"]},
     {"name": "modules/dispatch", "secs": 1, "job": "modules", "run": "npm test", "paths": ["modules/dispatch"]},
     {"name": "modules/sessions", "secs": 1, "job": "modules", "run": "npm test", "paths": ["modules/sessions"]}

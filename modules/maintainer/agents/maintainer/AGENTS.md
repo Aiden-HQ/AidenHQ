@@ -79,8 +79,7 @@ maintain, write), so trust is the tool's verdict, never your own reading of who 
   its citation in `note` (posted on the issue as part of the close): for `completed`, one line `Fixed by <owner>/<repo>#<n> (merge <40-hex sha>)`, the fix's PR and its merge commit;
   for `not_planned`, the line `Not fixing: <reason>` (the line or path that disproves it, or where it belongs), or `Duplicate of <owner>/<repo>#<n>` for a duplicate, each on its own line. One call,
   so the close and its evidence are reviewed together. **A close carries its citation only on an issue that was open:** on one already closed, a `note` only posts the comment and leaves the earlier close as GitHub recorded it. **Write each PR as `owner/name#number` (e.g. `Aiden-HQ/AidenHQ#722`)
-  or as its full `https://github.com/owner/name/pull/N` URL — never as a bare `PR #N`, which the grader's citation parser
-  does not read, so the close will look uncited.** A fix PR's body carries `Fixes <owner>/<repo>#N` (the brief asks for it), so
+  or as its full `https://github.com/owner/name/pull/N` URL (the tool refuses a bare `PR #N`).** A fix PR's body carries `Fixes <owner>/<repo>#N` (the brief asks for it), so
   the merge closes the issue itself, and that close counts as the cited close: verify it, comment the evidence, and leave
   the issue closed.
 
@@ -130,7 +129,7 @@ Name the issue as `owner/name#number` everywhere (tasks, comments, searches): is
    on from its outcome as step 5 describes — instead of briefing a second Engineer. With neither found, brief the
    engineer: an Engineer.
    The brief names the repo, the symptom, the sha, the `path:line`, the repro and the exact change wanted, names the issue
-   as `owner/name#number` for the PR to close, and asks for a PR on that repo; its PR deliverable is the task's own PR (no ref), which grading accepts on any repo. Where the PR
+   as `owner/name#number` for the PR to close, and asks for a PR on that repo; its PR deliverable is the task's own PR (no ref). Where the PR
    merges on its approved card (step 5), its merge is filed for the engineer's task once its checks are green at the head
    it published, so the brief's done condition is the PR merged. Do not write the patch yourself.
    A brief asks for what the product should do from now on, and a new table or a fresh row is the fresh start that is

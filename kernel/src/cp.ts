@@ -348,14 +348,7 @@ export function createCp({ whoami, asserter, plugin, once, sawn = () => 0, agent
       // never closed over its agent) is finished here; the checks hear the close as the task's own.
       const own = t.id === task || t.assigneeAgentId === agent;
       if (!own && !evidence && !(settling && t.status === "in_review")) throw fail(403, "forbidden", `only this job's own task is finished here; ${t.identifier ?? t.id} is finished by its assignee${settling ? " (a settler closes another agent's task only once it waits in review)" : ""}`);
-      if (checks) {
-        const tool = String(c.tool ?? "").split(".").pop()!;
-        const f = await checks.finish(t.id, { agent, tool, via: tool });
-        if (!f.pass) {
-          log("cp", { module: mod.module, agent: c.key, method, path, finish: "held" in f ? "held" : "reopened" });
-          return answer(202, Buffer.from(JSON.stringify("held" in f ? { held: { state: f.state, reason: f.reason } } : { reopened: { reason: f.reason } })));
-        }
-      }
+      if (checks) await checks.finish(t.id);
       gated = true;
     }
     const blocked = status === "blocked";

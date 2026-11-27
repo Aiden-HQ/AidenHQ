@@ -118,9 +118,8 @@ function eventRoutine(key: string, r: Obj, paperclip: Obj) {
  */
 export const LEGACY_LINKS: Record<string, { until: string; to: string[] }> = {
   "chat-lane": { until: "3a", to: ["board"] },
-  // 3h: the board reads grade rows from the grading module (its own key) until the board is a module; apps-mcp's grader reads
-  // (role apps.read) until 4c moves apps-mcp into apps-platform (owner-approved via the coordinator, 2026-11-18).
-  grading: { until: "4a", to: ["board", "apps-mcp"] },
+  // 3h: the board reads grade rows from the grading module (its own key) until the board is a module.
+  grading: { until: "4a", to: ["board"] },
   // The Fleet Steward's apps-mcp reads (role apps.read: status, quality, sources, open PRs), until 4c moves apps-mcp into apps-platform.
   "fleet-steward": { until: "4c", to: ["apps-mcp"] },
   monitoring: { until: "4c", to: ["board"] },
@@ -175,7 +174,7 @@ export const SPEND_GONE = "is gone: one install limit, spend_day_usd / spend_mon
  * The wave-1 part of an agent's grants-table entry (scripts/paperclip-setup.ts writeGrants), for the model gateway and the
  * grader: `models`, every model id the agent may call (its model, its runner models, its routines' models; OpenRouter ids,
  * `openrouter/` dropped); `graded`, whether tasks delegated to it
- * are graded by default (the board's completion gate and the runner's grader enforce it).
+ * get a rubric check by default.
  */
 /** An agent's `chat:` block, checked, with defaults: every lane tool must be one of its own granted tools ("connection.tool"). */
 export function chatBlock(key: string, c: Obj, tools: Obj) {
@@ -889,7 +888,9 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   settings.code_review_gated = reviewGated.watched.join(",");
   // Derived: whether the ship module is on, for the github module's adopted-PR writes (absent: every write naming an adoption is refused).
   settings.ship_enabled = enabled.includes("ship") ? "1" : "";
-  // An old per-repo shape (approve, merge or safe) fails the compile before anything is written, never half-read (risk tiers §11).
+  // Derived: the repos with a ship entry, for the Maintainer's Remove (an entry there is cleared from the Ship page, with the Maintainer's own).
+  settings.ship_repos = enabled.includes("ship") ? Object.keys(((settings.ship as { repos?: object } | undefined)?.repos) ?? {}).join(",") : "";
+  // An old per-repo shape (approve, merge or safe) fails the compile before anything is written, never half-read (docs/design/code-review.md, Risk tiers).
   if (enabled.includes("ship") && oldShape(settings.ship).length) fail(`settings.ship: ${oldShape(settings.ship).join(", ")}: approve and merge are per tier now: by_tier.<tier>.approve / merge; safe is gone: code review's tier rules say what is small and safe`);
 
   // What the board's Settings shows (services/board/src/settings.ts): every setting an enabled module declares or the instance
@@ -1392,6 +1393,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const enabledSkills = skills.filter((s) => s.enabled);
   if (enabledSkills.length) paperclip.skills = Object.fromEntries(enabledSkills.map((s) => [s.id, { dir: dirname(s.file), description: s.summary }]));
   const skillCatalog = Object.fromEntries(skills.map((s) => [s.id, s.enabled]));
+  const skillTools: Record<string, string[]> = Object.fromEntries(enabledSkills.map((s) => [s.id, s.tools]));
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     const ids = effectiveSkills(key, a, instance.overrides?.agents?.[key]?.skills, skillCatalog, (m) => warnings.push(m));
     const from: Obj = {};
@@ -1399,6 +1401,10 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       const [module, name] = [id.slice(0, id.indexOf(".")), id.slice(id.indexOf(".") + 1)];
       if (from[name]) fail(`agent ${key}: modules ${from[name]} and ${module} both give it a skill named ${name}`);
       from[name] = module;
+    }
+    for (const id of ids) {
+      const missing = (skillTools[id] ?? []).filter((t) => !a.enabled_tools?.[t.split(".")[0]!]?.includes(t.split(".")[1]));
+      if (missing.length) fail(`agent ${key}: skill ${id} calls ${missing.join(", ")}, which the agent is not granted (grant them in its connections)`);
     }
     if (ids.length) a.skills = ids;
     else delete a.skills;
@@ -1484,11 +1490,11 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const dispatchers = Object.entries<Obj>(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);
   if (dispatchers.length > 1) fail(`modules ${dispatchers.join(", ")} all request kernel.jobs: one job dispatcher at a time`);
   if (dispatchers.length) kernelModules.modules[dispatchers[0]!].dispatches = Object.keys(paperclip.agents).sort();
-  // kernel.grader (grader tokens for a task a finish check holds) is the one grading module's: exactly one holder, and it declares a
-  // task.finish check (the hold the kernel checks before it mints), the same way kernel.jobs has one dispatcher.
+  // kernel.grader (grader tokens for a finished task) is the one grading module's: exactly one holder, and it declares a
+  // task.rubric check, the same way kernel.jobs has one dispatcher.
   const graders = Object.entries<Obj>(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.grader")).map(([n]) => n);
   if (graders.length > 1) fail(`modules ${graders.join(", ")} all request kernel.grader: one grading module at a time`);
-  for (const n of graders) if (!(enabledDefs[n]?.checks ?? []).some((c: Obj) => c.at === "task.finish")) fail(`module ${n}: kernel.grader needs a finish check (checks: at: task.finish)`);
+  for (const n of graders) if (!(enabledDefs[n]?.checks ?? []).some((c: Obj) => c.at === "task.rubric")) fail(`module ${n}: kernel.grader needs a rubric check (checks: at: task.rubric)`);
   const secretPatterns = Object.fromEntries([...all.values()].flatMap((m) => [m.def.secrets?.provided ?? []].flat().filter((p: Obj) => p?.setup?.pattern).map((p: Obj) => [p.name, p.setup.pattern])));
   return { secretPatterns, bundleState: { seen: bundle, adopted: [...adopted] }, paperclip, faces, computersMax: settings.computers_max, checkComputersMax: settings.check_computers_max, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
@@ -1744,14 +1750,11 @@ export function reviewerSlot(defs: Obj, binding: Obj = {}) {
 }
 
 /**
- * A module's checks (spec §3.5, P5): `[{id, at: write.filed | task.finish, kinds?, agents?, post?, auth?, label?, mode?}]`. The kernel
- * calls the task.finish ones (config/kernel/checks.json, keyed `<module>.<id>`) at `post` with `auth`, one of the module's own
- * secrets; `rubric` is where the kernel files a rubric for a task a module filed with one (modtasks.ts); `grade` is where it reads
- * the task's latest sent-back verdict for the AI reviewer (review-loop.ts); `label` is the control-plane label a hold adds.
+ * A module's checks (spec §3.5, P5): `[{id, at: write.filed | task.rubric, kinds?, post?, auth?}]`. A task.rubric check is compiled as
+ * { module, at, url: post, auth_secret: auth } (config/kernel/checks.json, keyed `<module>.<id>`): the kernel files a rubric for a
+ * task a module filed with one at `post`, with `auth`, one of the module's own secrets (modtasks.ts); nothing is held or gated.
  * A write.filed check (`kinds`, the write kinds it runs on) is compiled as { module, at, kinds }: the kernel runs its code in
  * process on every filing of those kinds (kernel/src/writes.ts filedRaises) and refuses the filing when it has none.
- * `mode: observe` (kernel/src/gates.ts) records what a task.finish check would block without blocking; write.filed checks gate
- * writes and always enforce.
  * `validate: { post, auth, mode? }` is the module's own check of a settings change or a pasted secret, before the board files
  * it (kernel/src/module-validate.ts): compiled beside the checks as `<module>.validate`, `at: validate`.
  */
@@ -1760,22 +1763,17 @@ export function checkEntries(name: string, def: Obj) {
   for (const c of def.checks == null ? [] : Array.isArray(def.checks) ? def.checks : fail(`module ${name}: checks must be a list`)) {
     const at = `module ${name}: check ${c?.id}`;
     if (!c || typeof c !== "object" || !/^[a-z][a-z0-9-]{0,40}$/.test(String(c.id))) fail(`module ${name}: each check has an id (a-z, 0-9, -)`);
-    for (const k of Object.keys(c)) if (!["id", "at", "kinds", "agents", "post", "rubric", "grade", "auth", "label", "mode"].includes(k)) fail(`${at}: ${k} is not allowed`);
-    if (!["write.filed", "task.finish"].includes(c.at)) fail(`${at}: at is write.filed or task.finish`);
-    for (const k of ["kinds", "agents"]) if (c[k] != null && !(Array.isArray(c[k]) && c[k].every((x) => typeof x === "string"))) fail(`${at}: ${k} is a list`);
-    let mode: string | undefined;
-    try { mode = gateMode(`${name}.${c.id}`, c.mode); } catch (e) { fail(`${at}: ${(e as Error).message}`); }
-    if (c.at !== "task.finish") {
-      if (mode === "observe") fail(`${at}: a write.filed check gates writes: it always enforces`);
+    for (const k of Object.keys(c)) if (!["id", "at", "kinds", "post", "auth"].includes(k)) fail(`${at}: ${k} is not allowed`);
+    if (!["write.filed", "task.rubric"].includes(c.at)) fail(`${at}: at is write.filed or task.rubric`);
+    if (c.kinds != null && !(Array.isArray(c.kinds) && c.kinds.every((x: unknown) => typeof x === "string"))) fail(`${at}: kinds is a list`);
+    if (c.at !== "task.rubric") {
       if (!c.kinds?.length) fail(`${at}: a write.filed check names the write kinds it runs on (kinds)`);
       out[`${name}.${c.id}`] = { module: name, at: c.at, kinds: c.kinds };
       continue;
     }
     if (!/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(c.post ?? "")) fail(`${at}: post must be http://<service>:<port>/<path>`);
     if (!ownSecrets(def).includes(c.auth)) fail(`${at}: auth must name one of its own secrets`);
-    if (c.label != null && !/^[a-z][a-z0-9-]{0,40}$/.test(String(c.label))) fail(`${at}: label is a label name (a-z, 0-9, -)`);
-    for (const k of ["rubric", "grade"]) if (c[k] != null && !/^https?:\/\/[\w.-]+:\d+\/[\w/.-]*$/.test(c[k])) fail(`${at}: ${k} must be http://<service>:<port>/<path>`);
-    out[`${name}.${c.id}`] = { module: name, at: c.at, url: c.post, auth_secret: c.auth, ...(c.rubric ? { rubric: c.rubric } : {}), ...(c.grade ? { grade: c.grade } : {}), ...(c.agents ? { agents: c.agents } : {}), ...(c.label ? { label: String(c.label) } : {}), ...(mode === "observe" ? { mode } : {}) };
+    out[`${name}.${c.id}`] = { module: name, at: c.at, url: c.post, auth_secret: c.auth };
   }
   const v = def.validate;
   if (v != null) {
@@ -2181,21 +2179,23 @@ export function promptEntries(name: string, def: Obj, root: string): Obj[] {
  * job's engine home, never from the handbook.
  */
 /** A module's skills; `check: false` (a disabled module) lists their ids only, its SKILL.md text read and checked once it is on. */
-export function skillEntries(name: string, root: string, check = true): { id: string; file: string; summary: string }[] {
+export function skillEntries(name: string, root: string, check = true): { id: string; file: string; summary: string; tools: string[] }[] {
   const dir = join(root, "skills");
   return (existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []).filter((d) => d.isDirectory() && existsSync(join(dir, d.name, "SKILL.md"))).map((d) => {
     const file = join(dir, d.name, "SKILL.md");
-    if (!check) return { id: `${name}.${d.name}`, file, summary: "" };
+    if (!check) return { id: `${name}.${d.name}`, file, summary: "", tools: [] };
     if (!/^[a-z0-9][a-z0-9-]*$/.test(d.name)) fail(`module ${name}: skill ${d.name}: a skill's folder name is a-z, 0-9 and -`);
     // A skill is the module's own files: its folder resolves inside the module (jobs get a copy of it).
     if (!realpathSync(join(dir, d.name)).startsWith(realpathSync(root) + sep)) fail(`module ${name}: skill ${d.name}: its folder must be inside the module`);
-    const { name: skillName, description, ...meta } = frontmatter(readFileSync(file, "utf8")).meta;
+    const { name: skillName, description, tools, ...meta } = frontmatter(readFileSync(file, "utf8")).meta;
     if (skillName !== d.name) fail(`module ${name}: skill ${d.name}: its SKILL.md name must be its folder name (${d.name})`);
     const extra = Object.keys(meta).find((k) => !["license", "metadata", "allowed-tools"].includes(k));
-    if (extra) fail(`module ${name}: skill ${d.name}: unknown frontmatter ${extra} (allowed: license, metadata, allowed-tools; an agent lists the skills it uses in skills:)`);
+    if (extra) fail(`module ${name}: skill ${d.name}: unknown frontmatter ${extra} (allowed: license, metadata, allowed-tools, tools; an agent lists the skills it uses in skills:)`);
     const summary = typeof description === "string" ? description.trim() : "";
     if (!summary || summary.includes("\n")) fail(`module ${name}: skill ${d.name}: needs a one-line description`);
-    return { id: `${name}.${d.name}`, file, summary };
+    // `tools: [<connection>.<tool>]`: the connection tools the skill's steps call; an agent listing it must be granted each (compile checks).
+    if (tools != null && (!Array.isArray(tools) || tools.some((t) => typeof t !== "string" || !/^[a-z0-9_-]+\.[A-Za-z0-9_]+$/.test(t)))) fail(`module ${name}: skill ${d.name}: tools is a list of <connection>.<tool>`);
+    return { id: `${name}.${d.name}`, file, summary, tools: tools ?? [] };
   });
 }
 /**

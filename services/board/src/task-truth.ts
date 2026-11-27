@@ -1,21 +1,23 @@
 // What the task drawer's Done means and Activity show, shaped from the grading module's row (grading.ts) and the kernel's facts
 // for this one task (flow.ts task()). Agent text in either is untrusted: shown as plain text.
-import type { Deliverable, GradeState, GradesView, Verdict } from "./grading.js";
+import type { Deliverable, GradeState, GradesView } from "./grading.js";
 import type { Waterfall } from "./flow.js";
 import { triggerWords } from "./timeline.js";
 
 export interface GradeShown {
-  /** none: no grade row (nothing is shown); unavailable: the module can't be read; ungraded_close: closed with no verdict. */
-  state: "none" | "unavailable" | "ungraded_close" | GradeState;
-  rubric: { text: string; met: "yes" | "no" | "unknown"; evidence?: string }[];
-  judgedAt?: string;
-  version?: string;
+  /** none: no rubric row (nothing is shown); unavailable: the module can't be read; open: checked after close. */
+  state: "none" | "unavailable" | GradeState;
+  /** `met` is absent until the check has read the task. */
+  rubric: { text: string; met?: "yes" | "no"; reason?: string }[];
+  /** Why the check could not be made (state failed). */
+  reason?: string;
+  checkedAt?: string;
   deliverable?: { kind: Deliverable["kind"]; ref: string; href?: string };
 }
 
 export interface Milestone {
   at: string;
-  kind: "created" | "run_started" | "run_ended" | "asked_you" | "approved" | "applied" | "deployed" | "graded";
+  kind: "created" | "run_started" | "run_ended" | "asked_you" | "approved" | "applied" | "deployed";
   text: string;
   href?: string;
   runId?: string;
@@ -34,29 +36,25 @@ function hrefOf(d: Deliverable): string | undefined {
   return undefined;
 }
 
-/** The grade as the drawer shows it. `view` undefined: the module couldn't be read (never read as passed). */
-export function gradeShown(view: GradesView | undefined, id: string, status: string, w: Waterfall | null = null): GradeShown {
+/** The rubric check as the drawer shows it. `view` undefined: the module couldn't be read. */
+export function gradeShown(view: GradesView | undefined, id: string, w: Waterfall | null = null): GradeShown {
   if (!view || !Object.hasOwn(view.grades, id)) return { state: "unavailable", rubric: [] };
   const g = view.grades[id];
   if (!g) return { state: "none", rubric: [] };
-  const v: Verdict | undefined = g.verdicts.at(-1);
-  const texts = g.rubric.length ? g.rubric : (view.templates?.[g.deliverable.kind] ?? []);
-  const rubric = texts.map((text, i) => {
-    const c = v?.criteria.find((x) => x.id === String(i + 1));
-    return { text, met: c?.met ?? "unknown", ...(c?.evidence ? { evidence: clip(c.evidence, 200) } : {}) };
+  const rubric = g.rubric.map((text, i) => {
+    const c = g.criteria.find((x) => x.id === String(i + 1));
+    return { text, ...(c ? { met: c.met, ...(c.reason ? { reason: clip(c.reason, 200) } : {}) } : {}) };
   });
-  const closed = status === "done" || g.closedReason !== null;
-  // Met only on a satisfied (or owner-accepted) verdict: the module also closes a row satisfied when it gives up or lets unmet work through.
-  const verified = v?.verdict === "satisfied" || v?.verdict === "accepted";
   // A blank PR ref means the task's own PRs: the newest GitHub one it opened and that is not closed unmerged.
   const gone = new Set<string>();
   for (const f of w?.facts ?? []) if (f.type.startsWith("pr.")) f.type === "pr.closed" && f.data?.merged !== true ? gone.add(f.subject) : f.type === "pr.opened" || f.type === "pr.merged" ? gone.delete(f.subject) : undefined;
   const own = g.deliverable.ref || g.deliverable.kind !== "pr" ? "" : (w?.facts.findLast((f) => f.type === "pr.opened" && HOSTED.test(f.subject.slice(3)) && !f.subject.startsWith("pr:local/") && !gone.has(f.subject))?.subject.slice(3) ?? "");
   const deliverable = { ...g.deliverable, ref: g.deliverable.ref || own };
   return {
-    state: (g.state === "satisfied" && !verified) || (!v && closed) ? "ungraded_close" : g.state,
+    state: g.state,
     rubric,
-    ...(v ? { judgedAt: v.at, version: v.version } : {}),
+    ...(g.state === "failed" && g.reason ? { reason: clip(g.reason, 200) } : {}),
+    ...(g.checkedAt ? { checkedAt: g.checkedAt } : {}),
     deliverable: { kind: deliverable.kind, ref: deliverable.ref, href: hrefOf(deliverable) },
   };
 }
@@ -76,7 +74,6 @@ export function milestonesOf(w: Waterfall | null): Milestone[] {
       case "record.decided": if (d.decision === "approved") m("approved", `Card approved${d.decider === "reviewer" ? " by the AI reviewer" : d.decider === "owner" ? " by you" : ""}`, { href: record }); break;
       case "record.landed": m("applied", `Card applied${d.kind ? `: ${clip(d.kind, 60)}` : ""}`, { href: record }); break;
       case "pr.deployed": m("deployed", `Deployed${d.generation ? ` in generation ${d.generation}` : ""}`, { href: HOSTED.test(String(d.pr ?? "")) ? `https://github.com/${String(d.pr).replace("#", "/pull/")}` : undefined }); break;
-      case "grade.verdict": m("graded", d.pass === true ? "Graded: satisfied" : d.reason_code === "needs_revision" ? "Graded: criteria unmet" : `Graded: ${String(d.reason_code ?? "not met").replaceAll("_", " ")}`); break;
     }
   }
   return out.sort((a, b) => a.at.localeCompare(b.at));

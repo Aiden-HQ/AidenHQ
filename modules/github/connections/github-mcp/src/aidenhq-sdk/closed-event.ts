@@ -1,5 +1,5 @@
 // How GitHub records what closed an issue: the newest ClosedEvent's actor and `closer` (the merged pull request whose closing
-// keyword did it, or a commit) and the newest ReopenedEvent's time (a close after it is the current one). One selection for the grader's issue read (code host ops.ts) and github-mcp's github_issue_read.
+// keyword did it, or a commit) and the newest ReopenedEvent's time (a close after it is the current one). One selection, for github-mcp's github_issue_read.
 //
 // First-party modules hold byte-identical copies (scripts/sync-shared.ts: edit this one and run it).
 

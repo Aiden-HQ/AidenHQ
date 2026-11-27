@@ -114,7 +114,7 @@ stay out unless an app needs them (guidelines: the stack).
   `npm uninstall cn`, and revert any change it made to `src/index.css` (the theme comes from `shadcn.css`; never add a
   `.dark` block or literal colours there). Then set any new dependency to an exact, 7-day-old version. A `<style>` tag
   the new component renders needs `nonce={cspNonce}`.
-- **Dependencies:** pinned exactly, each published at least 7 days ago (`node .github/supply-chain/best-version.mjs npm
+- **Dependencies:** pinned exactly, each published at least 7 days ago (`node .github/supply-chain/best-version.ts npm
   <pkg>` from the CI template), installed with `npm install --save-exact --before=<7 days ago>` so transitive versions
   pass too, lockfile committed.
 - **Review states:** `?preview=loading|error|empty` shows that state of the example page with the sample data, and
@@ -123,4 +123,4 @@ stay out unless an app needs them (guidelines: the stack).
   `ui-review` can screenshot it. Remove it with the sample data, and give the real app a seed mode instead: `npm run
   preview` serves the app with fixture data (an in-memory store, no database) on port 4173, and `playwright.config.ts`
   starts it for `npm run screens`.
-- A shared app also follows the product's `docs/setup.md`, "What a shared app must do" (the identity check is in place).
+- A shared app also follows the product's `docs/design/access.md`, "What a shared app must do" (the identity check is in place).

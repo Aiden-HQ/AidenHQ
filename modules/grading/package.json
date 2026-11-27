@@ -7,7 +7,7 @@
   "engines": {
     "node": ">=24"
   },
-  "description": "Graded done: the grade rows, the task.finish check, the board's routes and the grade loop.",
+  "description": "Completion checks: the rubric rows, the one check after close and the board's read.",
   "scripts": {
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts"
   }

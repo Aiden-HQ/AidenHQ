@@ -1,4 +1,4 @@
-// The board as an OAuth resource server for the owner's own Claude (docs/superpowers/specs/2026-11-20-owner-mcp-design.md): /mcp
+// The board as an OAuth resource server for the owner's own Claude (docs/architecture.md, AidenHQ MCP): /mcp
 // takes a bearer only (never the board's cookies), minted by the kernel's authorization server on the admin origin and checked
 // there for this resource. Reads believe a checked bearer a few seconds; a write asks again, so a revoke, a disable or a reset
 // ends the very next write.

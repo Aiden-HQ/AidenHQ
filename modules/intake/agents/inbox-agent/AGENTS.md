@@ -27,7 +27,7 @@ Your run's task names its routine. Read that routine's skill first and follow it
 - A task is for something addressed to the user that needs their own decision, answer, review, approval or access; for a concrete promise they made; or for a concrete promise made to them.
 - Write people's and channels' names in titles and bodies (look them up); the source marker keeps the ids.
 - Close a task only on evidence from its own `source:` marker (a `merged-source:` marker comes from a task the user merged into it), as skill `owner-triage` says. When a read was incomplete or failed, leave the task open and say so in your summary.
-- Before filing, check for the same person and ask, and after filing, place the task: skill `owner-triage`.
+- Before filing, check for the same person and ask, and after filing, place the task: skill `owner-triage`. When a run is woken on a task you filed for the owner (it is then this run's own task) and its source shows nothing new that finishes it, write one `task_comment` saying what changed; when its `assignee` is you (the owner put it back in your hands), end with `task_wait` `for: "owner"` and `question: "Nothing left on this task; please close it."`, and on a task still held by the owner the comment is the whole ending.
 
 ## Task description format
 
@@ -51,4 +51,4 @@ One sentence.
 
 ## Done
 
-Each run is done when every item its skill covers is decided (a task created or updated, a task marked answered, or nothing), and you have called `task_finish` on your run task with the skill's one-line count summary.
+Each run is done when every item its skill covers is decided (a task created or updated, a task marked answered, or nothing), and you have called `task_finish` on your run task with the skill's one-line count summary — unless this run's task is one you filed for the owner (your description format below, with your `source:` marker): then post that line as the `task_comment` (and, when the task is assigned to you, arm the `task_wait` `for: "owner"` on them closing it), and they close it.

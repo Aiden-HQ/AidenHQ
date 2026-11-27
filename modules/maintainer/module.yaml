@@ -52,7 +52,7 @@ agents:
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list,
                          task_approvals, task_team, fleet_catalog,
                          task_comment, task_handoff, task_file_upload, task_finish, task_block, task_cancel,
-                         task_delegate, task_amend_rubric, task_create ]
+                         task_delegate, task_create ]
     roles: [ maintainer, product-issues, ship-admin? ]
 routines:
   maintainer-triage:
@@ -107,7 +107,7 @@ services:
         MAINTAINER_TOKEN_FILE: ${secrets.maintainer_token}
         MAINTAINER_SERVICE_KEY_FILE: ${secrets.maintainer_service_key}
         MAINTAINER_REPOS: "${settings.maintainer_repos}"
-        MAINTAINER_SHIP: "${settings.ship_enabled}" # set when Ship is on: it owns a listed repo's removal (its page clears all three entries)
+        MAINTAINER_SHIP_REPOS: "${settings.ship_repos}" # the repos with a ship entry: Ship's page owns their removal (it clears all three entries)
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
 generated_secrets:
   - maintainer_token

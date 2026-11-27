@@ -1,6 +1,6 @@
 # CI: tests, an automated code review and, when a PR could change the image, an image scan without a build, all on the
 # org's self-hosted runners (one fresh container per job, no Docker).
-# The job names `tests`, `code-review` and `image-scan` are the check names graders and rubrics cite: don't rename them,
+# The job names `tests`, `code-review` and `image-scan` are the check names rubrics and reviews cite: don't rename them,
 # don't add a matrix.
 # code-review's model key: on AidenHQ's runners none (it spends through the instance's model gateway, below, which also
 # names the review model and effort: settings.ci_review_model); elsewhere the secret OPENROUTER_API_KEY and the optional

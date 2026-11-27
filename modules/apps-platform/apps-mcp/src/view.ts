@@ -17,15 +17,11 @@ export const CANARY_NETWORK = "aidenhq-canary";
 /** Replace the identity token wherever the page could have echoed it back (or an error quoted it). */
 const redact = (s: string, secret?: string) => (secret ? s.replaceAll(secret, "***") : s);
 export const SNAPSHOT_CAP = 20_000;
-export const SNAPSHOT_MAX = 200_000; // the most a caller may ask the renderer to keep (the grader's own capture asks for more than an agent's view)
-/** What the grading module's own capture keeps: long enough to reach the row a criterion names on a long page, still bounded.
- * main.ts gives it only to the module the kernel names `grading`, never from a request field and never to another reader. */
-export const GRADER_SNAPSHOT_CAP = 200_000;
 export const RENDER_TIMEOUT_MS = 45_000; // the script exits itself at 40 s; docker run gets a little more
 const WIDTHS = { min: 320, max: 1920, default: 1280 };
 
-export interface RenderRequest { url: string; width: number; screenshot: boolean; web: boolean; snapshotCap?: number; headers?: Record<string, string> }
-export interface ViewResult { error?: string; status: number; url: string; title: string; timed_out: boolean; snapshot: string; truncated: boolean; snapshotCap?: number; png?: string }
+export interface RenderRequest { url: string; width: number; screenshot: boolean; web: boolean; headers?: Record<string, string> }
+export interface ViewResult { error?: string; status: number; url: string; title: string; timed_out: boolean; snapshot: string; truncated: boolean; png?: string }
 /** Runs the renderer on a docker network (`container:<id>` or a named network) and returns its result. */
 export type Render = (network: string, req: RenderRequest) => Promise<ViewResult>;
 
@@ -35,24 +31,13 @@ const width = (w?: number): number => {
   return v;
 };
 
-/** How much of the snapshot a render keeps: an agent's view keeps SNAPSHOT_CAP; the grader's own capture may ask for more, up to SNAPSHOT_MAX. */
-const snapshotCap = (n?: number): number => {
-  const v = n ?? SNAPSHOT_CAP;
-  if (!Number.isInteger(v) || v < 1_000 || v > SNAPSHOT_MAX) throw new Error(`snapshot cap must be 1000-${SNAPSHOT_MAX}`);
-  return v;
-};
-
 /** Open apps to every agent; an app with access.roles only to agents holding one of them (the same rule as app_status). */
 export function canView(app: App, roles: string[]): boolean {
   return !app.access || app.access.roles.some((r) => roles.includes(r));
 }
 
-export async function viewApp(app: App, caller: { key: string; roles: string[] }, req: { path?: string; width?: number; screenshot?: boolean }, d: { resolve: Resolve; render: Render; sign: Sign; audit?: (o: object) => void }): Promise<ViewResult> {
-  return renderApp(app, caller, req, d);
-}
-
-/** app_view with the snapshot cap chosen by the caller: only the grader's own capture passes more than SNAPSHOT_CAP. */
-async function renderApp(app: App, caller: { key: string; roles: string[] }, req: { path?: string; width?: number; screenshot?: boolean }, d: { resolve: Resolve; render: Render; sign: Sign; audit?: (o: object) => void }, cap?: number): Promise<ViewResult> {
+/** app_view: a page of a deployed app, seen as a member that may only read. */
+export async function viewApp(app: App, caller: { key: string; roles: string[] }, req: { path?: string; width?: number; screenshot?: boolean }, d: { resolve: Resolve; render: Render; sign: Sign; audit?: (o: object) => void }, cap?: number): Promise<ViewResult> {
   if (!canView(app, caller.roles)) throw new Error(`no access to ${app.name}`);
   const path = req.path ?? "/";
   plainPath(path);
@@ -65,40 +50,13 @@ async function renderApp(app: App, caller: { key: string; roles: string[] }, req
   const secret = d.sign(app.name, caller.key, memberScope());
   let r: ViewResult;
   try {
-    r = await d.render(`container:${container}`, { url: `${t.protocol}//127.0.0.1${t.port ? `:${t.port}` : ""}${path}`, width: w, screenshot: !!req.screenshot, web: false, ...(cap !== undefined ? { snapshotCap: snapshotCap(cap) } : {}), headers: { [IDENTITY_HEADER]: secret } });
+    r = await d.render(`container:${container}`, { url: `${t.protocol}//127.0.0.1${t.port ? `:${t.port}` : ""}${path}`, width: w, screenshot: !!req.screenshot, web: false, headers: { [IDENTITY_HEADER]: secret } });
   } catch (e) {
     throw new Error(redact(String((e as Error).message ?? e), secret));
   }
   r = { ...r, url: redact(r.url, secret), title: redact(r.title, secret), snapshot: redact(r.snapshot, secret), ...(r.error ? { error: redact(r.error, secret) } : {}) };
   d.audit?.({ caller: caller.key, app: app.name, path, status: r.status });
   return r;
-}
-
-/** `noHttp`: the deploy's own identity probe proved the running app serves no HTTP at all (checks.ts `noHttpProven`, stored
- * on its deploy row), so it has no page to capture and the grading module records its page criteria as not applicable. Absent
- * for every other app — a restricted one, one that isn't local, an app this was not proven for — because those are pages the
- * grader could not look at, never pages that don't exist. A registry declaration alone is never this flag. */
-export type GraderView = { unavailable: string; noHttp?: true } | (ViewResult & { sha_before: string; sha_after: string });
-
-/**
- * The runner's grader looking at a deployed app (through the board, never an agent): app_view as a member, with the running
- * commit read before and after the render, so the runner can tell a redeploy mid-capture from a verdict. An app it can't
- * view for good (role-restricted, no health.url, not local) is `unavailable` with the reason, not an error to retry.
- */
-export async function graderView(app: App, req: { path?: string; width?: number; cap?: number }, d: { resolve: Resolve; render: Render; sign: Sign; running: (name: string) => string | undefined; noHttpProven?: (name: string) => boolean; audit?: (o: object) => void }): Promise<GraderView> {
-  // Restricted apps' pages stay with the agents holding their roles: the grader's notes are posted on the task.
-  if (app.access) return { unavailable: `${app.name} is restricted to roles, so the grader doesn't capture its pages` };
-  // A remote app is out of this renderer's reach whatever it serves, so it is a page the grader could not look at, never one
-  // that doesn't exist: the registry's shape is a declaration this platform cannot check without the app's sockets, so it is
-  // never proof here. (A local app's shape is checked: the deploy's identity gate fails an app that answers HTTP.)
-  if (app.host !== "local") return { unavailable: `${app.name} runs on docker context ${app.host}; only local apps can be viewed` };
-  // No health.url: either the running app's own identity probe proved it serves no HTTP at all, or it has a page this
-  // registry knows no address for. Only the first is a not-applicable page criterion; the second is one not captured. The
-  // registry's shape is what an app says about itself, so it never decides this alone.
-  if (!app.health.url) return { unavailable: `${app.name} has no health.url, so there's no page to view`, ...(d.noHttpProven?.(app.name) ? { noHttp: true as const } : {}) };
-  const sha_before = d.running(app.name) ?? "";
-  const r = await renderApp(app, { key: "grader", roles: [] }, { path: req.path, width: req.width }, d, req.cap ?? SNAPSHOT_CAP);
-  return { ...r, sha_before, sha_after: d.running(app.name) ?? "" };
 }
 
 // Not public: this host, the LAN, Docker networks, the tailnet (CGNAT), link-local and cloud metadata, multicast, reserved,
@@ -273,8 +231,8 @@ process.stdin.on("data", (c) => (s += c)).on("end", async () => {
     if (!status.length && url === "about:blank") return out({ error: "the page didn't answer within 20 s" });
     const tree = await within(ab("snapshot"), 6000, {});
     const snap = String(tree.snapshot || "").replace(/ \[ref=e\d+\]/g, "").replace(/, ref=e\d+\]/g, "]").replace(/\[ref=e\d+, /g, "[");
-    const cap = Math.min(Number(r.snapshotCap) || ${SNAPSHOT_CAP}, ${SNAPSHOT_MAX});
-    const o = { status: status.length ? status[status.length - 1] : 0, url, title: (await within(ab("get", "title"), 2000, {})).title || "", timed_out, snapshot: snap.slice(0, cap), truncated: snap.length > cap, snapshotCap: cap };
+    const cap = ${SNAPSHOT_CAP};
+    const o = { status: status.length ? status[status.length - 1] : 0, url, title: (await within(ab("get", "title"), 2000, {})).title || "", timed_out, snapshot: snap.slice(0, cap), truncated: snap.length > cap };
     if (r.screenshot && (await within(ab("screenshot", "/tmp/view.png"), 8000, null))) o.png = readFileSync("/tmp/view.png").toString("base64");
     out(o);
   } catch (e) {

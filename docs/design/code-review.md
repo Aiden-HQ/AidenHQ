@@ -46,15 +46,7 @@ code_review:
       max_nits: 5            # nits a run keeps on the board; none are posted to GitHub
 ```
 
-**Risk tiers** (`docs/superpowers/specs/2026-11-24-risk-tiers-design.md`): every open PR head gets one tier (`skip`, `trivial`,
-`standard`, `sensitive`) from cheap facts about its own change (lines and files that count, every changed path, the author
-kind, the base branch, the repo's class) by the repo's ordered rules, the first that holds; no model call. The facts come from
-one consistent read of the PR's files list (github-mcp's `snapshot`); until a head has one it is pending, and nothing runs or
-passes on it. The tier is stored on the PR's row with what it came from, and served on `GET /v1/verdict` (`tier`,
-`requires_review`, `policy`). A head's policy (its tier's mandatory combos, base branch and ignore globs; not the tier's name,
-so tiers with the same reviewers share it) changing gets the new tier's full opening batch; only runs and coverage under the head's current policy count for its verdict, and push
-rounds count from where that policy started. A tier with no mandatory combo needs no review: its verdict passes unless an
-earlier mandatory finding is open.
+Each PR head's tier (Risk tiers, below) picks the combos it runs.
 
 A combo is an engine, a model (an OpenRouter id), an effort the engine accepts (codex and codex-native minimal to xhigh;
 claude-code and codegenie low to max), and `mandatory` (default false; written only when on; every preset combo is on), stored whole. A tier with a mandatory combo has one in `on_open`, else it is refused (the service and the compile say so); a mandatory `on_push` combo is optional: without one, the PR's opening review stands for every later head (no push is reviewed for the gate), open gating findings still hold the merge; a repo-level `mandatory` is refused. The engine catalog (`ENGINES` in `config.ts`, returned by `code_review_overview`) offers a
@@ -105,13 +97,83 @@ The box image (`services/computer/images/agent-base`) pins `@anthropic-ai/claude
 root and above each changed file, read from the **base** commit, never the PR; guidance grants no authority.
 
 Config is one authority: the board and Aiden write it through the normal settings change. The owner's own save on the board
-is his approval (docs/design/settings-changes.md); the Reviewer Manager's change goes to the AI reviewer. Tier 2 (owner) changes, so the
-Reviewer Manager cannot do them alone (`owner:` rules in `module.yaml`): outside PRs or drafts reviewed
-automatically, a repo in a new org, any change to a moment's combos (another engine or model, one more combo)
-and a repo's ignore globs. Reviews post as the owner's GitHub sign-in on any repo it reaches, or, where the owner's optional
-GitHub App is installed on the PR's base repo, as that App (one review writer, its own write limit:
-`docs/superpowers/specs/2026-11-22-github-app-review-writer-design.md`). `always`, `stop` and `focus` are
+is his approval (docs/design/settings-changes.md); the Reviewer Manager's change goes to the AI reviewer. What decides which merges go unattended is the owner's to
+approve, not the Reviewer Manager's alone (`code_review_configure`'s description): outside PRs or drafts reviewed
+automatically, a repo in a new org, any change to `rules`, `repo_class`, `preset` or `by_tier` (combos, `push_rounds`, a
+combo's `mandatory`) and a repo's ignore globs. Reviews post as the owner's GitHub sign-in on any repo it reaches, or, where the owner's optional
+GitHub App is installed on the PR's base repo, as that App (below). `always`, `stop` and `focus` are
 PR state, not config.
+
+## Risk tiers
+
+Every open PR head gets one tier from cheap facts about its own change, by the repo's ordered rules; no model call, no labels.
+Code review owns the rules and serves the tier on its verdict; ship and the CI template read it (end of this section). The
+classifier (`classify`), the facts and the default rules are `kernel/sdk/src/tiers.ts`, copied by `scripts/sync-shared.ts` into
+code review's service and recipe, the engineer image and the CI template (`.github/tiers.ts`).
+
+- **Tiers** (a fixed set): `skip` (no review), `trivial` (a small change by a member), `standard`, `sensitive` (sensitive paths,
+  outsiders, big changes, critical repos). Risk tiers are always named; the kernel's write tiers are numbered.
+- **Facts**, from the PR's own change (GitHub's files list from the merge base, never a push's delta, so a base merge changes
+  nothing): `lines` (additions plus deletions over every file but generated files and lockfiles; tests and docs count), `files`
+  (how many count), `paths` (every changed path, a rename's old one and generated files included), `author`, `base` (the base
+  branch) and `repo_class` (`critical`, `standard`, `sandbox`: only an input to the rules). `author` is `member` for the
+  instance's own App and for an `OWNER`, `MEMBER` or `COLLABORATOR` association (github-mcp raises a private-org member whose
+  association reads lower when write access shows it), `bot` for Dependabot and Renovate (never from a fork), else `outsider`.
+- **Snapshot.** github-mcp's `snapshot` reads the PR (head, base, author, `changed_files`), every page of its files, then the PR
+  again; a moved head or base, or pages that don't hold `changed_files` files, drop it and the next poll tries again. Until a head
+  has one it is pending: nothing runs or passes on it. Over 3,000 files (GitHub's list limit) the head is `sensitive`, "too many
+  files to read", without running the rules.
+- **Rules** (`rules`, whole or omitted for the defaults): the first whose `when` holds names the tier; the last has no `when`.
+  A `when` is an AND of `lines_min`/`lines_max`, `files_min`/`files_max`, `paths` (any changed path matches any glob),
+  `only_paths` (every changed path does), `author`, `base` (globs) and `repo_class`; a glob list is the only OR, and there is no NOT.
+  Globs are case-sensitive `posix.matchesGlob` on repo-relative paths, dot-names matching like any other. `parseRules` refuses an
+  invalid list and with it the repo's entry.
+- **Default rules**, in order: a critical repo is `sensitive`; a bot's PR touching only manifests and lockfiles is `skip`; a
+  change to an instruction file (`AGENTS.md`, `CLAUDE.md`, `REVIEW.md`) is `sensitive`; a member's PR of only docs-folder prose
+  is `standard`; any `SENSITIVE` path is `sensitive` (`.github/`, Dockerfiles, `package.json`, lockfiles, lint, test and tsconfig
+  config, `CODEOWNERS`, migrations, `*.tf`, `infra/`, `.env*`, `config/`, compose files, `.codex/`, and names holding
+  auth, secur, token, session or permission); an outsider's PR is `sensitive`; a sandbox repo's is `trivial`; a PR with no
+  substantive line (only generated files, lockfiles, binaries or renames) is `sensitive`; 600 or more lines is `sensitive`; a
+  member's change of at most 10 lines in at most 20 files is `trivial`; everything else is `standard`.
+- **Presets** (`PRESETS` in `config.ts`; `standard` by default, with `light` and `thorough`): what each tier runs. `by_tier`
+  merges over it per field, and every preset combo is `mandatory`. The `standard` preset:
+
+  | Tier | `on_open` | `on_push` | `push_rounds` |
+  |---|---|---|---|
+  | `skip` | none | none | 0 |
+  | `trivial` | codex, deepseek flash, medium | none | 0 |
+  | `standard` | codex, deepseek flash, medium | codex-native, Sol 6.2, low | 1 |
+  | `sensitive` | codex-native Sol 6.2 medium; claude-code Sonnet 5.5 medium | codex-native, Sol 6.2, low | 2 |
+
+- **Classification.** The service classifies a head when any input changed since the last classification (head, base branch,
+  author kind, the repo's class and rules), then triggers, so a head's first review already uses its tier. The tier is the
+  current head's, never a ratchet: findings from earlier mandatory runs still gate. It is stored on the PR's row (`tier`, `rule`,
+  `why`, `facts`, the inputs) and on each run, and served on `GET /v1/verdict` as `tier`: `classified` (with `tier`, `rule`,
+  `why`), `pending` (no snapshot yet, or the stored inputs are stale: another rules hash, another base branch than the caller's
+  live read, or an author who lost member access), or `unwatched`. A head's `policy` (the response's `policy`) is a hash of its
+  tier's mandatory combos, the base branch and the `ignore` globs, never the tier's name, so tiers with the same mandatory
+  reviewers share one.
+- **A PR keeps its reviews.** A settings edit, a retarget or a tier change never starts reviews over: `push_rounds`
+  count over the PR's whole life, and runs and coverage count whatever setting they ran under. What does change at once
+  is which reviewer holds the unchanged head, because the verdict reads the tier the repo names now: a mandatory
+  reviewer that is dropped stops holding the head even mid-run (`modules/code-review/test/engine.test.ts`, "a mandatory
+  reviewer dropped while it is still running holds nothing"), and one added that the head never had is queued alone,
+  over the whole PR, once per head, with the verdict waiting on it (`not_started`). With push rounds used up (or no
+  mandatory `on_push`), the gate stands on the latest opening run of each mandatory `on_open` combo the tier names now.
+- **Verdict.** The verdict adds `requires_review`: true for a tier with a mandatory combo; false for a tier with none (`skip`,
+  advice-only), which passes unless an earlier mandatory finding is open; true and `wait` ("classifying") while pending. A repo
+  code review doesn't watch has no tier and `requires_review: false`. The product repo's Tier 0 merge (`productMergeEligible`)
+  needs a pass backed by a review, so a head no mandatory review covered never skips the AI reviewer.
+- **Gated lists.** The compile derives two lists from the same parser (`config.ts`, imported by `scripts/modules.ts`):
+  `GITHUB_REVIEW_GATED` is every watched repo (the merge queue asks the verdict, which says per head whether a review is
+  required), and the kernel's `code_review_mandatory` (`ai_review_code: unless_code_review_mandatory`) is the repos where every
+  tier a head can get has a mandatory combo (`gatesAll`: the tiers the rules name, bot rules aside, and `sensitive`). A repo whose
+  rules can reach `skip` keeps the AI reviewer on its agents' pushes. An entry in an old shape (`on_open`, `on_push` or
+  `push_rounds` at the top level) fails the compile.
+- **Readers.** Ship reads `tier`, `requires_review` and `policy`: its per-tier `by_tier.<tier>.approve` and `merge` (and
+  `unwatched.merge`), waiting on `pending` and binding its approval to the policy (`modules/ship/README.md`). The CI template
+  classifies the whole PR with the same file and the gateway's per-repo rules, and picks its review depth by tier
+  (`modules/ci/README.md`).
 
 ## Triggers
 
@@ -287,9 +349,9 @@ finding is gone on the next run are resolved, only when Aiden posted them. A rev
 several combos it shows the latest run to finish. A command's queued notice is updated once with the outcome. Writes are cut to what changes: a notice, status or
 summary already as it would be writes nothing, and a post's thread resolves are one request.
 
-Identity: the owner's own GitHub sign-in, COMMENT reviews only, each review, file comment and notice ending with the
+Identity: the writer (the owner's own GitHub sign-in, or the App below), COMMENT reviews only, each review, file comment and notice ending with the
 AidenHQ footer (a review's inline comments carry it once, in its summary; each post still a kernel write record). Every fleet write posts as
-that same login, so nothing that decides anything is read back from GitHub text: findings, coverage, dispositions and the verdict
+the owner's login, so nothing that decides anything is read back from GitHub text: findings, coverage, dispositions and the verdict
 live in the service's database, and a thread is Aiden's own (a reply on it may answer its finding; it may be resolved) only when its first
 comment's id is one the service recorded from its own post's outcome (table `comments`), and the acknowledgement is the comment
 id it recorded (`prs.ack`). Markers serve display, dedupe and mapping a reply to its finding only. Threads posted before this
@@ -314,10 +376,44 @@ An infrastructure refusal of a post is a connection problem, not a verdict. gith
 shape rather than a bare 502, and the executor records that need on the run; the run ends `failed` with its post `refused`, and
 its askers' summary names the one link (the Grant link for `restricted`, Reconnect for `expired`) that unblocks the next post.
 
+## The GitHub App as review writer
+
+Optional and per repo, so reviews stop sharing the owner's GitHub write limit (the secondary content-creation limit blocked
+every writer). Any owner makes their own App on the kernel's admin page `/setup/github-app` (GitHub's manifest flow; `public:
+true`, so any org installs it on all or some of its repos). For each PR, code review posts as the App where it is installed on
+the PR's base repo, else as the owner's sign-in; agents' PRs, pushes, merges and comments stay the owner's. Without an App
+nothing changes.
+
+- **One writer.** `ReviewPoster.writer(repo)` (`review-post.ts`) serves every review write (the post, inline and file comments,
+  the summary, resolves, the status, notices and acknowledgements): a client bound to the App's installation (`gh.as`), or the
+  owner's. The owner's is picked only when no App is set up, its saved files are unreadable (the card warns), or GitHub answers
+  404 for `GET /repos/{repo}/installation`; any other failure of a working App throws (a bad key, a suspension, a rate limit), so
+  a review never moves to the owner's account because the App broke. Installation lookups are cached 10 minutes, tokens until 5
+  minutes before they expire.
+- **Pacing per identity.** github-mcp's client (`client.ts`) keeps one `Pace` per identity (the owner, or `app:<installation id>`):
+  its own rate buckets, serial write queue, secondary-limit backoff and `Retry-After`. An App answer never touches the owner's
+  sign-in state; an App 401 retries once with a fresh token.
+- **Threads.** A thread is ours when its first comment carries our marker and its author is the owner or the App, compared by kind
+  (REST `type`, GraphQL `__typename`). Threads are read as the writer, and one the writer can't resolve (`viewerCanResolve`
+  false) is skipped with a reason; the service also resolves only threads it recorded as its own. On a PR whose review or acknowledgement the owner posted earlier, the App posts its own and the
+  service records the new acknowledgement id.
+- **Setup.** The kernel writes `<vault>/modules/github/github-app/{app_id,key.pem,slug}`; the github process reads them at
+  `/state/github-app/` when needed (no restart). The manifest asks for `pull_requests`, `statuses` and `contents` write and
+  `checks`, `actions`, `issues` and `metadata` read; an install made before a permission change must accept it on GitHub. The
+  board's GitHub card shows a "Code review App" row (the bot and an Install link, or the error with Replace), what code review
+  posted as per org (`/state/review-as.json`), and where it posts as the owner a suggestion to create the App, which Dismiss
+  removes for good. The admin page also removes the App. Nothing nags, blocks or degrades without it.
+- **Reads.** A `GET /repos/{o}/{r}/…` goes as the App's installation when it is installed there and its installation holds the
+  permission the path needs (`PERMISSIONS`, `readerFor` in `client.ts`), whoever asks; every other path, GraphQL (which stays the
+  owner's: its own budget, and viewer-relative fields such as `mergeStateStatus`), org and user listings and searches stay the
+  owner's. A read refused for a permission the installation lacks is read again as the owner, and that repo and permission stay
+  the owner's for an hour (`github reads as the owner`). Every GET goes through one ETag cache per identity, so a 304 costs nothing.
+- **Measure.** Each content-creating write logs `github write` with its identity and `writes_this_hour`; every call is counted per
+  hour by caller, identity, resource and status as `github calls this hour`.
+
 ## Mandatory reviewers (the merge gate)
 
-A combo marked `mandatory` gates its repo's merges (the compile lists the gated repos for the github module and the kernel's
-`ai_review_code: unless_code_review_mandatory`). The parts:
+A combo marked `mandatory` gates its repo's merges (the two compiled lists are under Risk tiers). The parts:
 
 - **What reviewed a head.** The verdict and coverage read the mandatory runs that reviewed the head (the latest per combo and
   moment there), never the setting now: a settings change or a deploy applies from each PR's next head and never re-reviews open
@@ -370,8 +466,7 @@ A combo marked `mandatory` gates its repo's merges (the compile lists the gated 
   never stops it (anyone posting as the owner can write a command).
 - **Owner.** The Reviews page shows each gated PR's verdict and reasons on its review, with a Dismiss (and a reason) per open
   gating finding: the owner's own call of `code_review_dismiss` from the page (an agent's is refused; it answers with `code_review_resolve`). Turning a reviewer mandatory is the Reviewer Manager's
-  to do (it only adds a gate); turning one off, removing its combo or removing a gated repo is the owner's (`owner:` rules;
-  an entry removed holds its default, kernel/src/apply-tier.ts).
+  to do (it only adds a gate); turning one off, removing its combo or removing a gated repo is the owner's.
 
 ## Reviewer Manager
 

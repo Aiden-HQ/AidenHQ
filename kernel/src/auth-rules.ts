@@ -405,7 +405,7 @@ export function authCore(o: AuthCoreOptions) {
       admin({ defaultRole: "user", adminRoles: ["admin"] }),
       // Our lockout covers TOTP failures too (one lockout, not two).
       twoFactor({ issuer: "AidenHQ", accountLockout: { enabled: false } }),
-      // The owner's MCP clients (docs/superpowers/specs/2026-11-20-owner-mcp-design.md): authorization code + PKCE, opaque
+      // The owner's MCP clients (docs/architecture.md, AidenHQ MCP): authorization code + PKCE, opaque
       // tokens bound to the board's /mcp (1 hour; refresh 30 days, rotated on use), clients by metadata document (CIMD) or
       // open registration. The kernel's pages do sign-in and consent (admin.ts); only a ready admin gets that far.
       oauthProvider({

@@ -920,13 +920,6 @@ switchOver() {
     rm -f "$old" && systemctl --user daemon-reload && echo "gateway unit removed (the kernel replaces it)"
   fi
   local data="${AIDENHQ_DATA_DIR:-$PWD/data}"
-  # The grade rows move from the board's database to the grading module's (lean-core 3h), once (a marker in its data dir), with
-  # the board stopped so the old board writes nothing mid-move; compose then starts the grading service on them.
-  if [ -f ops/grades-move.ts ] && [ ! -f "$data/modules/grading/grades/.moved-from-board" ]; then
-    stopBoard
-    local moved; moved="$(node ops/grades-move.ts "$data")"
-    echo "grades: $moved (data/board/board.sqlite -> data/modules/grading/grades/)"
-  fi
   # codehost-github became the github module's code host part (docs/design/connections-simple.md): its data dir (cache clones,
   # merge queue, PR-task map, release train) moves once, its old container stopped first so nothing writes mid-move; compose
   # then starts the new one on it. Compile has just made the new dir's empty subdirs, which give way.

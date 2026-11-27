@@ -218,10 +218,7 @@ export function createEngine(d: Deps) {
 
   const up = (app: App) => compose(app, ["up", "-d", "--build", "--remove-orphans"]);
   const record = async (app: App, r: Result, by: string, detail = ""): Promise<number> => {
-    // The no-HTTP verdict belongs to the sha this deploy's own identity probe looked at: only a healthy record whose check
-    // proved it carries it. A deploy that never ran the probe (an older row, a build that never came up) leaves it absent.
-    const proven = r.status === "healthy" && r.checks?.some((c) => c.probe === "identity" && c.noHttpProven === true);
-    const id = d.store.addDeploy({ app: app.name, sha: r.sha, images_json: JSON.stringify(r.images), by, at: now(), status: r.status, detail, ...(proven ? { no_http_proven: 1 } : {}) });
+    const id = d.store.addDeploy({ app: app.name, sha: r.sha, images_json: JSON.stringify(r.images), by, at: now(), status: r.status, detail });
     // A healthy record is the proof that what is up is the commit that was checked: serve it again, and re-read the edge
     // now, so a rollback that lifts an earlier teardown hold reports a URL that works rather than one that waits a tick.
     if (r.status === "healthy" && d.store.unwithhold(app.name)) await d.expose?.(app).catch(() => {});

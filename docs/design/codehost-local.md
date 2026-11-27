@@ -63,7 +63,7 @@ words, diff and decisions are kernel records.
 |---|---|
 | `refs/changes/<n>/head` | the change's current head |
 | `refs/changes/<n>/base` | the default branch's tip when the head last moved |
-| `refs/changes/<n>/opened` | the default branch's tip when it was opened, never moved by a push: the grader's base commit |
+| `refs/changes/<n>/opened` | the default branch's tip when it was opened, never moved by a push: a review.s base commit |
 | `refs/changes/<n>/meta` | blob `{ title, body, branch, base, task, opened_at, draft }` |
 | `refs/changes/<n>/merged` | the squash commit, once merged |
 | `refs/changes/<n>/closed` | written when the change is closed |
@@ -98,8 +98,8 @@ Code refuses with a reason each: `head-moved` (the change's head is not the reco
 conflict. It lands as a squash: `merge-tree` of the change against the current default branch, then one new commit
 (`<title> (change <n>)`, committed as `AidenHQ`) with the base as its parent, written by compare-and-swap on the base ref, so a
 base that moved during the merge is refused rather than overwritten (the task asks again and its checks rerun on the new base).
-Afterwards it writes the `merged` ref and deletes the task branch. The merge's result carries the `merged-prs:` line the
-grader reads. The apps platform deploys `main` of a registered app as it does today.
+Afterwards it writes the `merged` ref and deletes the task branch. The merge's result carries the `merged-prs:` line.
+The apps platform deploys `main` of a registered app as it does today.
 
 **Not carried over locally:** merge trains and Actions re-runs, Dependabot (GitHub services), the image scan (a later build;
 owner). The only required check is the `change` job.

@@ -159,7 +159,6 @@ export interface Agents {
 /** GET /api/agents/:id/scorecard (fleet-stats.ts). */
 export interface Scorecard {
   done: { count: number; prior: number; tasks: { identifier: string; title: string }[] };
-  reopen: { graded: number; reopened: number };
   approvals: { filed: number; rejected: number; priorRejected: number };
   runsFailed: number;
   cost: { usd: number; prior: number; perDone: number | null; billed: boolean };
@@ -314,15 +313,15 @@ export interface CommentView {
 }
 
 export interface GradeShown {
-  state: "none" | "unavailable" | "ungraded_close" | "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "not_graded";
-  rubric: { text: string; met: "yes" | "no" | "unknown"; evidence?: string }[];
-  judgedAt?: string;
-  version?: string;
+  state: "none" | "unavailable" | "open" | "met" | "unmet" | "failed";
+  rubric: { text: string; met?: "yes" | "no"; reason?: string }[];
+  reason?: string;
+  checkedAt?: string;
   deliverable?: { kind: "pr" | "app" | "apply" | "file" | "report" | "issue"; ref: string; href?: string };
 }
 export interface Milestone {
   at: string;
-  kind: "created" | "run_started" | "run_ended" | "asked_you" | "approved" | "applied" | "deployed" | "graded";
+  kind: "created" | "run_started" | "run_ended" | "asked_you" | "approved" | "applied" | "deployed";
   text: string;
   href?: string;
   runId?: string;
@@ -891,10 +890,11 @@ export type NeedRow =
   | { id: string; kind: "answer"; teammate: FaceRef; since: string; task: { identifier: string; title: string }; question: string; detail?: string; options: string[]; questions: Question[]; waitSince: string }
   | { id: string; kind: "approval"; teammate: FaceRef; since: string; task: { identifier: string; title: string } | null; question: string; card: Approval }
   | { id: string; kind: "open"; teammate: FaceRef; since: string; task: { identifier: string; title: string }; question: string; reply?: { person: string | null; source: "slack" | "gmail" | null } };
-export type SinceItem = { teammate: FaceRef; text: string; at: string; task: string | null; kind: "done" | "fyi" | "digest" | "closed" };
+/** `reopen`: an owner task its filing agent closed on evidence (skill owner-triage): the row offers one-tap Reopen. */
+export type SinceItem = { teammate: FaceRef; text: string; at: string; task: string | null; kind: "done" | "fyi" | "digest" | "closed"; reopen?: true };
 export type WorldBlock = {
   waiting_on: { id: string; identifier: string; title: string; age_days: number; quiet_days: number }[] | null;
-  today: { timezone: string; events: { id: string; start: string; title: string; all_day: boolean; prep?: string }[] } | null;
+  today: { timezone: string; events: { id: string; start: string; title: string; all_day: boolean; url?: string; prep?: string }[] } | null;
 };
 export type TeamNews = { teammate: FaceRef; line: string };
 export type Home = {

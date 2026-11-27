@@ -14,29 +14,26 @@ const base = { priority: "medium", assigneeUserId: "me-1", assigneeAdapterOverri
 const issue = (n: number, status = "in_progress"): Issue => ({ ...base, id: `0000000${n}-0000-0000-0000-000000000000`, identifier: `WOR-${n}`, title: `Task ${n}`, description: "x", status });
 const [graded, ungraded, down, closed, bare, gaveUp] = [issue(1), issue(2), issue(3), issue(4, "done"), issue(5), issue(6, "done")];
 const all = [graded, ungraded, down, closed, bare, gaveUp];
-const verdict = { at: "2026-11-10T11:00:00.000Z", version: "abc123", model: "m", verdict: "needs_revision" as const, criteria: [{ id: "1", met: "yes" as const, evidence: "tests pass" }, { id: "2", met: "no" as const, evidence: "no docs" }] };
-const row = (id: string, o: Partial<Grade>): Grade => ({ issueId: id, rubric: [], deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ#12" }, attempts: 1, state: "needs_revision", verdicts: [], failures: 0, failedAt: null, delegators: null, closedReason: null, createdAt: "", updatedAt: "", ...o });
+const row = (id: string, o: Partial<Grade>): Grade => ({ task: id, rubric: [], deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ#12" }, state: "unmet", criteria: [], reason: "", checkedAt: "2026-11-10T11:00:00.000Z", ...o });
 const rows: Record<string, Grade | null> = {
-  [graded.id]: row(graded.id, { rubric: ["Tests pass", "Docs updated", "Reviewed"], verdicts: [verdict] }),
+  [graded.id]: row(graded.id, { rubric: ["Tests pass", "Docs updated", "Reviewed"], criteria: [{ id: "1", met: "yes", reason: "tests pass" }, { id: "2", met: "no", reason: "no docs" }, { id: "3", met: "yes", reason: "" }] }),
   [ungraded.id]: null,
-  [closed.id]: row(closed.id, { rubric: ["a", "b", "c"], state: "satisfied", deliverable: { kind: "pr", ref: "" } }),
-  [gaveUp.id]: row(gaveUp.id, { rubric: ["a", "b", "c"], state: "satisfied", verdicts: [verdict] }),
-  [bare.id]: row(bare.id, { state: "open", deliverable: { kind: "report", ref: "" } }),
+  [closed.id]: row(closed.id, { rubric: ["a", "b", "c"], state: "met", deliverable: { kind: "pr", ref: "" } }),
+  [gaveUp.id]: row(gaveUp.id, { rubric: ["a", "b", "c"], state: "failed", reason: "the model was unreachable" }),
+  [bare.id]: row(bare.id, { rubric: ["Says what was found", "Cites sources", "Answers the ask"], state: "open", checkedAt: null, deliverable: { kind: "report", ref: "" } }),
 };
 let gradingUp = true;
 const grading: Grading = {
   grades: async (ids): Promise<GradesView> => {
     if (!gradingUp || ids.includes(down.id)) throw new Error("down");
-    return { grades: Object.fromEntries(ids.map((i) => [i, rows[i] ?? null])), templates: { report: ["Says what was found", "Cites sources", "Answers the ask"] } };
+    return { grades: Object.fromEntries(ids.map((i) => [i, rows[i] ?? null])) };
   },
-  settle: async () => null,
 };
 const fact = (type: string, subject: string, at: string, data: Record<string, unknown> = {}) => ({ type, subject, at, actor: "kernel", data });
 const flow = {
   task: async (id: string): Promise<Waterfall> => ({
     task: id, root: id, stages: [], idle: [],
     facts: [
-      fact("grade.verdict", "grade:x:1", "2026-11-10T10:55:00.000Z", { pass: false }),
       fact("task.created", `task:${id}`, "2026-11-10T10:00:00.000Z"),
       fact("job.started", "job:j-1111111111111111", "2026-11-10T10:01:00.000Z"),
       fact("job.ended", "job:j-1111111111111111", "2026-11-10T10:10:00.000Z", { state: "failed", why: "timeout" }),
@@ -78,29 +75,28 @@ describe("task truth", () => {
       req.end();
     });
 
-  it("done means: the latest verdict's criteria with a PR link; unjudged criteria are unknown", async () => {
+  it("rubric: each criterion's result and reason with a PR link", async () => {
     const g = (await get(graded)).grade;
-    expect(g).toMatchObject({ state: "needs_revision", version: "abc123", deliverable: { kind: "pr", href: "https://github.com/Aiden-HQ/AidenHQ/pull/12" } });
-    expect(g.rubric).toEqual([{ text: "Tests pass", met: "yes", evidence: "tests pass" }, { text: "Docs updated", met: "no", evidence: "no docs" }, { text: "Reviewed", met: "unknown" }]);
+    expect(g).toMatchObject({ state: "unmet", deliverable: { kind: "pr", href: "https://github.com/Aiden-HQ/AidenHQ/pull/12" } });
+    expect(g.rubric).toEqual([{ text: "Tests pass", met: "yes", reason: "tests pass" }, { text: "Docs updated", met: "no", reason: "no docs" }, { text: "Reviewed", met: "yes" }]);
   });
 
-  it("no row shows nothing; a close without a verdict says so; an empty rubric uses the module's template; an empty ref has no link", async () => {
+  it("no row shows nothing; met, failed (with its reason) and open (checked after close) show the row; an empty ref has no link", async () => {
     expect((await get(ungraded)).grade.state).toBe("none");
-    expect((await get(closed)).grade).toMatchObject({ state: "ungraded_close", deliverable: { ref: "" } });
-    // The module closes a row satisfied when it gives up on unmet work: never shown as Met.
-    expect((await get(gaveUp)).grade.state).toBe("ungraded_close");
+    expect((await get(closed)).grade).toMatchObject({ state: "met", deliverable: { ref: "" } });
+    expect((await get(gaveUp)).grade).toMatchObject({ state: "failed", reason: "the model was unreachable" });
     const b = (await get(bare)).grade;
-    expect(b.rubric.map((r: { text: string }) => r.text)).toEqual(["Says what was found", "Cites sources", "Answers the ask"]);
+    expect(b).toMatchObject({ state: "open", rubric: [{ text: "Says what was found" }, { text: "Cites sources" }, { text: "Answers the ask" }] });
     expect(b.deliverable.href).toBeUndefined();
   });
 
-  it("an unreadable grading module is Grade unavailable, never passed", async () => {
+  it("an unreadable grading module is Rubric check unavailable", async () => {
     expect((await get(down)).grade.state).toBe("unavailable");
   });
 
   it("milestones: this task's facts in time order, a failed run with its reason, each source linked", async () => {
     const m = (await get(graded)).milestones;
-    expect(m.map((x: { kind: string }) => x.kind)).toEqual(["created", "run_started", "run_ended", "asked_you", "approved", "deployed", "graded"]);
+    expect(m.map((x: { kind: string }) => x.kind)).toEqual(["created", "run_started", "run_ended", "asked_you", "approved", "deployed"]);
     expect(m.find((x: { kind: string }) => x.kind === "run_ended")).toMatchObject({ text: "Run failed: timeout", runId: "j-1111111111111111" });
     expect(m.find((x: { kind: string }) => x.kind === "approved")).toMatchObject({ href: "#/approvals/R1" });
     expect(m.find((x: { kind: string }) => x.kind === "deployed").href).toContain("/pull/12");

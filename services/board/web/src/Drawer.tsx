@@ -739,33 +739,30 @@ function Thread({ issue, board, agent, prefix, title = "Activity" }: { issue: Is
   );
 }
 
-const GRADE_WORDS: Record<string, [StatusTone, string]> = {
-  satisfied: ["ok", "Met"],
-  needs_revision: ["needs", "Sent back"],
-  pending: ["working", "Being graded"],
-  open: ["idle", "Not graded yet"],
-  awaiting_evidence: ["idle", "Waiting for evidence"],
-  grading_failed: ["failed", "Grading failed"],
-  not_graded: ["idle", "Not graded"],
-  ungraded_close: ["idle", "Closed without verification"],
-  unavailable: ["failed", "Grade unavailable"],
+const rubricWords = (grade: IssueView["grade"]): [StatusTone, string] => {
+  const open = grade.rubric.filter((r) => r.met === "no").length;
+  return grade.state === "met" ? ["ok", "Rubric check: met"]
+    : grade.state === "unmet" ? ["needs", `Rubric check: ${open} ${open === 1 ? "item" : "items"} not done`]
+    : grade.state === "failed" ? ["idle", "Rubric check not made"]
+    : grade.state === "unavailable" ? ["idle", "Rubric check unavailable"]
+    : ["idle", "Checked after close"];
 };
-const MET: Record<string, [StatusTone, string]> = { yes: ["ok", "Met"], no: ["failed", "Unmet"], unknown: ["idle", "Unknown"] };
+const MET: Record<string, [StatusTone, string]> = { yes: ["ok", "Met"], no: ["needs", "Not done"] };
 const DELIVERABLE = { pr: "PR", app: "App", apply: "Apply", file: "File", report: "Report", issue: "Issue" };
 
-/** What done means for this task and whether the grader finds it met: the rubric with each verdict's evidence, and the deliverable. */
+/** The task's rubric and its one check after close: each criterion met or not done with the reason, and the deliverable. */
 function DoneMeans({ grade }: { grade: IssueView["grade"] }) {
   if (grade.state === "none") return null;
-  const [tone, word] = GRADE_WORDS[grade.state]!;
+  const [tone, word] = rubricWords(grade);
   const d = grade.deliverable;
   return (
-    <section className="done-means" aria-label="Done means">
+    <section className="done-means" aria-label="Rubric">
       <div className="dm-head">
-        <h3>Done means</h3>
+        <h3>Rubric</h3>
         <StatusDot tone={tone}>{word}</StatusDot>
-        {grade.judgedAt && (
-          <span className="muted small" title={new Date(grade.judgedAt).toLocaleString(undefined, stampOpts())}>
-            version {grade.version?.slice(0, 8)} · {ago(grade.judgedAt)}
+        {grade.checkedAt && (
+          <span className="muted small" title={new Date(grade.checkedAt).toLocaleString(undefined, stampOpts())}>
+            {ago(grade.checkedAt)}
           </span>
         )}
         {d && (
@@ -775,19 +772,20 @@ function DoneMeans({ grade }: { grade: IssueView["grade"] }) {
                 {DELIVERABLE[d.kind]}: {d.ref} ›
               </a>
             ) : (
-              <span className="muted">{d.ref || (d.kind === "pr" ? (grade.version ? "PR: the task's own" : "PR not opened yet") : `${DELIVERABLE[d.kind]} not ready yet`)}</span>
+              <span className="muted">{d.ref || (d.kind === "pr" ? "PR: the task's own" : `${DELIVERABLE[d.kind]} not ready yet`)}</span>
             )}
           </span>
         )}
       </div>
-      {grade.state === "unavailable" && <p className="muted small">The grading module can't be read, so this task's grade is not known.</p>}
+      {grade.state === "unavailable" && <p className="muted small">The grading module can't be read, so this task's rubric check is not known.</p>}
+      {grade.state === "failed" && grade.reason && <p className="muted small">{grade.reason}</p>}
       {grade.rubric.length > 0 && (
         <ul className="dm-rubric">
           {grade.rubric.map((r, i) => (
             <li key={i}>
-              <StatusDot tone={MET[r.met]![0]}>{MET[r.met]![1]}</StatusDot>
+              {r.met && <StatusDot tone={MET[r.met]![0]}>{MET[r.met]![1]}</StatusDot>}
               <span className="dm-text">{r.text}</span>
-              {r.evidence && <span className="dm-evidence muted small">{r.evidence}</span>}
+              {r.reason && <span className="dm-evidence muted small">{r.reason}</span>}
             </li>
           ))}
         </ul>

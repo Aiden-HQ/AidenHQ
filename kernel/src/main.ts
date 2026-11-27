@@ -233,7 +233,7 @@ const applyHost = hostApply({ repo, instanceDir, stateDir: env("AIDENHQ_STATE_DI
 const applies = createApply({ db: records.db, log, ...applyHost });
 // Its planner (apply-tier.ts): the same code host read and the product checkout.
 const applyPlanner = hostPlanner({ repo, instanceRepo: () => repos().instance, read: applyHost.codehost.read, verifyRelease: runVerify(repo), notes: (sha, requester, task) => routing.notes(sha, requester, task), skills: skillSides({ product: repo, fetch: () => checkoutMain(instanceDir)([]), tree: checkoutTree(instanceDir) }) });
-// The modules' checks (config/kernel/checks.json): the finish gate's task.finish ones and the write.filed ones every filing runs.
+// The modules' checks (config/kernel/checks.json): the task.rubric ones (module-filed rubrics) and the write.filed ones every filing runs.
 const checksRegistry = checksFile(path.join(configDir, "kernel", "checks.json"));
 const writes = createWrites({
   records, registry, connections, secret, resolver, reviews, onTask, log, replay: (r) => replay(r as never), repos,
@@ -491,7 +491,7 @@ jobs.adopt();
 // The wake inbox (wakes.ts): Paperclip events scan their task now; the reconcile poll scans every polled agent's open tasks.
 // Outcomes posted on a job's task as its agent, once (outcomes.ts): the agent's own Paperclip key, setup's paperclip-agents/<id>.
 const plugin = createPluginPost({ controlUrl, agentKey: (id) => secret(`paperclip-agents/${id}`), postKey: () => secret("paperclip_post_key") });
-const outcomes = createOutcomes({ db: records.db, facts, agentKey, plugin, log, relay: createReplyRelay({ owner: ownerApi, queue: notify.queue, log }), delegates: (id) => delegateIds(grantsTable().agents, id, appOwners), finish: (task, agent) => checks.finish(task, { agent, via: "job_post" }), chatTask: (id) => { const t = grantsTable().agents?.[id]?.chat_task; return typeof t === "string" ? t : undefined; },
+const outcomes = createOutcomes({ db: records.db, facts, agentKey, plugin, log, relay: createReplyRelay({ owner: ownerApi, queue: notify.queue, log }), delegates: (id) => delegateIds(grantsTable().agents, id, appOwners), finish: (task) => checks.finish(task), chatTask: (id) => { const t = grantsTable().agents?.[id]?.chat_task; return typeof t === "string" ? t : undefined; },
   // A reply on a closed task is not posted or relayed (outcomes.ts): one read of the task, as the owner reads it.
   task: async (id) => { const r = await cpApi(`/api/issues/${encodeURIComponent(id)}`); if (r.status === 404) return undefined; if (r.status !== 200) throw Object.assign(new Error(`control plane GET task ${id} → ${r.status}`), { status: r.status }); return (await r.json()) as { status?: string }; } });
 const KNOWN_REPOS = ["@agents/*", "@product", "@instance", "@orgs", "@maintained"];
@@ -576,7 +576,6 @@ const stop = (signal: string) => { log("stopping: jobs left running for the next
 let drain: () => void = () => stop("SIGUSR2");
 for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => stop(sig));
 process.on("SIGUSR2", () => drain());
-// The finish gate (checks.ts): modules' task.finish checks (compile), holds placed as the owner.
 // The Fleet Steward's operations (fleet-ops.ts): pause/resume, stop a run, restart a module's service, roll back.
 const fleetOps = createFleetOps({
   db: records.db, owner: ownerApi, log,
@@ -613,21 +612,16 @@ const deploys = createDeploys({ db: records.db, file: path.join(env("AIDENHQ_STA
 const syncDeploys = () => deploys().catch((e) => log("WARNING: deploy facts failed", { err: String((e as Error).message) }));
 syncDeploys();
 every(syncDeploys, 60_000);
-// One live grader token per task, reused while it has time left and dropped when the task's hold resolves. Kind grader (never an
-// agent's identity: whoami and every agent check refuse it) that names the assignee, so the gateway charges its calls to that
-// agent on that task (its task cap, gateway/lib.ts).
-const graderTokens = new Map<string, { token: string; exp: number }>();
-const graderToken = (task: string, agent: string) => {
-  const live = graderTokens.get(task);
-  if (live && live.exp > Date.now() + 5 * 60_000) return live.token;
-  const ttlMs = 15 * 60_000;
-  const token = mintToken(secret("gateway_job_secret"), { kind: "grader", agentId: agent, issueId: task, component: "Grader", ttlMs });
-  graderTokens.set(task, { token, exp: Date.now() + ttlMs });
-  return token;
-};
-const checks = createChecks({ db: records.db, registry: checksRegistry, owner: ownerApi, secret, resolver, log, agentKey: (id) => grantsTable().agents?.[id]?.key, graded: (id) => grantsTable().agents?.[id]?.graded === true, pending: (task) => records.list(["review", "owner", "approved"], 100, { task }),
+// A grader token for one rubric check (kind grader: never an agent's identity; whoami and every agent check refuse it) that names
+// the assignee, so the gateway charges the call to that agent on that task (its task cap, gateway/lib.ts).
+const graderToken = (task: string, agent: string) => mintToken(secret("gateway_job_secret"), { kind: "grader", agentId: agent, issueId: task, component: "Grader", ttlMs: 15 * 60_000 });
+// The finish gate and the modules' rubric checks (checks.ts).
+const checks = createChecks({ db: records.db, registry: checksRegistry, owner: ownerApi, secret, resolver, log, pending: (task) => records.list(["review", "owner", "approved"], 100, { task }),
   // A task's own change requests on this server: none may be open when it closes (a green-but-unmerged change is not shipped).
   localChanges: async ({ id, identifier }) => localHost() ? (await localCode.open()).filter((c) => (c.task && (c.task === id || c.task === identifier))).map((c) => ({ url: c.url, checks: c.checks.map(({ ok, pending }) => ({ ok, pending })) })) : [] });
+// Tasks the removed finish hold left in review close once their gate passes: tried hourly until none is left (a no-op after).
+setTimeout(() => void checks.releaseHolds(), 60_000).unref();
+every(() => void checks.releaseHolds(), 60 * 60_000);
 // First-run setup (/setup): the keys the modules ask for go into the vault view (AIDENHQ_SECRETS_DIR) as new 0600 files renamed into place; the
 // vault's recovery key waits there (ops/setup.sh --unattended moves it out of root's home) until the owner has seen it.
 const secretsDir = env("AIDENHQ_SECRETS_DIR", "");
@@ -770,7 +764,7 @@ const compileCheck = createCompileCheck({
   cache: env("AIDENHQ_NPM_CACHE", path.join(process.env.HOME ?? "/root", ".npm")), log,
 });
 const answers = createAnswers({ db: records.db, states: taskStates });
-const backplane = createBackplane({ projects, answers, compileCheck, idle, memory, sharing, boardApi: moduleBoardApi, views: createViews({ connections, asserter, resolver, secret }), facts, repos: codehostRepos, healthProbe, settingsChange, validate: moduleValidate, routing, events, connectionHealth: createConnectionHealth({ connections, resolver }), connectionState, healthKey: () => secret("health_probe_key"), codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, flow, taskStates, graderToken, dropGraderToken: (task) => graderTokens.delete(task), eventsKey: () => secret("paperclip_events_key"), jobTools, moduleTool: createModuleTool({ db: records.db, whoami, asserter, resolver, secret, log, decl: (m) => (modulesFile().modules?.[m] as { jobtools?: ModuleJobToolsDecl } | undefined)?.jobtools }), precheck, repoBundle: (module: string, repo: string, head?: string) => codehost.ask(module, "bundle", { repo, ref: head ?? "HEAD" }), appToken: codehost.appToken, advisories: advisories.list, testSessions: () => accounts?.test, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: model.ready, operatorKey: () => secret(OPERATOR_KEY), secrets: moduleSecrets, decide: channels.decideCard, update: (to, by) => updates.requestMain(to, by), validate: moduleValidate }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ sawn: (id) => jobs.sawn(id), projects, appOwners: () => appOwners(), asserter, whoami, plugin, once: outcomes.once, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl, checks, observe: wakes.observe, facts, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), fetch: ownerFetch, observe: wakes.observe, facts, log, ownerFiled: (id) => void records.db.prepare("INSERT OR IGNORE INTO task_filers (task, filer) VALUES (?, 'owner')").run(id) }) as never });
+const backplane = createBackplane({ projects, answers, compileCheck, idle, memory, sharing, boardApi: moduleBoardApi, views: createViews({ connections, asserter, resolver, secret }), facts, repos: codehostRepos, healthProbe, settingsChange, validate: moduleValidate, routing, events, connectionHealth: createConnectionHealth({ connections, resolver }), connectionState, healthKey: () => secret("health_probe_key"), codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, flow, taskStates, graderToken, eventsKey: () => secret("paperclip_events_key"), jobTools, moduleTool: createModuleTool({ db: records.db, whoami, asserter, resolver, secret, log, decl: (m) => (modulesFile().modules?.[m] as { jobtools?: ModuleJobToolsDecl } | undefined)?.jobtools }), precheck, repoBundle: (module: string, repo: string, head?: string) => codehost.ask(module, "bundle", { repo, ref: head ?? "HEAD" }), appToken: codehost.appToken, advisories: advisories.list, testSessions: () => accounts?.test, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: model.ready, operatorKey: () => secret(OPERATOR_KEY), secrets: moduleSecrets, decide: channels.decideCard, update: (to, by) => updates.requestMain(to, by), validate: moduleValidate }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ sawn: (id) => jobs.sawn(id), projects, appOwners: () => appOwners(), asserter, whoami, plugin, once: outcomes.once, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl, checks, observe: wakes.observe, facts, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), fetch: ownerFetch, observe: wakes.observe, facts, log, ownerFiled: (id) => void records.db.prepare("INSERT OR IGNORE INTO task_filers (task, filer) VALUES (?, 'owner')").run(id) }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };

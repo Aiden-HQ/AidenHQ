@@ -17,6 +17,8 @@ export type DigestItem = {
   persist?: boolean;
   onOpen?: () => void;
   open?: string;
+  /** A web address that opens in a new tab (a meeting); the row text is its link. */
+  external?: string;
   active?: boolean;
   receipt?: { text: string; onUndo?: () => void } | null;
   i?: number;
@@ -26,7 +28,8 @@ export type DigestItem = {
 const skip = "button, a, input, textarea, select, label, form";
 
 export function DigestRow({ d }: { d: DigestItem }) {
-  const open = d.onOpen ?? (d.open ? () => void (location.hash = safeHref(d.open!)) : undefined);
+  const out = d.external && safeHref(d.external) !== "#" ? d.external : undefined;
+  const open = d.onOpen ?? (d.open ? () => void (location.hash = safeHref(d.open!)) : out ? () => void window.open(out, "_blank", "noopener,noreferrer") : undefined);
   return (
     <div
       className={`ui-digest-row${open ? " openable" : ""}${d.active ? " on" : ""}`}
@@ -46,6 +49,8 @@ export function DigestRow({ d }: { d: DigestItem }) {
             <button type="button" className="ui-digest-text ui-digest-open" title={d.title} onClick={d.onOpen}>{d.text}</button>
           ) : d.open ? (
             <a className="ui-digest-text ui-digest-open" title={d.title} href={safeHref(d.open)}>{d.text}</a>
+          ) : out ? (
+            <a className="ui-digest-text ui-digest-open" title={d.title} href={out} target="_blank" rel="noopener noreferrer">{d.text}</a>
           ) : (
             <span className="ui-digest-text" title={d.title}>{d.text}</span>
           )}

@@ -22,7 +22,7 @@ agents:
     # platform-engineer: settings changes, access proposals, Dependabot tasks and pin bumps are filed to the agent holding it,
     # and it may push any branch (the code host's "Platform line": the kernel's record of who asked, never the args).
     roles: [ platform-engineer, ship-admin? ]
-    # Briefed and graded: deliverables delegated to it are checked against their rubric before they close (the grader).
+    # Briefed, and its deliverables carry a rubric: its done report is checked against it after the task closes.
     brief: true
     graded: true
     engine: codex-openrouter
@@ -55,8 +55,7 @@ agents:
       # A ship task's generate command, proposed when discovery couldn't settle it (ship skill; role ship-admin), when ship is on.
       ship?: [ ship_configure ]
       # Its own task only, never another's text: a `file` deliverable's file goes on it, task_approvals reads this task's
-      # approval cards (the merge card `publish` checks before waiting), and task_finish closes it through the kernel's finish
-      # gate (graded: held for the grader) once its work has landed; task_wait records what it waits on.
+      # approval cards (the merge card `publish` checks before waiting), and task_finish closes it once its work has landed; task_wait records what it waits on.
       paperclip_tasks: [ task_file_upload, task_finish, task_wait, task_approvals ]
     # Primer reads (optional: only with the primer module); in its computer through the kernel's proxy with its run token.
     jobcaps: [ primer-read? ]

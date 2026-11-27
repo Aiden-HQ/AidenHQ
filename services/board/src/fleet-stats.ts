@@ -1,8 +1,7 @@
 // Fleet reporting from facts the system already holds: tasks done (Paperclip), approvals (the kernel's records), billed cost (the kernel's
-// cost reports on the gateway's ledger), grades (graded done). Diagnostics, not rankings: agents with different jobs are not compared on one number.
+// cost reports on the gateway's ledger), Diagnostics, not rankings: agents with different jobs are not compared on one number.
 // scorecard: one agent, 7 days against the 7 before (the Agents page); fleetSummary: the whole fleet (fleet_status, the morning brief).
 import type { Approval, Records } from "./records.js";
-import type { Grade, Grading } from "./grading.js";
 import type { Issue, Paperclip } from "./paperclip.js";
 import type { PastRun } from "./runs.js";
 import type { CostReport } from "./costs.js";
@@ -16,7 +15,6 @@ export interface Facts {
   closed: Issue[];
   /** Approval records over the last 14 days, any state. */
   approvals: Approval[];
-  grades: (issueId: string) => Grade | undefined;
   /** The kernel's daily cost report over the last 14 days: per agent and UTC day, dollars, calls (rows) and how many were priced. */
   cost: { agentId: string | null; day: string; costUsd: number; rows: number; priced: number }[];
   /** Agent runs, newest first (the kernel lists the newest 200). */
@@ -39,15 +37,12 @@ export function scorecard(f: Facts, agentId: string, now = Date.now()) {
   const costUsd = spend(inWeek);
   // Billed only when every call in the week carried a cost; otherwise the figure undercounts and says so.
   const rows = ofAgent.filter((c) => inWeek(Date.parse(c.day)));
-  const graded = done.map((i) => f.grades(i.id)).filter((g): g is Grade => Boolean(g));
   const mineAp = f.approvals.filter((a) => a.requesterId === agentId);
   const apIn = (keep: (t: number) => boolean) => mineAp.filter((a) => keep(Date.parse(a.createdAt)));
   const runs = f.runs.filter((r) => r.agentId === agentId && r.startedAt && inWeek(Date.parse(r.startedAt)));
   return {
     window: { from: new Date(week).toISOString(), days: 7 },
     done: { count: done.length, prior: mine.filter((i) => inPrior(doneAt(i))).length, tasks: done.slice(0, 20).map((i) => ({ identifier: i.identifier, title: i.title })) },
-    // Reopen rate: of the graded tasks finished this week, how many had a version the grader sent back (attempts, graded done).
-    reopen: { graded: graded.length, reopened: graded.filter((g) => g.attempts > 0).length },
     approvals: { filed: apIn(inWeek).length, rejected: apIn(inWeek).filter((a) => a.state === "rejected").length, priorRejected: apIn(inPrior).filter((a) => a.state === "rejected").length },
     runsFailed: runs.filter((r) => FAILED_RUN.includes(r.status)).length,
     cost: { usd: costUsd, prior: spend(inPrior), perDone: done.length ? costUsd / done.length : null, billed: rows.length > 0 && rows.every((c) => c.priced === c.rows) },
@@ -122,16 +117,15 @@ export function fleetSummary(f: Facts, o: { window: "24h" | "7d"; blocked: Issue
   };
 }
 
-/** Gathers the 14 days of facts (done tasks, cards, billed cost, runs); `grades` come from the grading module (none when it is unreachable). */
-export async function gatherFacts(pc: Paperclip, recentRuns: () => Promise<PastRun[]>, costs: CostReport, records: Pick<Records, "list">, grading: Pick<Grading, "grades">, now = Date.now()): Promise<Facts> {
+/** Gathers the 14 days of facts (done tasks, cards, billed cost, runs) */
+export async function gatherFacts(pc: Paperclip, recentRuns: () => Promise<PastRun[]>, costs: CostReport, records: Pick<Records, "list">, now = Date.now()): Promise<Facts> {
   const [from, to] = [new Date(Date.parse(day(now)) - 13 * DAY).toISOString(), new Date(now + 1000).toISOString()];
   const [closed, runs, cards, daily] = await Promise.all([pc.closedSince(from, "500"), recentRuns(), records.list("recent", { limit: 1000 }), costs<{ agentId: string | null; day: string; usd: number; calls: number; priced: number }[]>("daily", { from, to })]);
-  const grades = await grading.grades(closed.filter((i) => i.status === "done").map((i) => i.id)).then((v) => v.grades, () => ({}) as Record<string, Grade | null>);
-  return { closed, runs, approvals: cards.filter((a) => a.createdAt > from || (a.decidedAt ?? "") > from), grades: (id) => grades[id] ?? undefined, cost: daily.map((c) => ({ agentId: c.agentId, day: c.day, costUsd: c.usd, rows: c.calls, priced: c.priced })) };
+  return { closed, runs, approvals: cards.filter((a) => a.createdAt > from || (a.decidedAt ?? "") > from), cost: daily.map((c) => ({ agentId: c.agentId, day: c.day, costUsd: c.usd, rows: c.calls, priced: c.priced })) };
 }
 
 /** fleet_status's `summary`: the fleet in a few lists over the window (24h or 7d). */
-export async function statusSummary(pc: Paperclip, recentRuns: () => Promise<PastRun[]>, costs: CostReport, records: Pick<Records, "list">, grading: Pick<Grading, "grades">, window: "24h" | "7d"): Promise<FleetSummary> {
-  const [facts, open, agents] = await Promise.all([gatherFacts(pc, recentRuns, costs, records, grading), pc.openIssues(), pc.agents()]);
+export async function statusSummary(pc: Paperclip, recentRuns: () => Promise<PastRun[]>, costs: CostReport, records: Pick<Records, "list">, window: "24h" | "7d"): Promise<FleetSummary> {
+  const [facts, open, agents] = await Promise.all([gatherFacts(pc, recentRuns, costs, records), pc.openIssues(), pc.agents()]);
   return fleetSummary(facts, { window, blocked: open.filter((i) => i.status === "blocked"), names: new Map(agents.map((a) => [a.id, a.name])) });
 }

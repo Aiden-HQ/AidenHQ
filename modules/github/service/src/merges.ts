@@ -72,7 +72,7 @@ export function createMerges(d: {
   reviewGate: ReviewGate;
   /** Flow facts (flow.ts): CI done on a head, merges, and each wait with its reason. */
   flow?: Flow;
-  /** The task that opened a PR (pr-tasks.json, pr-tasks.ts notePrTask): an already-merged PR is evidence for grading only when it links to the task its merge is for. */
+  /** The task that opened a PR (pr-tasks.json, pr-tasks.ts notePrTask): an already-merged PR is evidence only when it links to the task its merge is for. */
   taskOf?: (repo: string, n: number) => string | null;
   /** A task's id from its identifier (WOR-12), as the kernel's work read resolves it (by its jobs): a module's record (ship's)
    * names its task by id only, and pr-tasks.json keys a PR's owner by the identifier. */
@@ -423,7 +423,7 @@ export function createMerges(d: {
       if (v.do === "done") {
         // Merged at the bound head. It is this queue's merge only when an unanswered merge call of ours is still pending and the
         // merge commit is exactly that call's (mergedBy): an owner's or GitHub auto-merge is never ours. Either way the merge
-        // commit at the bound head is evidence; finish() emits it for grading when the PR links to the task the record is for.
+        // commit at the bound head is evidence; finish() emits it when the PR links to the task the record is for.
         const sha = String(pull?.mergeCommit?.oid ?? "");
         const ours = sha ? mergedBy(pull?.mergeCommit, sha, p.mergeCalls) : undefined;
         if (sha && !ours && p.mergeCalls?.length) log("merge call unanswered, but the merge commit isn't this queue's: another writer merged it", { pr: p.url });
@@ -596,8 +596,8 @@ export function createMerges(d: {
   /**
    * ok only when every PR the record named merged (or was merged already). The text's first line is MERGED_LINE and the PRs that
    * merged at their bound head, as JSON ({ repo, number, head, sha }, an empty list when none): this queue's own merges and the
-   * ones already merged when it polled them (a merge commit at the bound head, its sha), what readers of the record (the grading
-   * module) take as merged, never the record's args. An already-merged PR is evidence only when it links to the task this merge is
+   * ones already merged when it polled them (a merge commit at the bound head, its sha), what readers of the record (tasks-mcp's
+   * task_actions) take as merged, never the record's args. An already-merged PR is evidence only when it links to the task this merge is
    * for: a pr-tasks.json row naming it, the task's own pr/push record naming the repo and this exact head commit (`bound`, from
    * prBound), or the merge commit's message naming it (namesTask) — a matching head and merge commit alone prove what GitHub
    * merged, not that it delivered this task. `objects`
@@ -635,7 +635,7 @@ export function createMerges(d: {
     const merged = q.prs.filter(evidence).sort((a, b) => Number(b.status === "merged") - Number(a.status === "merged"))
       .map((p) => ({ repo: p.repo, number: p.number, head: p.head, sha: p.sha! }));
     const objects = q.prs.filter((p) => p.status === "merged" && typeof p.sha === "string").map((p) => `github:${p.repo.toLowerCase()}@${p.sha}`);
-    // The first line is machine-readable and whole (the grading module reads it): the kernel keeps the outcome to OUTCOME_MAX
+    // The first line is machine-readable and whole (tasks-mcp reads it): the kernel keeps the outcome to OUTCOME_MAX
     // characters, cutting only the end, so the human summary after the first line is what is capped here — sized to the room the
     // kernel leaves it, never by a constant of its own that could push the line's end past the cut.
     const line = `${MERGED_LINE}${JSON.stringify(merged)}`;

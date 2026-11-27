@@ -530,7 +530,6 @@ export function createFlow({ db, file, stages, journeys = () => [], now = () => 
       no_action_wakes: noAction.length + w.filter((f) => f.type === "wake.dropped").length,
       no_action_cost: cost(noActionJobs),
       held_seconds_by_reason: held,
-      first_pass_grade: firstBy("grade.verdict", (f) => f.data.pass === true),
       first_pass_review: firstBy("record.decided", (f) => /^approve/.test(String(f.data.decision)), (f) => f.data.decider === "reviewer"),
       handoffs: assigned.filter((f) => str(f.data.from)).length,
       time_to_first_action_p50: p50(assigned.filter((f) => str(f.data.to)).map((a) => { const j = (x.byTask.get(taskOf(a)!) ?? []).find((f) => f.type === "job.started" && byTime(f, a) > 0); return j ? sec(ms(j.at) - ms(a.at)) : undefined; }).filter((v): v is number => v !== undefined)),

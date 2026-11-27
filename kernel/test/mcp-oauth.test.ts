@@ -1,4 +1,4 @@
-// The owner's MCP clients sign in (docs/superpowers/specs/2026-11-20-owner-mcp-design.md): the admin listener is the OAuth
+// The owner's MCP clients sign in (docs/architecture.md, AidenHQ MCP): the admin listener is the OAuth
 // authorization server (metadata, registration, PKCE authorize behind the kernel's sign-in and consent, tokens bound to the
 // board's /mcp), the board checks bearers on the backplane and decides cards as the bearer's account.
 import { test } from "node:test";

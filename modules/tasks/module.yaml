@@ -25,7 +25,7 @@ journeys:
       - { name: ci, label: CI, from: [ pr.checks_started, pr.pushed ] }
       - { name: merge, label: Merge review, from: [ record.filed ], where: { kind: [ github.merge, codehost-local.merge ] } }
       - { name: deploy, label: Deploy, from: [ pr.merged ] }
-      - { name: finish, label: Finishing, from: [ pr.deployed, grade.requested ] }
+      - { name: finish, label: Finishing, from: [ pr.deployed ] }
     end: [ task.status_changed ]
     end_where: { to: [ done, cancelled ] }
 connections:
@@ -45,7 +45,7 @@ connections:
       # coach_record: the fleet-audit role's (the Fleet Steward); its coach_due and coach_evidence reads are the fleet-steward module's.
       read: [ task_current, task_get, task_search, task_list, task_team, task_comments, task_files, task_file_read, task_approvals, fleet_status, fleet_costs, fleet_catalog, handbook_list, handbook_read, advisor_ask, fanout_map, memory_note, memory_forget, memory_read, memory_rewrite, routine_events, self_change ]
       named: [ memory_read, memory_rewrite, self_change ]
-      write: [ coach_record, task_create, task_delegate, task_route, task_join, task_schedule, task_stale, task_recurring, task_merge, task_update, task_amend_rubric, task_rebind, task_pass_on, task_handoff, task_comment, task_file_upload, task_finish, task_wait, task_block, task_cancel, task_relay_owner_words, chat_open, app_request_from_owner, fleet_control ]
+      write: [ coach_record, task_create, task_delegate, task_route, task_join, task_schedule, task_stale, task_recurring, task_merge, task_update, task_pass_on, task_handoff, task_comment, task_file_upload, task_finish, task_wait, task_block, task_cancel, task_relay_owner_words, chat_open, app_request_from_owner, fleet_control ]
 services:
   data: true
   run:

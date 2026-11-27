@@ -43,7 +43,7 @@ export function createAsker(kernel: Kernel) {
   /**
    * When the last of a parent's agent-made sub-tasks ends a run, one summary for whoever asked (the parent's agent), so the
    * parent isn't silent while the results sit on N tasks. `ended`: each sub-task's last run (state), from the kernel's jobs;
-   * `live`: sub-tasks with a run going. Skipped when every run finished and every one is graded (the grader speaks then).
+   * `live`: sub-tasks with a run going. Skipped when every sub-task was cancelled.
    * Returns the key of the batch it reported (the newest job), or undefined while a sibling is still busy.
    */
   async function summarize(task: Issue, { ended, live, dir }: { ended: (task: string) => Promise<{ seq: number; state: string } | undefined>; live: (task: string) => Promise<boolean>; dir: Directory }) {
@@ -66,7 +66,7 @@ export function createAsker(kernel: Kernel) {
     const rows = runs.sort((a, b) => String(a.c.identifier).localeCompare(String(b.c.identifier), undefined, { numeric: true }));
     const batch = Math.max(...rows.map((r) => r.run?.seq ?? 0));
     const failed = rows.filter((r) => r.c.status !== "cancelled" && r.run && r.run.state !== "done");
-    if (!failed.length && rows.every((r) => r.c.status === "cancelled" || dir[r.c.assigneeAgentId!]?.graded)) return batch;
+    if (!failed.length && rows.every((r) => r.c.status === "cancelled")) return batch;
     const text = `**The ${rows.length} task${rows.length === 1 ? "" : "s"} for this have finished a run:**\n\n${rows.map((r) => `- ${r.c.identifier}: ${r.c.status}${r.run ? `, last run ${r.run.state}` : ""}`).join("\n")}\n\nTheir replies are on each task.`;
     await tell(task, text, failed.length ? `has ${failed.length === 1 ? "a run" : "runs"} that stopped` : undefined);
     return batch;

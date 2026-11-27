@@ -10,6 +10,7 @@ import { compile } from "../modules.ts";
 import { BUNDLE } from "./bundle.ts";
 
 const product = join(dirname(fileURLToPath(import.meta.url)), "../..");
+const PRIMER_DOCS = ["primer_create_document", "primer_add_version", "primer_reply_to_thread", "primer_get_doc", "primer_list_versions", "primer_get_comments", "primer_list_suggestions", "primer_withdraw_suggestion", "primer_apply_ops"];
 const settings = { timezone: "UTC", owner_name: "Sam", owner_email: "o@example.com", product_repo: "acme/aidenhq" };
 
 /** An instance with the local module `acme` (agent review-chaser, its `skills`) and its own skill acme.nudge (`skillMeta` frontmatter). */
@@ -17,7 +18,7 @@ function instance({ skills, overrides, skillMeta = "" }: { skills?: string[]; ov
   const dir = mkdtempSync(join(tmpdir(), "skills-"));
   const write = (p: string, t: string) => (mkdirSync(dirname(join(dir, p)), { recursive: true }), writeFileSync(join(dir, p), t));
   write("instance.yaml", YAML.stringify({ product: "0".repeat(40), modules: [...BUNDLE, "github"], settings, ...(overrides ? { overrides } : {}) }));
-  const def = { name: "Review Chaser", description: "Chases pull requests waiting on review.", reports_to: "chief-of-staff", model: "~deepseek/deepseek-flash-latest", connections: { primer: "read", github: "read" }, ...(skills ? { skills } : {}) };
+  const def = { name: "Review Chaser", description: "Chases pull requests waiting on review.", reports_to: "chief-of-staff", model: "~deepseek/deepseek-flash-latest", connections: { primer: PRIMER_DOCS, github: "read" }, ...(skills ? { skills } : {}) };
   write("modules/acme/module.yaml", YAML.stringify({ name: "acme", description: "Chases reviews.", agents: { "review-chaser": def } }));
   write("modules/acme/agents/review-chaser/AGENTS.md", "# Review Chaser\n\nYou chase reviews.\n");
   write("modules/acme/skills/nudge/SKILL.md", `---\nname: nudge\ndescription: How to nudge a reviewer.\n${skillMeta}---\n\nNudge kindly.\n`);
@@ -55,4 +56,11 @@ test("a retired skill in a saved override is dropped with a warning, not an upgr
 
 test("when on a skill fails compile", () => {
   assert.throws(() => compile(product, instance({ skillMeta: "when: { fields: { name: Review Chaser } }\n" })), /module acme: skill nudge: unknown frontmatter when/);
+});
+
+test("a skill's tools must be granted to every agent that lists it", () => {
+  const meta = "tools: [ primer.primer_add_collaborator ]\n";
+  // a destructive tool is reached only by a grant naming it: listing the skill without a grant naming it fails compile.
+  assert.throws(() => compile(product, instance({ skills: ["acme.nudge"], skillMeta: meta })), /agent review-chaser: skill acme\.nudge calls primer\.primer_add_collaborator, which the agent is not granted/);
+  assert.deepEqual(skillsOf(instance({ skillMeta: meta }), "review-chaser"), []);
 });

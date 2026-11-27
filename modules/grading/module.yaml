@@ -1,45 +1,18 @@
 name: grading
-description: "Graded done: a delegated task's rubric and grade, the finish check every move to done passes (held for the grader until its rubric is met), and the routes the board reads. Always installed (core requires it)."
+description: "Completion checks as housekeeping: a delegated task's rubric, one check of it after the task closes (read from the agent's own report), and the result on the board. Nothing is held or sent back. In the default bundle."
 license: MIT
-# A task.finish check (P5, spec §3.5): the kernel asks POST /check/finish on every move to done (kernel/src/checks.ts); a held
-# task goes to review with the `grading` label, which this module releases (POST /v1/checks/:task) once a verdict is in. The
-# grade loop runs in the service (service/src/kernel-loop.ts, W7): it reads tasks (kernel.cp-read) and the kernel's jobs
-# (kernel.work-read), asks it for a grader token (kernel.grader), moves a graded task through the finish check and tells
-# parents by wake notice (kernel.wake). It never writes to the control plane itself. A PR's evidence is read from GitHub (below);
-# an app's status, deploys and live view are held ("not available"): apps-mcp's internal API has no route this module may reach.
+# The service polls its open rubrics (service/src/check.ts): once a task is done, one model pass reads the rubric and the agent's
+# report (kernel.cp-read), with a grader token billed to the task (kernel.grader); an unmet criterion sends the delegating agent one
+# wake notice (kernel.wake). It never writes to the control plane itself.
 roles:
-  requests: [ kernel.cp-read, kernel.work-read, kernel.grader, kernel.wake, apps.read, kernel.facts ] # apps.read: an app deliverable's status, deploys and live view (apps-mcp)
-# Flow (docs/design/flow.md): a task's grade attempts and the waits its retry ladder puts on the task, emitted by service/src/loop.ts.
-facts:
-  grade.requested: { subject: grade }
-  grade.verdict: { subject: grade }
-  work.waiting: { subject: task, reasons: [grade_retry] }
-  work.resumed: { subject: task, reasons: [grade_retry] }
-stages:
-  - { name: grade, label: Grading, from: grade.requested, to: grade.verdict }
+  requests: [ kernel.cp-read, kernel.grader, kernel.wake ]
+# A task a module files with {deliverable, rubric} (POST /v1/tasks): the kernel files its rubric here (kernel/src/modtasks.ts).
 checks:
-  - id: finish
-    at: task.finish
-    post: http://grading:8096/check/finish
-    rubric: http://grading:8096/check/rubric # a task a module files with {deliverable, rubric} (POST /v1/tasks) is graded from its filing
-    grade: http://grading:8096/check/grade # the latest verdict that sent the task's work back: the AI reviewer reads it (kernel/src/review-loop.ts)
+  - id: rubric
+    at: task.rubric
+    post: http://grading:8096/check/rubric
     auth: grading_check_key
-    label: grading
-# PR and issue evidence: typed reads of the instance's known repositories (agents org, product, github_orgs, maintainer_repos)
-# through the kernel's code host (POST /v1/codehost/read, service/src/github.ts): a PR, its checks and its diff, an issue, a job
-# and its run, the one map file a command fact's command and directory come from, and whether a suite's directory exists at the
-# graded head (a boolean only: no contents).
-codehost:
-  read:
-    repos: [ "@agents/*", "@product", "@orgs", "@maintained" ]
-  evidence:
-    repos: [ "@agents/*", "@product", "@orgs", "@maintained" ]
-    paths: [ ".github/ci/areas.json", ".github/workflows/ci.yml" ]
-  exists:
-    repos: [ "@agents/*", "@product", "@orgs", "@maintained" ]
-labels:
-  - { name: grading, color: "#7c3aed" }
-# The board's reads (held parts, wake-ups, rollover, Fleet Ops' stale grades), with its own key, until the board is a module.
+# The board's reads (the drawer's rubric and result), with its own key, until the board is a module.
 board_env:
   GRADING_URL: http://grading:8096
   GRADING_BOARD_KEY_FILE: ${secrets.grading_board_key}
@@ -52,7 +25,7 @@ services:
       port: 8096
       # The kernel's listener is a host address: reached the way every module with no legacy link reaches it.
       egress: true
-      links: [ board, apps-mcp ] # the board's reads (until the board is a module); apps-mcp's grader reads (until 4c moves it into apps-platform)
+      links: [ board ] # the board's reads (until the board is a module)
       data: ["grades:/data"]
       env:
         GRADES_DB: /data/grades.sqlite
@@ -64,4 +37,4 @@ generated_secrets:
   - grading_token
   - grading_check_key
   - grading_board_key
-data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)
+data_version: 1 # its data dir's format: bumped by each forward-only migration (docs/configuration.md); 1 dropped the grade gate's rows

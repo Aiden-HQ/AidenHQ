@@ -1,4 +1,4 @@
-// Approval (spec §5, risk tiers §7): the PR's risk tier from code review's verdict, whether code review's pass carries to a later head,
+// Approval (docs/design/code-review.md, Risk tiers): the PR's risk tier from code review's verdict, whether code review's pass carries to a later head,
 // and the one judgement of whether the App may approve an adopted PR's head. Facts only, from code: no model reads anything here.
 // The round reads the PR's own change (GitHub's compare from its merge base) only where a pass stands on an earlier head, and passes
 // riskOf()'s answer (the tier's approve and merge) and judge()'s to round().
@@ -90,7 +90,7 @@ export const canApprove = (j: Judged | undefined) => j?.ok === true && j.risk.ap
 export type Approved = { head: string; why?: string; policy?: string };
 /** An App approval that no longer stands for this head: issued on another commit (the head moved since: GitHub may keep it as
  * approving, but it never saw this change), under another policy than the head's current one, or where the tier's `approve` is no
- * longer `on` (risk tiers §7; a tier not known yet, code review unreachable, changes nothing). A person's stays whatever the tier says; an approval ship never made is none. It is dismissed, never
+ * longer `on` (docs/design/code-review.md, Risk tiers; a tier not known yet, code review unreachable, changes nothing). A person's stays whatever the tier says; an approval ship never made is none. It is dismissed, never
  * counted, and the approve round judges the head again: where code review's pass carries to it (the PR's own change is the same),
  * the App approves the new head without a fresh review. */
 export const staleApproval = (ap: Approved | undefined, head: string, r: Risk) => !!ap && !ap.why && (ap.head !== head || (r.state !== "pending" && (r.approve !== "on" || ap.policy !== r.policy)));
