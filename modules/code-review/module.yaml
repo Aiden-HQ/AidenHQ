@@ -215,6 +215,7 @@ services:
       data: ["reviews:/data"]
       env:
         CODE_REVIEW_DB: /data/code-review.sqlite
+        OWNER_TIMEZONE: "${settings.timezone}"
         CODE_REVIEW_SETTINGS: "${settings.code_review}"
         CODE_REVIEW_TOKEN_FILE: ${secrets.code_review_token}
         CODE_REVIEW_SERVICE_KEY_FILE: ${secrets.code_review_service_key}

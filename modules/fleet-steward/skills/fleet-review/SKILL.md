@@ -23,9 +23,9 @@ description: "Groups the week's recurring failures into at most 3 rule proposals
    `src_github.issues`, a revert is titled `Revert "…"`); same defect twice, each with a step-3 proposal for a deterministic check (lint rule, test or `ui-review` check).
 6. **Spend, from the gateway's counters** (never `fleet_status.summary.spend.avg7dUsd` or `fleet_costs`: both read the
    board's usage rollup, which understates — $207.04/day reported for 2026-11-20…26 against $286.85/day billed). On the
-   `prometheus` datasource run `query_prometheus`, `queryType: range`, `stepSeconds: 86400`, from `<today−6>T00:00:00Z`
-   to `<today>T00:00:00Z`; each point is the previous UTC day's final value (the 00:00Z sample still carries the day that
-   just ended, not the reset). The gauge exports only the current UTC day, and a call in flight at 00:00Z settles onto
+   `prometheus` datasource run `query_prometheus`, `queryType: range`, `stepSeconds: 86400`, from the owner's midnight of
+   `<today−6>` to the owner's midnight of `<today>` (the owner's `timezone`, as UTC instants); each point is the previous owner day's final value (the midnight sample still carries the day that
+   just ended, not the reset). The gauge exports only the current owner day, and a call in flight at midnight settles onto
    the day it started, after that day stopped being exported: such a call is in no sample, so state the figure as the
    gateway day gauge's and expect it to sit a little under the ledger.
    - **Split:** `sum by (kind) (aidenhq_gateway_spend_usd_today)`. Per day, `check` plus `ci-code-review` is CI/check spend,

@@ -1219,11 +1219,11 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       // them (Paperclip limits concurrent list requests per client).
       const window = (body as { window?: string } | null)?.window === "7d" ? "7d" : "24h";
       const status = await fleetStatus(pc, records, kernelActivity);
-      const summary = await statusSummary(pc, recentRuns, report, records, window).catch((err) => (log.warn({ err: String(err) }, "fleet summary failed"), null));
+      const summary = await statusSummary(pc, recentRuns, report, records, window, opts.timezone).catch((err) => (log.warn({ err: String(err) }, "fleet summary failed"), null));
       // A bounded reply: the lists are what get long, and a cut-off payload is unreadable.
       return boundedFleetStatus({ ...status, summary });
     }, ["fleet-admin", "fleet-read"]) },
-    { method: "POST", path: /^\/internal\/fleet\/costs$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc) => fleetCosts(pc, report, parse(CostsSchema, body ?? {}).days)) },
+    { method: "POST", path: /^\/internal\/fleet\/costs$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc) => fleetCosts(pc, report, opts.timezone, parse(CostsSchema, body ?? {}).days)) },
     { method: "POST", path: /^\/internal\/fleet\/control$/, handle: async (_m, body, _u, req) => fleetCall(req, async (pc, cos) => fleetControl(pc, cos, parse(ControlSchema, body), store)) },
     {
       // The Chief of Staff relays the owner's own chat message, word for word, to an engineer's or the Researcher's task. The agent picks the
@@ -1895,7 +1895,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       path: /^\/api\/approvals\/(k-[0-9a-f]{16})\/explain$/,
       handle: async (m) => records.explain(m[1]!).then((explanation) => ({ explanation }), (e: Error & { status?: number }) => { throw new HttpError(e.status === 404 ? 404 : 502, e.message); }),
     },
-    { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, recentRuns, report, records), m[1]!) },
+    { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, recentRuns, report, records, Date.now(), opts.timezone), m[1]!, Date.now(), opts.timezone) },
     {
       // Chats: open ones first, then the 20 newest finished ones; each with its agent and state. With `agent` (a key), that
       // agent's chats only (by the chat's own agent, handed-back ones included), no fleet-wide cap: `state=active` its open,
@@ -2217,7 +2217,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     {
       method: "GET",
       path: /^\/api\/costs\/ledger$/,
-      handle: async (_m, _b, url) => ledgerSummary({ report, agents: () => pc.agents(), key: keyUsage, spend: () => spendSummary(opts.gateway), issues: (ids) => issuesOf(taskStates, ids), catalog: () => modelCatalogCached(opts.gateway) }, ledgerRange(url.searchParams)),
+      handle: async (_m, _b, url) => ledgerSummary({ report, timezone: opts.timezone, agents: () => pc.agents(), key: keyUsage, spend: () => spendSummary(opts.gateway), issues: (ids) => issuesOf(taskStates, ids), catalog: () => modelCatalogCached(opts.gateway) }, ledgerRange(url.searchParams)),
     },
     {
       method: "GET",
@@ -3109,7 +3109,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
           if (!token || !bearerMatches(req.headers.authorization, token)) throw new HttpError(401, "unauthorized");
           if (!String(req.headers.host ?? "") || !opts.allowedHosts.includes(String(req.headers.host).toLowerCase())) throw new HttpError(403, "unknown host");
           if (req.method !== "GET") throw new HttpError(405, "method not allowed");
-          return send(res, 200, await metricsText(records), "text/plain; version=0.0.4; charset=utf-8");
+          return send(res, 200, await metricsText(records, opts.timezone), "text/plain; version=0.0.4; charset=utf-8");
         }
         // Only the board's internal token.
         const token = opts.internalToken;

@@ -38,7 +38,7 @@ tick from now, so a routine turned on after weeks paused starts at its next tick
 
 ## 2. The install's spend limit
 
-A new install gets the defaults: `spend_day_usd` 50 (a UTC day) and `spend_month_usd` 1000 (a UTC calendar month), and
+A new install gets the defaults: `spend_day_usd` 50 (the owner's day) and `spend_month_usd` 1000 (the owner's calendar month), and
 `task_usd` 20 per task.
 
 - Compile writes the limits into `config/gateway.json` (`install_day_usd`, `install_month_usd`).

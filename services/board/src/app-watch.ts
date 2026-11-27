@@ -5,6 +5,7 @@
 //   when it has stayed open over 30 minutes or the app had 3 or more incidents in 24 hours: one task per incident.
 // - Resources: an app over 90% of its memory limit, or the host disk over 85%: one task per cause per day.
 import type { Store } from "./store.js";
+import { ownerDay } from "./owner-day.js";
 
 export interface AppStatus { name: string; incident?: { opened_at: number | string; kind: string; detail: string }; stats?: { mem_bytes: number; mem_limit_bytes: number } }
 /** A task for the chief of staff; the same `source` is the same task (POST /v1/board-tasks). */
@@ -13,7 +14,7 @@ type Kv = Pick<Store, "meta" | "setMeta">;
 const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
 const HOW = "Get it fixed: check the app's current state first (finish this task if it is healthy again), see whether the app builder ran on it and wake or re-brief it, or delegate. Tell the owner only if their authority is needed (money, a credential, a security trade-off) or their users are affected and nobody can fix it.";
 
-export async function appWatchTick(d: { apps: () => Promise<AppStatus[]>; diskPct?: () => Promise<number>; store: Kv; file: (a: Alert) => Promise<unknown>; now?: number }): Promise<void> {
+export async function appWatchTick(d: { apps: () => Promise<AppStatus[]>; diskPct?: () => Promise<number>; store: Kv; file: (a: Alert) => Promise<unknown>; timezone: string; now?: number }): Promise<void> {
   const now = d.now ?? Date.now();
   const get = (k: string) => d.store.meta(`appwatch:${k}`) ?? "";
   const set = (k: string, v: string) => d.store.setMeta(`appwatch:${k}`, v);
@@ -39,7 +40,7 @@ export async function appWatchTick(d: { apps: () => Promise<AppStatus[]>; diskPc
       source: `app-incident:${app.name}:${opened}`,
     });
   }
-  const day = new Date(now).toISOString().slice(0, 10);
+  const day = ownerDay(now, d.timezone);
   const resource = (cause: string, what: string) => alert(`${cause}:${day}`, { title: `App resources: ${what}`, description: `${what}.\n\n${HOW}`, source: `app-resource:${cause}:${day}` });
   for (const a of apps) {
     const m = a.stats;

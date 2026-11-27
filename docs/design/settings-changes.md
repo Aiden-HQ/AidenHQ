@@ -99,7 +99,7 @@ Steward (role `routing-tuner`; the fleet-steward module requests the kernel role
 forwards to `POST /v1/routing/<op>` with the Steward job's caller assertion; the kernel reads the job from its own token,
 never from the request.
 
-- **Evidence** (`routing_evidence`): the previous UTC day's decisions from `team_routes`, each with outcomes the kernel
+- **Evidence** (`routing_evidence`): the previous owner's day's decisions from `team_routes`, each with outcomes the kernel
   recorded: task status and completion time, reopen wakes. Never task text.
 - **Replay** (`routing_replay`): code re-runs each decision's candidate snapshot (`team_routes.snapshot`) with the proposed
   weights or repos.

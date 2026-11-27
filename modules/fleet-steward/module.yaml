@@ -134,7 +134,7 @@ routines:
       task with one line.
     concurrency: skip_if_active
     schedules:
-      - { cron: "15 0 * * *", timezone: "UTC", label: "after each UTC day" }
+      - { cron: "15 0 * * *", timezone: "${settings.timezone}", label: "after each day" }
   librarian-weekly:
     title: Librarian weekly lint
     agent: fleet-steward
@@ -177,6 +177,7 @@ services:
       env:
         FLEET_STEWARD_STATE_FILE: /data/state.json
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
+        OWNER_TIMEZONE: "${settings.timezone}"
         FLEET_STEWARD_TOKEN_FILE: ${secrets.fleet_steward_token}
         FLEET_STEWARD_SERVICE_KEY_FILE: ${secrets.fleet_steward_service_key}
         FLEET_OPS_INTERVAL_MINUTES: "${settings.fleet_ops_interval_minutes}"

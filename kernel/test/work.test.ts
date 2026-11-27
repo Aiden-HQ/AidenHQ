@@ -333,7 +333,7 @@ test("a day's billed cost on a module's own tasks of a source family: by each ch
   t.after(() => server.close());
   const get = (path, token = "design") => fetch(`http://127.0.0.1:${server.address().port}${path}`, { headers: { authorization: `Bearer ${token}` } });
   const today = await (await get("/v1/work?spend_tasks=design:pass:acme:&day=2026-11-26")).json();
-  assert.deepEqual(today, { day: "2026-11-26", by_task: [{ task: "t-r1", source: "design:pass:acme:r1", cost_usd: 5.1 }] });
+  assert.deepEqual(today, { day: "2026-11-26", from: "2026-11-26T00:00:00.000Z", by_task: [{ task: "t-r1", source: "design:pass:acme:r1", cost_usd: 5.1 }] });
   assert.deepEqual((await (await get("/v1/work?spend_tasks=design:pass:acme:&day=2026-11-25")).json()).by_task.map((r) => r.cost_usd), [1]);
   assert.equal((await get("/v1/work?spend_tasks=design:pass:acme:&day=yesterday")).status, 400);
   assert.equal((await get("/v1/work?spend_tasks=design:pass:acme:&day=2026-11-26", "plain")).status, 403);

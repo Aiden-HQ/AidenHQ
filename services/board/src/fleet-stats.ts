@@ -6,16 +6,16 @@ import type { Issue, Paperclip } from "./paperclip.js";
 import type { PastRun } from "./runs.js";
 import type { CostReport } from "./costs.js";
 import { oneLine, report, type Row } from "./aidenhq-sdk/quality.js";
+import { addDays, dayStart, ownerDay } from "./owner-day.js";
 
 const DAY = 864e5;
-const day = (t: number) => new Date(t).toISOString().slice(0, 10);
 
 export interface Facts {
   /** Tasks closed (done or cancelled) over the last 14 days. */
   closed: Issue[];
   /** Approval records over the last 14 days, any state. */
   approvals: Approval[];
-  /** The kernel's daily cost report over the last 14 days: per agent and UTC day, dollars, calls (rows) and how many were priced. */
+  /** The kernel's daily cost report over the last 14 days: per agent and owner's day, dollars, calls (rows) and how many were priced. */
   cost: { agentId: string | null; day: string; costUsd: number; rows: number; priced: number }[];
   /** Agent runs, newest first (the kernel lists the newest 200). */
   runs: PastRun[];
@@ -25,18 +25,19 @@ const doneAt = (i: Issue) => Date.parse(i.completedAt ?? i.updatedAt);
 const FAILED_RUN = ["failed", "timeout", "lost"];
 
 /** One agent's 7 days against the prior 7, plus a daily trend of tasks done and billed cost. */
-export function scorecard(f: Facts, agentId: string, now = Date.now()) {
-  const today = Date.parse(day(now));
-  const [week, prior] = [today - 6 * DAY, today - 13 * DAY];
+export function scorecard(f: Facts, agentId: string, now = Date.now(), tz = "UTC") {
+  const today = ownerDay(now, tz);
+  const [weekDay, priorDay] = [addDays(today, -6), addDays(today, -13)];
+  const [week, prior] = [dayStart(weekDay, tz), dayStart(priorDay, tz)];
   const inWeek = (t: number) => t >= week;
   const inPrior = (t: number) => t >= prior && t < week;
   const mine = f.closed.filter((i) => i.status === "done" && i.assigneeAgentId === agentId);
   const done = mine.filter((i) => inWeek(doneAt(i)));
   const ofAgent = f.cost.filter((c) => c.agentId === agentId);
-  const spend = (keep: (t: number) => boolean) => ofAgent.filter((c) => keep(Date.parse(c.day))).reduce((n, c) => n + c.costUsd, 0);
-  const costUsd = spend(inWeek);
+  const spend = (keep: (d: string) => boolean) => ofAgent.filter((c) => keep(c.day)).reduce((n, c) => n + c.costUsd, 0);
+  const costUsd = spend((d) => d >= weekDay);
   // Billed only when every call in the week carried a cost; otherwise the figure undercounts and says so.
-  const rows = ofAgent.filter((c) => inWeek(Date.parse(c.day)));
+  const rows = ofAgent.filter((c) => c.day >= weekDay);
   const mineAp = f.approvals.filter((a) => a.requesterId === agentId);
   const apIn = (keep: (t: number) => boolean) => mineAp.filter((a) => keep(Date.parse(a.createdAt)));
   const runs = f.runs.filter((r) => r.agentId === agentId && r.startedAt && inWeek(Date.parse(r.startedAt)));
@@ -45,10 +46,10 @@ export function scorecard(f: Facts, agentId: string, now = Date.now()) {
     done: { count: done.length, prior: mine.filter((i) => inPrior(doneAt(i))).length, tasks: done.slice(0, 20).map((i) => ({ identifier: i.identifier, title: i.title })) },
     approvals: { filed: apIn(inWeek).length, rejected: apIn(inWeek).filter((a) => a.state === "rejected").length, priorRejected: apIn(inPrior).filter((a) => a.state === "rejected").length },
     runsFailed: runs.filter((r) => FAILED_RUN.includes(r.status)).length,
-    cost: { usd: costUsd, prior: spend(inPrior), perDone: done.length ? costUsd / done.length : null, billed: rows.length > 0 && rows.every((c) => c.priced === c.rows) },
+    cost: { usd: costUsd, prior: spend((d) => d >= priorDay && d < weekDay), perDone: done.length ? costUsd / done.length : null, billed: rows.length > 0 && rows.every((c) => c.priced === c.rows) },
     daily: Array.from({ length: 7 }, (_, k) => {
-      const d = day(week + k * DAY);
-      return { day: d, done: done.filter((i) => day(doneAt(i)) === d).length, costUsd: ofAgent.filter((c) => c.day === d).reduce((n, c) => n + c.costUsd, 0) };
+      const d = addDays(weekDay, k);
+      return { day: d, done: done.filter((i) => ownerDay(doneAt(i), tz) === d).length, costUsd: ofAgent.filter((c) => c.day === d).reduce((n, c) => n + c.costUsd, 0) };
     }),
   };
 }
@@ -67,17 +68,17 @@ export interface FleetSummary {
 }
 
 /** The whole fleet in a few lists. `blocked` is the open blocked tasks; `names` maps agent ids to names. */
-export function fleetSummary(f: Facts, o: { window: "24h" | "7d"; blocked: Issue[]; names: Map<string, string>; now?: number }): FleetSummary {
+export function fleetSummary(f: Facts, o: { window: "24h" | "7d"; blocked: Issue[]; names: Map<string, string>; now?: number; tz?: string }): FleetSummary {
   const now = o.now ?? Date.now();
   const since = now - (o.window === "24h" ? DAY : 7 * DAY);
   const link = (identifier: string) => `#/t/${identifier}`;
   const landed = ["push", "pr", "merge", "apply", "deploy_app"];
   const recent = f.approvals.filter((a) => Date.parse(a.usedAt ?? a.createdAt) >= since);
   const card = (a: Approval) => ({ id: a.id, action: a.action, target: a.target, task: a.identifier });
-  const today = Date.parse(day(now));
-  const yesterday = day(today - DAY);
+  const today = ownerDay(now, o.tz ?? "UTC");
+  const yesterday = addDays(today, -1);
   const total = (keep: (d: string) => boolean) => f.cost.filter((c) => keep(c.day)).reduce((n, c) => n + c.costUsd, 0);
-  const week = Array.from({ length: 7 }, (_, k) => day(today - (k + 1) * DAY));
+  const week = Array.from({ length: 7 }, (_, k) => addDays(today, -(k + 1)));
   // The same trailing week as avg7dUsd, per agent: the split of the figure the summary shows, not a different day's.
   const perAgent = new Map<string, number>();
   for (const c of f.cost) if (week.includes(c.day) && c.agentId) perAgent.set(c.agentId, (perAgent.get(c.agentId) ?? 0) + c.costUsd);
@@ -118,14 +119,14 @@ export function fleetSummary(f: Facts, o: { window: "24h" | "7d"; blocked: Issue
 }
 
 /** Gathers the 14 days of facts (done tasks, cards, billed cost, runs) */
-export async function gatherFacts(pc: Paperclip, recentRuns: () => Promise<PastRun[]>, costs: CostReport, records: Pick<Records, "list">, now = Date.now()): Promise<Facts> {
-  const [from, to] = [new Date(Date.parse(day(now)) - 13 * DAY).toISOString(), new Date(now + 1000).toISOString()];
+export async function gatherFacts(pc: Paperclip, recentRuns: () => Promise<PastRun[]>, costs: CostReport, records: Pick<Records, "list">, now = Date.now(), tz = "UTC"): Promise<Facts> {
+  const [from, to] = [new Date(dayStart(addDays(ownerDay(now, tz), -13), tz)).toISOString(), new Date(now + 1000).toISOString()];
   const [closed, runs, cards, daily] = await Promise.all([pc.closedSince(from, "500"), recentRuns(), records.list("recent", { limit: 1000 }), costs<{ agentId: string | null; day: string; usd: number; calls: number; priced: number }[]>("daily", { from, to })]);
   return { closed, runs, approvals: cards.filter((a) => a.createdAt > from || (a.decidedAt ?? "") > from), cost: daily.map((c) => ({ agentId: c.agentId, day: c.day, costUsd: c.usd, rows: c.calls, priced: c.priced })) };
 }
 
 /** fleet_status's `summary`: the fleet in a few lists over the window (24h or 7d). */
-export async function statusSummary(pc: Paperclip, recentRuns: () => Promise<PastRun[]>, costs: CostReport, records: Pick<Records, "list">, window: "24h" | "7d"): Promise<FleetSummary> {
-  const [facts, open, agents] = await Promise.all([gatherFacts(pc, recentRuns, costs, records), pc.openIssues(), pc.agents()]);
-  return fleetSummary(facts, { window, blocked: open.filter((i) => i.status === "blocked"), names: new Map(agents.map((a) => [a.id, a.name])) });
+export async function statusSummary(pc: Paperclip, recentRuns: () => Promise<PastRun[]>, costs: CostReport, records: Pick<Records, "list">, window: "24h" | "7d", tz: string): Promise<FleetSummary> {
+  const [facts, open, agents] = await Promise.all([gatherFacts(pc, recentRuns, costs, records, Date.now(), tz), pc.openIssues(), pc.agents()]);
+  return fleetSummary(facts, { window, blocked: open.filter((i) => i.status === "blocked"), names: new Map(agents.map((a) => [a.id, a.name])), tz });
 }

@@ -51,6 +51,7 @@ import { render } from "./report.ts";
 import { PREVIOUS_BUDGET, SETUP_PATH } from "./adapters.ts";
 import { INPUT_MAX, mergeRecords, type DeepsecStore } from "./deepsec-store.ts";
 import type { FactIn } from "./aidenhq-sdk/kernel-client.ts";
+import { dayStart, ownerDay, ownerZone } from "./owner-day.ts";
 
 /** How a finding reopened by an unsafe answer says so in the post (fixed words). */
 const REOPENED = { title: "Reopened, its answer found unsafe: ", why: "The recheck found the answer to this finding unsafe: its fix or reason hides the problem or adds one.\n\n" };
@@ -245,8 +246,6 @@ export class RequestError extends Error {
 }
 /** A read GitHub answered with a refusal (a 4xx bar 408 and 429): retrying won't change it. */
 const permanent = (e: unknown) => { const s = (e as { status?: number }).status; return typeof s === "number" && s >= 400 && s < 500 && s !== 408 && s !== 429; };
-
-const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
 export function createEngine(d: EngineDeps) {
   const { db } = d;
@@ -529,11 +528,11 @@ export function createEngine(d: EngineDeps) {
   /** Running runs whose check job still waits for a computer (the kernel says so each tick). */
   const waiting = new Set<string>();
 
-  /** Spent today (UTC), real money only: ended runs' billed cost plus what running ones have spent so far, for one repo or the whole instance. */
+  /** Spent today (the owner's day), real money only: ended runs' billed cost plus what running ones have spent so far, for one repo or the whole instance. */
   function spent(repo?: string) {
-    const m = day(now());
+    const tz = ownerZone(), from = new Date(dayStart(ownerDay(now(), tz), tz)).toISOString();
     const where = repo ? " AND repo = ?" : "";
-    const ended = one<{ s: number }>(`SELECT COALESCE(SUM(cost_usd), 0) s FROM runs WHERE substr(ended, 1, 10) = ?${where}`, m, ...(repo ? [repo] : []))!.s;
+    const ended = one<{ s: number }>(`SELECT COALESCE(SUM(cost_usd), 0) s FROM runs WHERE ended >= ?${where}`, from, ...(repo ? [repo] : []))!.s;
     const running = all<RunRow>(`SELECT * FROM runs WHERE status = 'running'${where}`, ...(repo ? [repo] : []));
     // A failed attempt waiting for its retry (queued) has spent what it was billed.
     const retrying = one<{ s: number }>(`SELECT COALESCE(SUM(billed_prior), 0) s FROM runs WHERE status = 'queued'${where}`, ...(repo ? [repo] : []))!.s;
@@ -1566,7 +1565,7 @@ export function createEngine(d: EngineDeps) {
     const grant = refused.map((r) => fixOf(r.need)).find(Boolean);
     const fix = grant
       ?? (spend.length ? "the install's spend limit resets (Settings, spend_day_usd or spend_month_usd)" : undefined)
-      ?? (skipped.length ? "budget resets at 00:00 UTC" : undefined)
+      ?? (skipped.length ? "budget resets at midnight in the owner's timezone" : undefined)
       ?? (refused.length || failed.length ? "re-run it with code_review_run" : undefined);
     const text = `**One-off review settled:** ${first.repo}#${first.number} at ${first.head.slice(0, 7)}: ${runs.length} ${runs.length === 1 ? "run" : "runs"}, ${what}.${fix ? ` To fix it: ${fix}.` : ""}`;
     // The outcomes of these runs, and whether the owner can act on them (a Grant or Reconnect link, or the spend limit): the stamp

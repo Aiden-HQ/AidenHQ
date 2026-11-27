@@ -59,8 +59,8 @@
 //   GET  /v1/objects?ref=<ref> | ?type=pr&since=<iso>  (role kernel.work-read) whether a GitHub object is ours (objects.ts)
 //   GET  /v1/work[?task=|?job=|?record=|?agent=|?since=], GET /v1/work/metrics  (a module with role kernel.work-read) the jobs and records
 //                              of the kernel's work: a task's, one job, an agent's, the records and billed cost since a time, or what
-//                              runs and ended lately; Prometheus text (work.ts). ?spend_tasks=<source prefix>&day=<UTC date>: the confirmed
-//                              ledger charges in that UTC day on the tasks the module itself filed under that source prefix -> {day, by_task}
+//                              runs and ended lately; Prometheus text (work.ts). ?spend_tasks=<source prefix>[&day=<owner's date>]: the confirmed
+//                              ledger charges in that owner's day (default today) on the tasks the module itself filed under that source prefix -> {day, from, by_task}
 //   GET  /v1/work[?task=|?job=|?record=|?agent=|?since=|?sessions=1|?session=<task>]  (the board) the same reads (the sessions' task, state, lease, times, last words and spend: work.ts sessions()); never the metrics or a token
 //   GET  /v1/flow?task=|?item=|?journeys=1|?journey=|?since=[&to=&by=&scope=]  (the board, or a module with role
 //                              kernel.flow-read) Flow's views over the fact log (flow.ts): a task's or item's waterfall, the declared journeys, a journey's items (journeys.ts), the summary with its insights
@@ -161,6 +161,7 @@ import { requestChain } from "./review-loop.ts";
 import { NAME, type ConnectionState } from "./connection-state.ts";
 import { MemoryError, memoryOp, view as memoryView, type Memory } from "./memory.ts";
 import { EventsError, type Events } from "./events.ts";
+import { ownerDay } from "./owner-day.ts";
 import { OWNER_CAUSES, readNeed } from "../sdk/src/vendor/needs.ts";
 
 const MAX_ATTACHMENT = 25 * 1024 * 1024;
@@ -1142,7 +1143,7 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
         const p = new URLSearchParams(q ?? "");
         // A day's billed cost on the module's own tasks of a source family (the design module's per-app cap): never another module's.
         if (p.has("spend_tasks")) {
-          const prefix = String(p.get("spend_tasks")), day = String(p.get("day") ?? new Date().toISOString().slice(0, 10));
+          const prefix = String(p.get("spend_tasks")), day = String(p.get("day") ?? ownerDay(Date.now(), modules().owner?.timezone));
           if (!/^[\w.:/@#-]{1,200}$/.test(prefix) || !/^\d{4}-\d{2}-\d{2}$/.test(day) || Number.isNaN(Date.parse(`${day}T00:00:00Z`))) throw fail(400, "bad_request", "send ?spend_tasks=<source prefix>&day=<YYYY-MM-DD>");
           return send(res, 200, work.spendTasks(w.module!, prefix, day));
         }

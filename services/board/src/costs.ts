@@ -45,7 +45,7 @@ export function costReport(gateway: { url: string; token: string } | undefined):
   };
 }
 
-/** The install's spend against its two limits, from the kernel (GET /v1/spend/summary: the sums the gateway enforces; a UTC day and month). */
+/** The install's spend against its two limits, from the kernel (GET /v1/spend/summary: the sums the gateway enforces; the owner's day and month). */
 export interface SpendSummary {
   day: string;
   month: string;

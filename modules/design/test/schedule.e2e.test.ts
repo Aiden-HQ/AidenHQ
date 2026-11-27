@@ -1,5 +1,5 @@
 // The scheduler (schedule.ts) and startPass (passes.ts): one active pass per app, triggers by each app's schedule, the day cap from
-// the ledger's charges by UTC day, reconcile of passes whose task closed, Stop, and coverage resume.
+// the ledger's charges by owner day, reconcile of passes whose task closed, Stop, and coverage resume.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -58,7 +58,7 @@ test("triggers follow each app's schedule: a deploy or a default-branch push sta
   assert.equal(k.filed.length, 3, "the deploy that met a running pass is reviewed after it");
 });
 
-test("always runs back to back until the cap, then waits for the next UTC day; a pass spending past midnight counts on its day", async () => {
+test("always runs back to back until the cap, then waits for the next owner day; a pass spending past midnight counts on its day", async () => {
   const { tick, k, settings, finish, clock, today } = setup();
   settings({ apps: [{ name: "acme", url: U, schedule: "always" }] });
   await tick();
@@ -73,7 +73,7 @@ test("always runs back to back until the cap, then waits for the next UTC day; a
   assert.equal(k.filed.length, 1, "the cap holds: no pass on a day its passes billed $5.10");
   clock.t += 24 * 3_600_000;
   await tick();
-  assert.equal(k.filed.length, 2, "a new UTC day: the next pass starts");
+  assert.equal(k.filed.length, 2, "a new owner day: the next pass starts");
 });
 
 test("a pass whose worker died frees the app, and the next one resumes its coverage; a removed app gets none", async () => {
@@ -177,7 +177,7 @@ test("Stop holds the app until the job has ended; a Run now meanwhile is refused
   k.jobLive(first.id, false);
   await tick();
   assert.equal(runOf(first).status, "stopped");
-  assert.equal(k.filed.length, 1, "a Stop rests a 24/7 app for the rest of the UTC day");
+  assert.equal(k.filed.length, 1, "a Stop rests a 24/7 app for the rest of the owner day");
   assert.ok("run" in (await passes.startPass("acme", "request")), "Run now still works");
   assert.equal(store.active("acme")!.trigger, "request");
 });
@@ -187,7 +187,7 @@ test("a Stop asked after midnight rests a 24/7 app for that day, though its pass
   settings({ apps: [{ name: "acme", url: U, schedule: "always" }] });
   await tick(); // 23:00
   const first = k.filed[0]!;
-  clock.t += 2 * 3_600_000; // 01:00 the next UTC day
+  clock.t += 2 * 3_600_000; // 01:00 the next owner day
   await passes.stopPass("acme");
   k.jobLive(first.id, false);
   await tick();

@@ -21,6 +21,7 @@ describe("fleet_costs", () => {
     const reply = await fleetCosts(
       fakePc([{ id: "a1", name: "Alice" }, { id: "a2", name: "Bob" }]),
       fakeDaily([row("a1", today, 2, 400, 40, 60, 0.75), row("a1", yesterday, 1, 50, 0, 5, 0), row("a2", yesterday, 1, 1000, 100, 200, 1.234), row("deadbeef00001111", today, 1, 7, 0, 3, 0.01), row(null, today, 1, 9, 0, 1, 0.02)], asked),
+      "UTC",
       2,
     );
     expect(asked).toEqual([{ from: `${yesterday}T00:00:00.000Z`, to: new Date(Date.parse(today) + DAY).toISOString() }]);
@@ -35,5 +36,14 @@ describe("fleet_costs", () => {
       { agent: "Alice", day: today, runs: 2, inputTokens: 400, cachedInputTokens: 40, outputTokens: 60, costCents: 75 },
       { agent: "System calls", day: today, runs: 1, inputTokens: 9, cachedInputTokens: 0, outputTokens: 1, costCents: 2 },
     ]);
+  });
+
+  it("asks for the owner's days: a range from midnight to midnight in the owner's timezone", async () => {
+    const asked: unknown[] = [];
+    const fake = fakeDaily([], asked);
+    await fleetCosts(fakePc([]), fake, "Asia/Dubai", 2);
+    const { from, to } = (asked as { from: string; to: string }[])[0]!;
+    expect(new Date(to).getTime() - new Date(from).getTime()).toBe(2 * DAY);
+    expect(new Date(from).getUTCHours()).toBe(20); // Dubai midnight is 20:00 UTC the day before
   });
 });

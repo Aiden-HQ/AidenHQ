@@ -11,6 +11,7 @@ import { alertIncidents, firing, parseAlerts, receiveAlerts } from "./alerts.ts"
 import { coachReads } from "./coach.ts";
 import { checks, detectorState, gateActivity, QUIET_MS, snoozeFollowup, staleFollowups, stewardOn, tick, type Kv } from "./detector.ts";
 import { createMcp, fleetTools } from "./mcp.ts";
+import { ownerDay, ownerZone } from "./owner-day.ts";
 import { isModule } from "./module-caller.ts";
 import { createStewardServer } from "./server.ts";
 
@@ -59,7 +60,7 @@ const toSteward = async (text: string, key = hashOf(text), at = new Date()) => {
     title: `Fleet Ops: check: ${text.split(/\.\s/)[0]!.slice(0, 100)}`,
     description: `${text}\n\nFollow your fleet-check skill: own it until it is resolved live and its cause is fixed at the source. Close this task with one line.`,
     role: "fleet-audit",
-    source: `fleet-notice:${key.replace(/[^\w.:/@#-]/g, "-").slice(0, 120)}:${at.toISOString().slice(0, 10)}`,
+    source: `fleet-notice:${key.replace(/[^\w.:/@#-]/g, "-").slice(0, 120)}:${ownerDay(at.getTime(), ownerZone())}`,
   });
 };
 

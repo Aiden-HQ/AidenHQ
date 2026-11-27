@@ -147,7 +147,7 @@ export const fleetTools = (d: {
   {
     name: "routing_evidence",
     roles: ["routing-tuner"],
-    description: "routing-tuner role: the kernel's team routing decisions of the previous UTC day (`days`: 1 to 7 back), each with outcomes the kernel recorded (status, cycle_hours, reopens, gate_reopens: never task text), every team's current members' repos and weights, `base_sha` (the instance repo's main), the open experiment and whether you may propose today.",
+    description: "routing-tuner role: the kernel's team routing decisions of the previous owner's day (`days`: 1 to 7 back), each with outcomes the kernel recorded (status, cycle_hours, reopens, gate_reopens: never task text), every team's current members' repos and weights, `base_sha` (the instance repo's main), the open experiment and whether you may propose today.",
     inputSchema: { type: "object", properties: { days: { type: "number" } }, additionalProperties: false },
     run: async (a, caller) => d.routing("evidence", a, caller.assertion ?? ""),
   },

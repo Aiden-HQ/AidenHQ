@@ -13,7 +13,7 @@ export interface OverviewDeps {
   store: Store;
   apps: () => App[];
   logins: () => Record<string, Login>;
-  /** What the app's passes billed in the current UTC day: the scheduler's own sum of the gateway ledger. */
+  /** What the app's passes billed in the owner's day so far: the scheduler's own sum of the gateway ledger. */
   spentToday: (app: string) => Promise<number>;
 }
 

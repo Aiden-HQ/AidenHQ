@@ -8,6 +8,7 @@
 // drops whole buckets of both together, the rollup's first, so the calls leaving rebuild nothing.
 // Every range snaps to the buckets: its start floored, its end ceiled.
 import type { DatabaseSync } from "node:sqlite";
+import { ownerDay } from "../owner-day.ts";
 
 const DAY_MS = 864e5;
 const STEP_MS = 15 * 60_000;
@@ -117,7 +118,7 @@ const str = (v: unknown) => (typeof v === "string" && v.length <= 200 ? v : unde
 const ids = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.length > 0 && x.length <= 200) : []);
 
 /** The reports (POST /v1/costs/<name>, the board's key): each reads the rollup on one snapshot (the gateway's), a few grouped passes. */
-export function costReports(db: DatabaseSync, snapshot: <T>(f: () => T) => T) {
+export function costReports(db: DatabaseSync, snapshot: <T>(f: () => T) => T, timezone: () => string = () => "UTC") {
   const all = (sql: string, ...args: (string | number)[]) => db.prepare(sql).all(...args) as Record<string, unknown>[];
   /** A window's buckets: none when it ends where it starts, refused when it ends before; a range must hold one at least. */
   const bounds = (b: Body) => {
@@ -214,11 +215,21 @@ export function costReports(db: DatabaseSync, snapshot: <T>(f: () => T) => T) {
       return all(`SELECT issue AS issueId, SUM(input + cached + output) AS tokens, SUM(usd) AS usd FROM cost_rollup INDEXED BY cost_rollup_issue
         WHERE issue != '' AND issue IN (SELECT value FROM json_each(?)) GROUP BY issue`, JSON.stringify(ids(b.ids)));
     },
-    /** Per agent (null: system calls) and UTC day over [from, to): dollars, calls, how many were priced, and tokens. */
+    /**
+     * Per agent (null: system calls) and owner's day (midnight in the owner's timezone) over [from, to): dollars, calls, how many
+     * were priced, and tokens. The buckets are UTC instants and stay so; each is placed on the day it falls in, so a 23- or 25-hour
+     * day is whole (every zone's day edge is a whole quarter hour, a bucket edge).
+     */
     daily(b: Body) {
       const [from, to] = range(b);
-      return all(`SELECT NULLIF(agent, '') AS agentId, substr(t, 1, 10) AS day, COALESCE(SUM(usd), 0) AS usd, SUM(calls) AS calls, SUM(priced) AS priced,
-        SUM(input) AS input, SUM(cached) AS cached, SUM(output) AS output FROM cost_rollup WHERE t >= ? AND t < ? GROUP BY 1, 2`, from, to);
+      const tz = timezone(), days = new Map<string, Record<string, unknown>>();
+      for (const r of all(`SELECT NULLIF(agent, '') AS agentId, t, COALESCE(SUM(usd), 0) AS usd, SUM(calls) AS calls, SUM(priced) AS priced,
+        SUM(input) AS input, SUM(cached) AS cached, SUM(output) AS output FROM cost_rollup WHERE t >= ? AND t < ? GROUP BY 1, 2`, from, to) as Record<string, any>[]) {
+        const day = ownerDay(Date.parse(`${r.t}:00Z`), tz), k = `${r.agentId}|${day}`, d = days.get(k);
+        if (!d) { const { t: _t, ...rest } = r; days.set(k, { ...rest, day }); continue; }
+        for (const f of ["usd", "calls", "priced", "input", "cached", "output"]) d[f] = (d[f] as number) + r[f];
+      }
+      return [...days.values()];
     },
     /** One run's calls (a kernel job's id), oldest first: the run page. */
     calls(b: Body) {

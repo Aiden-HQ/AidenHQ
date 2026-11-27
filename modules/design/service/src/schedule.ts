@@ -6,14 +6,14 @@
 //      github change feed's `push` (its default branch only) of an app's repo, start a pass of each `after-deploy` app they name;
 //   3. starts the next pass of each `always` app that has none running.
 // Every start goes through passes.ts startPass, so one pass runs per app and none starts at the app's day cap. A 24/7 app rests
-// for the rest of the UTC day after the owner's Stop or after FAILED_MAX failed passes, so a pass that dies at once can't refile
+// for the rest of the owner's day after the owner's Stop or after FAILED_MAX failed passes, so a pass that dies at once can't refile
 // every minute.
-import { PASS_MS, passSource, utcDay, type App, type Passes } from "./passes.ts";
+import { PASS_MS, ownerDayStart, passSource, type App, type Passes } from "./passes.ts";
 import type { Store } from "./store.ts";
 
 /** A pass whose task isn't bound this long after it started (its filing's answer was lost) is filed again. */
 const FILING_MS = 2 * 60_000;
-/** A 24/7 app's failed passes in one UTC day before it rests until the next. */
+/** A 24/7 app's failed passes in one owner's day before it rests until the next. */
 export const FAILED_MAX = 3;
 
 export type FeedEvent = { seq: number; kind: string; resource: string; data?: Record<string, unknown> };
@@ -141,7 +141,7 @@ export function createScheduler(d: ScheduleDeps) {
   }
 
   async function always() {
-    const dayStart = `${utcDay(now())}T00:00:00.000Z`;
+    const dayStart = ownerDayStart(now());
     for (const a of d.apps()) {
       if (a.schedule !== "always" || d.store.active(a.name)) continue;
       const today = d.store.passesSince(a.name, dayStart);
