@@ -9,7 +9,7 @@ import type { Kernel, SourceEvent } from "./kernel.js";
 import { contentRow, DDL, editedRow, messageRow, reactionRow, senderId, tombstone, userRow, writeRow, type WarehouseItem } from "./sources.js";
 import { SourceStore, type Row } from "./source-store.js";
 import type { Store } from "./store.js";
-import { TdError, type Me, type TdClient, type TdUpdate } from "./td.js";
+import { belowId, TdError, type Me, type TdClient, type TdUpdate } from "./td.js";
 import type * as Td from "./tdlib-types.js";
 
 export type Settings = { muted: "tagged" | "all"; exclude: Set<number>; backfillDays: number };
@@ -353,8 +353,12 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
       const seen = new Set<number>();
       const missed: Td.message[] = [];
       let from = 0;
+      let stalls = 0;
       for (;;) {
-        const page = await td.invoke<Td.messages>({ _: "getChatHistory", chat_id: id, from_message_id: from, offset: 0, limit: 100, only_local: false });
+        // A page with nothing new isn't the end yet (TDLib answers from its local copy first): ask once more, then from just
+        // below the oldest seen, which TDLib fetches from Telegram (as backfill does).
+        const at = stalls === 2 && from ? belowId(from) : from;
+        const page = await td.invoke<Td.messages>({ _: "getChatHistory", chat_id: id, from_message_id: at, offset: 0, limit: 100, only_local: false });
         const msgs = page.messages.filter((m): m is Td.message => !!m);
         let fresh = 0;
         let reached = false;
@@ -366,8 +370,13 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
           if (m.id <= cp || m.date < floor) reached = true;
           else missed.push(m);
         }
-        // TDLib may answer with fewer than `limit`: page on until the checkpoint, the window's edge or an empty page.
-        if (reached || fresh === 0) break;
+        // TDLib may answer with fewer than `limit`: page on until the checkpoint or the window's edge.
+        if (reached) break;
+        if (fresh === 0) {
+          if (stalls++ < 2) continue;
+          break;
+        }
+        stalls = 0;
         from = Math.min(...msgs.map((m) => m.id));
       }
       missed.sort((a, b) => a.id - b.id);

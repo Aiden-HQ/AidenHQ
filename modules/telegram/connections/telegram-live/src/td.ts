@@ -97,3 +97,6 @@ export function openTd(o: { apiId: number; apiHash: string; dir: string; key: st
     close: () => client.close(),
   };
 }
+
+/** The position of the server message just below `id` (TDLib message ids are server ids shifted left by 20 bits). */
+export const belowId = (id: number) => Math.max(0, (Math.floor(id / 2 ** 20) - 1) * 2 ** 20);
