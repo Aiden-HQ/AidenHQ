@@ -15,7 +15,9 @@ const STW = "ffffffff-ffff-4fff-8fff-ffffffffffff", SET = "ffffffff-ffff-4fff-8f
 const OWN = "10000000-0000-4000-8000-000000000001", OTHER = "10000000-0000-4000-8000-000000000002", CHAT = "10000000-0000-4000-8000-000000000003";
 const FLEET = "10000000-0000-4000-8000-000000000004", HANDED = "10000000-0000-4000-8000-000000000005", MINE = "10000000-0000-4000-8000-000000000006";
 const ROUTINE = "10000000-0000-4000-8000-000000000007", ORPHAN = "10000000-0000-4000-8000-000000000008";
-const KEYS = { "key-ada": ADA, "key-cos": COS, "key-lead": LEAD, "key-stw": STW, "key-set": SET };
+const TESS = "dddddddd-dddd-4ddd-8ddd-ddddddddddd3";
+const FILED = "10000000-0000-4000-8000-000000000009", LOOP = "10000000-0000-4000-8000-00000000000a", CHASE = "10000000-0000-4000-8000-00000000000b";
+const KEYS = { "key-tess": TESS, "key-ada": ADA, "key-cos": COS, "key-lead": LEAD, "key-stw": STW, "key-set": SET };
 
 async function setup(t, { projects } = {}) {
   const h = pluginHost({
@@ -30,6 +32,10 @@ async function setup(t, { projects } = {}) {
     // that nobody holds (an unpolled routine) is not settler-routeable: there is no agent to hand it to.
     [ROUTINE]: { id: ROUTINE, identifier: "WOR-7", status: "in_progress", assigneeAgentId: BO, originKind: "routine_execution", companyId: "co", parentId: null },
     [ORPHAN]: { id: ORPHAN, identifier: "WOR-8", status: "in_progress", assigneeAgentId: null, originKind: "routine_execution", companyId: "co", parentId: null },
+    // Owner tasks agents filed: one Ada filed, and a waiting-on task with Eve's chaser part under it.
+    [FILED]: { id: FILED, identifier: "WOR-9", status: "todo", assigneeAgentId: null, assigneeUserId: "u-owner", createdByAgentId: ADA, companyId: "co", parentId: null },
+    [LOOP]: { id: LOOP, identifier: "WOR-10", status: "todo", assigneeAgentId: null, assigneeUserId: "u-owner", createdByAgentId: BO, companyId: "co", parentId: null },
+    [CHASE]: { id: CHASE, identifier: "WOR-11", status: "todo", assigneeAgentId: null, assigneeUserId: "u-owner", createdByAgentId: TESS, companyId: "co", parentId: LOOP },
   });
   const plugin = [];
   let k;
@@ -45,15 +51,16 @@ async function setup(t, { projects } = {}) {
   k = await kernel(t, {
     projects,
     settings: { fleet_issues: "WOR-4" },
-    agents: { ada: { id: ADA, task: OWN }, cos: { id: COS, task: OWN }, steward: { id: STW, task: OWN }, settler: { id: SET, task: OWN }, lead: { id: LEAD, task: OWN }, eve: { id: EVE, task: OWN } },
-    grants: { [ADA]: { key: "ada", tools: tool, delegate_to: ["bo"] }, [BO]: { key: "bo", chat_task: CHAT }, [COS]: { key: "cos", roles: ["fleet-admin"], tools: tool }, [STW]: { key: "fleet-audit", roles: ["fleet-audit"], tools: tool }, [SET]: { key: "fleet-steward", roles: ["fleet-audit", "fleet-settle"], tools: tool }, [EVE]: { key: "eve", tools: tool }, [LEAD]: { key: "lead", tools: tool }, [REP]: { key: "rep", reports_to: "lead" }, [ENG]: { key: "eng", profile: "engineer" } },
-    secrets: { todo_service_key: "todo-key", [`paperclip-agents/${ADA}`]: "key-ada", [`paperclip-agents/${COS}`]: "key-cos", [`paperclip-agents/${STW}`]: "key-stw", [`paperclip-agents/${SET}`]: "key-set", [`paperclip-agents/${LEAD}`]: "key-lead", paperclip_post_key: "post-key" },
+    agents: { ada: { id: ADA, task: OWN }, cos: { id: COS, task: OWN }, steward: { id: STW, task: OWN }, settler: { id: SET, task: OWN }, lead: { id: LEAD, task: OWN }, eve: { id: EVE, task: OWN }, tess: { id: TESS, task: OWN } },
+    grants: { [ADA]: { key: "ada", tools: tool, delegate_to: ["bo"] }, [BO]: { key: "bo", chat_task: CHAT }, [COS]: { key: "cos", roles: ["fleet-admin"], tools: tool }, [STW]: { key: "fleet-audit", roles: ["fleet-audit"], tools: tool }, [SET]: { key: "fleet-steward", roles: ["fleet-audit", "fleet-settle"], tools: tool }, [EVE]: { key: "eve", tools: tool }, [TESS]: { key: "tess", tools: tool }, [LEAD]: { key: "lead", tools: tool }, [REP]: { key: "rep", reports_to: "lead" }, [ENG]: { key: "eng", profile: "engineer" } },
+    secrets: { [`paperclip-agents/${TESS}`]: "key-tess", todo_service_key: "todo-key", [`paperclip-agents/${ADA}`]: "key-ada", [`paperclip-agents/${COS}`]: "key-cos", [`paperclip-agents/${STW}`]: "key-stw", [`paperclip-agents/${SET}`]: "key-set", [`paperclip-agents/${LEAD}`]: "key-lead", paperclip_post_key: "post-key" },
     connections: { todo: { url: `${todo.url}/mcp`, auth_secret: "todo_service_key", module: "todo", returns: "trusted", tools: { read: [], write: ["act"], destructive: [] } } },
     onControl: async (req, body, auth) => {
       const me = KEYS[auth];
       // Ada's Paperclip record claims the role and a chief-of-staff name; only the grants table's roles count.
       if (req.url === "/api/agents/me") return me ? { body: { id: me, companyId: "co", name: me === ADA ? "chief-of-staff" : undefined, metadata: me === ADA ? { roles: ["fleet-admin"] } : undefined } } : { status: 401, body: {} };
       if (req.url === "/api/companies/co") return { body: { id: "co", defaultResponsibleUserId: "u-owner" } };
+      if (req.url.startsWith("/api/companies/co/issues?")) { const parent = new URL(req.url, "http://x").searchParams.get("parentId"); return { body: Object.values(h.issues).filter((i) => i.parentId === parent) }; }
       const ref = /^\/api\/issues\/([^/?]+)$/.exec(req.url)?.[1];
       if (ref && req.method === "GET") { const i = Object.values(h.issues).find((x) => x.id === decodeURIComponent(ref) || x.identifier === decodeURIComponent(ref)); return i ? { body: i } : { status: 404, body: {} }; }
       if (req.url === "/api/plugins/aidenhq.events/actions/post") {
@@ -194,4 +201,38 @@ test("a task's project: named by the agent, else its parent's, else that of the 
   r = await act("ada", "PATCH", "/api/issues/WOR-1", { project: "Infra" });
   assert.deepEqual([r.status, h.issues[OWN].projectId], [200, P(3)]);
   assert.deepEqual(named, [["co", "Hiring"], ["co", "Infra"]]);
+});
+
+test("the evidence close: an owner task an agent filed is closed by its maker, its chaser or a settler, citing evidence", async (t) => {
+  const { h, act } = await setup(t);
+  // Done needs cited evidence; with it, the maker closes the owner's task and labels it.
+  let r = await act("ada", "PATCH", "/api/issues/WOR-9", { status: "done", comment: "Answered in Slack." });
+  assert.deepEqual([r.status, /cites its evidence/.test(r.json.error.message)], [400, true]);
+  r = await act("ada", "PATCH", "/api/issues/WOR-9", { status: "done", title: "x", comment: "Answered: https://example.com/t/1" });
+  assert.equal(r.status, 403);
+  r = await act("ada", "PATCH", "/api/issues/WOR-9", { status: "done", labelIds: [OTHER], comment: "Answered in Slack: https://example.com/t/1" });
+  assert.deepEqual([r.status, h.issues[FILED].status, h.issues[FILED].labelIds], [200, "done", [OTHER]]);
+  // Another agent may not; the agent that made a part of it (the chaser) may.
+  r = await act("ada", "PATCH", "/api/issues/WOR-10", { status: "done", comment: "Delivered: https://example.com/d" });
+  assert.equal(r.status, 403);
+  r = await act("tess", "PATCH", "/api/issues/WOR-10", { status: "done", comment: "Delivered: https://example.com/d" });
+  assert.deepEqual([r.status, h.issues[LOOP].status], [200, "done"]);
+  // A settler cancels a filed duplicate with a reason; the owner's own task is never closed this way.
+  r = await act("settler", "PATCH", "/api/issues/WOR-5", { status: "cancelled", comment: "Duplicate of WOR-9." });
+  assert.deepEqual([r.status, h.issues[HANDED].status], [200, "cancelled"]);
+  assert.equal((await act("settler", "PATCH", "/api/issues/WOR-6", { status: "done", comment: "Done: https://example.com" })).status, 403);
+});
+
+test("a source marker is appended by the task's filer, never by another agent", async (t) => {
+  const { h, act } = await setup(t);
+  // Ada filed WOR-9. Tess did not: a marker-only PATCH is not a source append, and the normal scope refuses it.
+  assert.equal((await act("ada", "PATCH", "/api/issues/WOR-9", { description: "Asked in the meeting." })).status, 200);
+  assert.equal((await act("tess", "PATCH", "/api/issues/WOR-9", { description: "Asked in the meeting.\n\n<!-- source:slack:C1:123.456 -->" })).status, 403);
+  assert.equal((await act("tess", "PATCH", "/api/issues/WOR-9", { description: "Asked in the meeting.\n\nHello" })).status, 403);
+  assert.equal((await act("tess", "PATCH", "/api/issues/WOR-9", { status: "cancelled", description: "Asked in the meeting.\n\n<!-- source:slack:C1:1 -->" })).status, 403);
+  // Ada filed it: the marker-only append is hers, and it is the only thing the source scope adds.
+  const r = await act("ada", "PATCH", "/api/issues/WOR-9", { description: "Asked in the meeting.\n\n<!-- source:slack:C1:123.456 -->" });
+  assert.deepEqual([r.status, h.issues[FILED].description], [200, "Asked in the meeting.\n\n<!-- source:slack:C1:123.456 -->"]);
+  // The owner's own task is not this path.
+  assert.equal((await act("tess", "PATCH", "/api/issues/WOR-6", { description: "<!-- source:slack:C1:1 -->" })).status, 403);
 });

@@ -6,7 +6,7 @@ requires:
   - google
 agents:
   open-loops:
-    skills: [ tasks.delegate-work ]
+    skills: [ tasks.delegate-work, tasks.owner-triage ]
     department: outreach
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high

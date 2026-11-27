@@ -31,14 +31,16 @@ const crewAgent = (i: Issue, list: Assignee[]) => list.find((a) => a.kind !== "m
 
 /**
  * The issues folded into another card: open or closed children of a task the board shows, assigned to a
- * crew agent, keyed to the top-most shown ancestor. Anything else (children assigned to the user, or
- * whose parent isn't shown, e.g. closed long ago) stays a card of its own.
+ * crew agent or made by one and handed back to the user, keyed to the top-most shown ancestor. Anything else
+ * (the user's own sub-tasks, or children whose parent isn't shown, e.g. closed long ago) stays a card of its own.
  */
 export function foldedChildren(issues: Issue[], assignees: Assignee[]): Map<string, string> {
   const byId = new Map(issues.map((i) => [i.id, i]));
   const out = new Map<string, string>();
+  // A part a crew agent made and handed back to the owner (the follow-up chaser's draft waiting on the owner's send) folds too.
+  const handedBack = (i: Issue) => !i.assigneeAgentId && Boolean(i.createdByAgentId) && assignees.some((a) => a.kind !== "me" && a.key === i.createdByAgentId);
   for (const i of issues) {
-    if (!i.parentId || !crewAgent(i, assignees)) continue;
+    if (!i.parentId || !(crewAgent(i, assignees) || handedBack(i))) continue;
     let top = byId.get(i.parentId);
     for (let n = 0; top?.parentId && byId.has(top.parentId) && n < 10; n++) top = byId.get(top.parentId);
     if (top && top.id !== i.id) out.set(i.id, top.id);
@@ -96,7 +98,8 @@ export const closedIssue = (i: Pick<Issue, "status">) => i.status === "done" || 
 export function crewOf(card: Issue, children: Issue[], input: CrewInput): CrewMember[] {
   const groups = new Map<string, { agent: Assignee; issues: Issue[] }>();
   for (const i of [card, ...[...children].sort((a, b) => a.createdAt.localeCompare(b.createdAt))]) {
-    const agent = crewAgent(i, input.assignees);
+    // A part handed back to the owner (a chase draft waiting on their send) still shows under the agent that made it.
+    const agent = crewAgent(i, input.assignees) ?? (i !== card && !i.assigneeAgentId ? input.assignees.find((a) => a.kind !== "me" && a.key === i.createdByAgentId) : undefined);
     if (!agent) continue;
     const g = groups.get(agent.key) ?? { agent, issues: [] };
     g.issues.push(i);

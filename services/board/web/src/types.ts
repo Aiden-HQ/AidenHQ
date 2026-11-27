@@ -331,6 +331,8 @@ export interface IssueView extends Omit<Card, "scheduled" | "recurring" | "worki
   working: Working | null;
   description: string;
   bucket: Bucket | null;
+  /** Why an agent placed it in its column (first-pass triage), until the owner moves it. */
+  placed?: { by: string; reason: string } | null;
   editable: boolean;
   /** Settled out of the active lists (finished work the owner put away). */
   settled?: boolean;
@@ -901,7 +903,8 @@ export type NeedRow =
   | { id: string; kind: "approval"; teammate: FaceRef; since: string; task: { identifier: string; title: string } | null; question: string; card: Approval; about?: About }
   | { id: string; kind: "open"; teammate: FaceRef; since: string; task: { identifier: string; title: string }; question: string; reply?: { person: string | null; source: "slack" | "gmail" | null }; about?: About };
 export type Waiting = { id: string; identifier: string; title: string; age_days: number; quiet_days: number; about?: About };
-export type SinceItem = { teammate: FaceRef; text: string; at: string; task: string | null; kind: "done" | "fyi" | "digest" | "closed" };
+/** `reopen`: an owner task its filing agent closed on evidence (skill owner-triage): the row offers one-tap Reopen. */
+export type SinceItem = { teammate: FaceRef; text: string; at: string; task: string | null; kind: "done" | "fyi" | "digest" | "closed"; reopen?: true };
 export type WorldBlock = {
   waiting_on: Waiting[] | null;
   today: { timezone: string; events: { id: string; start: string; title: string; all_day: boolean; url?: string; prep?: string }[] } | null;

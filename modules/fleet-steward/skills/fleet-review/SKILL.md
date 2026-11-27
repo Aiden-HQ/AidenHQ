@@ -40,6 +40,6 @@ description: "Groups the week's recurring failures into at most 3 rule proposals
      check+CI $1,522.89, 76%; agent $455.21, 23%; other $29.86), and the one or two costliest days with what drove them.
 
 7. **Summarize:** `task_search` marker `fleet-review:<date>`; exists, stop. Else `task_create` `Fleet review — <date>`, that
-   marker, `dedupe_closed: true`, **no `assignee`** (owner's board), with measures, causes, proposals, matched fixes. If new,
+   marker, `dedupe_closed: true`, label `report` (skill `owner-triage`, Reports), **no `assignee`** (owner's board), with measures, causes, proposals, matched fixes. If new,
    one `notify` (`kind: digest`) with a two-line headline and the identifier.
 8. `task_finish` with one line.

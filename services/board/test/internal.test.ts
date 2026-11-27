@@ -58,11 +58,11 @@ describe("internal listener", () => {
     expect((await post("/internal/issues/PEN-1/schedule", { clear: true }, { host: "evil:3122" })).status).toBe(403);
   });
 
-  it("the token alone changes nothing: the caller must be an agent granted the tool and the board-writer role", async () => {
+  it("the token alone changes nothing: the caller must be an agent granted the tool, and without board-writer it places only an owner task it filed", async () => {
     const refused = async (path: string, body: unknown, headers: Record<string, string>) => (await (await post(path, body, headers)).json()) as { error: string };
     expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, { "x-aidenhq-caller": "" })).error).toBe("missing caller assertion");
     expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, asAgent("forged"))).error).toMatch(/^only an agent granted task_schedule/);
-    expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, asAgent("scout"))).error).toMatch(/with the board-writer role/);
+    expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, asAgent("scout"))).error).toMatch(/places only an owner task you filed/);
     expect((await refused("/internal/issues/PEN-1/recurring", { action: "stop" }, {})).error).toMatch(/^only an agent granted task_recurring/); // not granted
     expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, asAgent("ra", { aud: "ops" }))).error).toMatch(/^refused: the caller assertion is for ops/);
     expect((await refused("/internal/issues/PEN-1/schedule", { clear: true }, asAgent("ra", { exp: 1 }))).error).toMatch(/expired/);

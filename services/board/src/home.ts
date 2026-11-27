@@ -42,7 +42,8 @@ export type NeedRow =
   | { id: string; kind: "approval"; teammate: FaceRef; since: string; task: TaskRef | null; question: string; card: object; about?: About }
   | { id: string; kind: "open"; teammate: FaceRef; since: string; task: TaskRef; question: string; reply?: Reply; about?: About };
 export type Waiting = { id: string; identifier: string; title: string; age_days: number; quiet_days: number; about: About };
-export type SinceItem = { teammate: FaceRef; text: string; at: string; task: string | null; kind: "done" | "fyi" | "digest" | "closed" };
+/** `reopen`: an owner task its filing agent closed on evidence (skill owner-triage): the row offers one-tap Reopen. */
+export type SinceItem = { teammate: FaceRef; text: string; at: string; task: string | null; kind: "done" | "fyi" | "digest" | "closed"; reopen?: true };
 export type Home = {
   as_of: string;
   since_from: string;
@@ -251,8 +252,10 @@ export async function buildHome(d: HomeDeps, viewer: { accountId: string }, from
   for (const t of told ?? []) if (SINCE_KINDS.includes(t.kind)) items.push({ teammate: face(t.source === "kernel" ? "" : t.source), text: toldLine(t.text), at: t.at, task: t.task, kind: t.kind as SinceItem["kind"] });
   for (const i of closed) {
     const at = i.completedAt ?? i.cancelledAt;
-    if (!at || at < since_from || !i.assigneeAgentId || labelled(i, "chat")) continue;
-    items.push({ teammate: face(keyOfAgent(i.assigneeAgentId)), text: `${i.completedAt ? "Done" : "Cancelled"}: ${i.title}`, at, task: i.identifier, kind: "closed" });
+    // An agent's own task, or an owner task its filer closed on evidence (label auto-closed, skill owner-triage).
+    const by = i.assigneeAgentId ?? (labelled(i, "auto-closed") ? i.createdByAgentId : null);
+    if (!at || at < since_from || !by || labelled(i, "chat")) continue;
+    items.push({ teammate: face(keyOfAgent(by)), text: `${i.completedAt ? "Done" : "Cancelled"}: ${i.title}`, at, task: i.identifier, kind: "closed", ...(i.assigneeAgentId ? {} : { reopen: true as const }) });
   }
   items.sort((a, b) => b.at.localeCompare(a.at));
   const seenTask = new Set<string>();

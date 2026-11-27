@@ -683,9 +683,24 @@ function CardAlone({ id }: { id: string }) {
   );
 }
 
+/** One-tap Reopen on a task an agent closed for the owner on evidence: the row turns into a receipt, or says why it failed. */
+function useReopen() {
+  const [done, setDone] = useState<Record<string, string>>({});
+  const reopen = (task: string) =>
+    void api.update(task, { status: "todo" }).then(
+      () => setDone((d) => ({ ...d, [task]: `${task} reopened` })),
+      (e) => setDone((d) => ({ ...d, [task]: `Couldn't reopen ${task}: ${(e as Error).message}` })),
+    );
+  return (i: SinceItem) =>
+    i.reopen && i.task
+      ? { actions: <Button variant="quiet" size="sm" onClick={() => reopen(i.task!)}>Reopen</Button>, receipt: done[i.task] ? { text: done[i.task]! } : null }
+      : {};
+}
+
 /** The top of what changed, grouped by teammate; "All N" opens every item in place, under the card. */
 function SinceCard({ since, timezone, from }: { since: NonNullable<Home["since"]>; timezone: string; from: string }) {
   const [all, setAll] = useState(false);
+  const reopen = useReopen();
   return (
     <SectionCard
       title="Since you last looked"
@@ -693,13 +708,13 @@ function SinceCard({ since, timezone, from }: { since: NonNullable<Home["since"]
       flush
       action={since.total > Math.min(3, since.groups.length) ? <button type="button" className="link-btn home-all" aria-expanded={all} onClick={() => setAll(!all)}>{all ? "Fewer" : `All ${since.total} →`}</button> : undefined}
     >
-      {all ? <SinceAll items={since.items} total={since.total} /> : <DigestList items={since.groups.map((g) => ({ id: g.teammate.key, face: face(g.teammate, 26, "idle"), text: g.count > 1 ? <>{g.latest.text} <span className="home-more">+{g.count - 1} more</span></> : g.latest.text, title: g.latest.text, open: g.latest.task ? `#/t/${g.latest.task}` : undefined }))} limit={3} />}
+      {all ? <SinceAll items={since.items} total={since.total} reopen={reopen} /> : <DigestList items={since.groups.map((g) => ({ id: g.teammate.key, face: face(g.teammate, 26, "idle"), text: g.count > 1 ? <>{g.latest.text} <span className="home-more">+{g.count - 1} more</span></> : g.latest.text, title: g.latest.text, open: g.latest.task ? `#/t/${g.latest.task}` : undefined, ...reopen(g.latest) }))} limit={3} />}
     </SectionCard>
   );
 }
 
 /** Every Since item the read carries (the newest 200), grouped by teammate, newest first. */
-function SinceAll({ items, total }: { items: SinceItem[]; total: number }) {
+function SinceAll({ items, total, reopen }: { items: SinceItem[]; total: number; reopen: ReturnType<typeof useReopen> }) {
   const groups = useMemo(() => {
     const by = new Map<string, SinceItem[]>();
     for (const i of items) by.set(i.teammate.key, [...(by.get(i.teammate.key) ?? []), i]);
@@ -711,7 +726,7 @@ function SinceAll({ items, total }: { items: SinceItem[]; total: number }) {
       {groups.map((g) => (
         <section key={g[0]!.teammate.key}>
           {chip(g[0]!.teammate, 24, `#/team/${g[0]!.teammate.key}`)}
-          <DigestList items={g.map((i, n) => ({ id: `${i.at}-${n}`, text: i.text, title: i.text, meta: ago(i.at), open: i.task ? `#/t/${i.task}` : undefined }))} limit={g.length} />
+          <DigestList items={g.map((i, n) => ({ id: `${i.at}-${n}`, text: i.text, title: i.text, meta: ago(i.at), open: i.task ? `#/t/${i.task}` : undefined, ...reopen(i) }))} limit={g.length} />
         </section>
       ))}
     </div>
