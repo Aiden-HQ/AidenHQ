@@ -1594,6 +1594,17 @@ test("an edit that skipped every job never turns a red head green, and an invali
   // A suite skipped by the run that tested the head is still a pass: only a newer edit's skips are dropped.
   const suiteSkipped = [run("modules (1)", "SKIPPED", 1), run("ci-required", "SUCCESS", 2)];
   assert.equal(decide(data(suiteSkipped), H).do, "merge");
+  // The cutoff is a check run's rank, never a commit status's timestamp (contextRank ranks the two differently): a successful
+  // `ci-required` status must not lift the cutoff above the edit's skipped runs, or the failure it sits beside would hide.
+  const withStatus = [run("ci-required", "FAILURE", 2), run("ci-required", "SKIPPED", 3)];
+  const statusRanked = { state: "SKIPPED", contexts: { pageInfo: { hasNextPage: false }, nodes: [
+    { __typename: "CheckRun", databaseId: 2, name: "ci-required", status: "COMPLETED", conclusion: "FAILURE" },
+    { __typename: "CheckRun", databaseId: 3, name: "ci-required", status: "COMPLETED", conclusion: "SKIPPED" },
+    { __typename: "StatusContext", context: "ci-required", state: "SUCCESS", createdAt: "2026-01-01T00:00:00Z" },
+  ] } };
+  const dataWithStatus = data(withStatus);
+  dataWithStatus.repository.pullRequest.commits.nodes[0].commit.statusCheckRollup = statusRanked;
+  assert.equal(decide(dataWithStatus, H).do, "fail", "a status's timestamp is not a check run's rank");
 });
 
 test("a maintained repo merges as the owner; once it leaves maintainer_repos its approved merge is refused at queue time", async () => {

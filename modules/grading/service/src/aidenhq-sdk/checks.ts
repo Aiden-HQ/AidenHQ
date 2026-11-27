@@ -109,11 +109,13 @@ export function newestGateSkipped<T extends { name?: string; kind?: "run" | "sta
  */
 export function judgedOnHead<T extends { name?: string; kind?: "run" | "status"; rank?: number; status?: string | null }>(checks: T[]): T[] {
   if (!newestGateSkipped(checks)) return checks;
-  const gates = checks.filter((c) => c.name === GATE_CHECK && !gateJudgedNothing(c) && typeof c.rank === "number");
+  // The cutoff is a check run's rank, compared only with check runs': a status's rank is its timestamp, a different domain
+  // (contextRank), and a timestamp compared against a database id would keep every skip of the edit's run.
+  const gates = checks.filter((c) => c.name === GATE_CHECK && (c.kind ?? "run") === "run" && !gateJudgedNothing(c) && typeof c.rank === "number");
   const cut = gates.reduce<number | undefined>((a, c) => (a === undefined || (c.rank as number) > a ? (c.rank as number) : a), undefined);
-  // No aggregate ever judged the head: nothing here is a pass, so only the reports that judged something stand.
+  // No check-run aggregate ever judged the head: nothing here is a pass, so only the reports that judged something stand.
   if (cut === undefined) return checks.filter(judgedSomething);
-  return checks.filter((c) => judgedSomething(c) || typeof c.rank !== "number" || c.rank <= cut);
+  return checks.filter((c) => judgedSomething(c) || (c.kind ?? "run") !== "run" || typeof c.rank !== "number" || c.rank <= cut);
 }
 
 const IMAGE_FILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
