@@ -33,6 +33,7 @@ import { approvedAt, HOLD_LABEL } from "./merge-gate.ts";
 import { contextRank } from "./aidenhq-sdk/checks.ts";
 import { ASYNC_POLLS, ASYNC_POLL_MS, asyncPath, readAsync, requestKey, requestStore } from "./async-merge.ts";
 import { createMerges } from "./merges.ts";
+import { commentsAsk, type CommentsAsk } from "./member-comments.ts";
 import type { ReviewGate } from "./review-gate.ts";
 import { createFlow } from "./flow.ts";
 import { createReleaseTrain } from "./train.ts";
@@ -127,7 +128,7 @@ export function reviewerOf(app: { installation(repo: string): Promise<number | n
 /** Ship's answer for one PR (its GET /v1/generation?repo&pr → { generation, hold, task? }): `generation` null when it isn't adopted
  * now, and the hold it sits on when it is. A `stalled` hold leaves the adoption in place: the push that resumes it may land, and
  * nothing else. */
-export type ShipAdoptions = { /** `at`: the head the write stands on (a fork's adoption refuses any head but the one handed off). */ generation(repo: string, number: number, at: string, check?: ShipCheck): Promise<{ generation: number | null; hold?: ShipHold; task?: string; refused?: string; retry?: boolean; /** Ask for members' open review comments before the write goes on (member-comments.ts): the hand-off's time, and the PR author whose own comments ask nothing. */ comments?: { since: string; author?: string } }> };
+export type ShipAdoptions = { /** `at`: the head the write stands on (a fork's adoption refuses any head but the one handed off). */ generation(repo: string, number: number, at: string, check?: ShipCheck): Promise<{ generation: number | null; hold?: ShipHold; task?: string; refused?: string; retry?: boolean; /** Ask for members' open review comments before the write goes on (member-comments.ts): the hand-off's time, the PR author whose own comments ask nothing, and the repo's ignored accounts. */ comments?: CommentsAsk }> };
 /**
  * The hold off ship's answer, when it carries one: a `stalled` one still admits the push that resumes it, so it is the plan's to
  * judge with its kind. A hold it can't read (not an object, or no kind) is still a hold: it reads as `unknown`, which no write
@@ -148,9 +149,9 @@ export function shipAdoptions(o: { url: string; key: () => string; fetchFn?: typ
       const q = new URLSearchParams({ repo: repo.toLowerCase(), pr: String(number), at, ...(check ? { do: check.do, head: check.head, base: check.base, association: check.association, ...(check.policy ? { policy: check.policy } : {}) } : {}) });
       const r = await fetchFn(`${o.url.replace(/\/+$/, "")}/v1/generation?${q}`, { headers: { authorization: `Bearer ${o.key()}` }, signal: AbortSignal.timeout(15_000) });
       if (!r.ok) throw fail(503, `ship answered ${r.status} for ${repo}#${number}: try again`);
-      const j = (await r.json()) as { generation?: unknown; hold?: unknown; task?: unknown; refused?: unknown; retry?: unknown; comments?: { since?: unknown; author?: unknown } };
+      const j = (await r.json()) as { generation?: unknown; hold?: unknown; task?: unknown; refused?: unknown; retry?: unknown; comments?: unknown };
       const generation = Number.isInteger(j.generation) && (j.generation as number) >= 1 ? (j.generation as number) : null;
-      return { generation, ...(holdOf(j.hold) ?? {}), ...(typeof j.task === "string" && j.task ? { task: j.task } : {}), ...(typeof j.refused === "string" && j.refused ? { refused: j.refused.slice(0, 300), ...(j.retry === true ? { retry: true } : {}) } : {}), ...(typeof j.comments?.since === "string" ? { comments: { since: j.comments.since, ...(typeof j.comments.author === "string" ? { author: j.comments.author } : {}) } } : {}) };
+      return { generation, ...(holdOf(j.hold) ?? {}), ...(typeof j.task === "string" && j.task ? { task: j.task } : {}), ...(typeof j.refused === "string" && j.refused ? { refused: j.refused.slice(0, 300), ...(j.retry === true ? { retry: true } : {}) } : {}), ...(commentsAsk(j.comments) ? { comments: commentsAsk(j.comments)! } : {}) };
     },
   };
 }
@@ -1098,11 +1099,18 @@ export function createService(o: Options) {
     const into = slugOf(pr.head.repo.full_name).slug;
     // The code host's sign-in writes the repair (the identity every ordinary task push uses); the reviewer App only reviews.
     const who = await writer();
-    const baseSha = String(pr.base.sha);
+    // The base branch's live tip, never the PR's `base.sha`: GitHub leaves that at the base the head was last pushed onto, so a
+    // repair right after an author's rebase merged a stale tip (a no-op) while the branch had moved on.
+    const baseRef = await gh("GET", refPath(s.slug, String(a.base)));
+    if (baseRef.status >= 300) throw fail(502, `GitHub GET ${a.base}'s tip: ${baseRef.status}`);
+    const baseSha = String(baseRef.body?.object?.sha ?? "");
     // Both commits in the cache (a fork's head is the base repo's too, as refs/pull/<n>/head).
     const { dir } = await fetchRemote(s, a.head);
     await fetchRemote(s, baseSha);
     const mergeBase = await git(dir, ["merge-base", a.head, baseSha]);
+    // The head already holds the base's tip: nothing to merge (GitHub's DIRTY outlived the push that took the base in). No box runs;
+    // ship reads this, wakes nobody, and asks again only at a new head or base tip.
+    if (mergeBase === baseSha) return { ok: false, text: `ship-noop: ${url} at \`${String(a.head).slice(0, 12)}\` already holds \`${a.base}\` at \`${baseSha}\`: nothing to repair, nothing was changed.` };
     // The box's run, followed to its end: the recipe's own limit (ship's module.yaml, 30 minutes) and a free computer's wait.
     let check = await kernel("POST", "/v1/checks", { repo: s.slug, head: a.head, run: "ship-repair", spec: { base: baseSha, merge_base: mergeBase, base_ref: String(a.base), plan: JSON.stringify(a.plan ?? {}), attempt: String(a.attempt ?? 1) } });
     const until = Date.now() + REPAIR_WAIT_MS;
@@ -2350,6 +2358,6 @@ export function createService(o: Options) {
     stepReleases: () => train?.step(),
     stepMerges: () => merges.step(),
     /** Ship's round decision for an adopted PR (merges.ts decision), for /internal/ship/decision. */
-    shipDecision: (repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number; comments?: { since: string; author?: string } }) => merges.decision(repo, number, head, view),
+    shipDecision: (repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number; comments?: CommentsAsk }) => merges.decision(repo, number, head, view),
   });
 }

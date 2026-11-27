@@ -19,7 +19,7 @@ const listen = (handler) => new Promise((ok) => { const s = createServer(handler
 const REPO = "acme-agents/widget";
 const SHIP = { kind: "module", module: "ship", roles: [] };
 
-async function setup(t, { generation = 2, queue = {}, asyncMerge = { put: () => ({ status: 202, body: { status: "pending", details: { uuid: "u-d" } } }), get: () => ({ status: 200, body: { status: "enqueued", details: {} } }) }, app = true, toolsDir = false, fleetOrg = "acme-agents", maintained = [], connected = () => true, reviewGate = async () => undefined, queueRead = () => undefined, signedBranches = () => false } = {}) {
+async function setup(t, { generation = 2, queue = {}, asyncMerge = { put: () => ({ status: 202, body: { status: "pending", details: { uuid: "u-d" } } }), get: () => ({ status: 200, body: { status: "enqueued", details: {} } }) }, app = true, toolsDir = false, fleetOrg = "acme-agents", maintained = [], connected = () => true, reviewGate = async () => undefined, queueRead = () => undefined, signedBranches = () => false, baseAhead = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ship-effects-"));
   const origin = join(root, "github", REPO, "..", "widget.git");
   mkdirSync(origin, { recursive: true });
@@ -52,6 +52,15 @@ async function setup(t, { generation = 2, queue = {}, asyncMerge = { put: () => 
   sh(ws, "commit", "--quiet", "-m", "contributor");
   sh(ws, "push", "--quiet", origin, "contrib");
   const c1 = sh(ws, "rev-parse", "HEAD");
+  // `baseAhead`: main moves on past the PR's base, so a repair has something to merge (a head that holds main is a no-op).
+  if (baseAhead) {
+    sh(ws, "checkout", "--quiet", "main");
+    writeFileSync(join(ws, "m.txt"), "m\n");
+    sh(ws, "add", "m.txt");
+    sh(ws, "commit", "--quiet", "-m", "main moves on");
+    sh(ws, "push", "--quiet", origin, "main");
+    sh(ws, "checkout", "--quiet", "contrib");
+  }
   const main = sh(ws, "rev-parse", "main");
   writeFileSync(join(ws, "gen.txt"), "regenerated\n");
   sh(ws, "add", "gen.txt");
@@ -881,7 +890,7 @@ test("with no App on the repo, approve is refused as needing a human; nothing is
 });
 
 test("ship's repair: github runs ship's check job, GitHub merges the base and the kept files land on top, every commit GitHub's own; leftovers and a fork without edits write nothing", async (t) => {
-  const { origin, c1, main, pr, call, run, checks, repairResult, updates } = await setup(t);
+  const { origin, ws, c1, main, pr, call, run, checks, repairResult, updates } = await setup(t, { baseAhead: true });
   const args = { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt"], commands: [{ dir: ".", cmd: "make gen" }] } };
   const plan = await call("/aidenhq/v1/executor/plan", { kind: "github.repair", args, requester: SHIP, task: "t1" });
   assert.equal(plan.status, 200, JSON.stringify(plan.json));
@@ -890,15 +899,16 @@ test("ship's repair: github runs ship's check job, GitHub merges the base and th
 
   const ok = await run("k-00000000000000c1", "github.repair", args);
   assert.equal(ok.ok, true, ok.text);
-  assert.deepEqual(checks[0], { repo: REPO, head: c1, run: "ship-repair", spec: { base: main, merge_base: main, base_ref: "main", plan: JSON.stringify(args.plan), attempt: "1" } });
+  assert.deepEqual(checks[0], { repo: REPO, head: c1, run: "ship-repair", spec: { base: main, merge_base: sh(origin, "merge-base", c1, main), base_ref: "main", plan: JSON.stringify(args.plan), attempt: "1" } });
   assert.deepEqual(updates, [{ expected_head_sha: c1 }], "GitHub's update-branch, bound to the head");
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^^1"), c1);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib^^2"), main);
   assert.equal(sh(origin, "show", "refs/heads/contrib:gen.txt"), "regenerated");
   assert.equal(sh(origin, "log", "-1", "--format=%cn", "refs/heads/contrib"), "GitHub", "a commit GitHub made and signs");
 
-  // Conflicts no generator rewrites: the outcome lists them and the branch stays.
+  // Conflicts no generator rewrites (main moved on again): the outcome lists them and the branch stays.
   pr.head = sh(origin, "rev-parse", "refs/heads/contrib");
+  sh(ws, "checkout", "--quiet", "main"); writeFileSync(join(ws, "m2.txt"), "m2\n"); sh(ws, "add", "m2.txt"); sh(ws, "commit", "--quiet", "-m", "main again"); sh(ws, "push", "--quiet", origin, "main");
   repairResult.result = { leftovers: ["src/a.ts"] };
   const left = await run("k-00000000000000c2", "github.repair", { ...args, head: pr.head });
   assert.equal(left.ok, false);
@@ -909,7 +919,7 @@ test("ship's repair: github runs ship's check job, GitHub merges the base and th
 });
 
 test("ship's repair keeps the head lease: a contributor's push while the repair runs is refused with ship-head-moved and the branch stays theirs", async (t) => {
-  const { root, origin, ws, c1, pr, run, duringRepair } = await setup(t);
+  const { root, origin, ws, c1, pr, run, duringRepair } = await setup(t, { baseAhead: true });
   // The contributor pushes while the repair's check job runs: the head it read before the run is no longer the PR's.
   const scratch = `${ws}-repair-contrib`;
   sh(root, "clone", "--quiet", "-b", "contrib", origin, scratch);
@@ -928,7 +938,7 @@ test("ship's repair keeps the head lease: a contributor's push while the repair 
 });
 
 test("a fork that allows maintainer edits: the fix and the repair are pushed to the fork's branch as the code host's sign-in, leased on the head", async (t) => {
-  const { root, origin, ws, c1, fix, main, pr, run, repairResult } = await setup(t);
+  const { root, origin, ws, c1, fix, main, pr, run, repairResult } = await setup(t, { baseAhead: true });
   // The contributor's fork, holding the PR's branch.
   const fork = join(root, "github", "someone", "widget.git");
   mkdirSync(dirname(fork), { recursive: true });
@@ -993,7 +1003,7 @@ test("ship's repair's deletion is the head's own path, next to a path that becam
 
 
 test("ship's repair GitHub's rules refuse is ship-refused with GitHub's words, and nothing is written", async (t) => {
-  const { origin, c1, run, refuseRef } = await setup(t);
+  const { origin, c1, run, refuseRef } = await setup(t, { baseAhead: true });
   refuseRef(true);
   const r = await run("k-00000000000000a2", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt"] } });
   assert.equal(r.ok, false);
@@ -1002,7 +1012,7 @@ test("ship's repair GitHub's rules refuse is ship-refused with GitHub's words, a
 });
 
 test("ship's repair takes the box's files only on generated paths and conflicted lockfiles: never a workflow, a gitlink, a source file, an untouched lockfile or a new symlink", async (t) => {
-  const { origin, c1, run, repairResult } = await setup(t);
+  const { origin, c1, run, repairResult } = await setup(t, { baseAhead: true });
   const file = (path, text, mode = "100644") => ({ path, mode, sha: execFileSync("git", ["hash-object", "--stdin"], { input: text, encoding: "utf8" }).trim(), content: Buffer.from(text).toString("base64") });
   const args = { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["gen.txt", ".github/**"] } };
   const tries = [
@@ -1021,15 +1031,13 @@ test("ship's repair takes the box's files only on generated paths and conflicted
   }
 });
 
-test("ship's repair whose merge and kept files leave every path at the head's is refused as nothing changed, with nothing written", async (t) => {
-  const { origin, ws, c1, run, calls, repairResult } = await setup(t);
-  // The head already contains the base (main is its parent), so git's merge-tree is the head's own tree, and the kept entry is
-  // that same content: the diff against the head is empty.
-  const bBlob = sh(ws, "rev-parse", `${c1}:b.txt`);
-  repairResult.keep.entries = [{ path: "b.txt", mode: "100644", sha: bBlob }];
+test("ship's repair of a head that already holds the base's live tip is a no-op: no box runs and nothing is written", async (t) => {
+  const { origin, c1, main, run, calls, checks } = await setup(t);
+  // The head already contains the base (main is its parent): GitHub's DIRTY outlived the push that took it in.
   const r = await run("k-00000000000000a1", "github.repair", { repo: REPO, number: 7, head: c1, generation: 2, base: "main", plan: { globs: ["b.txt"] } });
   assert.equal(r.ok, false, r.text);
-  assert.match(r.text, /^ship-refused: the repair of .*: nothing was changed/);
+  assert.equal(r.text, `ship-noop: https://github.com/${REPO}/pull/7 at \`${c1.slice(0, 12)}\` already holds \`main\` at \`${main}\`: nothing to repair, nothing was changed.`);
+  assert.equal(checks.length, 0, "no check job");
   assert.equal(calls.filter((c) => c.method !== "GET" && (c.path.includes("update-branch") || c.body?.query?.includes("createCommitOnBranch"))).length, 0, "nothing is written");
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "the branch stays where it was");
 });

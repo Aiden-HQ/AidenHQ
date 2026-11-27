@@ -32,13 +32,17 @@ The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui
   where the author allows maintainer edits; otherwise the PR holds.
 - **One decision per pass.** Merge-gate's `decide` returns `wait`, `repair`, `fix_ci`, `fix_review`, `approve`, `enqueue`,
   `merge`, `done`, `stall` or `fail`, and each writer re-decides right before it writes. Nothing moves on a draft, a stop label (`stop_label`, default `ship:stop`), a person assigned to the PR, or a hold.
-- **Repair.** The repo's own `actions` (slash commands, workflows) run first, then GitHub's update-branch, then on a conflict
-  the `ship-repair` check job: a credential-free box merges the base in, takes the base side of generated paths and lockfiles,
-  runs the discovered generator (`.gitattributes` `linguist-generated`, known lockfiles, generated-file headers; the `generated`
-  setting overrides) and returns the files, which github commits as the App. A leftover conflict or a failed generator wakes the
+- **Repair.** The repo's own `actions` run first: each a workflow with `workflow_dispatch`, dispatched on the PR's base branch
+  (the repo's own copy, so a PR can't change what runs with the repo's secrets) with the PR's number as an input
+  (`inputs: { pr: "{pr}" }`); ship follows the run GitHub names, and a failed run moves on to the next step, then to ship's own.
+  Then GitHub's update-branch, then on a conflict the `ship-repair` check job: a credential-free box merges the base's live tip in
+  (none when the head already holds it), takes the base side of generated paths and lockfiles, runs the discovered generator
+  (`.gitattributes` `linguist-generated`, known lockfiles, generated-file headers; the `generated` setting overrides; with
+  `generated.command: null` the repo's CI regenerates them and the box runs nothing) and returns the files, which github commits
+  as the App. A leftover conflict or a failed generator wakes the
   Engineer once per head. A stacked PR waits on the PR it stands on, then github's `retarget` moves it to the default branch.
 - **Fixes.** The task is woken for red required checks (a failure that is red on the base too is a wait), unanswered review
-  findings and members' unanswered review comments, one wake at a time in the same session. A model fix touching a `protected`
+  findings and members' unanswered review comments (never those of the repo's `ignore_authors`, its automation accounts), one wake at a time in the same session. A model fix touching a `protected`
   path puts the PR on hold; the deterministic repair may still regenerate lockfiles.
 - **Approval and merge.** Where the target branch's rules or code review's gate require it, the App approves the exact head when
   the head's risk tier has `approve: on`, code review's pass stands on it and checks are green (`observe` writes what it would

@@ -37,6 +37,10 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "ci_regenerates": {
+          "type": "boolean",
+          "description": "The repo's own CI regenerates the generated paths: the repair takes their base side and runs no generator for them."
+        },
         "globs": {
           "type": "array",
           "maxItems": 200,

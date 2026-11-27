@@ -5,7 +5,8 @@
 //     or `declined`).
 //   - A conversation comment is open when a member (not the PR's author where ship says so, not a bot, not a slash command, not
 //     AidenHQ-signed) wrote it after the hand-off and no member's AidenHQ-signed comment (other than ship's report) that cites its id came after it.
-// A member is flow.ts isMember (GitHub's identity: the owner, an OWNER, MEMBER or COLLABORATOR association, or write permission).
+// A member is flow.ts isMember (GitHub's identity: the owner, an OWNER, MEMBER or COLLABORATOR association, or write permission),
+// never one of the repo's automation accounts (ship's `ignore_authors`): their comments neither ask, answer nor reopen anything.
 // The AidenHQ footer is only how our own text is recognised (an answer), and only a member's counts, never what makes a comment trusted.
 
 import { hasFooter } from "./aidenhq-sdk/attribution.ts";
@@ -19,6 +20,17 @@ export const MEMBER_COMMENTS_QUERY = `query($owner: String!, $repo: String!, $nu
     }
   }
 }`;
+
+/** What ship asks about (its adoption's `commentsFor`): comments since the hand-off, the PR author whose own comments ask nothing,
+ * and the accounts that never ask. */
+export type CommentsAsk = { since: string; author?: string; ignore?: string[] };
+/** A CommentsAsk from a request body, or undefined (fields of the wrong type are dropped). */
+export function commentsAsk(v: unknown): CommentsAsk | undefined {
+  const c = (v && typeof v === "object" ? v : {}) as { since?: unknown; author?: unknown; ignore?: unknown };
+  if (typeof c.since !== "string") return undefined;
+  const ignore = Array.isArray(c.ignore) ? c.ignore.filter((x): x is string => typeof x === "string").slice(0, 50) : [];
+  return { since: c.since, ...(typeof c.author === "string" ? { author: c.author } : {}), ...(ignore.length ? { ignore } : {}) };
+}
 
 /** One open item: a thread (`thread:<id>:<last comment>`) or a conversation comment (`comment:<id>`). The id changes with a new reply. */
 export type OpenItem = { id: string; kind: "thread" | "comment"; author: string; path?: string; line?: number };
@@ -45,9 +57,11 @@ export async function readMemberComments(page: (beforeThreads: string | null, be
   return { reviewThreads: { nodes: threads }, comments: { nodes: comments } };
 }
 
-/** The open items in `pr` (readMemberComments' answer); `author` is the PR author whose own conversation comments ask nothing, if any. */
-export async function openMemberComments(pr: Json, o: { since: string; author?: string; isMember: (login: string, association: string) => Promise<boolean> }): Promise<OpenItem[]> {
-  const member = (a: Json, assoc: unknown) => a?.__typename === "User" && !!a.login && o.isMember(String(a.login), String(assoc ?? ""));
+/** The open items in `pr` (readMemberComments' answer); `author` is the PR author whose own conversation comments ask nothing, if any,
+ * and `ignore` the accounts that are never members here. */
+export async function openMemberComments(pr: Json, o: CommentsAsk & { isMember: (login: string, association: string) => Promise<boolean> }): Promise<OpenItem[]> {
+  const ignored = new Set((o.ignore ?? []).map((l) => l.toLowerCase()));
+  const member = (a: Json, assoc: unknown) => a?.__typename === "User" && !!a.login && !ignored.has(String(a.login).toLowerCase()) && o.isMember(String(a.login), String(assoc ?? ""));
   const items: OpenItem[] = [];
   for (const t of pr?.reviewThreads?.nodes ?? []) {
     const first = t.comments?.nodes?.[0];

@@ -19,9 +19,9 @@ side of generated paths and regenerating them. Its wake says what it left.
 - Check out the PR with the wake's `aidenhq ship checkout …` line, then `git fetch origin <base>` and
   `git merge origin/<base>` right away: a push merges only the base's current tip.
 - Resolve each real conflict, keeping both sides' intent. For generated paths, take the base side and run the repo's generate
-  command (its AGENTS.md or CI says which).
+  command (its AGENTS.md or CI says which), unless the wake says the repo's CI regenerates them: then take the base side only.
 - If the generator command ship used is wrong for this repo, propose the right one with `ship_configure`
-  (`generated: { globs, command }`).
+  (`generated: { globs, command }`; `command: null` when the repo's CI regenerates those paths on the PR).
 - Commit the merge and push it with the wake's `aidenhq ship push …` line.
 
 **Red required checks.** Read each failed job's log with `github_job_log`.

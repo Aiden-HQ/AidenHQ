@@ -17,6 +17,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { withBranch } from "./branch-lock.ts";
 import { readPrTasks } from "./pr-tasks.ts";
+import { commentsAsk, type CommentsAsk } from "./member-comments.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
 type Gh = (method: string, path: string, body?: unknown, o?: { background?: boolean; deadline?: number }) => Promise<{ status: number; body: any }>;
@@ -48,12 +49,12 @@ const CALLS: [string, RegExp, ((b: Json) => boolean)?][] = [
   ["GET", new RegExp(`^/repos/${REPO}/collaborators/[\\w-]+/permission$`)],
   ["POST", new RegExp(`^/repos/${REPO}/issues/\\d+/assignees$`), (b) => Array.isArray(b?.assignees) && Object.keys(b).length === 1],
   ["DELETE", new RegExp(`^/repos/${REPO}/issues/\\d+/assignees$`), (b) => Array.isArray(b?.assignees) && Object.keys(b).length === 1],
-  // The repo's own steps and discovery (ship's actions.ts): the base branch's tree and its blobs, a workflow's dispatch on the PR's
-  // branch, and that workflow's runs.
+  // The repo's own steps and discovery (ship's actions.ts): the base branch's tree and its blobs, a workflow's dispatch (always
+  // asking GitHub for the run it started), and that run.
   ["GET", new RegExp(`^/repos/${REPO}/git/trees/[\\w.-]+\\?recursive=1$`)],
   ["GET", new RegExp(`^/repos/${REPO}/git/blobs/[0-9a-f]{40}$`)],
-  ["POST", new RegExp(`^/repos/${REPO}/actions/workflows/[\\w.-]+\\.ya?ml/dispatches$`), (b) => typeof b?.ref === "string" && Object.keys(b).every((k) => k === "ref" || (k === "inputs" && typeof b.inputs === "object" && !Array.isArray(b.inputs)))],
-  ["GET", new RegExp(`^/repos/${REPO}/actions/workflows/[\\w.-]+\\.ya?ml/runs\\?[\\w=&%.-]*$`)],
+  ["POST", new RegExp(`^/repos/${REPO}/actions/workflows/[\\w.-]+\\.ya?ml/dispatches$`), (b) => typeof b?.ref === "string" && b.return_run_details === true && Object.keys(b).every((k) => k === "ref" || k === "return_run_details" || (k === "inputs" && typeof b.inputs === "object" && !Array.isArray(b.inputs)))],
+  ["GET", new RegExp(`^/repos/${REPO}/actions/runs/\\d+$`)],
 ];
 /** The loop's one GraphQL read: a repo's open PRs (a page of them) with their checks, and its default branch's. Ship names only the
  * variables, so no other query runs on the owner's sign-in. */
@@ -69,7 +70,7 @@ export const OPEN_PRS_QUERY = `query($owner: String!, $repo: String!, $after: St
 }`;
 
 export function shipRoutes(o: {
-  gh: Gh; decision?: (repo: string, number: number, head: string, view?: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number; comments?: { since: string; author?: string } }) => Promise<unknown>; gate: ReviewGate; cacheDir: string;
+  gh: Gh; decision?: (repo: string, number: number, head: string, view?: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number; comments?: CommentsAsk }) => Promise<unknown>; gate: ReviewGate; cacheDir: string;
   /** A head's latest check runs in REST's shape from the change feed's snapshot, or undefined when it has no fresh read of them. */
   checkRuns?: (repo: string, sha: string) => Json[] | undefined;
   /** Whether the fleet works this repo (git-auth.ts mergeable): ship's calls reach no other. */
@@ -166,7 +167,7 @@ export function shipRoutes(o: {
       if (op === "decision" && o.decision) {
         const repo = String(b.repo);
         if (!o.allowed(repo)) return send(res, 403, { error: `ship may not read ${repo.slice(0, 200)}` }), true;
-        const view = b.pr && typeof b.pr === "object" && b.main && typeof b.main === "object" ? { pr: b.pr, main: { name: String(b.main.name), oid: b.main.oid ? String(b.main.oid) : undefined, rollup: b.main.rollup }, ...(Number.isInteger(b.stackedOn) && b.stackedOn > 0 ? { stackedOn: b.stackedOn } : {}), ...(typeof b.comments?.since === "string" ? { comments: { since: b.comments.since, ...(typeof b.comments.author === "string" ? { author: b.comments.author } : {}) } } : {}) } : undefined;
+        const view = b.pr && typeof b.pr === "object" && b.main && typeof b.main === "object" ? { pr: b.pr, main: { name: String(b.main.name), oid: b.main.oid ? String(b.main.oid) : undefined, rollup: b.main.rollup }, ...(Number.isInteger(b.stackedOn) && b.stackedOn > 0 ? { stackedOn: b.stackedOn } : {}), ...(commentsAsk(b.comments) ? { comments: commentsAsk(b.comments)! } : {}) } : undefined;
         return send(res, 200, await o.decision(repo, Number(b.number), String(b.head), view)), true;
       }
       return send(res, 404, { error: "no such operation" }), true;

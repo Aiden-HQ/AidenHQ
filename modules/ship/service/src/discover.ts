@@ -5,13 +5,13 @@
 //   commands:  per package dir, the first of: a CI job that checks generated code is up to date, a command AGENTS.md names, a
 //              Makefile `generate` target, a package.json `generate` script, `go:generate` directives (go generate ./...)
 //   ambiguous: what discovery couldn't settle (the Engineer proposes the command with ship_configure; the setting wins from then on)
-//   suggest:   the repo's own regenerate command or workflow, as an `actions` step for the report to propose (never enabled here)
+//   suggest:   the repo's own regenerate workflow, as an `actions` step for the report to propose (never enabled here)
 export const LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
 
 // The `github.repair` request's limits (modules/github/schemas/repair.json, plan).
 const MAX_GLOBS = 200, MAX_GLOB_LEN = 300, MAX_COMMANDS = 20, MAX_DIR_LEN = 300, MAX_CMD_LEN = 500;
 
-export type Suggestion = { stage: "conflict" | "behind"; step: { comment: string } | { workflow: string }; from: string };
+export type Suggestion = { stage: "conflict" | "behind"; step: { workflow: string; inputs: Record<string, string> }; from: string };
 export type Discovered = { globs: string[]; commands: { dir: string; cmd: string }[]; ambiguous: string[]; suggest: Suggestion[] };
 
 const dirOf = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ".");
@@ -90,21 +90,17 @@ export function discover(files: Record<string, string>): Discovered {
   return { globs: kept, commands: commands.slice(0, MAX_COMMANDS), ambiguous, suggest: suggestions(files) };
 }
 
-// A comment workflow's command: `startsWith(github.event.comment.body, '/rebase')`, `contains(…, '/rebase')` or `== '/rebase'`.
-const SLASH = /comment\.body\s*(?:,\s*|==\s*)['"](\/[\w-]{1,40})['"]/;
 const REGEN = /\b(rebase|regenerat|generat|codegen)/i;
-/** The repo's own regenerate paths, from its workflows: a slash command that rebases or regenerates (issue_comment), and a
- * workflow_dispatch workflow that does. Proposed in the report as `actions` steps; enabling one is the owner's or an agent's
- * ship_configure. */
+/** The repo's own regenerate paths, from its workflows: a workflow_dispatch workflow that rebases or regenerates, proposed with the
+ * PR's number as its `pr` input (a hook runs on the base branch; the name of its input is the workflow's to say). Proposed in the
+ * report as `actions` steps; enabling one is the owner's or an agent's ship_configure. */
 function suggestions(files: Record<string, string>): Suggestion[] {
   const out: Suggestion[] = [];
   for (const [path, text] of Object.entries(files)) {
     if (!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(path)) continue;
     const name = base(path);
     const regen = REGEN.test(name) || jobsOf(text).some((j) => j.runs.some((r) => GEN_RUN.test(r) || /\bgit\s+rebase\b/.test(r)));
-    const slash = SLASH.exec(text)?.[1];
-    if (/\bissue_comment\b/.test(text) && slash && (regen || REGEN.test(slash))) out.push({ stage: "conflict", step: { comment: slash }, from: path });
-    else if (/\bworkflow_dispatch\b/.test(text) && regen) out.push({ stage: "conflict", step: { workflow: name }, from: path });
+    if (/\bworkflow_dispatch\b/.test(text) && regen) out.push({ stage: "conflict", step: { workflow: name, inputs: { pr: "{pr}" } }, from: path });
   }
   return out;
 }

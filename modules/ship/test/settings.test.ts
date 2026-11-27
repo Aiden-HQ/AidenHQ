@@ -44,16 +44,33 @@ test("loosens names each loosened field by repo, and the same policy spelled dif
   assert.deepEqual(loosens(off, { repos: { "a/b": "cautious" } }), ["a/b.by_tier.trivial.approve", "a/b.by_tier.sensitive.merge", "a/b.unwatched.merge"]);
   assert.deepEqual(loosens({ repos: { "a/b": "cautious" } }, off), []);
   // A new step of the repo's own is the owner's; dropping one isn't.
-  const step = { repos: { "a/b": { preset: "cautious", actions: { before_merge: [{ workflow: "deploy.yml" }] } } } };
+  const step = { repos: { "a/b": { preset: "cautious", actions: { before_merge: [{ workflow: "deploy.yml", inputs: { pr: "{pr}" } }] } } } };
   assert.ok(loosens({ repos: { "a/b": "cautious" } }, step).some((x) => /actions\.before_merge/.test(x)));
   assert.deepEqual(loosens(step, { repos: { "a/b": "cautious" } }), []);
   assert.deepEqual(loosens({ repos: { "a/b": "cautious" } }, { repos: { "a/b": { rebase: "behind" } } }), ["a/b.rebase"]);
   assert.deepEqual(loosens({}, { repos: { "a/b": "cautious" } }, scope), ["a/b.enabled"]);
   assert.deepEqual(loosens({ paused: true }, { paused: false }), ["paused"]);
   // A new generated glob widens what the repair may write; the command alone is an ordinary change.
-  const gen = (globs: string[], command = "make gen") => ({ repos: { "a/b": { preset: "cautious", generated: { globs, command } } } });
+  const gen = (globs: string[], command: string | null = "make gen") => ({ repos: { "a/b": { preset: "cautious", generated: { globs, command } } } });
   assert.deepEqual(loosens(gen(["gen/**"]), gen(["gen/**", "src/**"])), ["a/b.generated.globs"]);
   assert.deepEqual(loosens(gen(["gen/**"]), gen(["gen/**"], "npm run gen")), []);
+  // The repo's CI regenerating (command null) runs nothing and writes only the base's blobs: an ordinary change.
+  assert.deepEqual(loosens(gen(["gen/**"]), gen(["gen/**"], null)), []);
+  // Ignored accounts: adding narrows what ship acts on; dropping one (any case) widens it.
+  const ign = (l: string[]) => ({ repos: { "a/b": { preset: "cautious", ignore_authors: l } } });
+  assert.deepEqual(loosens(ign([]), ign(["acme-bot"])), []);
+  assert.deepEqual(loosens(ign(["acme-bot"]), ign(["ACME-bot"])), []);
+  assert.deepEqual(loosens(ign(["acme-bot"]), ign([])), ["a/b.ignore_authors"]);
+});
+
+test("repo hooks are workflows naming the PR with {pr}; comment steps and bad logins are refused", () => {
+  const scope = { fleet: ["a/*"], listed: [] };
+  const v = (e: unknown) => validate({ repos: { "a/b": e } }, scope);
+  assert.deepEqual(v({ actions: { conflict: [{ workflow: "pr-rebase.yml", inputs: { pr: "{pr}" } }] }, generated: { globs: ["gen/**"], command: null }, ignore_authors: ["acme-bot", "renovate[bot]"] }), []);
+  assert.match(v({ actions: { conflict: [{ comment: "/rebase" }] } }).join(), /comment steps are gone/);
+  assert.match(v({ actions: { conflict: [{ workflow: "pr-rebase.yml" }] } }).join(), /name the PR with \{pr\}/);
+  assert.match(v({ actions: { conflict: [{ workflow: "x.yml", inputs: { pr: "{pr}", ref: "{head}" } }] } }).join(), /only placeholder is \{pr\}/);
+  assert.match(v({ ignore_authors: ["not a login"] }).join(), /ignore_authors/);
 });
 
 test("clearing an explicit generated list back to discovery is a loosening", () => {

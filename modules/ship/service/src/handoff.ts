@@ -63,7 +63,7 @@ export type Kept = Adoption & {
   /** The App's approval: its record, the policy it was issued under (docs/design/code-review.md, Risk tiers), and `dismissed`: the record dismissing it. */
   approve?: { head: string; attempt: number; record: string; why?: string; policy?: string; dismissed?: string };
   /** What github's write-time recheck of members' comments needs (/v1/generation): the hand-off's time and the author whose own comments ask nothing; kept as the round asked for it. */
-  commentsFor?: { since: string; author?: string };
+  commentsFor?: { since: string; author?: string; ignore?: string[] };
   /** The head ship asked code review to review afresh (a model fix the last review doesn't carry to): asked once per head. */
   freshAsked?: string;
   /** The repo's own steps at a stage (actions.ts): which step, at which head, and how it ended. */

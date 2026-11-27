@@ -26,7 +26,7 @@ export type AdoptedOptions = {
   /** github's round decision for an adopted PR (merges.ts decision): decide's answer, the required checks red on the head, DIRTY,
    * whether the branch merges through a merge queue, the required checks red on the PR's latest merge_group run, and whether an
    * approval of the head is all it waits on. */
-  decision(repo: string, number: number, head: string, view: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number; /** Ask for members' unanswered review comments (member-comments.ts): `since` is the hand-off's time, `author` the member whose own comments on their PR ask nothing (not a task's PR: the code host authors those as the owner). */ comments?: { since: string; author?: string } }): Promise<Decision & { memberComments?: { id: string; kind: string; author: string; path?: string; line?: number }[]; failing?: string[]; redChecks?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[]; approval?: boolean; findingsKey?: string }>;
+  decision(repo: string, number: number, head: string, view: { pr: Json; main: { name: string; oid?: string; rollup?: Json }; stackedOn?: number; /** Ask for members' unanswered review comments (member-comments.ts): `since` is the hand-off's time, `author` the member whose own comments on their PR ask nothing (not a task's PR: the code host authors those as the owner), `ignore` the repo's automation accounts (`ignore_authors`). */ comments?: { since: string; author?: string; ignore?: string[] } }): Promise<Decision & { memberComments?: { id: string; kind: string; author: string; path?: string; line?: number }[]; failing?: string[]; redChecks?: string[]; dirty?: boolean; queue?: boolean; groupFailing?: string[]; approval?: boolean; findingsKey?: string }>;
   /** The report comment, code review's asks and its verdict (effects.ts shipEffects). */
   effects: { comment: RoundDeps["comment"]; askReview: HandoffDeps["askReview"]; askFresh: RoundDeps["askFresh"]; verdict(repo: string, number: number, head: string, live?: { base?: string; association?: string }): Promise<Verdict> };
   log(msg: string, f?: Record<string, unknown>): void;
@@ -326,7 +326,8 @@ export function adoptedPass(o: AdoptedOptions) {
         } else if (a.stack.landed === view.head) return;
         else { const { stack: _, ...rest } = a; a = rest as Kept; o.state.put(a); }
       }
-      const commentsFor = o.settings(repo)?.fix.includes("review") ? { since: a.trigger.at, ...(a.owner?.kind === "task" || view.authorBot ? {} : { author: view.author }) } : undefined;
+      const cs = o.settings(repo);
+      const commentsFor = cs?.fix.includes("review") ? { since: a.trigger.at, ...(a.owner?.kind === "task" || view.authorBot ? {} : { author: view.author }), ...(cs.ignore_authors.length ? { ignore: cs.ignore_authors } : {}) } : undefined;
       // Kept for github's recheck right before ship's approve, enqueue or merge executes (/v1/generation).
       if (JSON.stringify(a.commentsFor) !== JSON.stringify(commentsFor)) { const { commentsFor: _, ...rest } = a; a = (commentsFor ? { ...rest, commentsFor } : rest) as Kept; o.state.put(a); }
       const v = await o.decision(repo, pr.number, view.head, { pr, main, ...(ctx.stackedOn ? { stackedOn: ctx.stackedOn.number } : {}), ...(commentsFor ? { comments: commentsFor } : {}) });

@@ -16,7 +16,7 @@ import { CODE_REVIEW_STATUS, contextChecks, contextRank, judgedOnHead, namedChec
 import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
-import { MEMBER_COMMENTS_QUERY, openMemberComments, readMemberComments, type OpenItem } from "./member-comments.ts";
+import { MEMBER_COMMENTS_QUERY, openMemberComments, readMemberComments, type CommentsAsk, type OpenItem } from "./member-comments.ts";
 import { ASYNC_POLL_MS, DIRECT_POLLS, mergeDirect, requestStore } from "./async-merge.ts";
 import { HOLD_LABEL, PR_FILES_QUERY, PR_QUERY, allPrFiles, decide, headChecks, mergeMethod, mergePath, productMergeEligible, requiredChecks, withGate } from "./merge-gate.ts";
 import type { ReviewGate } from "./review-gate.ts";
@@ -144,7 +144,7 @@ export function createMerges(d: {
     }
   }
   /** The open member comments on a PR (member-comments.ts): its comments read, members as flow.ts isMember has it. */
-  async function memberItems(repo: string, number: number, c: { since: string; author?: string }): Promise<OpenItem[]> {
+  async function memberItems(repo: string, number: number, c: CommentsAsk): Promise<OpenItem[]> {
     const [owner, name] = repo.split("/");
     const pr = await readMemberComments(async (beforeThreads, beforeComments) => {
       const r = await d.gh("POST", "/graphql", { query: MEMBER_COMMENTS_QUERY, variables: { owner, repo: name, number, beforeThreads, beforeComments } });
@@ -152,7 +152,7 @@ export function createMerges(d: {
       if (r.status >= 300 || r.body?.errors?.length || !node) throw new Error(`GitHub GraphQL: the PR's comments couldn't be read (${r.status})`);
       return node;
     }, c.since);
-    return openMemberComments(pr, { since: c.since, ...(c.author ? { author: c.author } : {}), isMember: (login, association) => d.flow!.isMember(login, association, repo) });
+    return openMemberComments(pr, { ...c, isMember: (login, association) => d.flow!.isMember(login, association, repo) });
   }
   /**
    * The pull request's complete file list: the pages after the first while GitHub says there are more (merge-gate.ts allPrFiles).
@@ -796,7 +796,7 @@ export function createMerges(d: {
      * the checks from its rollup unless that is cut at 100. Code review's verdict is read once and decided on (`findingsKey`
      * names its findings, so new findings at one head are a new fix_review).
      */
-    async decision(repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number; comments?: { since: string; author?: string } }) {
+    async decision(repo: string, number: number, head: string, view?: { pr: any; main: { name: string; oid?: string; rollup?: any }; stackedOn?: number; comments?: CommentsAsk }) {
       // A skipped image scan is judged on the PR's files, which only the full read has.
       const listed = view && !skippedImageScan(view.pr);
       const data = listed ? listView(view.pr, view.main) : await readPr(repo, number);

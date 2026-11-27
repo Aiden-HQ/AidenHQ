@@ -5,9 +5,10 @@
 //
 // Spec (/aidenhq-out/spec.json): head (the workspace), base (the base branch's tip, its tree at /aidenhq-out/base), merge_base (its
 // tree at /aidenhq-out/merge_base, when it isn't the head or the base), base_ref (the base branch's name, for the message) and plan
-// ({ globs, commands: [{ dir, cmd }] }: ship's generated paths and generators, from the target branch or the repo's setting).
+// ({ globs, commands: [{ dir, cmd }], ci_regenerates? }: ship's generated paths and generators, from the target branch or the repo's
+// setting; `ci_regenerates`: the repo's own CI regenerates those paths, so no generator runs for them).
 //   1. Merge the base into the head (a history made from the three trees).
-//   2. A conflicted generated path a generator covers takes the base side; a conflicted lockfile takes the base side and its
+//   2. A conflicted generated path a generator covers (any, when the repo's CI regenerates) takes the base side; a conflicted lockfile takes the base side and its
 //      package manager rewrites it (npm, pnpm); a conflicted go.sum keeps both sides' lines, sorted (go.mod is never rewritten:
 //      `go mod tidy` would); anything else is a leftover for the Engineer.
 //   3. Run the generators; put back a lockfile they only re-spaced.
@@ -27,6 +28,14 @@ const LOCK_CMD: Record<string, string> = {
   "pnpm-lock.yaml": "pnpm install --lockfile-only --ignore-scripts",
 };
 const LOCKS = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
+/** A failed command's words as github keeps them (its outcome holds 2,000 characters after its own prefix): the command, then the
+ * tail of stderr (where the error is) and of stdout, each within its own budget. */
+const STDERR_TAIL = 1000, STDOUT_TAIL = 500, CMD_SHOWN = 200;
+export function failedText(cmd: string, dir: string, status: number | string, stderr: string, stdout: string, tool?: string): string {
+  const tail = (s: string, n: number) => (s.length > n ? `…${s.slice(-n)}` : s);
+  const parts = [stderr.trim() && `stderr:\n${tail(stderr.trim(), STDERR_TAIL)}`, stdout.trim() && `stdout:\n${tail(stdout.trim(), STDOUT_TAIL)}`].filter(Boolean);
+  return `${tool ? `toolchain missing: ${tool}\n` : ""}\`${tail(cmd, CMD_SHOWN)}\` in ${dir.slice(0, 100)} exited ${status}:\n${parts.join("\n") || "(no output)"}`;
+}
 
 /** The tool a command's output says is missing, from the shell's or a launcher's own words only: `sh: 1: webrpc-gen: not found`,
  * `bash: buf: command not found`, a script's `./gen.sh: 2: protoc: not found`, `make: oapi-codegen: No such file or directory`, `env: 'x': No such file or directory`, or
@@ -65,7 +74,7 @@ export function goSumOrder(a: string, b: string): number {
 }
 
 export function repair(ws: string, out: string, spec: Record<string, string>) {
-  const plan = JSON.parse(spec.plan || "{}") as { globs?: string[]; commands?: { dir: string; cmd: string }[] };
+  const plan = JSON.parse(spec.plan || "{}") as { globs?: string[]; commands?: { dir: string; cmd: string }[]; ci_regenerates?: boolean };
   const globs = (plan.globs ?? []).filter((x) => typeof x === "string" && x);
   const commands = (plan.commands ?? []).filter((c) => typeof c?.cmd === "string" && typeof c?.dir === "string" && !c.dir.split("/").includes(".."));
   const repo = mkdtempSync(join(tmpdir(), "ship-repair-"));
@@ -94,7 +103,8 @@ export function repair(ws: string, out: string, spec: Record<string, string>) {
   }
   const name = (p: string) => p.slice(p.lastIndexOf("/") + 1);
   const dirOf = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ".");
-  const covered = (p: string) => commands.some((c) => c.dir === "." || p.startsWith(`${c.dir.replace(/\/+$/, "")}/`));
+  // Covered: a generator rewrites it here, or the repo's CI regenerates it after the push (the base side stands until then).
+  const covered = (p: string) => plan.ci_regenerates === true || commands.some((c) => c.dir === "." || p.startsWith(`${c.dir.replace(/\/+$/, "")}/`));
   const generated = globs.length ? g(["diff", "--name-only", "--diff-filter=U", "-z", "--", ...globs.map((x) => `:(glob)${x}`)]).split("\0").filter(Boolean) : [];
   const relock: { dir: string; cmd: string; path: string }[] = [];
   // Every path the repair decides (a conflict it resolved, a file a generator touched) is named in the result, even when it ends
@@ -122,11 +132,11 @@ export function repair(ws: string, out: string, spec: Record<string, string>) {
   for (const c of [...relock, ...commands]) {
     try { execFileSync("sh", ["-c", c.cmd], { cwd: join(repo, c.dir), env: { ...process.env, CI: "1" }, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 << 20 }); } catch (e) {
       const x = e as { status?: number; stderr?: Buffer; stdout?: Buffer; message: string };
-      const said = [x.stderr, x.stdout].map((b) => String(b ?? "")).join("\n").trim() || x.message;
-      // A tool this box doesn't have (the shell's "not found", Go's exec error, or exit 127): said first, plainly, so ship can
-      // suggest the repo's own workflow instead.
-      const tool = missingTool(said) ?? (x.status === 127 ? c.cmd.trim().split(/\s+/)[0] : undefined);
-      return { result: { failed: `${tool ? `toolchain missing: ${tool}\n` : ""}\`${c.cmd}\` in ${c.dir} exited ${x.status ?? "?"}: ${said.slice(-2000)}` } };
+      const stderr = String(x.stderr ?? ""), stdout = String(x.stdout ?? "");
+      // A tool this box doesn't have (the shell's "not found", Go's exec error, or exit 127), read from the whole output: said
+      // first, plainly, so ship can suggest the repo's own workflow instead.
+      const tool = missingTool(`${stderr}\n${stdout}`) ?? (x.status === 127 ? c.cmd.trim().split(/\s+/)[0] : undefined);
+      return { result: { failed: failedText(c.cmd, c.dir, x.status ?? "?", stderr || (stdout ? "" : x.message), stdout, tool) } };
     }
   }
   g(["add", "-A"]);

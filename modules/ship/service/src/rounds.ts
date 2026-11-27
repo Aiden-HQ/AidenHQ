@@ -78,8 +78,10 @@ export interface RoundDeps {
 
 const OPEN = ["review", "owner", "approved", "claimed", "done"];
 
-/** The repair's plan for the box: the repo's `generated` setting, else what discovery found on the target branch. */
+/** The repair's plan for the box: the repo's `generated` setting, else what discovery found on the target branch. `command: null`
+ * is the repo's CI regenerating those paths: the box takes their base side and runs no generator for them. */
 export function repairPlan(s: ShipSettings, d?: Discovered) {
+  if (s.generated?.command === null) return { globs: s.generated.globs, commands: [], ci_regenerates: true };
   if (s.generated) return { globs: s.generated.globs, commands: s.generated.command ? [{ dir: ".", cmd: s.generated.command }] : [] };
   return { globs: d?.globs ?? [], commands: d?.commands ?? [] };
 }
@@ -364,6 +366,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           return "acted";
         }
         // A conflict: ship's repair check job (no model) first, as github's `repair` effect; the Engineer gets only what it leaves.
+        // `noop`: the base tip the repair found already in the head (GitHub's DIRTY outlived the push that took the base in).
+        let noop: string | undefined;
         if (a!.repair?.head === pr.head) {
           const r = await d.kernel.call("GET", `/v1/writes/${a!.repair.record}`);
           if (OPEN.includes(String(r.state))) return "nothing";
@@ -371,11 +375,15 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           // Done (or the PR moved meanwhile): the next head is the next round's.
           if (r.state === "done" || /^ship-head-moved/.test(text)) return "nothing";
           if (r.state !== "failed") return hold(`ship's repair was ${r.state}: ${text.slice(0, 300)}`, HOLD.repair);
+          // Nothing to merge: nobody is woken, and this head and base tip are not asked again while GitHub still says DIRTY. A new
+          // head is a new round; a new tip of the default branch (the only base this pass reads) is repaired again.
+          noop = /^ship-noop: .* already holds `[^`]*` at `([0-9a-f]{40})`/.exec(text)?.[1];
+          if (noop && (!pr.baseOid || pr.baseOid === noop)) return "nothing";
           const left = text.split("\n").filter((l) => l.startsWith("leftover: ")).length;
           // The box lacks the generator's tool: the Engineer's computer is the same image, so the PR holds, and the report suggests
-          // the repo's own command or workflow as an `actions` step.
+          // the repo's own workflow as an `actions` step.
           const missing = /^ship-generator/.test(text) && /^toolchain missing: ([\w.+-]{1,60})/m.exec(text)?.[1];
-          if (missing) return hold(`toolchain missing: ${missing} (the repair box doesn't have it): configure an \`actions\` step for conflicts, such as the repo's own regenerate command or workflow${suggest.length ? `: ${suggest[0]}` : ""}`, HOLD.repair);
+          if (missing) return hold(`toolchain missing: ${missing} (the repair box doesn't have it): configure the repo's own regenerate workflow as an \`actions\` step for conflicts${suggest.length ? ` (${suggest[0]})` : ""}, or set \`generated.command: null\` when the repo's CI regenerates these paths`, HOLD.repair);
           if (/^ship-leftovers/.test(text) || /^ship-generator/.test(text)) {
             if (a!.repair.woke) return "nothing";
             a = { ...a!, repair: { ...a!.repair, woke: true } };
@@ -383,14 +391,17 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
               /^ship-leftovers/.test(text)
                 ? `${pr.url} conflicts with \`${pr.base}\` at head ${pr.head}, and ship's repair left ${left} conflict(s) no generator rewrites (its outcome is on record ${a!.repair!.record}).`
                 : `${pr.url} conflicts with \`${pr.base}\` at head ${pr.head}, and ship's repair stopped on a generator (its outcome is on record ${a!.repair!.record}).`,
-              `Resolve it as the \`ship\` skill says: merge \`origin/${pr.base}\` in, resolve, regenerate the generated files, one commit.`,
+              s.generated?.command === null
+                ? `Resolve it as the \`ship\` skill says: merge \`origin/${pr.base}\` in, resolve, take the base side of the generated files (${s.generated.globs.map((g) => `\`${g}\``).join(", ") || "none listed"}) and don't regenerate them: the repo's CI does. One commit.`
+                : `Resolve it as the \`ship\` skill says: merge \`origin/${pr.base}\` in, resolve, regenerate the generated files, one commit.`,
               push(),
             ].join("\n"));
           }
           // A run that didn't finish (nothing kept) is asked for once more at this head; anything else holds with its reason.
-          if (!/^ship-repair:/.test(text) || a!.repair.retried) return hold(`ship's repair couldn't write the branch: ${text.split("\n")[0]!.slice(0, 300)}`, HOLD.repair);
+          if (!noop && (!/^ship-repair:/.test(text) || a!.repair.retried)) return hold(`ship's repair couldn't write the branch: ${text.split("\n")[0]!.slice(0, 300)}`, HOLD.repair);
         }
-        const retry = a!.repair?.head === pr.head;
+        // A no-op at a base that has since moved is a fresh repair, not a retry.
+        const retry = a!.repair?.head === pr.head && !noop;
         const held = spend();
         if (held) return held;
         const holder = a!.task || a!.holder ? undefined : await recordTask(d.kernel, pr, a!);

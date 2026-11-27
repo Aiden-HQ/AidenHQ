@@ -51,6 +51,19 @@ test("open member threads and conversation comments: answered, resolved, outside
   assert.deepEqual([(await openMemberComments(own, { since: "2026-11-24T01:00:00Z", author: "me", isMember })).length, (await openMemberComments(own, { since: "2026-11-24T01:00:00Z", isMember })).length], [0, 1]);
 });
 
+test("the repo's ignored automation accounts (any case) never ask, answer or reopen: their comments and threads, and their replies to a thread", async () => {
+  const pr = {
+    reviewThreads: { nodes: [th("bot-opened", { first: "acme-bot" }), th("answered", { n: 3, last: `fixed in abc${FOOTER}` }), th("bot-reply", { n: 2, last: `declined: no${FOOTER}`, tail: { by: "acme-bot", body: "❌ /rebase stopped" } })] },
+    comments: { nodes: [note("1", "acme-bot", "2026-11-24T02:00:00Z", "❌ `/rebase` stopped: non-generated file conflicts"), note("2", "maria", "2026-11-24T02:01:00Z", "please rename it")] },
+  };
+  // A machine User with MEMBER association, as GitHub shows a repo's own bot account.
+  const bot = { ...pr, reviewThreads: { nodes: pr.reviewThreads.nodes.map((t) => t.id === "bot-reply" ? { ...t, last: { nodes: [...t.last.nodes.slice(0, -1), { ...t.last.nodes.at(-1), authorAssociation: "MEMBER" }] } } : t) } };
+  const all = await openMemberComments(bot, { since: "2026-11-24T01:00:00Z", isMember });
+  assert.deepEqual(all.map((i) => i.id), ["thread:bot-opened:bot-opened-first", "thread:bot-reply:bot-reply-tail", "comment:1", "comment:2"], "unlisted, the bot is a member");
+  const ignored = await openMemberComments(bot, { since: "2026-11-24T01:00:00Z", ignore: ["ACME-Bot"], isMember });
+  assert.deepEqual(ignored.map((i) => i.id), ["comment:2"]);
+});
+
 test("a PR with more threads and comments than a page is read back to the hand-off, and one that can't be is an error, never a clear PR", async () => {
   const pages = [
     { reviewThreads: { pageInfo: { hasPreviousPage: true, startCursor: "t2" }, nodes: [th("c", {})] }, comments: { pageInfo: { hasPreviousPage: true, startCursor: "c2" }, nodes: [note("3", "maria", "2026-11-24T03:00:00Z", "late")] } },

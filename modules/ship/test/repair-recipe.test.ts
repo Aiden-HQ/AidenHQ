@@ -50,9 +50,17 @@ test("ship-repair: generated conflicts regenerated into the files on top of the 
 
   // No generator: the generated conflict is the Engineer's too. A source conflict is always.
   assert.deepEqual(run(head, { globs: ["gen/**"], commands: [] }).result, { leftovers: ["gen/out.txt"] });
+  // The repo's CI regenerates them: the base side is taken and nothing runs.
+  const ci = run(head, { globs: ["gen/**"], commands: [], ci_regenerates: true });
+  const gen = ci.keep!.entries.find((e) => e.path === "gen/out.txt");
+  assert.equal(gen?.sha, git("rev-parse", `${base}:gen/out.txt`), "the base's own blob");
   assert.deepEqual(run(clash, { globs: ["gen/**"], commands: [{ dir: ".", cmd: "cat src/*.txt > gen/out.txt" }] }).result, { leftovers: ["src/a.txt"] });
   // A failed generator stops it, with the command's own words.
-  assert.match(String((run(head, { globs: ["gen/**"], commands: [{ dir: ".", cmd: "echo broken >&2; exit 3" }] }).result as any).failed), /exited 3: broken/);
+  assert.match(String((run(head, { globs: ["gen/**"], commands: [{ dir: ".", cmd: "echo broken >&2; exit 3" }] }).result as any).failed), /exited 3:\nstderr:\nbroken$/);
+  // A long stdout never pushes the error out: stderr and stdout each keep their own tail, together within github's 2,000.
+  const loud = String((run(head, { globs: ["gen/**"], commands: [{ dir: ".", cmd: "yes progress | head -c 50000; echo the real error >&2; exit 2" }] }).result as any).failed);
+  assert.match(loud, /stderr:\nthe real error\nstdout:\n…/);
+  assert.ok(loud.length < 2000, String(loud.length));
   // A tool the box doesn't have is said first, plainly (ship holds and suggests the repo's own workflow).
   assert.match(String((run(head, { globs: ["gen/**"], commands: [{ dir: ".", cmd: "webrpc-gen-not-here -schema x.ridl" }] }).result as any).failed), /^toolchain missing: webrpc-gen-not-here\n/);
 });
