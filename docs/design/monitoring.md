@@ -90,7 +90,7 @@ refused registration is `activating` rather than `active`, so the loop is named 
 empties `CiRunnersDown`'s active count), `CiRunnerBackoff` (a runner whose persisted wait is at the 60-second cap and has
 held it for ten minutes: the wait is the loop's own state, so it fires even when a scrape misses every brief active
 interval between backoffs, while a wait that has since cleared breaks the condition and raises nothing), `CiRunnerUnitMissing` (a runner unit seen in
-the last day and gone now, named by unit), `JobOverlong`, `GatewaySpendNearCap`, `CiReviewSpendNearCap` and `AppsCpuStarved` (an
+the last day and gone now, named by unit), `JobOverlong`, `GatewaySpendNearLimit` (over 80% of the install's day or month spend limit), `KernelEventLoopSaturated` and `AppsCpuStarved` (an
 `app-*` container's own CPU pressure over 20% while the host's is over 15%; the alert names the app's project, and host
 pressure alone never fires it). Only `CoreServiceDown` and `ApplyFailed` are critical.
 

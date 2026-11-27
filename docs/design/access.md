@@ -54,15 +54,14 @@ lets in. Everything else on that interface is dropped, and 80 is closed in every
   and fails on a wildcard 443 listener outside public mode. In public mode it also checks the door as the Internet meets
   it: a publicly trusted certificate on both sites, and exactly 401 from `https://<ip>/api/board` without a session.
 
-Switching modes: [minimal-core-install.md](minimal-core-install.md).
-
 ### The public front door (Caddy)
 
 `scripts/front-door.ts`, compiled only with `exposure: public`, for the IPv4 in `.env` (`AIDENHQ_PUBLIC_IP`; never
 `instance.yaml`, which agents can change through an apply):
 
-- **Two sites on one name:** `https://<ip>` to the board (3121) and `https://<ip>:8446` to the kernel's admin listener
-  (3120), which needs its own origin for its forms. `.env` holds both URLs (`BOARD_LAN_URL`, `AIDENHQ_ADMIN_URL`), which
+- **Sites on one name:** `https://<ip>` to the board (3121), `https://<ip>:8446` to the kernel's admin listener
+  (3120), which needs its own origin for its forms, `https://<ip>:8447` to the gate as the module door, and an
+  app door's `<app>.<ip-with-dashes>.sslip.io` hosts ([app-doors.md](app-doors.md)). `.env` holds both URLs (`BOARD_LAN_URL`, `AIDENHQ_ADMIN_URL`), which
   the kernel reads for its hosts, origins and the board's handoff origin; compile refuses a `.env` that disagrees with the IP.
 - **Certificate.** Let's Encrypt, the `shortlived` profile (160 hours), over TLS-ALPN-01 on 443: no listener on 80, no
   HTTP/3, no admin API. Each site names its ACME issuer, so Caddy's local CA is never served; `default_sni` names the IP
@@ -125,13 +124,12 @@ setup link and resets with the operator key).
   cookie, which reaches the board's origin too, is never read there. Account administration on the board goes to the
   kernel as that admin's session (`/v1/accounts/*`).
 - **The admin listener** is the kernel's, on `127.0.0.1:3120`, behind its own front door (8446 or the SSH tunnel). It
-  serves sign-in, TOTP enrolment, link claims, the approval list and card pages, batch decide, the owner's confirmation
-  page and the owner message frame, server-rendered with no script. Every page sends `frame-ancestors 'none'` except
+  serves sign-in, TOTP enrolment, link claims, the owner's confirmation page and the owner message frame, server-rendered
+  with no script; its old approval addresses redirect to the board. Every page sends `frame-ancestors 'none'` except
   `/owner/message`, which the board's origins may frame. Every form carries this listener's own Origin exactly (cookies
-  ignore ports, so the board's origin on the same host is refused) and, signed in, a token bound to the session. The
-  board links each card to its kernel page; it decides nothing.
-- **Two kinds of account.** An admin signs in on the admin listener with email, password and TOTP and can approve cards
-  there. A user never gets the board or the kernel pages; the account only opens shared apps.
+  ignore ports, so the board's origin on the same host is refused) and, signed in, a token bound to the session.
+- **Two kinds of account.** An admin signs in on the admin listener with email, password and TOTP and approves cards
+  on the board. A user never gets the board or the kernel pages; the account only opens shared apps.
 - **Credentials.** Passwords are argon2id with a 12-character minimum. An admin session is refused unless TOTP is
   enrolled (except on the enrolment routes). Sessions last 30 days, sliding.
 - **Invites and resets.** An admin invites an account by email and passes on a one-time link (72 hours, 24 on public
