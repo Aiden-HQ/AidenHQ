@@ -262,7 +262,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     a = { ...a!, approve: { ...ap!, dismissed: String(r.id) }, did: [...(a!.did ?? []), `asked to dismiss the App's approval of \`${ap!.head.slice(0, 12)}\` (made on another commit or under another review policy)`] };
     return "acted";
   };
-  const push = () => `Start from the PR's head with \`aidenhq ship checkout ${pr.url} ${pr.head}\`, commit your fix there, and push it with \`aidenhq ship push ${pr.url} ${pr.head} ${a!.generation}\`.`;
+  const push = () => `Start from the PR's head with \`aidenhq ship checkout ${pr.url} ${pr.head}\`, commit your fix there, and push it with \`aidenhq ship push ${pr.url} ${pr.head} ${a!.generation}\`.${s.protected.length ? ` Protected paths: ${s.protected.join(", ")}.` : ""}`;
   // Behind only, under `rebase: conflict`: brought up to date only at the front of the repo's merge order; the rest wait their turn.
   if (v.do === "repair" && !f.dirty && s.rebase === "conflict" && !f.front && !f.queue) return "nothing";
   // The repo's own commands and workflows for the stage this round needs (actions.ts), before ship's own step for it.
