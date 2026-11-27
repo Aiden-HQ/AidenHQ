@@ -542,7 +542,7 @@ exit 0
         AIDENHQ_INSTANCE_DIR: "", CONTAINERS: containersFile, TAGS: tagsFile, HELD: heldFile, HELD_IDS: heldIdsFile, BROKEN: brokenFile,
         INSPECT_SILENT: inspectSilent,
         SAVE_ERRORS: saveErrorsFile, SAVE_GROW: growFile, TAKE_AFTER_SAVE: takeFile, FREE_TAKEN: freeTakenFile, SAVED: join(dir, "saved.tar"), CLEAN: join(dir, "clean"), SIZES: sizesFile, LABELLED: join(dir, "labelled"), SIZE_ERRORS: sizeErrorsFile, SIZE_JUNK: sizeJunkFile, INVALID_REFS: invalidRefsFile, CONTAINER_SIZES: containerSizesFile, EXPORT_ERRORS: exportErrorsFile, EXPORT_GROW: exportGrowFile, MODES: modesFile, PLATFORM_MANIFESTS: platformManifestsFile, PLATFORM_SIZES: platformSizesFile, PS_FAILS: psFails ? "1" : "", NO_DESCRIPTOR_FIELD: noDescriptorField ? "1" : "", PS_FAILS_NTH: psFailsFrom ? String(psFailsFrom) : "", INSPECT_FAILS: inspectFails.join(" "), DRIFT: join(dir, "drift"), DRIFT_COUNT: join(dir, "drift-count"), LOCKS: join(dir, "locks"), FAKE_APPLY_LOCK: join(dirname(dirname(scriptPath_)), "data/apply.lock"),
-        DIR: dir, ...env,
+        DIR: dir, AIDENHQ_SBOM_POLL_S: "0.05", ...env,
       },
     }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}` }));
   });

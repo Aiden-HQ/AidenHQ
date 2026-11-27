@@ -29,7 +29,7 @@ async function rig(t, { dayUsd = 30, taskUsd, answer, dir = mkdtempSync(join(tmp
     let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => { const body = JSON.parse(b); seen.push(body); answer(body, res, seen.length); });
   });
   const jobAgent = {}; // a job's agent, as its row's frozen profile would say
-  const open = () => createGateway({ dbFile: join(dir, "kernel.db"), legacyDbFile: legacy, grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: upstream.url, modelsUrl, jobLive: () => true, jobProfile: (id) => agents?.[jobAgent[id]]?.profile, now: () => clock.t });
+  const open = () => createGateway({ dbFile: join(dir, "kernel.db"), legacyDbFile: legacy, grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: upstream.url, modelsUrl, jobLive: () => true, retryDelaysMs: [0, 0], jobProfile: (id) => agents?.[jobAgent[id]]?.profile, now: () => clock.t });
   const gw = open();
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { upstream.s.close(); front.s.close(); try { gw.close(); } catch {} });
@@ -148,7 +148,7 @@ test("a definite upstream refusal before any output is released at $0; a cut str
   const dir = mkdtempSync(join(tmpdir(), "spend-refused-"));
   writeFileSync(join(dir, "grants.json"), JSON.stringify({ agents: { ag: { key: "eng" } } }));
   writeFileSync(join(dir, "gateway.json"), "{}");
-  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: await closedPort(), modelsUrl, jobLive: () => true });
+  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: await closedPort(), modelsUrl, jobLive: () => true, retryDelaysMs: [0, 0] });
   const front = await serve((req, res) => gw.handle(req, res));
   t.after(() => { front.s.close(); gw.close(); });
   const res = await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${mintToken("js", { kind: "job", job: "j-WOR-1", agentId: "ag", issueId: "WOR-1" }, Date.now())}` }, body: JSON.stringify({ model: "flat", messages: [] }) });
@@ -333,9 +333,9 @@ test("the spend totals equal a full sum: another process's writes, a hold ageing
 
 test("a rate limit cools the model down for every kernel on the file, Retry-After honoured; a new call waits it out before it holds anything", async (t) => {
   let limited = 1;
-  const r = await rig(t, { answer: (body, res, n) => (limited-- > 0 ? res.writeHead(429, { "content-type": "application/json", "retry-after": "1" }).end("{}") : usage(0.001)(body, res, n)) });
+  const r = await rig(t, { answer: (body, res, n) => (limited-- > 0 ? res.writeHead(429, { "content-type": "application/json", "retry-after": "0.05" }).end("{}") : usage(0.001)(body, res, n)) });
   assert.equal((await r.call({ model: "flat", messages: [] })).status, 200); // retried past the 429 inside the call
-  assert.deepEqual({ ...r.gw.db.prepare("SELECT model, until, step FROM model_cooldown").get() }, { model: "flat", until: Date.parse("2026-11-16T10:00:00Z") + 1000, step: 0 });
+  assert.deepEqual({ ...r.gw.db.prepare("SELECT model, until, step FROM model_cooldown").get() }, { model: "flat", until: Date.parse("2026-11-16T10:00:00Z") + 50, step: 0 });
   // A peer kernel's cooldown on a model holds a new call to it back, with nothing reserved, until the cooldown ends.
   const before = r.rows().length;
   r.gw.db.prepare("INSERT INTO model_cooldown (model, until, step) VALUES ('priced', ?, 0)").run(Date.parse("2026-11-16T10:00:30Z"));

@@ -15,7 +15,7 @@ import { createResolver } from "../src/net.ts";
 import { RETRY_MS } from "../src/tier.ts";
 import { readBody, serve } from "./helpers.ts";
 
-const until = async (fn) => { for (let i = 0; i < 300 && !fn(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(fn()); };
+const until = async (fn) => { for (let i = 0; i < 1000 && !fn(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(fn()); }; // 10 s: the kernel suite runs six files at once
 const KIND = "acme.post";
 const OK = { decision: "approve", code: "clean", reason: "fine", model: "~acme/model-a" };
 
@@ -278,6 +278,8 @@ test("the restart probe asks the service's own /healthz, and a probe in flight n
   mod.mod.instance = "instance-1";
   const sweep = k.loop.tick();
   await until(() => mod.seen.length === 1);
+  // The probe covers reviews the kernel has recorded: `seen` only says the module was sent it.
+  await until(() => k.reviews.held().includes("instance-1"));
   // The service restarts, and its /healthz is slow: a second review lands while the probe is in flight. It is covered by the
   // probe by identity, not by a timestamp, so even an acknowledgement in the same clock tick as the probe is never stale.
   mod.mod.instance = "instance-2";
@@ -320,6 +322,7 @@ test("a review that finishes during the restart probe is no restart: check() rep
   mod.mod.instance = "instance-1";
   const sweep = k.loop.tick();
   await until(() => mod.seen.length === 1);
+  await until(() => k.reviews.held().includes("instance-1")); // recorded, not only sent
   // The service answers its probe slowly, and the review finishes while that answer is still in flight.
   mod.mod.instance = "instance-2";
   mod.mod.healthDelay = 300;
