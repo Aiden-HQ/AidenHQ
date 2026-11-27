@@ -30,7 +30,7 @@ describe("backfill", () => {
     const b = chat(9, "dm", { last: 30 });
     const muted = chat(-2002, "channel", { muted: true, last: 5 });
     // a: 250 messages back 50 days (only the last 30 days are fetched); b: 30 recent ones.
-    const hist = { [-2001]: history(-2001, 250, 0.2), 9: history(9, 30, 0.01), [-2002]: history(-2002, 5, 0.01) };
+    const hist: Record<number, Td.message[]> = { [-2001]: history(-2001, 250, 0.2), 9: history(9, 30, 0.01), [-2002]: history(-2002, 5, 0.01) };
     const inWindow = (cid: number) => hist[cid]!.filter((m) => m.date >= NOW_S - 30 * DAY_S).map((m) => m.id);
     const wh = fakeWarehouse();
     const kernel = fakeKernel();
