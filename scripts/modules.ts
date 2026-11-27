@@ -2201,7 +2201,7 @@ export function skillEntries(name: string, root: string, check = true): { id: st
     const summary = typeof description === "string" ? description.trim() : "";
     if (!summary || summary.includes("\n")) fail(`module ${name}: skill ${d.name}: needs a one-line description`);
     // `tools: [<connection>.<tool>]`: the connection tools the skill's steps call; an agent listing it must be granted each (compile checks).
-    if (tools != null && (!Array.isArray(tools) || tools.some((t) => typeof t !== "string" || !/^[a-z0-9_]+\.[A-Za-z0-9_]+$/.test(t)))) fail(`module ${name}: skill ${d.name}: tools is a list of <connection>.<tool>`);
+    if (tools != null && (!Array.isArray(tools) || tools.some((t) => typeof t !== "string" || !/^[a-z0-9_-]+\.[A-Za-z0-9_]+$/.test(t)))) fail(`module ${name}: skill ${d.name}: tools is a list of <connection>.<tool>`);
     return { id: `${name}.${d.name}`, file, summary, tools: tools ?? [] };
   });
 }
