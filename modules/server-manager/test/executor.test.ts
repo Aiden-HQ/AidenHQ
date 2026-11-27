@@ -55,7 +55,7 @@ function fakeHost(i: { simulate?: string; estimate?: string; audit?: string; boo
     ["systemctl list-units", { out: i.units ?? g("systemctl list-units --type=service --state=running --no-legend --plain") }],
     ["sudo -n env DEBIAN_FRONTEND=noninteractive apt-get -s install", { out: i.simulate ?? g("apt-get -s install --only-upgrade libc6=2.39-0ubuntu8.5 openssl=3.0.13-0ubuntu3.4") }],
     // The estimate is its own `--print-uris` read (§11.3): the fixture's is real apt 2.8.4 output. `null` proves the refusal path.
-    ["sudo -n env DEBIAN_FRONTEND=noninteractive apt-get --print-uris install", { out: i.estimate ?? g("apt-get --print-uris install --only-upgrade libc6=2.39-0ubuntu8.5 openssl=3.0.13-0ubuntu3.4") }],
+    ["sudo -n env LC_ALL=C LANG=C LANGUAGE=C DEBIAN_FRONTEND=noninteractive apt-get --print-uris install", { out: i.estimate ?? g("apt-get --print-uris install --only-upgrade libc6=2.39-0ubuntu8.5 openssl=3.0.13-0ubuntu3.4") }],
     ["sudo -n apt-get update", { out: "" }],
     ["sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install", { out: "Setting up libc6...\nSetting up openssl...\n" }],
     ["df ", { out: i.disk ?? "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/vda1 41152736 1 18432000 7% /\n/dev/vda2 1523248 1 1430080 1% /boot" }],
@@ -124,7 +124,7 @@ test("plan for a patch reads the host and proposes the exact name=version list w
   assert.match(plan.card!["sentence"]!, /Installs 3 security updates/);
   // The plan's disk guard read a real estimate, not `0`: the exact list's `--print-uris` call carries `Need to get 4598 kB`,
   // which is what the fixture's `-s` output never printed.
-  assert.ok(h.read().some((c) => c.cmd.startsWith("sudo -n flock -w 600 -x /var/lib/dpkg/lock-frontend env DEBIAN_FRONTEND=noninteractive apt-get --print-uris install --only-upgrade -y")), "the plan reads the estimate from --print-uris over the exact list");
+  assert.ok(h.read().some((c) => c.cmd.startsWith("sudo -n env LC_ALL=C LANG=C LANGUAGE=C DEBIAN_FRONTEND=noninteractive apt-get --print-uris install --only-upgrade -y")), "the plan reads the estimate from --print-uris over the exact list, under the C locale and no lock");
   // Only the server-manager service files its own kinds.
   await assert.rejects(createExecutor(d).plan({ kind: "server-manager.patch", args: { machine: "vm-one", mode: "security" }, requester: module({ module: "github" }), task: "" } as never), /only the server-manager service/);
   await assert.rejects(createExecutor(d).plan({ kind: "server-manager.patch", args: { machine: "vm-nine", mode: "security" }, requester: module(), task: "" } as never), /no machine/);
@@ -238,6 +238,23 @@ test("§11.1 a security record installs on a host that also has ordinary updates
   const clean = await ex.execute({ id: "k-fedcba9876543210", kind: "server-manager.patch", args: plan.args, digest: "d", idempotency_key: "i2", tier: 0 } as never);
   assert.equal(clean.ok, true, clean.text);
   assert.ok(h.read().some((c) => c.cmd.startsWith("sudo -n flock -w 600 -x /var/lib/dpkg/lock-frontend env DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade")), "the install ran on the exact list");
+});
+
+// §11.3, §11.9 — the estimate takes no lock. `--print-uris` only reads, and on a real host it answers while another patch holds the
+// dpkg lock; putting it behind `flock` would queue a plan behind a running install for up to 600 s, past the kernel's 30 s plan
+// deadline, and the card would never come back. The simulation and the install keep the lock they take.
+test("§11.9 the estimate is never behind the dpkg lock, while the simulation and the install are", async () => {
+  const h = fakeHost();
+  const ex = createExecutor(deps(h).d);
+  const plan = await ex.plan({ kind: "server-manager.patch", args: { machine: "vm-one", mode: "security" }, requester: module(), task: "" } as never);
+  await ex.execute({ id: "k-0123456789abcdef", kind: "server-manager.patch", args: plan.args, digest: "d", idempotency_key: "i", tier: 0 } as never);
+  const calls = h.read().map((c) => c.cmd);
+  const estimates = calls.filter((c) => c.includes("--print-uris"));
+  assert.ok(estimates.length >= 2, "the plan and the run each read an estimate");
+  for (const c of estimates) assert.ok(!c.includes("flock"), `the estimate takes no lock: ${c}`);
+  // The simulation and the real install still take it, so the estimate's freedom narrowed nothing else.
+  assert.ok(calls.some((c) => c.includes("apt-get -s install --only-upgrade") && c.startsWith("sudo -n flock -w 600 -x /var/lib/dpkg/lock-frontend")), "the exact-list simulation keeps the lock");
+  assert.ok(calls.some((c) => c.startsWith("sudo -n flock -w 600 -x /var/lib/dpkg/lock-frontend env DEBIAN_FRONTEND=noninteractive apt-get install --only-upgrade")), "the install keeps the lock");
 });
 
 // §11.3 — the plan-time guard reads the exact list's real estimate. With the estimate read as `0` (the old `-s` path) the floor is

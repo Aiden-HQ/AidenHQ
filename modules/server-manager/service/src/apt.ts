@@ -298,6 +298,10 @@ export const installArgv = (list: string[], simulate = false) => aptInstallArgv(
  * and prints `Need to get … of archives.` `apt-get -s` does not print that line on any apt tested (2.8.4 on Ubuntu 24.04, 3.3.6 on
  * Debian): it prints the `Inst`/`Conf` lines and the summary counts, nothing about bytes. So `-s` proves the plan and this call
  * answers the space; `--print-uris` changes nothing and downloads nothing.
+ *
+ * `C` is part of the environment, not an option: apt localizes `Need to get`, and a host whose locale the SSH session does not carry
+ * would then print the line in another language and the parser would find no estimate at all. `LANG` and `LANGUAGE` too, because a
+ * `LANGUAGE` set with `LC_ALL=C` still routes messages through gettext on some builds.
  */
 export const estimateArgv = (list: string[]) => aptInstallArgv(list, "--print-uris");
 
@@ -315,8 +319,13 @@ export const LOCKED = ["flock", "-w", "600", "-x", "/var/lib/dpkg/lock-frontend"
  */
 export const installCommand = (list: string[], simulate = false) => ["sudo", "-n", ...LOCKED, "env", "DEBIAN_FRONTEND=noninteractive", ...installArgv(list, simulate)];
 
-/** The estimate (`--print-uris`) as a host runs it: the same `sudo`, lock guard and environment as `installCommand`. */
-export const estimateCommand = (list: string[]) => ["sudo", "-n", ...LOCKED, "env", "DEBIAN_FRONTEND=noninteractive", ...estimateArgv(list)];
+/**
+ * The estimate (`--print-uris`) as a host runs it. It takes no lock: `apt-get --print-uris` reads no dpkg state and writes none, and
+ * on a real host it answers while another run holds `/var/lib/dpkg/lock-frontend` (a simulation and the same list's install both
+ * waited; this did not). So it must not queue behind `flock` — that would make planning wait out a patch already running, past the
+ * kernel's 30 s plan deadline. The lock stays on the install and the simulation, which do take it.
+ */
+export const estimateCommand = (list: string[]) => ["sudo", "-n", "env", "LC_ALL=C", "LANG=C", "LANGUAGE=C", "DEBIAN_FRONTEND=noninteractive", ...estimateArgv(list)];
 
 /** `apt-get update`, the same two lock guards as the install so a concurrent unattended-upgrades run is waited out (§11.9). */
 export const UPDATE_ARGV = ["sudo", "-n", ...LOCKED, "apt-get", "update", "-o", "DPkg::Lock::Timeout=600"];
@@ -388,14 +397,25 @@ export function simulationProblems(lines: SimLine[], list: string[]): string[] {
   return [...out].sort();
 }
 
-/** `Need to get 12.3 MB of archives.` as bytes, or `null` when the text carries no estimate (§11.3: unavailable ≠ zero). */
+/**
+ * `Need to get 12.3 MB of archives.` as bytes, or `null` when the text carries no estimate (§11.3: unavailable ≠ zero).
+ *
+ * When part of the list is already in apt's archive cache the line is `Need to get 0 B/2069 kB of archives.` — the bytes still to
+ * fetch, then the whole archives' size. The space the run needs is the archives, cached or not: unpacking a cached package fills the
+ * filesystem just the same, so this reads the total after the slash (the larger figure) and never the remaining-download half, which
+ * would say 0 B for a fully cached 2 GB upgrade and pass a host with no room to unpack it.
+ */
 export function downloadEstimate(text: string): number | null {
-  // apt groups thousands with a comma (`Need to get 900,000 kB of archives.`), so a comma is part of the number, not a break.
-  const m = /Need to get ([0-9][0-9,.]*)\s*(B|kB|MB|GB)/i.exec(text);
+  // apt groups thousands with a comma (`Need to get 900,000 kB of archives.`), so a comma is part of the number, not a break. Both
+  // halves carry their own unit: `0 B/2069 kB`.
+  const m = /Need to get ([0-9][0-9,.]*)\s*(B|kB|MB|GB)(?:\/([0-9][0-9,.]*)\s*(B|kB|MB|GB))? of archives\./i.exec(text);
   if (!m) return null;
-  const n = Number(m[1]!.replace(/,/g, ""));
-  if (!Number.isFinite(n)) return null;
-  return Math.round(n * ({ B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 } as Record<string, number>)[m[2]!.toUpperCase()]!);
+  const toBytes = (n: string, unit: string) => {
+    const v = Number(n.replace(/,/g, ""));
+    return Number.isFinite(v) ? Math.round(v * ({ B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 } as Record<string, number>)[unit.toUpperCase()]!) : null;
+  };
+  // The total after the slash when apt prints one (`remaining/total`), else the only figure there is.
+  return toBytes(m[3] ?? m[1]!, m[4] ?? m[2]!);
 }
 
 /** The space a run needs: the larger of 1 GB and twice the download estimate, in GB. */

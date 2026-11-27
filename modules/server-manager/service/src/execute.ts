@@ -231,8 +231,9 @@ export async function runPatch(c: Connection, machine: Machine, rec: PatchArgs):
     // security-only record, and reading it here would refuse every security patch for the packages it correctly left out.
     const exact = await c.exec(installCommand(rec.packages, true), TIMEOUTS.lock);
     // The space this run needs, from the same words with `--print-uris` instead of `-s` (§11.3): a simulation prints no `Need to get`
-    // line, so reading the estimate off it refused every patch as `disk_unknown`.
-    const estimate = await c.exec(estimateCommand(rec.packages), TIMEOUTS.lock);
+    // line, so reading the estimate off it refused every patch as `disk_unknown`. It takes no lock and is not waited out: it only
+    // reads (the one call with the plain SSH read bound, 120 s), so it can never queue behind the very install this run is proving.
+    const estimate = await c.exec(estimateCommand(rec.packages));
     const downloaded = downloadEstimate(estimate.stdout);
     const verdict = verifyPatch(rec, {
       // One estimate for the verdict and the reported need: the exact list's own `Need to get`, from `--print-uris`.
