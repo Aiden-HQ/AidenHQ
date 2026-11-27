@@ -36,7 +36,11 @@ const RULES: { name: string; find: RegExp; bad: (src: string, m: RegExpExecArray
     find: /(toLocaleDateString|toLocaleTimeString|toLocaleString|Intl\.DateTimeFormat)\(/g,
     bad: (src, m) => {
       const args = callArgs(src, m.index + m[0].length - 1);
-      if (m[1] === "toLocaleString" && !/\b(hour|minute|weekday|month|day|year|dateStyle|timeStyle)\b/.test(args)) return false; // a number
+      if (m[1] === "toLocaleString" && !/\b(hour|minute|weekday|month|day|year|dateStyle|timeStyle)\b/.test(args)) {
+        // No date options: a Date (formatted in the host's zone) unless the receiver is a number.
+        const before = src.slice(Math.max(0, src.lastIndexOf("\n", m.index) + 1), m.index);
+        if (!/(\bDate\b[^;]*|\w*(date|time|stamp|At|when)\w*\)?)\.$/i.test(before)) return false;
+      }
       return !/\btimeZone\b/.test(args);
     },
     fix: "pass timeZone (the owner's `timezone` setting), or keep the ISO instant",
@@ -49,7 +53,7 @@ const RULES: { name: string; find: RegExp; bad: (src: string, m: RegExpExecArray
   },
   {
     name: "SQLite zone-less now",
-    find: /datetime\(\s*'now'|CURRENT_TIMESTAMP/gi,
+    find: /datetime\(\s*'now'/gi, // SQLite's; Postgres timestamptz (CURRENT_TIMESTAMP, now()) is an instant
     bad: () => true,
     fix: "store epoch ms or strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
   },

@@ -1004,8 +1004,11 @@ const TOOLS: Record<string, Tool> = {
       if (me) q.set("assigneeAgentId", me);
       else q.set("excludeRoutineExecutions", "true");
       if (label) q.set("labelId", (await labelIds([String(label)]))[0]);
-      if (updated_since && !ZONED.test(String(updated_since))) throw new Error("updated_since is an ISO time with Z or an offset (2026-11-28T05:00Z)");
-      if (updated_since) q.set("updatedSince", String(updated_since));
+      if (updated_since !== undefined) {
+        const since = ZONED.test(String(updated_since)) ? Date.parse(String(updated_since)) : NaN;
+        if (!Number.isFinite(since)) throw new Error("updated_since is an ISO time with Z or an offset (2026-11-28T05:00Z)");
+        q.set("updatedSince", new Date(since).toISOString());
+      }
       // The kernel kind/attention filter runs on each page as it arrives, so a match past the first page is found; a walk
       // stops at `limit` matches, so no more than that are returned. An idle or done row may sit far behind newer rows.
       // `prepare` keeps a row, replaces it, or drops it (null) before the kernel filter reads it.
