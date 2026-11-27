@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { SignInRequired, api } from "./api";
 import { SkeletonLines } from "./Skeleton";
 import type { RunTrace } from "./types";
-import { ago } from "./util";
+import { ago, clockOpts, stampOpts } from "./util";
 
 const dur = (ms: number | null) => (ms == null ? "—" : ms < 1000 ? `${ms}ms` : ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`);
 const tok = (n: number | null | undefined) => (n == null ? "—" : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
@@ -39,7 +39,7 @@ export function RunPage({ id, onClose, onSignIn }: { id: string; onClose: () => 
           {run && (
             <>
               <dl className="run-facts">
-                <dt>Started</dt><dd>{run.startedAt ? `${new Date(run.startedAt).toLocaleString()} (${ago(run.startedAt)} ago)` : "—"}</dd>
+                <dt>Started</dt><dd>{run.startedAt ? `${new Date(run.startedAt).toLocaleString(undefined, stampOpts())} (${ago(run.startedAt)} ago)` : "—"}</dd>
                 <dt>Duration</dt><dd>{dur(run.durationMs)}</dd>
                 <dt>Rev</dt>
                 <dd>{run.rev ? <code>{run.rev.rev}</code> : "—"}{run.rev && <span className="faint"> product {run.rev.productSha?.slice(0, 7) ?? "?"} · instance {run.rev.instanceSha?.slice(0, 7) ?? "?"}{run.rev.from === "revs" ? " (latest before the start)" : ""}</span>}</dd>
@@ -68,7 +68,7 @@ export function RunPage({ id, onClose, onSignIn }: { id: string; onClose: () => 
                   <ol className="run-timeline">
                     {run.timeline.map((e, i) => (
                       <li key={i} className={e.ok ? "" : "bad"}>
-                        <time>{e.at ? new Date(e.at).toLocaleTimeString() : ""}</time>
+                        <time>{e.at ? new Date(e.at).toLocaleTimeString(undefined, { ...clockOpts(), second: "2-digit" }) : ""}</time>
                         <span className="run-name">{e.kind}</span>
                         <span className="run-text">{e.text}</span>
                       </li>

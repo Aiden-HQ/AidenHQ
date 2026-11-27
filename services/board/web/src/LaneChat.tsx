@@ -6,8 +6,9 @@ import { Markdown } from "./markdown";
 import { Composer } from "./ChatPane";
 import { AgentFace } from "./components";
 import type { Assignee, LaneAgent, LaneMessage } from "./types";
+import { clockOpts } from "./util";
 
-const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { ...clockOpts() });
 
 export function LaneChat({ agent, mobile, faces, go }: { agent: LaneAgent; mobile: boolean; faces: Assignee[]; go: (h: string) => void }) {
   const [messages, setMessages] = useState<LaneMessage[]>([]);

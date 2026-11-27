@@ -1,15 +1,26 @@
 // Owner-local time: what the model sees and writes. The model never handles UTC.
 
-/** "Friday 14 November 2026, 21:05 (Indian/Mauritius)" */
-export function localNow(tz: string, now = Date.now()): string {
-  const d = new Date(now);
-  const date = d.toLocaleDateString("en-GB", { timeZone: tz, weekday: "long", day: "numeric", month: "long", year: "numeric" }).replace(",", "");
-  const time = d.toLocaleTimeString("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false });
-  return `${date}, ${time} (${tz})`;
+/** The owner's `time_format` (OWNER_TIME_FORMAT, the instance setting): "9:05 PM" by default, "21:05" for 24h. */
+function clock(tz: string, at: number): string {
+  const d = new Date(at);
+  if (process.env.OWNER_TIME_FORMAT === "24h") return d.toLocaleTimeString("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false });
+  return d.toLocaleTimeString("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true }).replace(/\u202f/g, " ");
 }
 
-/** "Sat 15 Nov 17:00" in the owner's timezone. */
+/** "Friday 14 November 2026, 9:05 PM (Indian/Mauritius)" */
+export function localNow(tz: string, now = Date.now()): string {
+  const date = new Date(now).toLocaleDateString("en-GB", { timeZone: tz, weekday: "long", day: "numeric", month: "long", year: "numeric" }).replace(",", "");
+  return `${date}, ${clock(tz, now)} (${tz})`;
+}
+
+/** "Sat 15 Nov 5:00 PM" in the owner's timezone: prose, in the owner's time_format. */
 export function localShort(tz: string, at: number): string {
+  const date = new Date(at).toLocaleDateString("en-GB", { timeZone: tz, weekday: "short", day: "numeric", month: "short" }).replace(",", "");
+  return `${date} ${clock(tz, at)}`;
+}
+
+/** "Sat 15 Nov 17:00" in the owner's timezone: a structured value (a tool's `due_local`), always 24-hour. */
+export function localStamp(tz: string, at: number): string {
   return new Date(at).toLocaleString("en-GB", { timeZone: tz, weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false }).replace(",", "");
 }
 

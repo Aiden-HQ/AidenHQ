@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { useLive } from "./events";
 import { QUERIES, useQuery } from "./queries";
-import { ago } from "./util";
+import { ago, stampOpts } from "./util";
 import { ListRow, ListRows } from "./ui";
 import { TaskState } from "./ui/TaskState";
 import { Bone } from "./Skeleton";
@@ -76,7 +76,7 @@ export function AttentionStrip({ onSignIn }: { onSignIn: () => void }) {
         <div className="attn-list">
           <ListRows>
             {rows.map((i) => (
-              <ListRow key={i.identifier} href={`#/t/${i.identifier}`} status={<TaskState state={i.state} />} title={i.title} id={i.identifier} time={ago(i.state.since)} timeTitle={new Date(i.state.since).toLocaleString()} />
+              <ListRow key={i.identifier} href={`#/t/${i.identifier}`} status={<TaskState state={i.state} />} title={i.title} id={i.identifier} time={ago(i.state.since)} timeTitle={new Date(i.state.since).toLocaleString(undefined, stampOpts())} />
             ))}
           </ListRows>
         </div>

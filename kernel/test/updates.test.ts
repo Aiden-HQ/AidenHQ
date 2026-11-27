@@ -134,7 +134,7 @@ test("a newer release is found and verified; by day nothing installs, and the ow
   const u = kernelSide(w, { lines });
   await u.tick(); await u.tick();
   assert.equal(lines.length, 1);
-  assert.match(lines[0], /2026\.11\.3 is available\. It is filed for install tonight between 2:00 and 5:00 \(Asia\/Dubai\)/);
+  assert.match(lines[0], /2026\.11\.3 is available\. It is filed for install tonight between 2:00 AM and 5:00 AM \(Asia\/Dubai\)/);
 });
 
 test("verification refuses a mismatched sha, a stamp from another or a failed run, a kernel off main, a module off history and a downgrade", async () => {

@@ -26,6 +26,7 @@ import { MODEL_KEY, type ModelStep } from "../../modules/models-openrouter/src/m
 import type { AdminSession, Step } from "./accounts.ts";
 import { ORG, manifest, type MadeApp } from "./github-app.ts";
 import type { Api } from "./channels.ts";
+import { NIGHT, hourWords } from "./clock.ts";
 import type { State as UpdateState } from "./updates.ts";
 
 type Deps = {
@@ -146,7 +147,7 @@ function updatesPage(u: UpdateState, form: (inner: string) => string): string {
 <p class="muted">Verified against the official release: its commits, its tested stamp and its image digests. Update now files it as an apply, like any change to this server: the AI reviewer checks it while auto-updates are on, else it waits for your approval; a failed health check puts this server back on ${esc(a.from.name)}.</p>
 ${form(`<input type="hidden" name="release" value="${esc(a.name)}"><button class="b">Update now</button>`)}</div>`
     : `<p>${u.error ? `<span class="err">${esc(u.error)}</span>` : "Nothing newer is out."}</p>`;
-  return `<h1>Updates</h1><p>This server runs <b>${esc(u.current.name)}</b>. Auto-updates are <b>${u.auto ? "on" : "off"}</b>${u.auto ? `: a newer release is filed between 02:00 and 05:00 (${esc(u.timezone ?? "UTC")}) and installs on the AI reviewer's yes` : ": you're told, and Update now files it for your approval"}. Change it in the board's Settings (auto_update). Last checked ${esc(when(u.checkedAt))}.</p>${avail}${last}`;
+  return `<h1>Updates</h1><p>This server runs <b>${esc(u.current.name)}</b>. Auto-updates are <b>${u.auto ? "on" : "off"}</b>${u.auto ? `: a newer release is filed between ${hourWords(NIGHT.from, u.timeFormat)} and ${hourWords(NIGHT.to, u.timeFormat)} (${esc(u.timezone ?? "UTC")}) and installs on the AI reviewer's yes` : ": you're told, and Update now files it for your approval"}. Change it in the board's Settings (auto_update). Last checked ${esc(when(u.checkedAt))}.</p>${avail}${last}`;
 }
 
 export function createAdmin(d: Deps) {

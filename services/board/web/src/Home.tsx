@@ -15,7 +15,7 @@ import { TaskCheck, useCheckOff } from "./MyTasks";
 import { chipOf } from "./own-tasks";
 import type { Approval, Board, Card, FaceRef, Home, NeedRow, SinceItem } from "./types";
 import { Banner, Button, DecisionRow, DetailPane, DigestList, Face, Kbd, Monogram, Page, SectionCard, TeammateChip, Tile, faceProps } from "./ui";
-import { ago } from "./util";
+import { ago, clockOpts, clockText } from "./util";
 import "./home.css";
 
 type Toast = (text: string, action?: { label: string; run: () => void }) => void;
@@ -35,14 +35,14 @@ export function needsLine(n: number): string {
 const NOTIFY_KEY = "aidenhq.notify-ask";
 const hourIn = (tz: string, d = new Date()) => Number(new Intl.DateTimeFormat("en-GB", { hour: "numeric", hourCycle: "h23", timeZone: tz }).format(d));
 const dayIn = (tz: string, d: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(d);
-const timeIn = (tz: string, d: Date) => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: tz }).format(d);
+const timeIn = (tz: string, d: Date) => new Intl.DateTimeFormat(undefined, { ...clockOpts(), timeZone: tz }).format(d);
 const face = (t: FaceRef, size: number, state = t.state) => <Face seed={t.key} {...faceProps(t.face)} state={state} size={size} label={t.name} />;
 const chip = (t: FaceRef, size = 24, href?: string) => <TeammateChip agent={{ key: t.key, name: t.name, teammate: { job: t.job, face: t.face } }} state={t.state} size={size} href={href} />;
 /** Where a person who waits on the owner wrote: "Slack", "Gmail", or just that they wait. */
 const replyRole = (r: NonNullable<Extract<NeedRow, { kind: "open" }>["reply"]>) => (r.source === "slack" ? "Slack" : r.source === "gmail" ? "Gmail" : "Waiting for your reply");
 const linkOf = (task: string | null) => (task ? { label: "Open", href: `#/t/${task}` } : undefined);
 
-/** "Overnight" when the window began before 06:00 today, "Since Tue" when before today, else "Since 14:20". */
+/** "Overnight" when the window began before 06:00 today, "Since Tue" when before today, else "Since 2:20 PM". */
 function sinceMeta(from: string, tz: string): string {
   const at = new Date(from);
   const today = dayIn(tz, new Date());
@@ -137,7 +137,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
     try {
       await api.homeSnooze(rkey(row), true);
       const undo = () => void api.homeSnooze(rkey(row), false).then(() => (receipt(row, null), reload()), (e) => fail(e, "undo"));
-      receipt(row, { text: "Hidden until 08:00", onUndo: undo });
+      receipt(row, { text: `Hidden until ${clockText(8)}`, onUndo: undo });
     } catch (e) {
       fail(e, "snooze");
     }

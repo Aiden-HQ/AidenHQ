@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { agentPaused } from "./aidenhq-sdk/agent-paused.js";
 import { forOthers } from "./aidenhq-sdk/for-others.js";
 import { readFile, stat } from "node:fs/promises";
@@ -17,6 +17,7 @@ import { timelineOf } from "./timeline.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
 import { cachedActivity, lastRunsOf, liveRunsOf, makeRuns, pastRunsOf, type LiveRun, type Work } from "./runs.js";
 import { agentsView, roster, runTasks, workingOn, type RunContext, type TaskRef, type Working } from "./activity.js";
+import { type TimeFormat, timeFormatOf } from "./clock.js";
 import { ROUTINE_PREFIX, RecurringSchema, changeRecurring, recurringView } from "./recurring.js";
 import { ScheduleSchema, scheduleMove } from "./scheduled-moves.js";
 import { AddAgentSchema, BadRequest, CreateSchema, HandOverSchema, PassSchema, isSystemNote, UpdateSchema, assignees, buildBoard, closedAt, commentView, displayText, executorOf, isWork, onMyDay, openrouterEngine, paperclipUpdate, replyTarget, toCard, workCard, type Assignee, type WorkCard } from "./board.js";
@@ -792,7 +793,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       executor: executorOf(issue, ctx.assignees),
       replyTarget: replyTarget(issue, ctx.assignees, crew.length > 0),
       scheduled: store.schedules().get(issue.id) ?? null,
-      recurring: rec ? recurringView(rec, await pc.routine(rec.routineId).catch(() => undefined)) : null,
+      recurring: rec ? recurringView(rec, await pc.routine(rec.routineId).catch(() => undefined), timeFormat()) : null,
       working: busy.map.get(issue.identifier) ?? null,
       comments: comments.map((c) => ({ ...commentView(c, ctx.me, ctx.agents), ...byOf(names, c.id), ...(replyQuestions(c.body) ? { questions: replyQuestions(c.body) } : {}) })),
       files: fileViews(files, ctx.me),
@@ -1210,7 +1211,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
 
   async function recurringChange(ref: string, body: unknown) {
     const { ctx, issue } = await editableIssue(ref);
-    const recurring = await changeRecurring(pc, store, { me: ctx.me, labels: ctx.labels, assistant: ctx.assignees.find((a) => a.kind === "assistant")?.key }, issue, parse(RecurringSchema, body), opts.timezone, log);
+    const recurring = await changeRecurring(pc, store, { me: ctx.me, labels: ctx.labels, assistant: ctx.assignees.find((a) => a.kind === "assistant")?.key }, issue, parse(RecurringSchema, body), opts.timezone, timeFormat(), log);
     return { identifier: issue.identifier, recurring };
   }
 
@@ -1479,6 +1480,17 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   const routineKeys = () => grantsTable().routine_keys ?? {};
   const settingsFiles = () => ({ compiled: process.env.BOARD_PAPERCLIP_CONFIG ?? "/config/paperclip.yaml", catalog: process.env.BOARD_MODULES_FILE ?? "/config/modules.json", grants: process.env.AIDENHQ_GRANTS_FILE });
 
+  /** The owner's `time_format` setting (kernel/settings.json) as the last apply compiled it; the file is re-read only when it changes. */
+  let formatRead: { mtime: number; format: TimeFormat } | undefined;
+  const timeFormat = (): TimeFormat => {
+    const file = settingsFiles().compiled;
+    try {
+      const mtime = statSync(file).mtimeMs;
+      if (formatRead?.mtime !== mtime) formatRead = { mtime, format: timeFormatOf(readSources({ compiled: file }).compiled?.settings?.time_format?.value) };
+    } catch { formatRead = undefined; }
+    return formatRead?.format ?? "12h";
+  };
+
   /** An active routine's next scheduled run: the soonest of its enabled triggers (a paused one has none). */
   const nextRunOf = (r: { status: string; triggers?: { enabled?: boolean; nextRunAt?: string | null }[] }) => (r.status === "active" ? (r.triggers ?? []).filter((t) => t.enabled !== false).map((t) => t.nextRunAt).filter(Boolean).sort()[0] ?? undefined : undefined);
 
@@ -1500,7 +1512,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       const r = rows.get(rec.routineId);
       const agent = agents.find((x) => x.id === r?.assigneeAgentId)?.metadata?.setupKey?.toString().replace(/^aidenhq:/, "");
       if (!r || !agent) return [];
-      const v = recurringView(rec, r);
+      const v = recurringView(rec, r, timeFormat());
       return [{ agent, title: r.title, task: r.title.replace(ROUTINE_PREFIX, ""), summary: v.summary, paused: v.paused, zone: r.triggers?.find((t) => t.kind === "schedule" && t.label === "repeats")?.timezone ?? undefined, ...(v.nextRun ? { next: v.nextRun } : {}) }];
     });
     const view = settingsView({
@@ -1683,7 +1695,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const open = mine(inv.open, ctx);
         const closed = mine(inv.closed, ctx).filter((i) => !stillSettled(settledAt.get(i.id), i, null));
         const routines = store.allRecurring().size ? new Map((await pc.routines()).map((r) => [r.id, r])) : new Map<string, Routine>();
-        const recurring = new Map([...store.allRecurring()].map(([id, r]) => { const v = recurringView(r, routines.get(r.routineId)); return [id, { summary: v.summary, nextRun: v.nextRun, paused: v.paused }]; }));
+        const recurring = new Map([...store.allRecurring()].map(([id, r]) => { const v = recurringView(r, routines.get(r.routineId), timeFormat()); return [id, { summary: v.summary, nextRun: v.nextRun, paused: v.paused }]; }));
         const [busy, google, signIns, names, summary] = await extras;
         // The header's spend line: the day and the month against the install's spend limits.
         const spend = summary?.install ?? null;
@@ -1706,7 +1718,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // When Tomorrow next rolls into Today: the next calendar day, except before days off.
         const today = localDate(opts.timezone);
         const rollsOn = nextWorkday(today, opts.workdays ?? WORKWEEK);
-        return { ...board, work, asOf: inv.read.as_of, incomplete: inv.incomplete, projects: inv.projects, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, spend, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status, offer, mode }) => ({ id, label, missing, stopped, status: status ?? null, offer, ...(mode === "device" ? { mode } : {}) })) };
+        return { ...board, work, asOf: inv.read.as_of, incomplete: inv.incomplete, projects: inv.projects, assignees: ctx.assignees, labels: ctx.labels, prefix: ctx.prefix, timezone: opts.timezone, timeFormat: timeFormat(), slackTeams: opts.slackTeams ?? {}, rollsOn, rollsTomorrow: rollsOn === addDays(today, 1), buckets: board.buckets, agentsActive: busy.active, spend, google: google ?? null, signIns: signIns.map(({ id, label, missing, stopped, status, offer, mode }) => ({ id, label, missing, stopped, status: status ?? null, offer, ...(mode === "device" ? { mode } : {}) })) };
       }),
     },
     // Saved boards (views.ts): the signed-in account's own; a write at a stale rev is a 409 with the row as it is now (null: gone).

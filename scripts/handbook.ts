@@ -28,7 +28,7 @@ export function readInstructions(cfg: Obj, a: Obj, { repo, instanceDir = "" }: {
   const trees = join(defaultCache(), "trees");
   const mod = a.tier === "local" ? join(instanceDir, "modules", a.module, "agents") : a.handbook_fork ? join(instanceDir, "agents") : String(a.instructions).startsWith(trees + sep) ? trees : a.module && /^[a-z0-9-]+$/.test(a.module) ? join(repo, "modules", a.module, "agents") : "";
   // Handbooks say "the owner"; one line names them.
-  const owner = cfg.owner_name ? `This AidenHQ belongs to ${cfg.owner_name}: wherever this handbook says "the owner", it means ${cfg.owner_name}.\n\n` : "";
+  const owner = cfg.owner_name ? `This AidenHQ belongs to ${cfg.owner_name}: wherever this handbook says "the owner", it means ${cfg.owner_name}. Times you write for ${cfg.owner_name} read ${cfg.settings?.time_format?.value === "24h" ? "24-hour (20:00)" : "12-hour with AM/PM (8:00 PM)"}; tool inputs and machine values stay as the tool asks.\n\n` : "";
   // Where agent-built repos live: handbooks say "the agents org", one per enabled code host (compile's agents_orgs).
   const org = orgLine(cfg.agents_orgs ?? []);
   const own = owner + org + readInside(mod, a.instructions, `agent ${a.name}: instructions`).replace(/^---\n[\s\S]*?\n---\n?/, "").trim();

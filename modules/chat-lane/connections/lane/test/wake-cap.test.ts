@@ -60,6 +60,19 @@ describe("the wake cap counts only wakes on open tasks", () => {
     expect(fired(due)).toEqual(["check the deploy"]);
   });
 
+  it("reads the time_format setting in prose but keeps a structured due_local in 24-hour time", async () => {
+    const closed = new Set<string>();
+    const { call, laneStore } = await server(closed);
+    const due = Math.ceil((Date.now() + 3600_000) / 60_000) * 60_000;
+    const set = await call("wake_at", { when_local: at(due), note: "check the deploy", task: "WOR-5245" });
+    expect(set).toMatchObject({ ok: true });
+    // due_local is a machine value (the PR body lists API values as staying 24-hour): "HH:MM", never "5:00 PM".
+    expect(set.due_local).toBe(`${new Date(due).toLocaleString("en-GB", { timeZone: "UTC", weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false }).replace(",", "")} (UTC)`);
+    expect(set.due_local).toMatch(/ \d{2}:\d{2} \(UTC\)$/);
+    const listed = await call("wake_list");
+    expect(listed.wakes.find((w: { id: string }) => w.id === set.id).due_local).toBe(set.due_local);
+  });
+
   it("still refuses the 51st wake when the 50 pending ones are on tasks that are open", async () => {
     const { call, laneStore } = await server(new Set());
     for (let i = 0; i < MAX_WAKES; i++) laneStore.addWake("aria", Date.now() + 3600_000, `check ${i}`, false, "WOR-5245");

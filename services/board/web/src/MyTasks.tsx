@@ -7,7 +7,7 @@ import { MergeMenu, MoveMenu, SnoozeMenu } from "./components";
 import { GROUPS, QUICK_MOVES, chipOf, delegatedOf, hintOf, needsSummary, visibleOf, type Buckets } from "./own-tasks";
 import { BUCKET_NAMES, type Board, type Bucket, type Card, type NeedRow } from "./types";
 import { Dialog, Face, Kbd, faceProps } from "./ui";
-import { SOURCE_NAMES, ago, agoLabel, todayIn, untilLabel } from "./util";
+import { SOURCE_NAMES, ago, agoLabel, todayIn, untilLabel, stampOpts } from "./util";
 import "./my-tasks.css";
 
 const INBOX_OWN = 5;
@@ -208,7 +208,7 @@ function TaskRow({ card, board, bucket, selected, mergeTargets, onOpen, onDone, 
         <span>{card.title}</span>
       </button>
       {chip && <span className="mt-chip">{chip}</span>}
-      <span className={`mt-when${card.carried ? " carried" : ""}`} title={`Last activity ${new Date(card.activityAt).toLocaleString()}`}>{whenOf(card, board.timezone)}</span>
+      <span className={`mt-when${card.carried ? " carried" : ""}`} title={`Last activity ${new Date(card.activityAt).toLocaleString(undefined, stampOpts())}`}>{whenOf(card, board.timezone)}</span>
       {!done && (
         <span className="mt-acts">
           {!card.recurring && <SnoozeMenu timezone={board.timezone} onPick={(d) => onSnooze(card, d)} />}

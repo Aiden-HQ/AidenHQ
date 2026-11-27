@@ -7,9 +7,10 @@ import { ConnectButton, type Connectable } from "./Connect";
 import { admin, api } from "./api";
 import type { SignIn } from "./connections";
 import { Button, LinkButton, StatusDot, type StatusTone } from "./ui";
+import { clockOpts } from "./util";
 
 const TONE = { ok: "ok", warn: "needs", error: "failed" } as const satisfies Record<string, StatusTone>;
-const localTime = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const localTime = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { ...clockOpts() });
 
 /** How many rows need the owner (the tile's hint). */
 export const linesNeeding = (s: SignIn | null) => (s?.state === "ok" ? (s.lines ?? []).filter((l) => l.state !== "ok").length : 0);

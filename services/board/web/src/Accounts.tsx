@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { SignInRequired, accountsApi, api, type Account, type AppAdmins, type AuthSession, type McpClient, type Session } from "./api";
 import { SkeletonLines } from "./Skeleton";
-import { agoLabel } from "./util";
+import { agoLabel, clockOpts } from "./util";
 import { StatusDot, Tag, type StatusTone } from "./ui";
 
 function Screen({ title, sub, children }: { title: string; sub?: ReactNode; children: ReactNode }) {
@@ -68,7 +68,7 @@ const browserOf = (ua: string | null) => {
 
 function statusOf(a: Account): { label: string; tone: StatusTone } {
   if (a.disabled) return { label: "Disabled", tone: "idle" };
-  if (a.lockedUntil) return { label: `Sign-ins paused until ${new Date(a.lockedUntil).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`, tone: "needs" };
+  if (a.lockedUntil) return { label: `Sign-ins paused until ${new Date(a.lockedUntil).toLocaleTimeString(undefined, { ...clockOpts() })}`, tone: "needs" };
   if (a.role === "admin" && !a.twoFactorEnabled) return { label: "No authenticator yet", tone: "idle" };
   return { label: "Active", tone: "ok" };
 }

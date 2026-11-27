@@ -265,6 +265,8 @@ export interface Board {
   labels: Label[];
   prefix: string;
   timezone: string;
+  /** The owner's time_format setting: "12h" (default) or "24h". */
+  timeFormat?: "12h" | "24h";
   /** Slack host → the ID its slack:// links need. */
   slackTeams: Record<string, string>;
   /** The next workday, when Tomorrow rolls into Today. */

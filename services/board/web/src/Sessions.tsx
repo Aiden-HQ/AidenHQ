@@ -5,7 +5,7 @@ import { Markdown } from "./markdown";
 import { Bone } from "./Skeleton";
 import type { ChatMessage, SessionRow, SessionState } from "./types";
 import { Banner, Button, Card, Dialog, EmptyState, Facts, Field, Input, LinkButton, Page, PageHeader, Section, Segmented, StatusDot, type StatusTone } from "./ui";
-import { agoLabel } from "./util";
+import { agoLabel, clockOpts, stampOpts } from "./util";
 import { Icon } from "./ui/icons";
 import "./sessions.css";
 
@@ -109,7 +109,7 @@ function Row({ s }: { s: SessionRow }) {
       <span className="ses-doing ses-doing-col" title={doing(s)}>{doing(s)}</span>
       <span className="ses-by" title={`Started by ${s.creator.name}`}>{s.creator.name}</span>
       <span className="ses-cost" title="Spend so far">{usd(s.cost_usd)}</span>
-      <time className="ses-when" dateTime={s.started_at} title={`Started ${new Date(s.started_at).toLocaleString()}`}>{agoLabel(live(s) ? s.started_at : s.ended_at ?? s.started_at)}</time>
+      <time className="ses-when" dateTime={s.started_at} title={`Started ${new Date(s.started_at).toLocaleString(undefined, stampOpts())}`}>{agoLabel(live(s) ? s.started_at : s.ended_at ?? s.started_at)}</time>
     </a>
   );
 }
@@ -386,7 +386,7 @@ function Details({ row, go }: { row: SessionRow; go: (hash: string) => void }) {
             row.last_activity && ["Last activity", <time key="a" dateTime={row.last_activity.at}>{agoLabel(row.last_activity.at)}</time>],
             ["Spend", usd(row.cost_usd)],
             ["Started by", `${row.creator.name}${row.creator.kind === "agent" ? " (agent)" : ""}`],
-            ["Started", <time key="s" dateTime={row.started_at}>{new Date(row.started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time>],
+            ["Started", <time key="s" dateTime={row.started_at}>{new Date(row.started_at).toLocaleString(undefined, { month: "short", day: "numeric", ...clockOpts() })}</time>],
                         ["Task", <a key="t" href={`#/t/${row.identifier}`} onClick={(e) => (e.preventDefault(), go(`#/t/${row.identifier}`))}>{row.identifier}</a>],
           ]}
         />

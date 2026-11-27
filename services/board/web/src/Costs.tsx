@@ -3,6 +3,7 @@ import { SignInRequired, api } from "./api";
 import { duration } from "./FeatureCost";
 import type { FeatureCost, CostLedger, CostTop, LedgerMetrics, LedgerPeriod } from "./types";
 import { Tag } from "./ui";
+import { clockOpts } from "./util";
 
 // The Costs tab: billed spend from the model gateway's ledger (src/cost-ledger.ts), aggregated on the board.
 //  1. Overview: today / 7 / 30 days against the period before, the OpenRouter key's limit, the install's spend limits.
@@ -20,7 +21,7 @@ const short = (model: string) => model.replace(/^openrouter\//, "").split("/").p
 const cacheHit = (m: LedgerMetrics) => (m.input + m.cached ? m.cached / (m.input + m.cached) : null);
 const LANES: Record<string, string> = { agent: "Agent runs", engineer: "Engineer jobs", advisor: "Advisor", fanout: "Fan-out", grader: "Grader", reviewer: "AI reviewer", source: "Sources and intake", "ci-code-review": "App CI code review", aside: "Side chat", check: "Check jobs" };
 const lane = (k: string) => LANES[k] ?? k;
-const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
+const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", ...clockOpts() }) : "");
 
 /** Up or down against the period before, as words: costs going up are worth a look, not an alarm. */
 function Delta({ cur, prev, vs }: { cur: number; prev: number | null; vs: string }) {
@@ -303,11 +304,11 @@ function buckets(d: CostLedger): string[] {
 }
 const wallMs = (t: string, hour: boolean) => Date.parse(hour ? `${t}:00:00Z` : `${t}T00:00:00Z`);
 const fmtDay = (ms: number) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
-const fmtHour = (ms: number) => new Date(ms).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+const fmtHour = (ms: number) => new Date(ms).toLocaleString(undefined, { month: "short", day: "numeric", ...clockOpts(), timeZone: "UTC" });
 /** The bucket's start in UTC, for hover. */
 const utcStart = (t: string, hour: boolean, offset: number) => `${fmtHour(wallMs(t, hour) - offset * 6e4)} UTC`;
 const bucketLabel = (t: string, hour: boolean) => (hour ? fmtHour(wallMs(t, hour)) : fmtDay(wallMs(t, hour)));
-const tickLabel = (t: string, hour: boolean) => (hour && !t.endsWith("T00") ? `${t.slice(11)}:00` : fmtDay(wallMs(t, hour)));
+const tickLabel = (t: string, hour: boolean) => (hour && !t.endsWith("T00") ? new Date(wallMs(t, hour)).toLocaleTimeString(undefined, { ...clockOpts(), timeZone: "UTC" }) : fmtDay(wallMs(t, hour)));
 /** A round axis maximum and its steps: 1, 2 or 5 × a power of ten. */
 function niceMax(v: number): number[] {
   if (v <= 0) return [0, 0.01];
