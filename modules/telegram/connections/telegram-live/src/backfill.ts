@@ -5,7 +5,7 @@
 import type { Logger } from "pino";
 import type { Ingest } from "./ingest.js";
 import type { Store } from "./store.js";
-import { belowId, TdError, type TdClient } from "./td.js";
+import { TdError, type TdClient } from "./td.js";
 import type * as Td from "./tdlib-types.js";
 
 const WORKERS = 2;
@@ -69,10 +69,12 @@ export function startBackfill(o: {
   }
 
   async function chat(id: number): Promise<void> {
-    // A page with nothing older than its cursor isn't the end yet: TDLib answers from what it holds locally first (often only
-    // the chat's last message). Ask once more after a pause, then from the position just below the cursor, which TDLib must
-    // fetch from Telegram; only an answer with nothing older after both is the end of the chat's history.
-    let stalls = 0;
+    // TDLib answers a page from its local copy first, often with only the chat's last message, and answers the same request
+    // the same way again. So only the first page includes the cursor (offset -1); every later page asks strictly older
+    // messages (offset 0 starts below from_message_id), a range TDLib must fetch from Telegram. A page with nothing older is
+    // asked once more after a pause before the chat counts as done.
+    let first = true;
+    let stalled = false;
     while (!stopped) {
       const row = q.row.get(id) as { from_message_id: number; flood_until: number | null };
       if (row.flood_until && row.flood_until > now()) {
@@ -83,12 +85,11 @@ export function startBackfill(o: {
       }
       while (ingest.liveBusy() && !stopped) await sleep(200);
       if (stopped) return;
-      const cursor = row.from_message_id;
-      const from = stalls === 2 ? belowId(cursor) : cursor;
+      const from = row.from_message_id;
+      const offset = first ? -1 : 0;
       let page: Td.messages;
       try {
-        // offset 0: the page starts AT from_message_id and goes older.
-        page = await td.invoke<Td.messages>({ _: "getChatHistory", chat_id: id, from_message_id: from, offset: 0, limit: PAGE, only_local: false });
+        page = await td.invoke<Td.messages>({ _: "getChatHistory", chat_id: id, from_message_id: from, offset, limit: PAGE, only_local: false });
       } catch (err) {
         if (err instanceof TdError && err.retryAfterS !== undefined) {
           q.flood.run(now() + err.retryAfterS * 1000, id);
@@ -101,25 +102,28 @@ export function startBackfill(o: {
         }
         throw err;
       }
-      const msgs = page.messages.filter((m): m is Td.message => !!m && m.id <= cursor);
+      first = false;
+      const msgs = page.messages.filter((m): m is Td.message => !!m && m.id <= from);
       const edge = cutoff();
       const inWindow = msgs.filter((m) => m.date >= edge);
       await ingest.ingestHistory(inWindow);
       for (const m of inWindow) oldest = Math.min(oldest ?? m.date, m.date);
-      const older = msgs.filter((m) => m.id < cursor);
+      if (inWindow.length < msgs.length) {
+        q.done.run(id);
+        return;
+      }
+      const older = msgs.filter((m) => m.id < from);
       if (!older.length) {
-        if (stalls < 2) {
-          if (stalls++ === 0) await sleep(STALL_MS);
+        if (offset === -1) continue; // only the cursor came back: the next page asks below it
+        if (!stalled) {
+          stalled = true;
+          await sleep(STALL_MS);
           continue;
         }
         q.done.run(id);
         return;
       }
-      stalls = 0;
-      if (inWindow.length < msgs.length) {
-        q.done.run(id);
-        return;
-      }
+      stalled = false;
       q.from.run(Math.min(...older.map((m) => m.id)), id);
     }
   }

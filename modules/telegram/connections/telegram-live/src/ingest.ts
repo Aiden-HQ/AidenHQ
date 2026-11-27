@@ -9,7 +9,7 @@ import type { Kernel, SourceEvent } from "./kernel.js";
 import { contentRow, DDL, editedRow, messageRow, reactionRow, senderId, tombstone, userRow, writeRow, type WarehouseItem } from "./sources.js";
 import { SourceStore, type Row } from "./source-store.js";
 import type { Store } from "./store.js";
-import { belowId, TdError, type Me, type TdClient, type TdUpdate } from "./td.js";
+import { TdError, type Me, type TdClient, type TdUpdate } from "./td.js";
 import type * as Td from "./tdlib-types.js";
 
 export type Settings = { muted: "tagged" | "all"; exclude: Set<number>; backfillDays: number };
@@ -353,12 +353,11 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
       const seen = new Set<number>();
       const missed: Td.message[] = [];
       let from = 0;
-      let stalls = 0;
+      let stalled = false;
       for (;;) {
-        // A page with nothing new isn't the end yet (TDLib answers from its local copy first): ask once more, then from just
-        // below the oldest seen, which TDLib fetches from Telegram (as backfill does).
-        const at = stalls === 2 && from ? belowId(from) : from;
-        const page = await td.invoke<Td.messages>({ _: "getChatHistory", chat_id: id, from_message_id: at, offset: 0, limit: 100, only_local: false });
+        // From 0 the newest page; then strictly older than the oldest seen (offset 0 starts below from_message_id). A page with
+        // nothing new is asked once more before it counts as the end (TDLib answers from its local copy first).
+        const page = await td.invoke<Td.messages>({ _: "getChatHistory", chat_id: id, from_message_id: from, offset: 0, limit: 100, only_local: false });
         const msgs = page.messages.filter((m): m is Td.message => !!m);
         let fresh = 0;
         let reached = false;
@@ -373,10 +372,11 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
         // TDLib may answer with fewer than `limit`: page on until the checkpoint or the window's edge.
         if (reached) break;
         if (fresh === 0) {
-          if (stalls++ < 2) continue;
-          break;
+          if (stalled) break;
+          stalled = true;
+          continue;
         }
-        stalls = 0;
+        stalled = false;
         from = Math.min(...msgs.map((m) => m.id));
       }
       missed.sort((a, b) => a.id - b.id);

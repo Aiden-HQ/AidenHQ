@@ -99,7 +99,7 @@ describe("backfill", () => {
     p.ingest.stop();
   });
 
-  it("a chat TDLib answers with only its last message still backfills, from the position below it", async () => {
+  it("a chat TDLib answers with only its last message still backfills, by paging below it", async () => {
     const db = tmpDb();
     // Telegram ids: server id << 20, as TDLib hands them out.
     const ids = (n: number) => Array.from({ length: n }, (_, i) => (i + 1) * 2 ** 20);
@@ -108,8 +108,8 @@ describe("backfill", () => {
     const c = chat(11, "dm", { last });
     const p = boot(db, [c], hist);
     const real = p.td.invoke.bind(p.td);
-    // As seen in production: every request starting at the last message gets only that message back.
-    p.td.invoke = (async (req: any) => (req._ === "getChatHistory" && req.from_message_id === last ? { _: "messages", total_count: 1, messages: [hist[11]!.at(-1)] } : real(req))) as typeof p.td.invoke;
+    // As seen in production: every request that includes the last message (offset -1) gets only that message back.
+    p.td.invoke = (async (req: any) => (req._ === "getChatHistory" && req.from_message_id === last && req.offset < 0 ? { _: "messages", total_count: 1, messages: [hist[11]!.at(-1)] } : real(req))) as typeof p.td.invoke;
     const bf = startBackfill({ td: p.td, store: p.store, ingest: p.ingest, days: 30, log, now: () => NOW_MS, sleep: async () => {} });
     await bf.done;
     expect(p.store.db.prepare(`SELECT count(*) AS n FROM ingested WHERE chat_id = 11`).get()).toEqual({ n: 40 });
