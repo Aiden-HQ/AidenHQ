@@ -127,9 +127,10 @@ export function createChecks({ db, registry, owner, secret, resolver, pending = 
           const grading = Array.isArray(labels.json) ? (labels.json as { id: string; name?: string }[]).find((l) => l.name === "grading")?.id : undefined;
           // Read again just before the move: a task reopened or cancelled meanwhile keeps its new state and labels.
           const now = await issue(i.id);
-          if (now.status !== "in_review") { db.prepare("DELETE FROM check_holds WHERE task = ?").run(t); continue; }
           const ids = now.labelIds ?? (now.labels ?? []).map((l) => l.id);
-          const r = await owner("PATCH", `/api/issues/${encodeURIComponent(i.id)}`, { status: "done", ...(grading && ids.includes(grading) ? { labelIds: ids.filter((x) => x !== grading) } : {}) });
+          // Still held: in review with the hold's label. A task moved or unlabelled since was taken over by hand and is left alone.
+          if (now.status !== "in_review" || !grading || !ids.includes(grading)) { db.prepare("DELETE FROM check_holds WHERE task = ?").run(t); continue; }
+          const r = await owner("PATCH", `/api/issues/${encodeURIComponent(i.id)}`, { status: "done", labelIds: ids.filter((x) => x !== grading) });
           if (r.status >= 300) throw new Error(`the control plane answered ${r.status}`);
           log("held task released", { task: i.identifier ?? i.id });
         }

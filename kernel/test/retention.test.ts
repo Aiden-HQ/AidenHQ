@@ -30,7 +30,8 @@ test("records: details, context and big args clear; the veto key, summary, outco
   const out = await clearFinished(records.db, { pause: async () => {} });
   assert.equal(out.records, 2);
   assert.ok(out.bytes > 9000);
-  assert.equal(records.get(apply.id)!.card.details, EXPIRED_NOTE);
+  // An apply's diff stays: the approval history shows it.
+  assert.ok(records.get(apply.id)!.card.details.startsWith("diff --git"));
   assert.equal(records.get(apply.id)!.context, null);
   const r = records.get(rejected.id)!;
   assert.equal(r.card.details, EXPIRED_NOTE);

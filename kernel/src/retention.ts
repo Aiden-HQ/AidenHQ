@@ -2,7 +2,7 @@
 // Paperclip's run history and activity log are pruned (Paperclip prunes neither). One daily timer; small batches, each its own
 // transaction on the kernel's one connection, so the event loop is never held for long.
 //   records  finished (not review, owner, approved, claimed), by updated_at (each move sets it, so it is the terminal move):
-//            card.details -> an explicit note (card.expired), context -> NULL, args -> its small keys. The veto key (connection,
+//            card.details -> an explicit note (card.expired; an apply's stays: the approval history shows what was applied), context -> NULL, args -> its small keys. The veto key (connection,
 //            tool), the PRs a write names (prs, only, repo, head...) are small and stay; `paths` is filled from the diff first
 //            (work.ts reads it), the summary lines of the card, the outcome and the reviewer's note stay.
 //   jobs     finished (not admitted, running), by ended: full_prompt -> NULL (only a running job resumes from it: jobs.ts
@@ -66,7 +66,7 @@ export async function clearFinished(db: DatabaseSync, { now = Date.now(), stoppi
   const cutoff = now - KERNEL_DAYS * DAY, iso = new Date(cutoff).toISOString(), out: Cleared = { records: 0, jobs: 0, checks: 0, bytes: 0 };
   // Prepared per table when it exists (a statement on a missing table fails to prepare).
   const sel = {
-    records: () => db.prepare(`SELECT id, card, args, context, paths FROM records WHERE ${REC_DUE} AND updated_at < ? ORDER BY updated_at LIMIT ?`),
+    records: () => db.prepare(`SELECT id, kind, card, args, context, paths FROM records WHERE ${REC_DUE} AND updated_at < ? ORDER BY updated_at LIMIT ?`),
     jobs: () => db.prepare(`SELECT id, full_prompt, progress FROM jobs WHERE ${JOB_DUE} AND COALESCE(ended, at) < ? ORDER BY COALESCE(ended, at) LIMIT ?`),
     checks: () => db.prepare(`SELECT id, spec, result FROM checks WHERE ${CHECK_DUE} AND COALESCE(ended, at) < ? ORDER BY COALESCE(ended, at) LIMIT ?`),
   };
@@ -85,7 +85,8 @@ export async function clearFinished(db: DatabaseSync, { now = Date.now(), stoppi
       const work = () => {
         for (const r of rows) {
           if (table === "records") {
-            const card = keptCard(r.card), args = keptArgs(r.args);
+            // An apply's diff stays in its approval history: what the owner or the reviewer approved (about 1 MB in all).
+            const card = r.kind === "kernel.apply" ? { card: r.card, paths: [] } : keptCard(r.card), args = keptArgs(r.args);
             out.bytes += size(r.card, r.args, r.context) - size(card.card, args);
             update.run(card.card, args, card.paths.length && !r.paths ? JSON.stringify(card.paths) : null, now, r.id);
           } else if (table === "jobs") {

@@ -20,7 +20,7 @@ function world(answer: { id: string; met: string; reason: string }[]) {
     calls.push(`${method} ${path}`);
     const m = /^\/v1\/cp\/read\/api\/issues\/([^/]+)(\/comments)?$/.exec(path);
     if (m && m[2]) return [{ id: "c1", authorAgentId: "eng", body: "Merged #12. I skipped the test: no time." }];
-    if (m) return tasks[decodeURIComponent(m[1]!)] ?? Promise.reject(Object.assign(new Error("no task"), { status: 404 }));
+    if (m) return tasks[decodeURIComponent(m[1]!)] ? { ...tasks[decodeURIComponent(m[1]!)] } : Promise.reject(Object.assign(new Error("no task"), { status: 404 }));
     if (path === "/v1/wakes") return (wakes.push(body), { posted: true });
     throw new Error(`unexpected ${method} ${path}`);
   };
@@ -101,6 +101,25 @@ test("a notice that fails to send is sent on the next pass, without a second che
   assert.equal(w.asked(), 1);
   await checker.pass();
   assert.equal(w.wakes.length, 1);
+});
+
+test("every unmet item fits the notice; a task reopened and closed again while it was checked is checked again", async () => {
+  const long = "x".repeat(500);
+  const rubric = ["A first criterion.", "A second criterion.", "A third criterion.", "A fourth criterion."];
+  const w = world(rubric.map((_, i) => ({ id: String(i + 1), met: "no", reason: long })));
+  w.store.file("T1", "agent:lead", rubric, { kind: "pr", ref: "" });
+  Object.assign(w.tasks.T1, { status: "done", completedAt: "2026-11-01T00:00:00Z" });
+  // The first check finds the task closed again meanwhile: nothing recorded, the next pass checks the close now standing.
+  let calls = 0;
+  const ask = async (t: string, p: any) => { if (calls++ === 0) w.tasks.T1.completedAt = "2026-11-01T01:00:00Z"; return w.ask(t, p); };
+  const checker = createChecker({ store: w.store, kernel: w.kernel, ask, model: "m" });
+  await checker.pass();
+  assert.equal(w.store.get("T1")!.state, "open");
+  await checker.pass();
+  assert.equal(w.store.get("T1")!.state, "unmet");
+  assert.equal(w.wakes.length, 1);
+  assert.ok(w.wakes[0].text.length <= 2000);
+  for (const c of rubric) assert.ok(w.wakes[0].text.includes(c));
 });
 
 test("an answer that doesn't match the rubric is not a result", () => {
