@@ -65,6 +65,7 @@ settings:
   # id; service/src/actions.ts) } } }. Ship works the fleet org's repos and the product repo, and every repo with an entry here: `repos` is Ship's own list (adding one is the owner's; quiet until enabled), apart from the Maintainer's and code review's. The Fleet page
   # edits it; this is the advanced form. Read by the service (service/src/settings.ts).
   ship:
+    title: Ship settings per repo
     type: object
     writers: [ ship-admin ]
     default:
@@ -73,6 +74,7 @@ settings:
   # The kill switch: true stops every adoption, push, approval and merge; PRs resume where they were. Its own setting, so a repo
   # change saved from an older proposal can never put it back (resuming is the owner's).
   ship_paused:
+    title: Ship paused
     default: false
     writers: [ ship-admin ]
 # Sam: ship's teammate. The service above is the engine; Sam answers the owner about it and changes its settings when asked.

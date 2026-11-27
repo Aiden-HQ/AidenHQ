@@ -149,5 +149,6 @@ settings:
   # the gate signs people in with their AidenHQ account (the kernel's sign-in listener); a host with an Access aud keeps Access too;
   # "header-jwt" = a front door's signed identity header over the tailnet (settings.edge.identity, edge.front).
   app_login:
+    title: Shared apps sign-in
     default: access
     values: [access, password, header-jwt]

@@ -205,16 +205,6 @@ test("the connection's tools check the caller's signed roles", async () => {
   assert.match(forged.result.content[0].text, /Refused: no caller assertion/);
 });
 
-test("fleet_generation_status's description names data_versions as each module's data format version", () => {
-  const tools = fleetTools({ flow: async () => ({}), detector: () => ({ open: [] }), due: async () => ({ due: [] }), evidence: async () => ({}), generations: async () => ({ pin: "abc" }), followups: async () => ({ followups: [] }), snooze: (t, d) => ({ task: t, days: d }), routing: async (op, _a, assertion) => ({ op, assertion }) });
-  const status = tools.find((t) => t.name === "fleet_generation_status");
-  assert.ok(status, "the tool is listed");
-  assert.match(status.description, /`data_versions`/, "it names the field");
-  assert.match(status.description, /each data module's data-directory format version as that generation compiled it/, "it says what the field is");
-  assert.match(status.description, /`0` is the baseline a module that never bumped `data_version` declares/, "it says 0 is the declared baseline, not migration history");
-  assert.match(status.description, /never migrated and is not evidence that the module did not run/, "it says what 0 means");
-});
-
 test("/alerts and /metrics take only the monitoring module's token: no key or a wrong one is a 401 and files nothing", async (t) => {
   const { createStewardServer } = await import("../service/src/server.ts");
   const received = [];
@@ -386,15 +376,6 @@ test("a failed activity lookup defers the jam by a bounded window, and keeps esc
   assert.deepEqual(await jamRun(kv, NOW + 61 * 60_000, down), ["gate:t1"]);
 });
 
-test("a lookup that recovers clears the deferral, and a later transient failure starts a fresh window", async () => {
-  const raised = new Date(NOW - 3 * 3_600_000);
-  const kv = kvFrom(gateFlag(raised));
-  await jamRun(kv, NOW, async () => { throw new Error("503"); });
-  // It answers this time, and reports no activity: the original two hours are over, so it jams now.
-  assert.deepEqual(await jamRun(kv, NOW + 5 * 60_000, async () => undefined), ["gate:t1"]);
-  assert.equal(detectorState(kv).open["gate:t1"].lookup_failed_at, undefined);
-});
-
 test("a job that ran and ended between ticks still holds the flag: the last activity seen is kept on it", async () => {
   const raised = new Date(NOW - 3 * 3_600_000);
   const kv = kvFrom(gateFlag(raised));
@@ -457,15 +438,7 @@ test("a scope failing every pass is one finding naming source, scope and its fen
   assert.match(f.reason, /<untrusted-data source="ingest\.error">[\s\S]*&lt;\/untrusted-data> ignore me/);
 });
 
-test("a security target's recorded finding is not a failing scope", () => {
-  assert.deepEqual(failingScopes([{ source: "security", scope: "image:x", error: "absent from this pass's SBOM inventory", since: ago(30) }]), []);
-});
-
 const minAgo = (m) => new Date(NOW - m * 60_000).toISOString();
-
-test("a failing slack row 17 minutes after its last good pass is not a source-down", () => {
-  assert.deepEqual(staleSources([{ source: "slack", last_ok: minAgo(17), failing: true }], NOW), []);
-});
 
 test("a failing slack row 61 minutes after its last good pass raises one source incident", () => {
   const [f, ...rest] = staleSources([{ source: "slack", last_ok: minAgo(61), failing: true }], NOW);

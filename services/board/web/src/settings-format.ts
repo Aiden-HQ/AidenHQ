@@ -70,6 +70,57 @@ export function yamlValue(v: unknown): string {
   return String(v);
 }
 
+const MAX_LISTED = 3;
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+const itemName = (x: unknown): string => {
+  if (x && typeof x === "object") {
+    const o = x as Record<string, unknown>;
+    const n = o.name ?? o.repo ?? o.title ?? o.id;
+    return typeof n === "string" || typeof n === "number" ? String(n) : "item";
+  }
+  return String(x);
+};
+const isEmpty = (v: unknown) => v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length) || (typeof v === "object" && !Array.isArray(v) && !Object.keys(v as object).length);
+
+const noun = (k: string) => k.replace(/_/g, " ").replace(/s$/, "");
+const listText = (v: unknown[], word: string) => {
+  const names = v.map(itemName);
+  return `${plural(v.length, word)}: ${names.slice(0, MAX_LISTED).join(", ")}${names.length > MAX_LISTED ? ` +${names.length - MAX_LISTED} more` : ""}`;
+};
+
+/** A setting's short title: its declared `title`, else its key in words ("app_login" is "App login"). Never its help text. */
+export const settingTitle = (s: Pick<SettingRow, "key" | "title">) => s.title ?? s.key.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+
+/** A setting's value in one plain line: On/Off, a list as "N items: a, b, c +N more", an object as its key fields, "Not set" when empty. */
+export function settingSummary(v: unknown): string {
+  if (typeof v === "boolean") return v ? "On" : "Off";
+  if (isEmpty(v)) return "Not set";
+  if (Array.isArray(v)) return listText(v, "item");
+  if (v && typeof v === "object") {
+    const filled = Object.entries(v).filter(([, x]) => !isEmpty(x));
+    // { apps: [...] }: the one list is the value.
+    if (filled.length === 1 && Array.isArray(filled[0]![1])) return listText(filled[0]![1], noun(filled[0]![0]));
+    const parts = Object.entries(v)
+      .filter(([, x]) => !isEmpty(x))
+      .map(([k, x]) => (Array.isArray(x) ? plural(x.length, noun(k)) : x && typeof x === "object" ? plural(Object.keys(x).length, noun(k)) : `${k.replace(/_/g, " ")}: ${typeof x === "boolean" ? (x ? "on" : "off") : String(x)}`));
+    if (!parts.length) return "Not set";
+    return parts.slice(0, MAX_LISTED).join(", ") + (parts.length > MAX_LISTED ? ` +${parts.length - MAX_LISTED} more` : "");
+  }
+  return String(v);
+}
+
+/** Whether a setting's summary leaves part of its value out: a list cut short, or a list of objects shown by name only. */
+export function settingOmitted(v: unknown): boolean {
+  if (Array.isArray(v)) return v.length > MAX_LISTED || v.some((x) => x !== null && typeof x === "object");
+  if (v && typeof v === "object") {
+    const filled = Object.entries(v).filter(([, x]) => !isEmpty(x));
+    // { apps: [...] }: the one list is the value.
+    if (filled.length === 1 && Array.isArray(filled[0]![1])) return settingOmitted(filled[0]![1]);
+    return filled.length > MAX_LISTED || filled.some(([, x]) => Array.isArray(x) || (x !== null && typeof x === "object"));
+  }
+  return false;
+}
+
 /** What a value shows as on the page. */
 export const shown = (v: unknown) => (v === null || v === undefined || v === "" ? "not set" : Array.isArray(v) ? (v.length ? v.join(", ") : "none") : typeof v === "object" ? JSON.stringify(v) : String(v));
 

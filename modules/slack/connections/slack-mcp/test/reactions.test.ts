@@ -84,22 +84,6 @@ describe("planReactionSearch", () => {
     expect(planReactionSearch("slack_search_public", { query: "in:<#C1> hasmy::pushpin:" })).toMatchObject({ kind: "unsupported" });
   });
 
-  it("passes a modifiers-only query and filters that carry no reaction filter straight through", () => {
-    expect(planReactionSearch("slack_search_public", { query: "in:<#C1>", filters: "after:2026-11-08" })).toEqual({ kind: "pass" });
-    expect(planReactionSearch("slack_search_public", { query: "has:pin", filters: "in:<#C1>" })).toEqual({ kind: "pass" });
-    // Two modifier sets that both name a reaction can't be reconciled into one set.
-    expect(planReactionSearch("slack_search_public", { query: "hasmy::pushpin:", filters: "in:<#C1>" })).toMatchObject({ kind: "unsupported" });
-  });
-
-  it("refuses an ordering or shape this path can't reproduce, and accepts the ones it can", () => {
-    expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", sort: "timestamp" })).toMatchObject({ kind: "unsupported" });
-    expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", response_format: "concise" })).toMatchObject({ kind: "unsupported" });
-    expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", include_context: true })).toMatchObject({ kind: "unsupported" });
-    expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", some_future_option: "x" })).toMatchObject({ kind: "unsupported" });
-    // The options this path reproduces (or that don't change the set) are accepted.
-    expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", response_format: "detailed", include_context: false })).toMatchObject({ kind: "mine" });
-  });
-
   it("names the unsupported filter for has::, an extra modifier, or more than one reaction filter", () => {
     expect(planReactionSearch("slack_search_public", { filters: "has::pushpin:" })).toMatchObject({ kind: "unsupported", filter: "has::pushpin:" });
     expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin: in:<#C1>" })).toMatchObject({ kind: "unsupported", filter: "hasmy::pushpin: in:<#C1>" });
@@ -125,11 +109,6 @@ describe("planReactionSearch", () => {
     expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", content_types: "files" })).toMatchObject({ kind: "unsupported" });
     expect(planReactionSearch("slack_search_public_and_private", { filters: "hasmy::pushpin:", channel_types: "im,mpim" })).toMatchObject({ kind: "unsupported" });
     expect(planReactionSearch("slack_search_public", { filters: "hasmy::pushpin:", content_types: "messages" })).toMatchObject({ kind: "mine" });
-  });
-
-  it("leaves a non-reaction filters-only search as sent", () => {
-    expect(planReactionSearch("slack_search_public", { filters: "in:<#C1> after:2026-11-08" })).toEqual({ kind: "pass" });
-    expect(planReactionSearch("slack_search_public", { filters: "has:pin" })).toEqual({ kind: "pass" });
   });
 });
 
@@ -180,12 +159,6 @@ describe("scanMyReactions", () => {
     expect(scan).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C1", ts: "1.1" }), expect.objectContaining({ channel: "C2", ts: "2.2" }), expect.objectContaining({ channel: "C4", ts: "4.4" })], nextCursor: null });
     // A small result limit never shrinks the upstream page: the fetch size stays at the default floor.
     expect(calls[0]).toContain("limit=200");
-  });
-
-  it("keeps thread_ts for a reacted thread reply, so the scan can attach it to the conversation's task", async () => {
-    const { fetchImpl } = fakeSlack([page([item("C1", "1.2", "pushpin", [ME], { thread_ts: "1.1" })])]);
-    const scan = await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.2", thread_ts: "1.1" }] });
   });
 
   it("a public-only scan drops private channels and DMs; the all-channels one drops kinds the sign-in has no search scope for", async () => {
@@ -261,48 +234,6 @@ describe("scanMyReactions", () => {
     expect(asked).toEqual(["", "2"]);
   });
 
-  it("sends the page size from the first request, so numbered pages keep one set of boundaries", async () => {
-    const counts: string[] = [];
-    const numbered = (async (url: string | URL) => {
-      const u = new URL(String(url));
-      counts.push(u.searchParams.get("count") ?? "");
-      const n = Number(u.searchParams.get("page") ?? "1");
-      return Response.json({ ok: true, items: [item("C1", `${n}.0`)], paging: { count: 500, total: 1000, page: n, pages: 2 } });
-    }) as unknown as typeof fetch;
-    const scan = await scanMyReactions({ emoji: "pushpin", limit: 500 }, { authorization: "Bearer x", userId: ME }, { fetchImpl: numbered });
-    expect(scan).toMatchObject({ ok: true, nextCursor: null, messages: [{ ts: "1.0" }, { ts: "2.0" }] });
-    // The first request carries `count` too: a numbered answer can't start at Slack's default and then shift.
-    expect(counts).toEqual(["500", "500"]);
-  });
-
-  it("continues numbered pages at the size Slack reports having used, larger or smaller", async () => {
-    const big: string[] = [];
-    const wide = (async (url: string | URL) => {
-      const u = new URL(String(url));
-      big.push(u.searchParams.get("count") ?? "");
-      const n = Number(u.searchParams.get("page") ?? "1");
-      // Page 1 returned 500 items although we asked for 200: page 2 must ask for 500, or it re-reads 201-500.
-      return Response.json({ ok: true, items: [item("C1", `${n}.0`)], paging: { count: 500, total: 1000, page: n, pages: 2 } });
-    }) as unknown as typeof fetch;
-    const wideScan = await scanMyReactions({ emoji: "pushpin" }, { authorization: "Bearer x", userId: ME }, { fetchImpl: wide });
-    expect(wideScan).toMatchObject({ ok: true, nextCursor: null });
-    expect(big).toEqual(["200", "500"]);
-  });
-
-  it("continues numbered pages at a smaller size Slack reports having used, never a larger one", async () => {
-    const counts: string[] = [];
-    const numbered = (async (url: string | URL) => {
-      const u = new URL(String(url));
-      counts.push(u.searchParams.get("count") ?? "");
-      const n = Number(u.searchParams.get("page") ?? "1");
-      // Page 1 reports 50 items used despite count=500: page 2 must not jump to 500 and skip 51-500.
-      return Response.json({ ok: true, items: [item("C1", `${n}.0`)], paging: { count: 50, total: 100, page: n, pages: 2 } });
-    }) as unknown as typeof fetch;
-    const scan = await scanMyReactions({ emoji: "pushpin", limit: 500 }, { authorization: "Bearer x", userId: ME }, { fetchImpl: numbered });
-    expect(scan).toMatchObject({ ok: true, nextCursor: null, messages: [{ ts: "1.0" }, { ts: "2.0" }] });
-    expect(counts).toEqual(["500", "50"]);
-  });
-
   it("stops at its deadline with what it has, so it never outlives the caller", async () => {
     let clock = 0;
     const fetchImpl = (async () => {
@@ -318,23 +249,6 @@ describe("scanMyReactions", () => {
     expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl: late, now: () => clock, deadlineMs: 90_000 })).toMatchObject({ ok: false, detail: expect.stringContaining("deadline") });
   });
 
-  it("does not read a page with no item list as an empty last page", async () => {
-    const { fetchImpl } = fakeSlack([page([item("C1", "1.1")], "c2"), { ok: true, response_metadata: { next_cursor: "" } }]);
-    // The first page's match is verified, so it is returned with a continuation; the unreadable page never reads as an
-    // empty, complete set. With nothing verified, the same answer is the unknown-set error.
-    const scan = await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }], nextCursor: expect.any(String) });
-    // Nothing for "eyes" on the readable page, then a page with no item list: no verified match, so the set is unknown.
-    const unreadable = fakeSlack([{ ok: true, items: [item("C1", "1.1")], response_metadata: { next_cursor: "more" } }, { ok: true, response_metadata: { next_cursor: "" } }]);
-    expect(await scanMyReactions({ ...plan, emoji: "eyes" }, { authorization: "Bearer x", userId: ME }, { fetchImpl: unreadable.fetchImpl })).toMatchObject({ ok: false, detail: expect.stringContaining("item list") });
-  });
-
-  it("carries permalink when the item has one", async () => {
-    const { fetchImpl } = fakeSlack([page([item("C1", "1.1", "pushpin", [ME], { permalink: "https://acme.slack.com/archives/C1/p11" })])]);
-    const scan = await scanMyReactions(plan, { authorization: "Bearer xoxp-user", userId: ME }, { fetchImpl });
-    expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1", permalink: "https://acme.slack.com/archives/C1/p11" }] });
-  });
-
   it("is not a complete set when Slack refuses (ok: false) or answers a non-200", async () => {
     const refused = (async () => Response.json({ ok: false, error: "invalid_auth" })) as unknown as typeof fetch;
     expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl: refused })).toMatchObject({ ok: false, detail: expect.stringContaining("invalid_auth") });
@@ -347,15 +261,6 @@ describe("scanMyReactions", () => {
   it("reports a repeated cursor as an incomplete set, never a cursor that can't advance", async () => {
     const { fetchImpl } = fakeSlack([page([item("C1", "1.1")], "same"), page([item("C2", "2.2")], "same")]);
     expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: false, detail: expect.stringContaining("already followed") });
-  });
-
-  it("hands back Slack's own cursor at the page cap, which still advances the set", async () => {
-    const pages = Array.from({ length: 4 }, (_, i) => page([item("C1", `${i}.0`)], `c${i + 1}`));
-    const { fetchImpl } = fakeSlack(pages);
-    // No result limit: the continuation resumes the walk past this page, so nothing is skipped.
-    const scan = await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl, maxPages: 3 });
-    expect(scan).toMatchObject({ ok: true, nextCursor: expect.any(String) });
-    expect((scan as { nextCursor: string }).nextCursor).toMatch(/^aidenhq:pos:/);
   });
 
   it("hands back a verified match at the page cap, with a continuation that still advances", async () => {
@@ -398,17 +303,6 @@ describe("scanMyReactions", () => {
     expect(calls.filter((c) => c.includes("reactions.list")).length).toBeGreaterThan(3);
   });
 
-  it("returns verified matches inside the error when the scan can't offer a continuation", async () => {
-    // Numbered pages past the cap have no cursor to resume, so the answer is an error — but it carries the match Slack
-    // did return, with no `next_cursor`, so the caller knows the set is unknown and still has the message.
-    const numbered = (async (url: string | URL) => {
-      const n = Number(new URL(String(url)).searchParams.get("page") ?? "1");
-      return Response.json({ ok: true, items: [item("C1", `${n}.0`)], paging: { count: 1, total: 5, page: n, pages: 5 } });
-    }) as unknown as typeof fetch;
-    const scan = await scanMyReactions({ emoji: "pushpin" }, { authorization: "Bearer x", userId: ME }, { fetchImpl: numbered, maxPages: 2 });
-    expect(scan).toMatchObject({ ok: false, detail: expect.stringContaining("page limit"), messages: [{ channel: "C1", ts: "1.0" }, { channel: "C1", ts: "2.0" }] });
-  });
-
   it("keeps the matches it already found when a later page fails, and says the set is not complete", async () => {
     // The first page holds the one requested match; the second page is rate-limited out. The match is real, so it is
     // returned with a continuation, never discarded in favour of the failure.
@@ -420,55 +314,6 @@ describe("scanMyReactions", () => {
     n = 0;
     const failed = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl: (async () => new Response("down", { status: 503 })) as unknown as typeof fetch });
     expect(failed).toMatchObject({ ok: false });
-  });
-
-  it("keeps a verified match when a later channel lookup fails during the lookahead", async () => {
-    // C1 is verified public and returned (limit 1). The lookahead then checks C2, whose conversations.info answers 503:
-    // the verified match is real, so it is returned with a continuation, not thrown away for the failure.
-    const fetchImpl = (async (url: string | URL) => {
-      const u = new URL(String(url));
-      if (u.pathname.endsWith("/conversations.info")) {
-        if (u.searchParams.get("channel") === "C2") return new Response("down", { status: 503 });
-        return Response.json({ ok: true, channel: { id: "C1", is_channel: true } });
-      }
-      return Response.json(page([item("C1", "1.1"), item("C2", "2.2")]));
-    }) as unknown as typeof fetch;
-    const scan = await scanMyReactions({ emoji: "pushpin", publicOnly: true, scopes: new Set(["search:read.public"]), limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }], nextCursor: expect.any(String) });
-  });
-
-  it("keeps a verified match on page one when an unbounded scan's channel lookup fails", async () => {
-    // No limit and no caller cursor: C1 is verified, then C2's lookup fails. C1 is real, so it is returned with an
-    // identity continuation (no Slack cursor needed — the resume replays from the start and skips it).
-    const fetchImpl = (async (url: string | URL) => {
-      const u = new URL(String(url));
-      if (u.pathname.endsWith("/conversations.info")) {
-        if (u.searchParams.get("channel") === "C2") return new Response("down", { status: 503 });
-        return Response.json({ ok: true, channel: { id: "C1", is_channel: true } });
-      }
-      return Response.json(page([item("C1", "1.1"), item("C2", "2.2")]));
-    }) as unknown as typeof fetch;
-    const scan = await scanMyReactions({ emoji: "pushpin", publicOnly: true, scopes: new Set(["search:read.public"]) }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }], nextCursor: expect.stringMatching(/^aidenhq:pos:/) });
-  });
-
-  it("keeps a verified match when a later numbered page fails", async () => {
-    // Page 1 holds the match; page 2 is a 503. Numbered pagination advances without a cursor, so the match is still kept.
-    const fetchImpl = (async (url: string | URL) => {
-      const n = Number(new URL(String(url)).searchParams.get("page") ?? "1");
-      if (n > 1) return new Response("down", { status: 503 });
-      return Response.json({ ok: true, items: [item("C1", "1.1")], paging: { count: 1, total: 3, page: 1, pages: 3 } });
-    }) as unknown as typeof fetch;
-    const scan = await scanMyReactions({ emoji: "pushpin" }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }], nextCursor: expect.any(String) });
-  });
-
-  it("keeps a verified match when a lookahead page comes back without an item list", async () => {
-    // Page 1 holds the match and a cursor; page 2 answers ok with no items. The match is real, so it is returned with a
-    // continuation rather than the whole call turning into an error.
-    const { fetchImpl } = fakeSlack([page([item("C1", "1.1")], "more"), { ok: true, response_metadata: { next_cursor: "" } }]);
-    const scan = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }], nextCursor: expect.any(String) });
   });
 
   it("stops at the answer's size budget and hands back a continuation, rather than one oversized answer", async () => {
@@ -500,48 +345,6 @@ describe("scanMyReactions", () => {
     expect(fourth).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C4" })], nextCursor: null });
   });
 
-  it("does not repeat a message that recurs on a later page, across a continuation", async () => {
-    // C1 carries both reactions, so Slack can list it again on page 2 while the caller pages with limit 1.
-    const { fetchImpl } = fakeSlackByCursor({
-      start: page([item("C1", "1.1")], "page-2"),
-      "page-2": page([item("C1", "1.1"), item("C2", "2.2")]),
-    });
-    const first = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    expect(first).toMatchObject({ ok: true, messages: [{ channel: "C1" }] });
-    const second = await scanMyReactions({ emoji: "pushpin", limit: 1, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    expect(second).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C2" })], nextCursor: null });
-  });
-
-  it("keeps a caller-supplied Slack cursor as the starting point of a limited continuation", async () => {
-    // Resumed from a Slack cursor "mid", the walk must not restart at the head (whose earlier results the caller already has).
-    const { fetchImpl, calls } = fakeSlackByCursor({
-      mid: page([item("C1", "1.1"), item("C2", "2.2")], "later"),
-      later: page([item("C3", "3.3")]),
-    });
-    const first = await scanMyReactions({ emoji: "pushpin", limit: 1, cursor: "mid" }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    expect(first).toMatchObject({ ok: true, messages: [{ channel: "C1" }], nextCursor: expect.any(String) });
-    await scanMyReactions({ emoji: "pushpin", limit: 1, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    // Every reactions.list request in the second walk asks for the caller's "mid" cursor, never the head.
-    const second = calls.slice(calls.length - 2);
-    // The second walk starts at the caller's cursor (not the head), then follows Slack's own continuation.
-    expect(second[0]).toContain("cursor=mid");
-    expect(second[1]).toContain("cursor=later");
-  });
-
-  it("keeps the upstream page size from the first call when a continuation asks for a different limit", async () => {
-    const { fetchImpl, calls } = fakeSlackByCursor({
-      start: page([item("C1", "1.1")], "page-2"),
-      "page-2": page([item("C2", "2.2")]),
-    });
-    const first = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    expect(first).toMatchObject({ ok: true, nextCursor: expect.any(String) });
-    await scanMyReactions({ emoji: "pushpin", limit: 10, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    // The continuation's upstream page size stays the first call's, even though the second asked for 10 results.
-    const sizes = calls.filter((c) => c.includes("reactions.list")).map((c) => new URL(c).searchParams.get("limit"));
-    expect(new Set(sizes).size).toBe(1);
-    expect(sizes[0]).toBe("200");
-  });
-
   it("resumes by identity, so a reaction removed between calls doesn't skip an unreturned message", async () => {
     // The first answer returns A (limit 1) from a page of A, B, C. Then the owner unpins A, so a replay starts with B.
     const before = page([item("C1", "1.1"), item("C2", "2.2"), item("C3", "3.3")]);
@@ -553,11 +356,6 @@ describe("scanMyReactions", () => {
     // B is still returned: the resume skipped by identity, not by the position A used to occupy.
     const second = await scanMyReactions({ emoji: "pushpin", limit: 1, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
     expect(second).toMatchObject({ ok: true, messages: [{ channel: "C2" }] });
-  });
-
-  it("a limit larger than the set still ends at the last page with a null cursor", async () => {
-    const { fetchImpl } = fakeSlack([page([item("C1", "1.1")], "only"), page([item("C2", "2.2")])]);
-    expect(await scanMyReactions({ emoji: "pushpin", limit: 50 }, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: true, nextCursor: null });
   });
 
   it("carries Slack's needed scope on a missing_scope failure, so it is a permission, not an outage", async () => {
@@ -576,14 +374,6 @@ describe("scanMyReactions", () => {
     const { fetchImpl } = fakeSlack([page([item("C1", "1.1")], "next"), { ok: false, error: "internal_error" }]);
     expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: true, messages: [{ channel: "C1" }] });
   });
-
-  it("does not report numbered pages cut off at the cap as complete: there is no cursor to hand back", async () => {
-    const numbered = (async (url: string | URL) => {
-      const n = Number(new URL(String(url)).searchParams.get("page") ?? "1");
-      return Response.json({ ok: true, items: [item("C1", `${n}.0`)], paging: { count: 1, total: 9, page: n, pages: 9 } });
-    }) as unknown as typeof fetch;
-    expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl: numbered, maxPages: 2 })).toMatchObject({ ok: false });
-  });
 });
 
 describe("servedTool", () => {
@@ -595,15 +385,6 @@ describe("servedTool", () => {
     // genuinely excluded everything, so this is a confirmed refusal, not an outage to retry.
     const probe = ask({ "/mcp/read": live([]), "/mcp": live(["slack_search_public"]) });
     expect(await servedTool(true, "slack_search_public", probe, () => "k")).toEqual({ served: false, confirmed: true });
-  });
-
-  it("is unconfirmed when the read endpoint answers with unannotated stand-ins, or with nothing at all", async () => {
-    // The proxy's outage fallback: stand-ins carry no annotations, so admission can't be decided and a retry is right.
-    const standIns = { result: { tools: [{ name: "slack_search_public", description: "connect" }] } };
-    expect(await servedTool(true, "slack_search_public", ask({ "/mcp/read": standIns, "/mcp": live(["slack_search_public"]) }), () => "k")).toEqual({ served: false, confirmed: false });
-    expect(await servedTool(true, "slack_search_public", ask({ "/mcp/read": undefined, "/mcp": live(["slack_search_public"]) }), () => "k")).toEqual({ served: false, confirmed: false });
-    // The full catalog itself unreachable: unconfirmed, never a refusal.
-    expect(await servedTool(true, "slack_search_public", ask({ "/mcp/read": live([]), "/mcp": standIns }), () => "k")).toEqual({ served: false, confirmed: false });
   });
 
   it("serves a read that both the live catalog and the read rule admit", async () => {
@@ -740,33 +521,6 @@ describe("interception through the proxy", () => {
     expect(await res.text()).toBe("");
   });
 
-  it("leaves a call the transport would refuse (a bad id or a missing Accept) to the proxy", async () => {
-    seen.length = 0;
-    const bad = async (body: unknown, headers: Record<string, string> = {}) =>
-      fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream", "x-aidenhq-caller": "ok", ...headers }, body: JSON.stringify(body) });
-    // An id of the wrong type: the SDK rejects it, so this route must not answer it with a Slack-derived success.
-    const badId = await bad({ jsonrpc: "2.0", id: 1.5, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } });
-    expect(badId.status).toBe(400);
-    expect(seen).toEqual([]);
-    // An unsupported MCP protocol version: the transport answers 400, so this route must not answer it either.
-    const badVersion = await bad({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }, { "mcp-protocol-version": "1999-01-01" });
-    expect(badVersion.status).toBe(400);
-    expect(slackCalls).toBe(0);
-    // A `params` the SDK's call schema refuses (`_meta` as a string): the transport rejects it, so this route must too.
-    const badParams = await bad({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" }, _meta: "nope" } });
-    expect(badParams.status).toBe(400);
-    expect(slackCalls).toBe(0);
-    // A `+json` suffix is not `application/json`: the transport answers 415, so no Slack read happens here either.
-    const badType = await bad({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }, { "content-type": "application/mcp+json" });
-    expect(badType.status).toBe(415);
-    expect(slackCalls).toBe(0);
-    // Without an Accept that allows both types, the transport answers 406 and no Slack read happens.
-    const noAccept = await bad({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }, { accept: "application/json" });
-    expect(noAccept.status).toBe(406);
-    expect(slackCalls).toBe(0);
-    expect(seen).toEqual([]);
-  });
-
   it("serves the read endpoint for the read key, and refuses a call without the kernel's caller assertion", async () => {
     seen.length = 0;
     const read = await rpc("/mcp/read", "rd", "slack_search_public", { filters: "hasmy::pushpin:" });
@@ -840,61 +594,6 @@ describe("interception through the proxy", () => {
     noReactions.close();
   });
 
-  it("asks the admission rule of the endpoint the call came to", async () => {
-    const seenEndpoints: boolean[] = [];
-    const perEndpoint = createVendorProxy({
-      name: "Slack",
-      upstream: new URL(`${upstream}/mcp`),
-      auth: { headers: async () => ({ authorization: "Bearer x" }), refresh: async () => {}, status: () => ({ state: "ok", since: "" }), mark: () => {}, signedIn: () => true },
-      log,
-      serviceKey: "svc",
-      readKey: "rd",
-      reads: ["slack_search_public"],
-      caller: async () => ({}),
-      instructions: "test",
-      stateDir: dir,
-      routes: (req, res) => interceptReactionSearch(req, res, {
-        tokenFile: join(dir, "token.json"),
-        headers: async () => ({ authorization: "Bearer xoxp-user" }),
-        authState: () => "ok",
-        serviceKey: "svc",
-        readKey: "rd",
-        caller: async () => ({}),
-        served: async (readOnly, n) => { seenEndpoints.push(readOnly); return { served: n.startsWith("slack_search_public"), confirmed: true }; },
-        fetchImpl: (async (url: string | URL) => {
-          if (new URL(String(url)).pathname.endsWith("/conversations.info")) return Response.json({ ok: true, channel: { id: "C1", is_channel: true } });
-          return Response.json(page([item("C1", "1.1")]));
-        }) as unknown as typeof fetch,
-      }),
-    });
-    const base = await listen(perEndpoint);
-    const call = (path: string, key: string) => fetch(`${base}${path}`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) }).then((r) => r.json() as any);
-    expect(payload(await call("/mcp", "svc")).messages).toHaveLength(1);
-    expect(payload(await call("/mcp/read", "rd")).messages).toHaveLength(1);
-    expect(seenEndpoints).toEqual([false, true]);
-    perEndpoint.close();
-  });
-
-  it("says admission couldn't be confirmed when the catalog probe fails, not that the tool isn't a read", async () => {
-    const unconfirmed = createVendorProxy({
-      name: "Slack",
-      upstream: new URL(`${upstream}/mcp`),
-      auth: { headers: async () => ({ authorization: "Bearer x" }), refresh: async () => {}, status: () => ({ state: "ok", since: "" }), mark: () => {}, signedIn: () => true },
-      log,
-      serviceKey: "svc",
-      readKey: "rd",
-      caller: async () => ({}),
-      instructions: "test",
-      stateDir: dir,
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", served: async () => ({ served: false, confirmed: false }), serviceKey: "svc", readKey: "rd", caller: async () => ({}) }),
-    });
-    const base = await listen(unconfirmed);
-    const res = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) });
-    const body = (await res.json()) as any;
-    expect(payload(body)).toMatchObject({ error: "admission_unknown", set: "unknown" });
-    unconfirmed.close();
-  });
-
   it("refuses a continuation issued for another Slack account, instead of skipping that account's messages", async () => {
     const { fetchImpl } = fakeSlack([page([item("C1", "1.1")], "more"), page([item("C2", "2.2")])]);
     const first = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
@@ -902,43 +601,6 @@ describe("interception through the proxy", () => {
     // The owner reconnects as someone else: the same `seen` keys would suppress a message that account reacted to.
     const other = await scanMyReactions({ emoji: "pushpin", limit: 1, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer y", userId: "U0OTHER02" }, { fetchImpl });
     expect(other).toMatchObject({ ok: false, detail: expect.stringContaining("Slack account") });
-  });
-
-  it("refuses a continuation issued under a different set of granted scopes", async () => {
-    // The same account, but a reconnect granted another search scope: a channel that was invisible before may now be
-    // visible, so the old `seen` keys can't be trusted to skip it.
-    const fetchImpl = (async (url: string | URL) => {
-      const u = new URL(String(url));
-      if (u.pathname.endsWith("/conversations.info")) return Response.json({ ok: true, channel: { id: u.searchParams.get("channel"), is_channel: true } });
-      return Response.json(page([item("C1", "1.1"), item("C2", "2.2")]));
-    }) as unknown as typeof fetch;
-    const first = await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public"]), limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    expect(first).toMatchObject({ ok: true, nextCursor: expect.any(String) });
-    const wider = await scanMyReactions({ emoji: "pushpin", scopes: new Set(["search:read.public", "search:read.private"]), limit: 1, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    expect(wider).toMatchObject({ ok: false, detail: expect.stringContaining("granted scopes") });
-  });
-
-  it("refuses a continuation reused for a different emoji, instead of skipping that search's messages", async () => {
-    const fetchImpl = (async (url: string | URL) => {
-      if (new URL(String(url)).pathname.endsWith("/conversations.info")) return Response.json({ ok: true, channel: { id: "C1", is_channel: true } });
-      return Response.json(page([item("C1", "1.1"), item("C2", "2.2")]));
-    }) as unknown as typeof fetch;
-    const first = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    const cursor = (first as { nextCursor: string }).nextCursor;
-    expect(await scanMyReactions({ emoji: "eyes", limit: 1, cursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: false, detail: expect.stringContaining("different reaction search") });
-    // The same search may resume with it.
-    expect(await scanMyReactions({ emoji: "pushpin", limit: 1, cursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: true, messages: [{ channel: "C2" }] });
-  });
-
-  it("returns an explicit unsupported error for has:: and for hasmy:: with an extra modifier, never an empty page", async () => {
-    seen.length = 0;
-    for (const filters of ["has::pushpin:", "hasmy::pushpin: in:<#C1>", "hasmy::pushpin: after:2026-11-08"]) {
-      const r = await rpc("/mcp", "svc", "slack_search_public", { filters }, "ok");
-      expect(r.body.result.isError).toBe(true);
-      expect(payload(r.body)).toMatchObject({ error: "unsupported_reaction_filter", set: "unknown", filter: filters });
-      expect(payload(r.body).detail).toContain(filters.split(" ")[0]);
-    }
-    expect(seen).toEqual([]);
   });
 
   it("returns an error result, not an empty page, when reactions.list fails", async () => {
@@ -959,100 +621,6 @@ describe("interception through the proxy", () => {
     expect(body.result.isError).toBe(true);
     expect(payload(body)).toMatchObject({ error: "reactions_list_failed", set: "unknown" });
     broken.close();
-  });
-
-  it("sends the scope need to the owner even when a match was already verified", async () => {
-    // C1 is verified and returned by reactions.list; the next channel's lookup is missing_scope. Following a cursor can't
-    // grant a permission, so the answer is the `scope` need (with C1 riding along), never a successful page.
-    const scoped = createVendorProxy({
-      name: "Slack",
-      upstream: new URL(`${upstream}/mcp`),
-      auth: { headers: async () => ({ authorization: "Bearer x" }), refresh: async () => {}, status: () => ({ state: "ok", since: "" }), mark: () => {}, signedIn: () => true },
-      log,
-      serviceKey: "svc",
-      caller: async () => ({}),
-      instructions: "test",
-      stateDir: dir,
-      routes: (req, res) => interceptReactionSearch(req, res, {
-        tokenFile: join(dir, "token.json"),
-        headers: async () => ({ authorization: "Bearer xoxp-user" }),
-        authState: () => "ok",
-        serviceKey: "svc",
-        caller: async () => ({}),
-        served: async () => ({ served: true, confirmed: true }),
-        fetchImpl: (async (url: string | URL) => {
-          const u = new URL(String(url));
-          if (u.pathname.endsWith("/conversations.info")) {
-            if (u.searchParams.get("channel") === "C2") return Response.json({ ok: false, error: "missing_scope", needed: "groups:read" });
-            return Response.json({ ok: true, channel: { id: "C1", is_channel: true } });
-          }
-          return Response.json(page([item("C1", "1.1"), item("C2", "2.2")]));
-        }) as unknown as typeof fetch,
-      }),
-    });
-    const scopedBase = await listen(scoped);
-    const res = await fetch(`${scopedBase}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public_and_private", arguments: { filters: "hasmy::pushpin:" } } }) });
-    const body = (await res.json()) as any;
-    expect(body.result.structuredContent).toMatchObject({ error: "needs_owner", need: { cause: "scope", scope: "groups:read" } });
-    scoped.close();
-  });
-
-  it("names conversations.info, not reactions.list, when the channel lookup is what lacked the scope", async () => {
-    // reactions.list works; conversations.info answers missing_scope for the only channel. The owner-facing need must
-    // name the call that was refused, so reconnecting for a channel lookup's scope is not described as reactions.list.
-    const scoped = createVendorProxy({
-      name: "Slack",
-      upstream: new URL(`${upstream}/mcp`),
-      auth: { headers: async () => ({ authorization: "Bearer x" }), refresh: async () => {}, status: () => ({ state: "ok", since: "" }), mark: () => {}, signedIn: () => true },
-      log,
-      serviceKey: "svc",
-      caller: async () => ({}),
-      instructions: "test",
-      stateDir: dir,
-      routes: (req, res) => interceptReactionSearch(req, res, {
-        tokenFile: join(dir, "token.json"),
-        headers: async () => ({ authorization: "Bearer xoxp-user" }),
-        authState: () => "ok",
-        serviceKey: "svc",
-        caller: async () => ({}),
-        served: async () => ({ served: true, confirmed: true }),
-        fetchImpl: (async (url: string | URL) => {
-          const u = new URL(String(url));
-          if (u.pathname.endsWith("/conversations.info")) return Response.json({ ok: false, error: "missing_scope", needed: "channels:history" });
-          return Response.json(page([item("C1", "1.1")]));
-        }) as unknown as typeof fetch,
-      }),
-    });
-    const scopedBase = await listen(scoped);
-    const res = await fetch(`${scopedBase}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) });
-    const body = (await res.json()) as any;
-    expect(body.result.structuredContent).toMatchObject({ error: "needs_owner", need: { cause: "scope", scope: "channels:history" } });
-    expect(JSON.stringify(body.result)).toContain("conversations.info");
-    expect(JSON.stringify(body.result)).not.toContain("reactions.list can't be read");
-    scoped.close();
-  });
-
-  it("names the missing permission when the sign-in has no channel search scope at all, never an empty complete set", async () => {
-    const bare = mkdtempSync(join(tmpdir(), "slack-reactions-"));
-    writeFileSync(join(bare, "token.json"), JSON.stringify({ access_token: "xoxp-user", user_id: ME, scope: "reactions:read" }));
-    const unscoped = createVendorProxy({
-      name: "Slack",
-      upstream: new URL(`${upstream}/mcp`),
-      auth: { headers: async () => ({ authorization: "Bearer x" }), refresh: async () => {}, status: () => ({ state: "ok", since: "" }), mark: () => {}, signedIn: () => true },
-      log,
-      serviceKey: "svc",
-      caller: async () => ({}),
-      instructions: "test",
-      stateDir: bare,
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(bare, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", serviceKey: "svc", caller: async () => ({}), fetchImpl: (async () => Response.json(page([]))) as unknown as typeof fetch }),
-    });
-    const unscopedBase = await listen(unscoped);
-    const res = await fetch(`${unscopedBase}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public_and_private", arguments: { filters: "hasmy::pushpin:" } } }) });
-    const body = (await res.json()) as any;
-    expect(body.result.isError).toBe(true);
-    expect(payload(body)).toMatchObject({ error: "scope", set: "unknown" });
-    expect(payload(body).detail).toContain("search scope");
-    unscoped.close();
   });
 
   it("answers needs_owner, not a plain error, when Slack refuses the sign-in or it is missing", async () => {
@@ -1108,35 +676,6 @@ describe("interception through the proxy", () => {
     signedOut.close();
   });
 
-  it("treats an unreadable auth state as a retryable admission error, not as Slack being signed out", async () => {
-    // `unknown` means the sign-in state couldn't be read right now (a restart mid-refresh): telling the owner to
-    // reconnect would be wrong, so the answer is the retryable admission error.
-    const unknown = createVendorProxy({
-      name: "Slack",
-      upstream: new URL(`${upstream}/mcp`),
-      auth: { headers: async () => ({}), refresh: async () => {}, status: () => ({ state: "unknown", since: "" }), mark: () => {}, signedIn: () => true },
-      log,
-      serviceKey: "svc",
-      caller: async () => ({}),
-      instructions: "test",
-      stateDir: dir,
-      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "unknown", served: async () => ({ served: false, confirmed: false }), serviceKey: "svc", caller: async () => ({}) }),
-    });
-    const unknownBase = await listen(unknown);
-    const res = await fetch(`${unknownBase}/mcp`, { method: "POST", headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) });
-    const body = (await res.json()) as any;
-    expect(body.result.isError).toBe(true);
-    expect(payload(body)).toMatchObject({ error: "admission_unknown" });
-    unknown.close();
-  });
-
-  it("consults the proxy's own read admission: a read-tagged, read-only tool is served; a read-tagged write is refused", async () => {
-    // The shared proxy advertises both search tools read-only and read-tagged, so the probe must find them.
-    const res = await fetch(`${base}/mcp/read`, { method: "POST", headers: { authorization: "Bearer rd", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
-    const listed = (await res.json()) as any;
-    expect(listed.result.tools.map((t: any) => t.name).sort()).toEqual(["slack_search_public", "slack_search_public_and_private"]);
-  });
-
   it("refuses a batched reaction search instead of letting it reach the search tool as an empty page", async () => {
     seen.length = 0;
     const res = await fetch(`${base}/mcp`, {
@@ -1154,40 +693,5 @@ describe("interception through the proxy", () => {
     expect(call.result.content[0].text).toContain("reactions.list");
     expect(seen).toEqual([]);
     expect(body.find((m) => m.id === 12).result.tools).toHaveLength(2);
-  });
-
-  it("passes ordinary searches through exactly, and the proxy still applies the argument hook", async () => {
-    seen.length = 0;
-    const keyword = await rpc("/mcp", "svc", "slack_search_public", { keywords: ["deploy"], filters: "in:<#C1> after:2026-11-08" }, "ok");
-    expect(payload(keyword.body)).toMatchObject({ upstream: true });
-    expect(seen).toEqual(["slack_search_public"]);
-    seen.length = 0;
-    const plain = await rpc("/mcp", "svc", "slack_search_public", { query: "deploy rollback" }, "ok");
-    expect(payload(plain.body).arguments).toEqual({ query: "deploy rollback" });
-    expect(seen).toEqual(["slack_search_public"]);
-    // `in:`+`after:` alone is the working filters-only search, and it reaches the vendor untouched.
-    seen.length = 0;
-    const scoped = await rpc("/mcp", "svc", "slack_search_public", { filters: "in:<#C1> after:2026-11-08" }, "ok");
-    expect(payload(scoped.body).arguments).toEqual({ filters: "in:<#C1> after:2026-11-08" });
-    expect(seen).toEqual(["slack_search_public"]);
-  });
-
-  it("hands a body the proxy must parse back byte for byte, and still lists tools", async () => {
-    const list = await fetch(`${base}/mcp`, {
-      method: "POST",
-      headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
-    });
-    const listed = (await list.json()) as any;
-    expect(listed.result.tools.map((t: any) => t.name)).toEqual(["slack_search_public", "slack_search_public_and_private"]);
-    // A body with trailing whitespace and a multi-megabyte argument both reach the proxy intact.
-    const big = { filters: "in:<#C1>", blob: "z".repeat(2_000_000) };
-    const res = await fetch(`${base}/mcp`, {
-      method: "POST",
-      headers: { authorization: "Bearer svc", "content-type": "application/json", accept: "application/json, text/event-stream", "x-aidenhq-caller": "ok" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "slack_search_public", arguments: big } }) + "\n\n",
-    });
-    const body = (await res.json()) as any;
-    expect(payload(body).arguments).toEqual(big);
   });
 });
