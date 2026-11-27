@@ -479,16 +479,16 @@ const waited = (iso: string) => {
   const m = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 60_000));
   return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`;
 };
-/** A Source line's date ("2026-10-09") or date and time ("2026-11-25 15:13", ISO with a zone or without: the owner's clock) as
- * the drawer writes dates (`when`, the time_format setting); null when it is neither. */
+/** A Source line's date ("2026-10-09") or zoned date and time ("2026-11-25T15:13Z", "…+04:00") as the drawer writes dates
+ * (`when`, the time_format setting); null otherwise. A time with no zone has no defined clock, so it is shown as written. */
 export function sourceDate(v: string): string | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(Z|[+-]\d{2}:?\d{2})?)?$/.exec(v.trim());
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(Z|[+-]\d{2}:?\d{2}))?$/.exec(v.trim());
   if (!m) return null;
   if (!m[4]) {
     const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
     return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(d.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}) });
   }
-  const d = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}${m[5] ?? ""}`);
+  const d = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}${m[5]!.length === 5 ? `${m[5]!.slice(0, 3)}:${m[5]!.slice(3)}` : m[5]}`);
   return Number.isNaN(d.getTime()) ? null : when(d.toISOString());
 }
 /** An http(s) address as a link that opens in a new tab, a date as a date; any other value as text. */

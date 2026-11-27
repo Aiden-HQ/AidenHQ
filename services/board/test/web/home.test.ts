@@ -112,6 +112,16 @@ describe("Home", () => {
     over.remove();
   });
 
+  it("writes a Source line's zoned time and date as dates, and a zone-less time as written", async () => {
+    const { sourceDate } = await import("../../web/src/Home");
+    const { when } = await import("../../web/src/util");
+    expect(sourceDate("2026-10-05T13:47Z")).toBe(when("2026-10-05T13:47:00Z"));
+    expect(sourceDate("2026-10-05T17:47+0400")).toBe(when("2026-10-05T13:47:00Z"));
+    expect(sourceDate("2026-10-09")).toMatch(/Oct/);
+    expect(sourceDate("2026-11-25 15:13")).toBeNull();
+    expect(sourceDate("Thursday")).toBeNull();
+  });
+
   it("opens a decided card that isn't in Needs you at #/approvals/<id>", async () => {
     const id = "k-00000000000000d1";
     const { el } = await mountApp(`#/approvals/${id}`, (path) => (path === `/api/approvals/${id}` ? answer({ approval: { ...card, id, state: "rejected", decidedBy: "account:u1" } }) : undefined));
