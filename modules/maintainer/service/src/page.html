@@ -57,7 +57,7 @@
   const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   let cfg = { repos: [], defaults: null };
   // One local draft per repo (its whole effective settings); the page proposes every repo's draft at once, and the board's bar saves it.
-  let drafts = {}, lastGood = {}, removing = null, openRepo = null, drawn = false;
+  let drafts = {}, lastGood = { drafts: {}, removing: null }, sentRev = 0, removing = null, openRepo = null, drawn = false;
   const advOpen = new Set();
   const saved = (repo) => cfg.repos.find((r) => r.repo === repo).effective;
   const draft = (repo) => (drafts[repo] ??= structuredClone(saved(repo)));
@@ -79,8 +79,11 @@
   function propose() {
     const repos = edits();
     // Always propose, an unchanged draft included, so the board's bar holds exactly what the page shows; a refused draft goes back to the last one proposed.
-    const sent = structuredClone(drafts), gone = removing;
-    inOrder(async () => { try { proposed(await tool("maintainer_configure", { edits: { repos }, ...(gone ? { remove: gone } : {}) })); lastGood = sent; } catch (e) { drafts = structuredClone(lastGood); if (removing === gone) removing = null; redraw(); say(e.message, true); } });
+    const sent = { drafts: structuredClone(drafts), removing }, rev = ++sentRev;
+    inOrder(async () => {
+      try { proposed(await tool("maintainer_configure", { edits: { repos }, ...(sent.removing ? { remove: sent.removing } : {}) })); lastGood = sent; }
+      catch (e) { if (rev === sentRev) { drafts = structuredClone(lastGood.drafts); removing = lastGood.removing; redraw(); } say(e.message, true); }
+    });
   }
   const change = (repo, patch) => { Object.assign(draft(repo), patch); soon(redraw); propose(); };
 
@@ -179,7 +182,7 @@
   }
 
   async function load() {
-    try { cfg = await tool("maintainer_config", {}); drafts = {}; lastGood = {}; removing = null; draw(); } catch (e) { say(e.message, true); }
+    try { cfg = await tool("maintainer_config", {}); drafts = {}; lastGood = { drafts: {}, removing: null }; removing = null; draw(); } catch (e) { say(e.message, true); }
   }
   start("maintainer", load);
 </script>
