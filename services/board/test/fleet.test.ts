@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Refused, assertOwnerWords, fleetControl, unfenced } from "../src/fleet.js";
+import { Refused, assertOwnerWords, fleetControl, pick, unfenced } from "../src/fleet.js";
 import type { Agent, Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
 
@@ -34,6 +34,11 @@ describe("fleet owner-words gate", () => {
   it("matches the target ignoring case, punctuation and spacing, and refuses another routine", async () => {
     await expect(gate(pcWith("Run the owner tasks re-triage now please"), "run_routine", "Owner tasks: re-triage", "run the owner tasks re-triage now")).resolves.toBe("c1");
     await expect(gate(pcWith("Run the owner tasks re-triage now please"), "run_routine", "Daily brief", "run the owner tasks re-triage now")).rejects.toThrow(/name the target/);
+  });
+  it("picks the routine by the owner's spelling and refuses two titles that read the same", () => {
+    const rows = [{ title: "Owner tasks: re-triage" }, { title: "Daily brief" }];
+    expect(pick(rows, "owner tasks re-triage", "routine", (r) => [r.title])).toBe(rows[0]);
+    expect(() => pick([{ title: "Health check: EU" }, { title: "Health check - EU" }], "health check eu", "routine", (r) => [r.title])).toThrow(/several/);
   });
   it("accepts the owner's opening chat message as the board recorded it, once per task", async () => {
     const typed = "Run the daily brief now please";
