@@ -2,7 +2,13 @@
 // (OWNER_TIMEZONE, the instance `timezone` setting), never the server's.
 import { renderInZone, type NormalizedEvent } from "./workspace.js";
 
-export type TodayEvent = { id: string; start: string; end: string; title: string; all_day: boolean };
+export type TodayEvent = { id: string; start: string; end: string; title: string; all_day: boolean; /** The meeting's video-call URL, else the event's calendar page; http(s) only, absent when the event has neither. */ url?: string };
+
+const httpUrl = (u?: string) => (u && /^https?:\/\/\S+$/i.test(u) ? u : undefined);
+const CALL_HOST = /^https?:\/\/(?:[\w-]+\.)*(?:zoom\.us|zoomgov\.com|meet\.google\.com|teams\.microsoft\.com|teams\.live\.com)(?:[/?#]\S*)?$/i;
+/** Where a click on the event goes: its video call (Meet link or conference entry, else a Zoom/Meet/Teams URL in the location), else its calendar page. */
+export const eventUrl = (e: Pick<NormalizedEvent, "meet_link" | "location" | "html_link">) =>
+  httpUrl(e.meet_link) ?? e.location?.split(/[\s,;]+/).find((w) => CALL_HOST.test(w)) ?? httpUrl(e.html_link);
 
 const offsetMs = (at: number, zone: string) => {
   const m = renderInZone(new Date(at).toISOString(), zone).match(/([+-])(\d\d):(\d\d)$/);
@@ -25,6 +31,6 @@ export async function calendarToday(ws: { listEvents(start: string, end: string,
     events: events
       .filter((e) => e.status !== "cancelled" && !e.attendees.some((a) => a.self && a.response_status === "declined"))
       .filter((e) => (e.all_day ? e.start.slice(0, 10) <= today && today < e.end.slice(0, 10) : Date.parse(e.end) > from && Date.parse(e.start) < to))
-      .map((e) => ({ id: e.id, start: e.start, end: e.end, title: e.title, all_day: e.all_day })),
+      .map((e) => ({ id: e.id, start: e.start, end: e.end, title: e.title, all_day: e.all_day, ...(eventUrl(e) ? { url: eventUrl(e) } : {}) })),
   };
 }

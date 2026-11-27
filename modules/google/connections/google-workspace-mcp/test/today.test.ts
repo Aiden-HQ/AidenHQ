@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { expect, it } from "vitest";
 import { verifyCaller } from "../src/aidenhq-sdk/caller.js";
 import { FixtureWorkspace } from "../src/fixtures.js";
-import { calendarToday } from "../src/today.js";
+import { calendarToday, eventUrl } from "../src/today.js";
 
 it("an owner call (no agent) gets only today's events in the owner's zone", async () => {
   // The kernel's view route signs kind owner with empty agent and key (kernel/src/views.ts); the service accepts it.
@@ -32,4 +32,12 @@ it("an owner call (no agent) gets only today's events in the owner's zone", asyn
   expect(today.timezone).toBe("Asia/Dubai");
   expect(today.events.map((e) => e.id).sort()).toEqual(["allday", "early"]);
   expect(Object.keys(today.events[0]!).sort()).toEqual(["all_day", "end", "id", "start", "title"]);
+});
+
+it("an event links to its video call, else its calendar page, http(s) only", () => {
+  expect(eventUrl({ meet_link: "https://meet.google.com/abc-defg-hij", html_link: "https://www.google.com/calendar/event?eid=1" })).toBe("https://meet.google.com/abc-defg-hij");
+  expect(eventUrl({ location: "Room 4 or https://acme.zoom.us/j/123?pwd=x", html_link: "https://www.google.com/calendar/event?eid=1" })).toBe("https://acme.zoom.us/j/123?pwd=x");
+  expect(eventUrl({ location: "https://example.com/not-a-call", html_link: "https://www.google.com/calendar/event?eid=1" })).toBe("https://www.google.com/calendar/event?eid=1");
+  expect(eventUrl({ meet_link: "javascript:alert(1)", html_link: "ftp://x" })).toBeUndefined();
+  expect(eventUrl({})).toBeUndefined();
 });

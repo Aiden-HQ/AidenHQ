@@ -892,7 +892,7 @@ export type NeedRow =
 export type SinceItem = { teammate: FaceRef; text: string; at: string; task: string | null; kind: "done" | "fyi" | "digest" | "closed" };
 export type WorldBlock = {
   waiting_on: { id: string; identifier: string; title: string; age_days: number; quiet_days: number }[] | null;
-  today: { timezone: string; events: { id: string; start: string; title: string; all_day: boolean; prep?: string }[] } | null;
+  today: { timezone: string; events: { id: string; start: string; title: string; all_day: boolean; url?: string; prep?: string }[] } | null;
 };
 export type TeamNews = { teammate: FaceRef; line: string };
 export type Home = {
