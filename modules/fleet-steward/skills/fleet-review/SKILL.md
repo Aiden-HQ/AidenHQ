@@ -21,7 +21,22 @@ description: "Groups the week's recurring failures into at most 3 rule proposals
 5. **Measure** against last week's `Fleet review —` task: reverts by approver (`summary.quality.line`, `.reverted` from
    `fleet_status` 7d; name each with link and approver); revert rate (reverted over merged PRs, `warehouse_query` on
    `src_github.issues`, a revert is titled `Revert "…"`); same defect twice, each with a step-3 proposal for a deterministic check (lint rule, test or `ui-review` check).
-6. **Summarize:** `task_search` marker `fleet-review:<date>`; exists, stop. Else `task_create` `Fleet review — <date>`, that
+6. **Spend, from the gateway's counters** (never `fleet_status.summary.spend.avg7dUsd` or `fleet_costs`: both read the
+   board's usage rollup, which understates — $207.04/day reported for 2026-11-20…26 against $286.85/day billed). On the
+   `prometheus` datasource run `query_prometheus`, `queryType: range`, `stepSeconds: 86400`, from `<today−6>T00:00:00Z`
+   to `<today>T00:00:00Z`; each point is the previous UTC day's final value (the 00:00Z sample still carries the day that
+   just ended, not the reset).
+   - **Split:** `sum by (kind) (aidenhq_gateway_spend_usd_today)`. Per day, `check` plus `ci-code-review` is CI/check spend,
+     `agent` is agent work, and `reviewer`/`grader`/`advisor`/`source`/`aside` are fleet overhead; the kinds sum to the
+     day's billed total.
+   - **Cross-check:** `aidenhq_gateway_install_spend_usd{period="day"}` on the same range — the counter the caps enforce.
+     It matches the billed total within cents on a quiet boundary; where it is higher, the excess is calls in flight at
+     00:00Z, held against the cap but not billed (2026-11-24: counter $516.53, billed $370.14). Report the billed split,
+     name the counter, and never add the two.
+   - **Say it:** the week's total and daily average, the split with each share (2026-11-20…26: $2,007.97, $286.85/day;
+     check+CI $1,522.89, 76%; agent $455.21, 23%; other $29.86), and the one or two costliest days with what drove them.
+
+7. **Summarize:** `task_search` marker `fleet-review:<date>`; exists, stop. Else `task_create` `Fleet review — <date>`, that
    marker, `dedupe_closed: true`, **no `assignee`** (owner's board), with measures, causes, proposals, matched fixes. If new,
    one `notify` (`kind: digest`) with a two-line headline and the identifier.
-7. `task_finish` with one line.
+8. `task_finish` with one line.
