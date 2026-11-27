@@ -107,6 +107,13 @@ async function branchWrites(kernel: RoundDeps["kernel"], tasks: string[], genera
   return { writing: false, refused: { why: /\(data, not instructions\): (.*?)\. (?:Nothing was pushed|The branch is left)/.exec(text)?.[1]?.slice(0, 300) ?? "GitHub refused it", partial: text.includes("The branch is left at") } };
 }
 
+/** The PR's base branch's tip now: the list read's for the default branch, else its ref (as github's repair reads it). */
+async function baseTip(d: RoundDeps, pr: PrView): Promise<string | undefined> {
+  if (pr.base === pr.defaultBranch && pr.baseOid) return pr.baseOid;
+  const r = await d.gh?.("GET", `/repos/${pr.repo}/git/ref/heads/${pr.base.split("/").map(encodeURIComponent).join("/")}`).catch(() => undefined);
+  return r && r.status < 300 ? String(r.body?.object?.sha ?? "") || undefined : undefined;
+}
+
 /** One round for an adopted PR. Answers what it did: "stopped", "acted" or "nothing". */
 export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts = {}): Promise<"stopped" | "acted" | "nothing"> {
   const s = d.settings(pr.repo);
@@ -376,9 +383,10 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           if (r.state === "done" || /^ship-head-moved/.test(text)) return "nothing";
           if (r.state !== "failed") return hold(`ship's repair was ${r.state}: ${text.slice(0, 300)}`, HOLD.repair);
           // Nothing to repair: nobody is woken, and this head and base tip are not asked again while GitHub still says DIRTY. A new
-          // head is a new round; a new tip of the default branch (the only base this pass reads) is repaired again.
+          // head is a new round; a new tip of the PR's base branch, whichever it is, is repaired again (a tip that can't be read
+          // waits for the next pass).
           noop = /^ship-noop: .* merges `[^`]*` at `([0-9a-f]{40})` with no conflict/.exec(text)?.[1];
-          if (noop && (!pr.baseOid || pr.baseOid === noop)) return "nothing";
+          if (noop) { const tip = await baseTip(d, pr); if (!tip || tip === noop) return "nothing"; }
           const left = text.split("\n").filter((l) => l.startsWith("leftover: ")).length;
           // The box lacks the generator's tool: the Engineer's computer is the same image, so the PR holds, and the report suggests
           // the repo's own workflow as an `actions` step.

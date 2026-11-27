@@ -154,3 +154,23 @@ test("a repair with no conflict to resolve wakes nobody and isn't filed again at
   assert.equal(w.of("POST /v1/writes").length, 2, "a new base tip is repaired again");
   assert.equal(w.of("POST /v1/writes")[1]!.body.args.attempt, undefined, "a fresh repair, not a retry");
 });
+
+test("a no-op on a release branch is keyed on that branch's own tip: its hook runs on the default branch, and the branch moving re-files", async () => {
+  const w = world({ preset: "cautious", generated: { globs: ["gen/**"], command: "" }, actions: { conflict: [{ workflow: "pr-rebase.yml", inputs: { pr: "{pr}" } }] } });
+  const R1 = "d".repeat(40), R2 = "e".repeat(40);
+  let tip = R1;
+  const gh = w.deps.gh;
+  (w.deps as any).gh = async (method: string, path: string, body?: unknown) => (path === "/repos/a/b/git/ref/heads/release/1.x" ? { status: 200, body: { object: { sha: tip } } } : gh(method, path, body));
+  const rel = () => w.pr({ base: "release/1.x" });
+  await w.adopt();
+  await round(w.deps, rel(), { do: "repair" }, { dirty: true });
+  assert.equal(w.of("POST /repos/a/b/actions/workflows/pr-rebase.yml/dispatches")[0]!.body.ref, "main", "the repo's trusted copy, never the release branch's");
+  w.runs[0] = { status: "completed", conclusion: "failure" };
+  await round(w.deps, rel(), { do: "repair" }, { dirty: true });
+  w.records["rec-1"] = { state: "failed", outcome: { text: `ship-noop: https://github.com/a/b/pull/7 at \`${H1.slice(0, 12)}\` merges \`release/1.x\` at \`${R1}\` with no conflict: nothing to repair, nothing was changed.` } };
+  assert.equal(await round(w.deps, rel(), { do: "repair" }, { dirty: true }), "nothing");
+  assert.equal(w.of("POST /v1/writes").length, 1);
+  tip = R2;
+  await round(w.deps, rel(), { do: "repair" }, { dirty: true });
+  assert.equal(w.of("POST /v1/writes").length, 2, "the release branch moved: repaired again");
+});

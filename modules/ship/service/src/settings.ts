@@ -15,7 +15,7 @@ export const FIX = ["conflicts", "ci", "review"] as const;
 /** The stages a repo's own workflows run at (actions.ts): before ship's repair of a conflict, before it brings a branch up to
  * date, and before it merges. */
 export const STAGES = ["conflict", "behind", "before_merge"] as const;
-/** One step of a stage: one of the repo's workflows, dispatched on the PR's base branch; an input value's `{pr}` is the PR's number
+/** One step of a stage: one of the repo's workflows, dispatched on the repo's default branch; an input value's `{pr}` is the PR's number
  * (how the workflow knows which PR). */
 export type ActionStep = { workflow: string; inputs?: Record<string, string> };
 
@@ -133,7 +133,7 @@ export function stepError(x: unknown): string | undefined {
   if (typeof x.workflow !== "string" || !WORKFLOW.test(x.workflow)) return "workflow: a file name in .github/workflows, e.g. pr-rebase.yml";
   if ("inputs" in x && (!isMap(x.inputs) || Object.keys(x.inputs).length > 10 || Object.entries(x.inputs).some(([k, v]) => !/^[\w-]{1,50}$/.test(k) || typeof v !== "string" || v.length > 200))) return "inputs: up to 10 names with text values";
   if ("inputs" in x && Object.values(x.inputs as Dict).some((v) => /[{}]/.test(String(v).replaceAll("{pr}", "")))) return "inputs: the only placeholder is {pr}";
-  // It runs on the base branch: an input naming the PR is the only way it knows which one.
+  // It runs on the default branch: an input naming the PR is the only way it knows which one.
   if (!isMap(x.inputs) || !Object.values(x.inputs).some((v) => String(v).includes("{pr}"))) return "inputs: name the PR with {pr}, e.g. inputs: { pr: \"{pr}\" }";
   return undefined;
 }

@@ -58,7 +58,7 @@ settings:
   # each PR head; a tier or field omitted takes the preset's), unwatched: { merge: off|ready } (a repo code review doesn't watch has no
   # tier), enabled: true|false, stop_label,
   # actions: { conflict|behind|before_merge: [ { workflow: "file.yml", inputs: { pr: "{pr}", … } } ] } (the repo's own workflows,
-  # dispatched on the PR's base branch with the PR's number as an input, run before ship's own step; ship follows each run by its
+  # dispatched on the repo's default branch with the PR's number as an input, run before ship's own step; ship follows each run by its
   # id; service/src/actions.ts) } } }. Ship works the fleet org's repos and the product repo; a maintainer_repos repo is worked only once it has an entry here (quiet until enabled). The Fleet page
   # edits it; this is the advanced form. Read by the service (service/src/settings.ts).
   ship:

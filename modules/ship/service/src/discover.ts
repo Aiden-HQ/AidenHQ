@@ -92,7 +92,7 @@ export function discover(files: Record<string, string>): Discovered {
 
 const REGEN = /\b(rebase|regenerat|generat|codegen)/i;
 /** The repo's own regenerate paths, from its workflows: a workflow_dispatch workflow that rebases or regenerates, proposed with the
- * PR's number as its input that names the PR (`pr`, `pr_number`, `pull_request`, …; a hook runs on the base branch, so an input
+ * PR's number as its input that names the PR (`pr`, `pr_number`, `pull_request`, …; a hook runs on the default branch, so an input
  * is how it knows the PR; a workflow without one is left to the owner). Proposed in the report as `actions` steps; enabling one is the owner's or an agent's ship_configure. */
 function suggestions(files: Record<string, string>): Suggestion[] {
   const out: Suggestion[] = [];

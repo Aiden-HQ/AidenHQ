@@ -32,8 +32,8 @@ The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui
   where the author allows maintainer edits; otherwise the PR holds.
 - **One decision per pass.** Merge-gate's `decide` returns `wait`, `repair`, `fix_ci`, `fix_review`, `approve`, `enqueue`,
   `merge`, `done`, `stall` or `fail`, and each writer re-decides right before it writes. Nothing moves on a draft, a stop label (`stop_label`, default `ship:stop`), a person assigned to the PR, or a hold.
-- **Repair.** The repo's own `actions` run first: each a workflow with `workflow_dispatch`, dispatched on the PR's base branch
-  (the repo's own copy, so a PR can't change what runs with the repo's secrets) with the PR's number as an input
+- **Repair.** The repo's own `actions` run first: each a workflow with `workflow_dispatch`, dispatched on the repo's default branch
+  whatever the PR's base (the repo's own trusted copy, so neither a PR nor a release branch changes what runs with its secrets) with the PR's number as an input
   (`inputs: { pr: "{pr}" }`); ship follows the run GitHub names, and a failed run moves on to the next step, then to ship's own.
   Then GitHub's update-branch, then on a conflict the `ship-repair` check job: a credential-free box merges the base's live tip in
   (none when the head already holds it), takes the base side of generated paths and lockfiles, runs the discovered generator

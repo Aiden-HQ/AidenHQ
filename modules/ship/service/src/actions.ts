@@ -1,9 +1,9 @@
 // The repo's own tooling (the `actions` setting) and zero-config discovery, read and run through GitHub (`gh`, the owner's calls
 // through github's /internal/ship/gh).
-//   Actions: per stage (conflict, behind, before_merge) a list of steps, each one of the repo's workflows, dispatched on the PR's
-//   base branch (the repo's own copy of the workflow: a PR can't change what runs with the repo's secrets, and a branch made before
-//   the workflow took `workflow_dispatch` needn't have it) with the PR named by an input (`{pr}`), and `return_run_details` so
-//   GitHub answers the run's id. A step runs before ship's own step for that stage and only
+//   Actions: per stage (conflict, behind, before_merge) a list of steps, each one of the repo's workflows, dispatched on the repo's
+//   default branch whatever the PR's base (the repo's own trusted copy of the workflow: neither a PR nor a release branch changes
+//   what runs with the repo's secrets, and a branch made before the workflow took `workflow_dispatch` needn't have it) with the PR
+//   named by an input (`{pr}`), and `return_run_details` so GitHub answers the run's id. A step runs before ship's own step for that stage and only
 //   when the round needs that stage, on an adopted PR. Ship then reads that run: success ends the stage; any other conclusion, or no
 //   end within STEP_WAIT_MS, moves on to the next step, and past the last ship's own step follows on the same pass (before_merge:
 //   the PR holds). A new head (the repo's workflow pushed it) ends a conflict or behind stage too. A head a step produced never runs
@@ -68,9 +68,9 @@ async function next(gh: Gh, pr: PrView, stage: Stage, steps: ActionStep[], from:
     const at = new Date(now).toISOString();
     try {
       const inputs = inputsOf(s, pr);
-      // On the base branch, the PR named by its inputs. GitHub answers the run it started (200, `workflow_run_id`); an answer
+      // On the default branch, the PR named by its inputs. GitHub answers the run it started (200, `workflow_run_id`); an answer
       // without one is a step that can't be followed.
-      const d = await must(gh, "POST", `/repos/${pr.repo}/actions/workflows/${s.workflow}/dispatches`, { ref: pr.base, ...(inputs ? { inputs } : {}), return_run_details: true });
+      const d = await must(gh, "POST", `/repos/${pr.repo}/actions/workflows/${s.workflow}/dispatches`, { ref: pr.defaultBranch, ...(inputs ? { inputs } : {}), return_run_details: true });
       const run = Number(d?.workflow_run_id);
       if (!Number.isSafeInteger(run) || run <= 0) throw new Error("GitHub started it without naming its run");
       return { go: "started", rec: { stage, head: pr.head, step: i, at, run, steps: JSON.stringify(steps) }, did: `ran the \`${s.workflow}\` workflow (${stage.replace("_", " ")}) at \`${pr.head.slice(0, 12)}\`` };
