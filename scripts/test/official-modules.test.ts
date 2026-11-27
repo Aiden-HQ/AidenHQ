@@ -30,7 +30,7 @@ test("the default bundle and every official module compile", () => {
     writeFileSync(join(dir, "instance.yaml"), YAML.stringify({ product: "0".repeat(40), modules, settings }));
     assert.doesNotThrow(() => compile(product, dir), label);
     if (label !== "every module") continue;
-    // The ten default teammates, keyed and named as the roster (each with its kit face); the meeting work is Nora's alone.
+    // The default teammates, keyed and named as the roster (each with its kit face); the meeting work is Nora's alone.
     const r = compile(product, dir);
     const kit = (hair, accessory, body, n, hair_color = n) => ({ hair, accessory, body, skin: n, hair_color, palette: n });
     const roster = Object.fromEntries(Object.entries(r.paperclip.agents).filter(([, a]) => a.teammate).map(([k, a]) => [k, [a.name, a.teammate.job, a.teammate.face]]));
@@ -45,6 +45,9 @@ test("the default bundle and every official module compile", () => {
       architect: ["Archie", "Agent Architect", kit("short", "hard-hat", "none", 7)],
       "security-watch": ["Vik", "Security", { ...kit("short", "headband", "shield", 8), hair_color: 0 }],
       assistant: ["Rhea", "Researcher", kit("long", "round-glasses", "none", 9, 8)],
+      // server-manager ships a teammate but is not in the default bundle, so it is on only while the instance lists it: the roster
+      // here is the modules a fresh install ships, and this entry is the one extra the every-module compile adds.
+      "server-manager": ["Rolf", "Server upkeep", kit("spiky", "headset", "shield", 6)],
     });
     assert.equal(r.paperclip.agents["open-loops"].teammate.first, 1);
     assert.deepEqual(["meeting-scan", "meeting-actions"].map((k) => r.paperclip.routines[k].agent), ["meetings", "meetings"]);

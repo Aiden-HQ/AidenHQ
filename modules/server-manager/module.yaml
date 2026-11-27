@@ -1,0 +1,141 @@
+name: server-manager
+description: "Server Manager: keeps the Linux servers you list (Ubuntu LTS and Debian stable) patched over SSH, inside a quiet window, with one approval record per maintenance run and one status row per server. It checks, patches and reboots through typed operations only: no arbitrary commands, no ad hoc service restarts."
+# docs/superpowers/specs/2026-11-27-servers-design.md is the design of record. The one service (services.run.ssh) holds a
+# server's private key only at connect time and speaks to servers over SSH; settings.servers_machines is the whole per-server
+# configuration; the board's Sign-ins panel (contributes.board.pages secret_maps) writes the servers_keys map one key at a time.
+requires:
+  - board # contributes.board.pages, the page and its Sign-ins panel
+  - warehouse # contributes.warehouse.sources (src_servers, the one status row per server)
+contributes:
+  # The Servers page: a module view served by the connection below (docs/design/board-ui.md "Modules").
+  board.pages:
+    - id: server-manager
+      title: Servers
+      icon: shield
+      order: 40
+      connection: server-manager
+      view: "ui://server-manager/page"
+      tools: [ server_manager_config, server_manager_status, server_manager_check, server_manager_patch, server_manager_reboot, server_manager_host_key_reset ]
+      settings: [ servers_machines ]
+      # The board's own Sign-ins panel under the frame: each machine's key by name, typed outside the module, one entry of the
+      # servers_keys map. `keys_from` is exactly the field a machine entry names, so a key's name is what the service looks up.
+      secret_maps:
+        - secret: servers_keys
+          keys_from: servers_machines[].key
+          fields:
+            - { name: private_key, label: "Private key", kind: key, maxLength: 4096 }
+  # contributes.warehouse.sources (`src_servers`) arrives with the read path that fills it (slice 2: src/status.ts and the
+  # warehouse writer). This build declares no source it cannot serve: a view needs its writer, its schema and its login shipped
+  # together, or a fresh install would advertise a view the warehouse does not have.
+roles:
+  # kernel.tasks: the service files a task for the agent when a run needs a judgement (§13). kernel.wake: it wakes that task.
+  requests: [ kernel.tasks, kernel.wake ]
+secrets:
+  # The JSON map of key name -> { private_key }, written only by the board's Sign-ins panel; the service reads it on each use
+  # and never writes it. The pattern accepts any JSON object: the map is multi-line from the first key on.
+  provided:
+    - name: servers_keys
+      setup:
+        label: "SSH keys"
+        pattern: '^\{[\s\S]*\}$'
+        help: "Each server's private key, by the name its entry uses. Added from this page's Sign-ins panel; never shown again."
+# The service's own token (it files records and tasks through the kernel) and the connection's service key.
+generated_secrets:
+  - server_manager_token
+  - server_manager_service_key
+connections:
+  server-manager:
+    setup: "Built in: nothing to connect."
+    url: http://server-manager-ssh:8103/mcp
+    auth: server_manager_service_key
+    returns: untrusted
+    # The kernel's proxy would cut a tool call at 300 s otherwise, below the install's 1500 s bound (§4).
+    tool_timeout_sec: 1800
+    tools:
+      # server_manager_check is a read on a key and a private host, so it is tagged `named`: only a grant that names it reaches it.
+      read: [ server_manager_config, server_manager_status, server_manager_check ]
+      write: [ server_manager_patch, server_manager_reboot, server_manager_host_key_reset ]
+      named: [ server_manager_check ]
+# The two typed write kinds: the service files each record itself and executes it (executor@1). A view cannot call a tool a kind
+# routes, so neither kind routes a tool (`tools: []`); the page calls server_manager_patch / _reboot, and the service files the record.
+providers:
+  executor:
+    url: http://server-manager-ssh:8103/aidenhq/v1/executor
+    auth: server_manager_service_key
+# The hook's host is the service's key in services.run (`ssh`), not the compose name: compile checks a validate.post's host against
+# services.run's keys, and the kernel resolves either name to the same container.
+validate:
+  post: http://ssh:8103/validate
+  auth: server_manager_service_key
+writes:
+  # Install the revalidated set (security or full) on one machine. Tier 0: no model in a scheduled run's path (§6).
+  patch:
+    args: schemas/patch.json
+    floor: 0
+    tools: []
+    card:
+      target: "{{target}}"
+      sentence: "{{sentence}}"
+      changes: "{{changes}}"
+      reads: "{{reads}}"
+      cost: "No model cost; apt installs {{count}} package(s) on this machine."
+      details: "{{details}}"
+  # Reboot one machine. Tier 0 inside its quiet window; `plan` raises to 2 when the machine is "ask me first".
+  reboot:
+    args: schemas/reboot.json
+    floor: 0
+    tools: []
+    card:
+      target: "{{target}}"
+      sentence: "{{sentence}}"
+      changes: "{{changes}}"
+      reads: "Reads the boot ID before and after; a reboot is done only when it changed."
+      cost: "No model cost; the machine restarts."
+      details: "{{details}}"
+# The servers this module maintains, one entry each: the whole of that server's configuration. The page's Save is the owner's.
+settings:
+  # The servers this module maintains, one entry each: the whole of that server's configuration, from its address and the vault
+  # key it signs in with to when to check and patch it and whether it may reboot on its own. An entry is checked whole by the
+  # module's validate hook; `name` is its identity and never changes (renaming is remove-and-add).
+  servers_machines:
+    title: Servers
+    type: array
+    default: []
+    entry: name
+    pattern: '^[a-z0-9][a-z0-9-]{0,31}$'
+    writers: [ owner ]
+agents:
+  server-manager:
+    skills: [ server-manager.maintenance, tasks.delegate-work ]
+    department: platform
+    model: ~deepseek/deepseek-flash-latest
+    timeout_sec: 1200
+    paperclip_tasks: [ task_current, task_get, task_comments, task_comment, task_block, task_finish, task_list, task_approvals ]
+    # kernel.tasks/kernel.wake: the service files a task here and wakes it (§13). The grant names server_manager_check, which
+    # `server-manager: read` would not hand out.
+    connections:
+      server-manager: [ server_manager_config, server_manager_status, server_manager_check ]
+      apps: [ web_view, app_view ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_comment, task_block, task_finish, task_list, task_approvals ]
+    # The 4-hour heartbeat is the backstop for a missed wake (quiet start turns heartbeats off for a new install).
+    heartbeat: 4
+services:
+  data: true
+  run:
+    # Compile names it server-manager-ssh; its key here (`ssh`) is the validate.post host, and `ssh` is its network alias.
+    ssh:
+      build: ./service
+      tmp: 16m
+      port: 8103
+      # Servers are usually private, so this service (alone) reaches them: agent computers can't.
+      egress: true
+      data: ["state:/data"]
+      secrets: [ servers_keys ]
+      env:
+        SERVERS_STATE_DIR: /data
+        SERVERS_KEYS_FILE: /run/secrets/servers_keys
+        SERVERS_TOKEN_FILE: ${secrets.server_manager_token}
+        SERVERS_SERVICE_KEY_FILE: ${secrets.server_manager_service_key}
+        SERVERS_MACHINES: "${settings.servers_machines}"
+        AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
+data_version: 0 # its data dir's format (known_hosts/, the durable due-slot records): bumped by each forward-only migration
