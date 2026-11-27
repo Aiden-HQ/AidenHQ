@@ -81,7 +81,7 @@ words, diff and decisions are kernel records.
 
 **Checks run as the kernel's `change` check job**, in a credential-free box on the change's snapshot (never on the host):
 `checks/tests.sh` runs the secret scan (gitleaks with the base's config), the supply-chain checks (the product's
-`scripts/supply-chain`, at `/opt/aidenhq/supply-chain` in the box) before anything is installed, then `npm ci`, the repo's lint, tests and build. The
+`scripts/supply-chain`, at `/opt/aidenhq/supply-chain` in the box) before anything is installed, then `bun install --frozen-lockfile --ignore-scripts`, the repo's lint, tests and build. The
 scripts are the recipe's own copies, never the change's, so a change cannot loosen its checks. The kernel starts the job when
 a change is opened and again when a base moved under an open one; the receipt is signed by the kernel and keyed to the exact
 head and base. A missing or partial receipt counts as not passed; a running check reads as pending; a check that could not run

@@ -1,5 +1,5 @@
 # The third-party twin: a module written the way an outside author would, against the packed SDK, never against kernel/
-# sources. CI copies it to a temp dir, installs the local `npm pack` tarball of kernel/sdk and runs the contract kit there.
+# sources. CI copies it to a temp dir, installs the local `bun pm pack` tarball of kernel/sdk and runs the contract kit there.
 name: twin
 description: Answers every job with the prompt it was given (a third-party engine module).
 license: MIT

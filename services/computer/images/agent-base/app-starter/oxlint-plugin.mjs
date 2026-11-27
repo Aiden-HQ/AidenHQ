@@ -1,6 +1,6 @@
 // Fast static checks for the mistakes agents repeat, as Oxlint JS-plugin rules (one rule per group, so a directory that owns
 // a concern can be exempt from just that group: .oxlintrc.json overrides). Each message says how to fix it.
-// `npm run lint` runs in CI next to the tests. src/catalog is the dev-only preview.
+// `bun run lint` runs in CI next to the tests. src/catalog is the dev-only preview.
 const nav = (why) => `Use <Link href> from lib/navigation (navigate() from code); ${why}, while Link moves without a page load and keeps Back, Forward and reload working.`
 const link = "JSXOpeningElement[name.name='a'] > JSXAttribute[name.name='onClick']"
 const loc = "[left.object.name='location'], [left.object.property.name='location']"

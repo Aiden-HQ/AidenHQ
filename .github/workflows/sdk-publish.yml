@@ -1,11 +1,12 @@
 name: sdk-publish
 # Tag `sdk-vX.Y.Z` publishes @aidenhq/sdk X.Y.Z (version from the tag) by npm trusted publishing (GitHub OIDC, no token).
-# npmjs.com trusts this exact workflow filename. PRs that touch kernel/sdk dry-run the same steps.
+# npmjs.com trusts this exact workflow filename. PRs that touch kernel/sdk dry-run the same steps. Bun installs, versions and
+# packs (its prepack builds dist/); npm only publishes that tarball, since provenance needs npm's trusted publishing.
 on:
   push:
     tags: ["sdk-v*"]
   pull_request:
-    paths: ["kernel/sdk/**", "scripts/sdk-pack.ts", ".github/workflows/sdk-publish.yml"]
+    paths: ["kernel/sdk/**", "scripts/sdk-pack.ts", ".github/workflows/sdk-publish.yml", ".github/actions/bun/**"]
 # No job a PR can trigger gets a secret or OIDC: only the tag job holds id-token.
 permissions:
   contents: read
@@ -20,20 +21,25 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
+      - uses: ./.github/actions/bun
+        with:
+          cache: sdk
       # Trusted publishing needs npm 11.5.1 or later; Node 24 bundles it.
       - name: npm supports trusted publishing
         run: node -e 'const [a,b,c]=process.argv[1].split(".").map(Number); if (a<11||(a===11&&(b<5||(b===5&&c<1)))) { console.error("npm "+process.argv[1]+" is older than 11.5.1"); process.exit(1) }' "$(npm --version)"
       # The pack step compiles with the SDK's own TypeScript.
       - name: Install
         working-directory: kernel/sdk
-        run: npm ci --ignore-scripts
+        run: bun install --frozen-lockfile --ignore-scripts
       # A dry run still refuses a version already on npm, so a PR checks a throwaway prerelease.
       - name: Prerelease version for the dry run
         working-directory: kernel/sdk
-        run: npm version "0.0.0-pr.${{ github.run_id }}" --no-git-tag-version
-      - name: Publish (dry run)
+        run: bun pm version "0.0.0-pr.${{ github.run_id }}" --no-git-tag-version
+      - name: Pack
         working-directory: kernel/sdk
-        run: npm publish --access public --dry-run --tag pr
+        run: bun pm pack --destination "$RUNNER_TEMP/sdk"
+      - name: Publish (dry run)
+        run: npm publish "$RUNNER_TEMP"/sdk/aidenhq-sdk-*.tgz --access public --dry-run --tag pr
   publish:
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
@@ -47,16 +53,22 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
+      - uses: ./.github/actions/bun
+        with:
+          cache: sdk
       # Trusted publishing needs npm 11.5.1 or later; Node 24 bundles it.
       - name: npm supports trusted publishing
         run: node -e 'const [a,b,c]=process.argv[1].split(".").map(Number); if (a<11||(a===11&&(b<5||(b===5&&c<1)))) { console.error("npm "+process.argv[1]+" is older than 11.5.1"); process.exit(1) }' "$(npm --version)"
       # The pack step compiles with the SDK's own TypeScript.
       - name: Install
         working-directory: kernel/sdk
-        run: npm ci --ignore-scripts
+        run: bun install --frozen-lockfile --ignore-scripts
       - name: Version from the tag
         working-directory: kernel/sdk
-        run: npm version "${GITHUB_REF_NAME#sdk-v}" --no-git-tag-version
-      - name: Publish
+        run: bun pm version "${GITHUB_REF_NAME#sdk-v}" --no-git-tag-version
+      - name: Pack
         working-directory: kernel/sdk
-        run: npm publish --provenance --access public
+        run: bun pm pack --destination "$RUNNER_TEMP/sdk"
+      # The one npm command left: bun can't publish with provenance.
+      - name: Publish
+        run: npm publish "$RUNNER_TEMP"/sdk/aidenhq-sdk-*.tgz --provenance --access public

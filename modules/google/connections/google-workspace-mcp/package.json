@@ -15,17 +15,17 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.2",
-    "pg": "^8.23.1",
-    "pino": "^10.4.0",
-    "zod": "^4.6.6"
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "pg": "8.23.1",
+    "pino": "10.4.0",
+    "zod": "4.6.7"
   },
   "overrides": {
-    "body-parser": "^2.4.0"
+    "body-parser": "2.4.0"
   },
   "devDependencies": {
-    "@types/node": "^24.19.1",
-    "@types/pg": "^8.23.1",
+    "@types/node": "24.19.1",
+    "@types/pg": "8.23.1",
     "bun-types": "1.4.5",
     "typescript": "7.0.2"
   }

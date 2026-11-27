@@ -5,7 +5,7 @@
 // Copied into the code host's service (scripts/sync-shared.ts); codehost-local calls it from the kernel.
 
 /** The paths churn ignores unless the code host's `churn_exclude` setting says otherwise. */
-export const DEFAULT_CHURN_EXCLUDE = ["**/package-lock.json", "**/dist/**", "**/vendor/**", "**/*.min.*"];
+export const DEFAULT_CHURN_EXCLUDE = ["**/package-lock.json", "**/bun.lock", "**/dist/**", "**/vendor/**", "**/*.min.*"];
 export type ChurnPr = { pr: string; mergedAt: string; diff: string };
 export type Rewrite = { pr: string; by_pr: string; lines: number; days: number };
 

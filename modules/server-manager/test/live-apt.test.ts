@@ -5,7 +5,7 @@
 //
 // It needs no key and touches no machine: the container is the host, and the argv runs there directly rather than over the
 // module's Connection. The container has no network at all (`--network none`), so the only apt source is a repository the script
-// builds inside it. Where no container runtime is available the test is skipped, so a bare `npm test` still runs; in CI it fails
+// builds inside it. Where no container runtime is available the test is skipped, so a bare `bun run test` still runs; in CI it fails
 // instead of skipping, because a smoke test that silently never runs is not the test §14 asks for.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";

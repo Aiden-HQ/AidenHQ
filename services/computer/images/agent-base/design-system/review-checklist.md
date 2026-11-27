@@ -47,8 +47,8 @@ better, suggest a mockup from the UI/UX Designer.
 - [ ] Matches its mockup when it had one, side by side at the mockup's width and mode: same theme colours, type scale,
       spacing, depth and detail, and the hover, focus and open/close motion it lists; what it drops is what the request
       or the mockup drops.
-- [ ] Checked at desktop and phone width, light and dark, with a clean console and CSP, and `npm test` passes (it checks
-      the CSP). Engineer jobs: `npm run screens` (Playwright) screenshots the changed pages and runs the changed flow; its
+- [ ] Checked at desktop and phone width, light and dark, with a clean console and CSP, and `bun run test` passes (it checks
+      the CSP). Engineer jobs: `bun run screens` (Playwright) screenshots the changed pages and runs the changed flow; its
       screenshots are attached to the task.
 - [ ] Meets the guidelines' floors: readable contrast in both themes, visible focus, details at a URL that opens them on
       load, every page at its own URL, and empty, loading and error states.

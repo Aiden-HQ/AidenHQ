@@ -34,6 +34,7 @@ main() {
   . ops/lib/progress.sh
   . ops/lib/ci-runner-enabled.sh
   . ops/lib/build-cache.sh
+  . ops/lib/bun.sh
   local want="" force=0 gen="" recover=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -96,8 +97,11 @@ main() {
   fi
   git fetch --quiet origin main
   # The pin is read with the kernel's own parser (kernel/src/apply.ts) before the checkout moves, so a fresh host installs
-  # the kernel's deps for the checkout it has; the npm step below follows the product's lockfiles once it has moved.
-  [ -d kernel/node_modules ] || npm ci --prefix kernel --silent
+  # the kernel's deps for the checkout it has; the install step below follows the product's lockfiles once it has moved.
+  # Bun (ops/lib/bun.sh) first: a host set up before Bun gets the pinned one here, before any install needs it. One installer
+  # for every tree: `bun install` also reads a product from before Bun (a rollback) from its package-lock.json, as npm would.
+  ensureBun
+  [ -d kernel/node_modules ] || installDeps kernel
   if [ -n "$gen" ]; then applyGeneration; return; fi
   # An apply that died is finished before anything else (the lock says no other apply is running). It moves both
   # checkouts, so a hand-over's record of what ran before no longer holds: it is read again below.
@@ -159,7 +163,7 @@ main() {
   # miss a compiler-only move, so this script keeps the switch (and restarts on the closure) rather than hand over to it.
   if [ -z "${AIDENHQ_APPLY_BEFORE:-}" ] && git cat-file -e "$product:ops/lib/ci-runner-enabled.sh" 2>/dev/null \
      && git grep -q kernel-code "$product" -- ops/apply-config-work.sh \
-     && ! git diff --quiet "$before" "$product" -- ops/apply-config.sh ops/apply-config-work.sh ops/lib/apply-lock.sh ops/lib/generations.sh ops/lib/ci-runner-enabled.sh \
+     && ! git diff --quiet "$before" "$product" -- ops/apply-config.sh ops/apply-config-work.sh ops/lib/apply-lock.sh ops/lib/generations.sh ops/lib/ci-runner-enabled.sh ops/lib/bun.sh \
      && grep -q AIDENHQ_APPLY_BEFORE ops/apply-config-work.sh; then
     echo "the apply's scripts changed: running the new ones"
     local again=("$want"); [ "$force" = 0 ] || again+=(--force)
@@ -170,9 +174,9 @@ main() {
   if [ -n "${AIDENHQ_APPLY_BEFORE:-}" ] && [ -z "${AIDENHQ_APPLY_INST_BEFORE:-}" ]; then inst_before="$(instancePinning "$before")"; fi
   # Host-side Node deps (the compiler/setup and the kernel) follow the product's lockfiles.
   for d in scripts kernel; do
-    if [ ! -d "$d/node_modules" ] || ! git diff --quiet "$before" "$product" -- "$d/package-lock.json"; then npm ci --prefix "$d" --silent; fi
+    if [ ! -d "$d/node_modules" ] || ! git diff --quiet "$before" "$product" -- "$d/bun.lock" "$d/package-lock.json"; then installDeps "$d"; fi
   done
-  lap npm
+  lap deps
   materializeModules || { restoreCheckouts; echo "refusing: the official modules could not be fetched" >&2; exit 1; }
 
   # Held at the last known good: a pair that failed its health check is not applied again until main moves, unless the
@@ -581,7 +585,7 @@ applyGeneration() {
   git -C "$inst" checkout --quiet --detach "$instance"
   git checkout --quiet --detach "$product"
   for d in scripts kernel; do
-    if [ ! -d "$d/node_modules" ] || ! git diff --quiet "$before" "$product" -- "$d/package-lock.json"; then npm ci --prefix "$d" --silent; fi
+    if [ ! -d "$d/node_modules" ] || ! git diff --quiet "$before" "$product" -- "$d/bun.lock" "$d/package-lock.json"; then installDeps "$d"; fi
   done
   materializeModules || { echo "refusing: the official modules of generation $gen could not be fetched" >&2; exit 1; }
   local m; m="$(genAppend "$product" "$instance" pending "" "${AIDENHQ_REVERT_OF:-}" "$gen")"
@@ -590,7 +594,7 @@ applyGeneration() {
   echo "generation $m: re-applying generation $gen (product ${product:0:12}, instance ${instance:0:12})"
   local prev_config; prev_config="$(mktemp)"; cp config/paperclip.yaml "$prev_config" 2>/dev/null || true
   local rc=0 staged=0
-  lap product # the data restore, both checkouts and the npm deps
+  lap product # the data restore, both checkouts and the host-side deps
   set +e
   ( set -e; switchOver )
   rc=$?
@@ -648,6 +652,9 @@ instancePinning() {
   rm -f "$tmp"
 }
 
+# A host-side package's dependencies, from its lockfile, with no install scripts (none of them needs one).
+installDeps() { bun install --cwd "$1" --frozen-lockfile --ignore-scripts --silent; }
+
 # The official modules are the product's own modules/ (2026-11-18). A product from before that (a rollback to an older
 # generation) still has modules-pin.json and fetches them itself into the ignored ./modules (its own materialize.mjs: the
 # instance's `aidenhq` marketplace at its sha, else the pin). The first apply of a product that tracks modules/ over such a
@@ -665,7 +672,7 @@ materializeModules() {
 restoreCheckouts() {
   git checkout --quiet --detach "$before"
   for d in scripts kernel; do
-    git diff --quiet "$before" "$product" -- "$d/package-lock.json" || npm ci --prefix "$d" --silent || true
+    git diff --quiet "$before" "$product" -- "$d/bun.lock" "$d/package-lock.json" || installDeps "$d" || true
   done
   if [ -n "${inst_before:-}" ] && [ "$(git -C "$inst" rev-parse HEAD)" != "$inst_before" ]; then git -C "$inst" checkout --quiet --detach "$inst_before"; fi
   # The official modules of the restored pair, when it is from before they were the product's own (materializeModules).
@@ -792,7 +799,7 @@ setupInputs() {
   local code
   code="$(node scripts/imports.ts scripts/paperclip-setup.ts)" || { echo "unlisted $(date +%s%N)"; code=""; }
   # shellcheck disable=SC2086 # repo paths, one word each
-  git ls-tree HEAD -- $code scripts/prompts scripts/package-lock.json kernel/package-lock.json kernel/settings.json kernel/defaults.json kernel/schemas services/paperclip-events
+  git ls-tree HEAD -- $code scripts/prompts scripts/bun.lock kernel/bun.lock kernel/settings.json kernel/defaults.json kernel/schemas services/paperclip-events
   git ls-tree -r HEAD -- modules | grep -E $'\tmodules/[^/]+/(module\\.yaml$|(agents|prompts|skills)/)' || true
   git -C "$inst" ls-tree HEAD -- agents
   git -C "$inst" ls-tree -r HEAD -- modules
@@ -834,7 +841,7 @@ kernelInputs() {
   sha256sum -- $code || { echo "unreadable $(date +%s%N)"; return 0; }
   # The rest are the product's own tracked files, read from the working tree's HEAD by their blob shas: the kernel settings
   # and schemas the compiler reads, the launcher the unit runs, and the lockfiles of the packages it runs.
-  git ls-tree -r HEAD -- kernel/settings.json kernel/defaults.json kernel/schemas ops/run-draining.sh scripts/package-lock.json kernel/package-lock.json \
+  git ls-tree -r HEAD -- kernel/settings.json kernel/defaults.json kernel/schemas ops/run-draining.sh scripts/bun.lock kernel/bun.lock \
     || echo "unreadable $(date +%s%N)"
   # The host's own settings, which the kernel reads when it loads: .env (kernel/src/env.ts: the instance and state dirs, the
   # secrets dir) and the job tuning (sandboxConfig: AIDENHQ_CONFIG_DIR's runner.yaml, default config/). Neither is tracked,
@@ -1311,7 +1318,7 @@ lap() { echo "apply timing: $1 $(apply_secs "$apply_lap")s"; apply_lap="$(apply_
 # printed as the phase starts, with its estimated seconds (compose is the images' parallel pull) and what the owner is told.
 # shellcheck disable=SC2034  # read through progress.sh's nameref
 APPLY_PHASES=(
-  "instance|3|checking your instance" "product|3|updating AidenHQ's code" "npm|20|installing tooling"
+  "instance|3|checking your instance" "product|3|updating AidenHQ's code" "deps|20|installing tooling"
   "validate|5|checking the configuration" "reconcile|2|checking what changed" "snapshot|5|taking a safety snapshot"
   "compile|10|preparing the services" "computer-images|40|preparing agent computers" "compose|240|downloading and starting the services"
   "setup|90|setting up Aiden and the agents" "warehouse|20|preparing the data warehouse" "units|5|starting background services"

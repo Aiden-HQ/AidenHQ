@@ -13,7 +13,7 @@ components wear, the rules, and the review checklist.
 | `review-checklist.md` | What blocks a UI pull request (obvious, major breakage only; the rest is a non-blocking note), plus the Engineer's self-review. |
 | `components.css`, `kit.js` | **Deprecated:** the plain-CSS kit (version 2), kept only for apps that still vendor it until they migrate (below). Don't use it in new work. |
 
-The catalog is the starter's dev-only `catalog.html` (`npm run catalog`): every block, component, variant, shell and
+The catalog is the starter's dev-only `catalog.html` (`bun run catalog`): every block, component, variant, shell and
 preset, themed, with palette and mode pickers (`?palette=crisp&mode=dark`). Apps never ship it. The product repo is the
 source. The starter vendors `tokens.css`, `shadcn.css` and `presets/` in `src/styles/`, and the agent computers carry this folder at `/opt/aidenhq/design-system/` and the starter at
 `/opt/aidenhq/app-starter/` (byte-identical copies, `node scripts/sync-shared.ts`; a test fails on drift).
@@ -23,7 +23,7 @@ source. The starter vendors `tokens.css`, `shadcn.css` and `presets/` in `src/st
 Start from the UI/UX Designer's mockup when the app has one. Copy the starter (without `node_modules` and `dist`) into
 the app's repo, keep its `AGENTS.md`, and follow its README. Use its building blocks
 (`src/components/blocks/`), components and the example page's patterns where they fit, and replace the sample shell
-with navigation that suits the app; add shadcn components with the pinned CLI (`npx shadcn@4.23.0 add <name>`, then the fix-ups in the starter's README), pin any new
+with navigation that suits the app; add shadcn components with the pinned CLI (`bunx shadcn@4.23.0 add <name>`, then the fix-ups in the starter's README), pin any new
 dependency exactly at a version at least 7 days old, and check the browser console for CSP violations.
 
 **Re-theming:** an app or instance overrides tokens (`--accent*`, `--focus`, `--font`) or shadcn's variables in a

@@ -19,16 +19,16 @@
 #   - the board's session comes through the kernel's handoff; its welcome is unfinished; finishing it files one task for
 #     Aiden (source welcome, through the kernel's board tasks) and no chat, writes the welcome-sent marker, and a second
 #     finish files none.
-#   sudo bash ops/test/unattended-install.sh   (root, git, curl, node 24, kernel/, scripts/ and services/board npm ci'd; it adds a user and
+#   sudo bash ops/test/unattended-install.sh   (root, git, curl, node 24, kernel/, scripts/ and services/board installed (bun install); it adds a user and
 #                                               /opt/aidenhq, so it runs only where /.dockerenv exists or CI is set)
 # Not in CI: our runners' job containers set no-new-privileges, so sudo can't reach root there. Run it in a container,
-# e.g. a Node 24 Debian image with the checkout mounted, after npm ci in kernel/, scripts/ and services/board. The release
+# e.g. a Node 24 Debian image with the checkout mounted, after bun install in kernel/, scripts/ and services/board. The release
 # pins the kernel alone: the official modules are its own modules/.
 set -euo pipefail
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 [ "$(id -u)" = 0 ] || exec sudo -n env PATH="$PATH" CI="${CI:-}" bash "$0" "$@"
 [ -f /.dockerenv ] || [ -n "${CI:-}" ] || { echo "refusing: this test adds a user and /opt/aidenhq; run it in a throwaway container" >&2; exit 1; }
-[ -d "$src/kernel/node_modules" ] && [ -d "$src/scripts/node_modules" ] && [ -d "$src/services/board/node_modules" ] || { echo "npm ci in kernel/, scripts/ and services/board first" >&2; exit 1; }
+[ -d "$src/kernel/node_modules" ] && [ -d "$src/scripts/node_modules" ] && [ -d "$src/services/board/node_modules" ] || { echo "bun install in kernel/, scripts/ and services/board first" >&2; exit 1; }
 U=alice H=/home/alice
 work="$(mktemp -d /tmp/unattended.XXXXXX)"; chmod 0755 "$work"
 ok() { echo "ok   $*"; }
@@ -188,7 +188,7 @@ PC_PORT=3100 # the kernel's default control plane: the board reaches it only thr
 : > "$work/paperclip.log"; : > "$work/board.log"; chmod 0666 "$work/paperclip.log" "$work/board.log"
 node "$work/paperclip.mjs" "$PC_PORT" "$work/paperclip.log" & pc_pid=$!
 S="$H/.config/aidenhq" B="$H/aidenhq/services/board"
-runuser -u "$U" -- bash -c "cd '$B' && npx tsc -p tsconfig.build.json" || fail "the board doesn't build"
+runuser -u "$U" -- bash -c "cd '$B' && node_modules/.bin/tsc -p tsconfig.build.json" || fail "the board doesn't build"
 # As compose runs it: its points, system config and secrets from the checkout and the vault, the kernel on the backplane.
 runuser -u "$U" -- env BOARD_SYSTEM_CONFIG="$H/aidenhq/config/system.yaml" BOARD_POINTS_FILE="$H/aidenhq/config/points/board.json" \
   BOARD_SECRETS_DIR="$S" GATEWAY_BOARD_KEY_FILE="$S/gateway_board_key" \

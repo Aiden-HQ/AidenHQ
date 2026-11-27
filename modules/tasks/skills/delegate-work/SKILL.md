@@ -23,7 +23,7 @@ Engineers take code jobs from any agent (`task_delegate`; `task_team` lists them
 ## Choosing the agent
 
 - Product-repo code goes to the holder of the `platform-engineer` role (`fleet_catalog` lists roles); its writes there go to the AI reviewer and its merge is filed once checks are green. Several product tasks may go to it at once.
-- Engineers have the repository, toolchains, package installs, the public Internet and a headless browser (`npm run screens`: changed pages at 1440 and 390, light and dark; rubric "screenshots of the changed pages attached"). They have no Docker, host, app logs or warehouse: put needed data in the task,.
+- Engineers have the repository, toolchains, package installs, the public Internet and a headless browser (`bun run screens`: changed pages at 1440 and 390, light and dark; rubric "screenshots of the changed pages attached"). They have no Docker, host, app logs or warehouse: put needed data in the task,.
 - Image and CVE fixes: in app repos built from the CI template the rubric says "`image-scan` green on the PR's head"; in the product repo, "`image-scan` ran to completion (not skipped) on the PR's head and reports no fixable high or critical CVE"; elsewhere the PR carries the registry's vulnerability data for the tag and digest it pins. Packages a Dockerfile `RUN` step installs aren't covered by `image-scan`: the deployed image's security scan (the security agent, `security-watch`) proves them after the deploy; keep that out of the PR rubric.
 - One task per change; over about 2,000 changed lines, brief stacked PRs naming the slices. Files an open large rewrite replaces are held: target its branch or wait.
 

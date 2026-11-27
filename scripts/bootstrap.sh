@@ -98,7 +98,10 @@ mkdir -p "$data/paperclip/instances/default/companies" "$data/modules/meetings/o
 umask 022
 
 echo "Installing setup-script dependency"
-[ -d scripts/node_modules/yaml ] || npm ci --prefix scripts --silent
+# Bun, the pinned package manager (ops/lib/bun.sh): downloaded once, sha256-checked, into your own data dir.
+. ops/lib/bun.sh
+ensureBun
+[ -d scripts/node_modules/yaml ] || bun install --cwd scripts --frozen-lockfile --ignore-scripts --silent
 
 echo "Validating compose"
 docker compose --env-file "$env_file" -f compose.yaml config --quiet

@@ -73,7 +73,7 @@ minutes", waiting is alive and idle.
 ## Development
 
 `node web/dev/mock-api.ts` serves the page with `?sessions=full|fresh|off|error` and a fake terminal and web view
-(`?term=up|down|flaky`). Terminal and web view are not proxied with a matching Origin under `npm run dev:web`, so only
+(`?term=up|down|flaky`). Terminal and web view are not proxied with a matching Origin under `bun run dev:web`, so only
 their first GET works there. Screenshots at 1512, 1920, 2560, 1024, 768 and 375, light and dark, are in `sessions/`.
 
 ## Follow-ups

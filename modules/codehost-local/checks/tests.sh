@@ -11,4 +11,9 @@ echo "supply chain (the product's checks)"
 node /opt/aidenhq/supply-chain/npm-age.ts "$AIDENHQ_BASE" HEAD || status=1
 node /opt/aidenhq/supply-chain/pins.ts "$AIDENHQ_BASE" HEAD || status=1
 [ "$status" = 0 ] || exit 1
-npm ci && npm run --if-present lint && npm test && npm run --if-present build
+# A repo on Bun (a bun.lock at its root, as the app starter's) installs and runs with Bun; any other repo with npm.
+if [ -f bun.lock ]; then
+  bun install --frozen-lockfile --ignore-scripts && bun run --if-present lint && bun run test && bun run --if-present build
+else
+  npm ci && npm run --if-present lint && npm test && npm run --if-present build
+fi

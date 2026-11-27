@@ -48,7 +48,7 @@ jobs:
     if: needs.checks.outputs.packages != '[]'
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON(needs.checks.outputs.runner) }}
     timeout-minutes: 6
-    # This job runs the suites, so it runs PR code (`npm ci` and its lifecycle scripts included): read-only, no secret, and
+    # This job runs the suites, so it runs PR code (`bun install`; dependency lifecycle scripts never run): read-only, no secret, and
     # no `checks: write`.
     permissions:
       contents: read
@@ -63,9 +63,10 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - id: bun
+        uses: ./.github/actions/bun
         with:
-          bun-version: 1.4.5
+          cache: packages-${{ matrix.shard }}
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       # kernel/contract.lock.json against the PR's base lock (scripts/lean/contract-lock.ts): a stable entry is never
@@ -87,12 +88,12 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           # the checker imports the kernel's sources, so it needs the kernel's packages too
-          (cd scripts && npm ci --ignore-scripts) & s=$!
-          (cd kernel && npm ci --ignore-scripts) & k=$!
+          (cd scripts && bun install --frozen-lockfile --ignore-scripts) & s=$!
+          (cd kernel && bun install --frozen-lockfile --ignore-scripts) & k=$!
           wait $s && wait $k || exit 1
           node --disable-warning=ExperimentalWarning scripts/lean/contract-lock.ts --check --base "$PR_BASE"
       - name: Test
-        # Runs PR code (`npm ci` and the suites). This workflow passes no token or secret to this step: no `${{ secrets.* }}`,
+        # Runs PR code (the installs and the suites). This workflow passes no token or secret to this step: no `${{ secrets.* }}`,
         # no `GITHUB_TOKEN`, no `token:` input. The job's `permissions` are `contents: read`, so it cannot write a check; the
         # read-only token the fetch step above uses is passed to that step alone, and it ends before any PR code runs.
         env:
@@ -103,13 +104,13 @@ jobs:
           jq -r '.[] | [.name, .dir, .run, .secs] | @tsv' <<< "$ENTRIES" > "$list"
           echo "Shard ${{ matrix.shard }}: $(cut -f1 "$list" | tr '\n' ' ')"
           # The packages these suites share, installed once, here, side by side; no suite's run installs them, since two
-          # `npm ci` in one directory delete each other's files under the suites reading them: scripts/node_modules (the
+          # installs in one directory delete each other's files under the suites reading them: scripts/node_modules (the
           # scripts suites, the kernel's authority CLI, the twin), the kernel's (its suite, the scripts suites import kernel
           # sources, kernel/sdk's tests) and kernel/sdk's (its suite, the twin's pack).
           dirs=$(cut -f2 "$list"); pids=()
-          grep -qxE 'scripts|kernel|fixtures/twin' <<< "$dirs" && { (cd scripts && npm ci --silent) & pids+=($!); }
-          grep -qxE 'scripts|kernel|kernel/sdk' <<< "$dirs" && { (cd kernel && npm ci --silent) & pids+=($!); }
-          grep -qxE 'kernel/sdk|fixtures/twin' <<< "$dirs" && { (cd kernel/sdk && npm ci --silent) & pids+=($!); }
+          grep -qxE 'scripts|kernel|fixtures/twin' <<< "$dirs" && { (cd scripts && bun install --frozen-lockfile --ignore-scripts --silent) & pids+=($!); }
+          grep -qxE 'scripts|kernel|kernel/sdk' <<< "$dirs" && { (cd kernel && bun install --frozen-lockfile --ignore-scripts --silent) & pids+=($!); }
+          grep -qxE 'kernel/sdk|fixtures/twin' <<< "$dirs" && { (cd kernel/sdk && bun install --frozen-lockfile --ignore-scripts --silent) & pids+=($!); }
           for p in "${pids[@]}"; do wait "$p" || exit 1; done
           # run-suites.sh reports a plan entry whose directory is missing as `gone:` and exits 0, so a shard can be green with a
           # suite that never ran. A directory the tested commit (`TESTED_SHA`, the immutable commit the checkout came from) still
@@ -128,6 +129,12 @@ jobs:
           vanished before || exit 1
           bash .github/ci/run-suites.sh "$list"
           vanished after
+      # The Bun install cache, saved by pushes to main only (.github/actions/bun): pull requests read it.
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bun.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ steps.bun.outputs.key }}
 
   # The official modules' own suites (areas.json entries with job "modules": each module's packages, plus the module suites
   # whose paths a change touches, e.g. the kernel for the modules that import it), in the shards checks' `shards` step plans.
@@ -152,20 +159,21 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - id: bun
+        uses: ./.github/actions/bun
         with:
-          bun-version: 1.4.5
+          cache: modules-${{ matrix.shard }}
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
-        # Runs PR code (`npm ci` and the suites). This workflow passes no token or secret to this step: no `${{ secrets.* }}`,
+        # Runs PR code (the installs and the suites). This workflow passes no token or secret to this step: no `${{ secrets.* }}`,
         # no `GITHUB_TOKEN`, no `token:` input. The job's `permissions` are `contents: read`, so it cannot write a check.
         env:
           ENTRIES: ${{ toJSON(matrix.entries) }}
           TESTED_SHA: ${{ github.sha }}
         run: |
-          (cd kernel && npm ci --silent) & k=$!
-          (cd scripts && npm ci --silent) & c=$!
+          (cd kernel && bun install --frozen-lockfile --ignore-scripts --silent) & k=$!
+          (cd scripts && bun install --frozen-lockfile --ignore-scripts --silent) & c=$!
           wait $k && wait $c || exit 1
           list="$RUNNER_TEMP/suites"
           jq -r '.[] | [.name, .dir, .run, .secs] | @tsv' <<< "$ENTRIES" > "$list"
@@ -187,6 +195,12 @@ jobs:
           vanished before || exit 1
           bash .github/ci/run-suites.sh "$list"
           vanished after
+      # The Bun install cache, saved by pushes to main only (.github/actions/bun): pull requests read it.
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bun.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ steps.bun.outputs.key }}
 
   board:
     needs: checks
@@ -203,9 +217,10 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - id: bun
+        uses: ./.github/actions/bun
         with:
-          bun-version: 1.4.5
+          cache: board
       - name: Git identity (the tests make commits)
         run: git config --global user.name ci && git config --global user.email ci@example.com
       - name: Test
@@ -214,6 +229,12 @@ jobs:
         working-directory: services/board
         # The command is the suite's `run` in .github/ci/areas.json (scripts/ci-local.ts runs the same one).
         run: bash -eo pipefail -c "$(jq -r '.suites[] | select(.name == "services/board") | .run' ../../.github/ci/areas.json)"
+      # The Bun install cache, saved by pushes to main only (.github/actions/bun): pull requests read it.
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.bun.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ steps.bun.outputs.key }}
 
   # The plan the jobs below wait for, kept to fast steps (~10-15 s): the suites to test, the images to scan and where the
   # heavy jobs run. Which images this change could alter: each Dockerfile it changes, or whose directory gets a changed
@@ -405,7 +426,7 @@ jobs:
             while IFS= read -r f; do
               case "$f" in "$prefix"*) ;; *) continue ;; esac
               case "${f##*/}" in
-                [Dd]ockerfile*|[Cc]ontainerfile*|*.dockerfile|.dockerignore|package.json|package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|requirements*.txt|poetry.lock|Pipfile.lock|uv.lock|go.mod|go.sum|Cargo.lock|Gemfile.lock)
+                [Dd]ockerfile*|[Cc]ontainerfile*|*.dockerfile|.dockerignore|package.json|bun.lock|bunfig.toml|package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|requirements*.txt|poetry.lock|Pipfile.lock|uv.lock|go.mod|go.sum|Cargo.lock|Gemfile.lock)
                   found="$found $df"; break ;;
               esac
             done <<< "$changed"

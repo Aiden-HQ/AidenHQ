@@ -17,11 +17,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends tmux=3.8-1 ttyd
 # OPENCODE_CONFIG_DIR is the folder of agents and skills. Not fetched at run time: the model list (OPENCODE_DISABLE_MODELS_FETCH)
 # and updates (OPENCODE_DISABLE_AUTOUPDATE).
 ENV OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_AUTOUPDATE=1
-# Plugins: exactly plugins.json, with their whole dependency tree pinned by package-lock.json (every version at least 7 days old).
-# All three are the engine-opencode module's, copied here by scripts/sync-shared.ts. `npm ci` installs the lock once into
+# Plugins: exactly plugins.json, with their whole dependency tree pinned by bun.lock (every version at least 7 days old).
+# All four are the engine-opencode module's, copied here by scripts/sync-shared.ts. `bun install` installs the lock once into
 # /opt/opencode, with no install scripts, readable by every uid; plugins.json stays there for the engine's config builder.
-COPY package.json package-lock.json plugins.json /opt/opencode/
-RUN npm ci --prefix /opt/opencode --ignore-scripts --no-audit --no-fund && chmod -R a+rX /opt/opencode && npm cache clean --force
+COPY package.json bun.lock bunfig.toml plugins.json /opt/opencode/
+RUN cd /opt/opencode && bun install --frozen-lockfile --ignore-scripts && chmod -R a+rX /opt/opencode && bun pm cache rm
 # `session-stop <lease>`: how the launcher ends one session in the shared box (see the script).
 COPY --chmod=755 session-stop /opt/aidenhq/bin/session-stop
 # Git and gh in the shell (lane G): the credential helper and a `gh` wrapper, first on PATH (/opt/aidenhq/bin precedes the real gh),

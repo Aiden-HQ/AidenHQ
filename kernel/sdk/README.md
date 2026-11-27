@@ -13,4 +13,4 @@ may pin a version the day it is published.
 
 Push a tag `sdk-vX.Y.Z` on a commit of `main`. `.github/workflows/sdk-publish.yml` takes the version from the tag and publishes
 with npm trusted publishing (provenance, no token). Pull requests that touch this folder dry-run the same publish. The pack
-step (`scripts/sdk-pack.ts`) compiles with this folder's own TypeScript: `npm ci` here first.
+step (`scripts/sdk-pack.ts`) compiles with this folder's own TypeScript: `bun install --frozen-lockfile --ignore-scripts` here first.

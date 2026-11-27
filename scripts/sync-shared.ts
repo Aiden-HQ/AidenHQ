@@ -29,7 +29,7 @@
 //   modules/apps-platform/starter/      the app starter, in the agent computers (a whole folder: SHARED_DIRS)
 //   modules/design/eval/                the UI review's regression set, in the agent computers (/opt/aidenhq/design-eval)
 //   kernel/sdk/src/{types,engine-io,progress}.ts  the SDK's engine side, in every module with an sdk/ folder
-//   modules/engine-opencode/{plugins.json,package.json,package-lock.json}  opencode's curated, locked plugin set, in the session image
+//   modules/engine-opencode/{plugins.json,package.json,bun.lock,bunfig.toml}  opencode's curated, locked plugin set, in the session image
 //   modules/github/checks/{tests,history}.sh  a change's tests, in codehost-local's `change` check job
 //   modules/code-review/recipe/{brief,engines,deepsec,proc,review-checklist,scope,self-review}.ts  an Engineer's pre-publish review, in the engineer image
 //   modules/ci/template/.github/{code-review,review-tools,review-checklist}.ts  the review core, in the code review recipe
@@ -180,10 +180,11 @@ export function sharedCopies(root = repo) {
     ]),
   ),
   // opencode's curated plugin set: the session image installs exactly this list (its build context is the image folder).
-  // Its package.json and package-lock.json pin the plugins' whole tree: the image runs `npm ci` on them.
+  // Its package.json and bun.lock pin the plugins' whole tree: the image runs `bun install --frozen-lockfile` on them.
   "modules/engine-opencode/plugins.json": ["services/computer/images/session/plugins.json"],
   "modules/engine-opencode/package.json": ["services/computer/images/session/package.json"],
-  "modules/engine-opencode/package-lock.json": ["services/computer/images/session/package-lock.json"],
+  "modules/engine-opencode/bun.lock": ["services/computer/images/session/bun.lock"],
+  "modules/engine-opencode/bunfig.toml": ["services/computer/images/session/bunfig.toml"],
   // The SDK's engine side (A9: no npm package yet): a copy in every module that has an sdk/ folder, so an engine runs from its
   // module folder alone (in a job's sandbox or a computer box). A new module adds the folder; nothing here changes.
   ...Object.fromEntries(

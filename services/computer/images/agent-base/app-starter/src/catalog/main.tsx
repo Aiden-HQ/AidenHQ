@@ -1,4 +1,4 @@
-// The component catalog: a dev-only preview of the starter's library (`npm run catalog`). It is not an app route and is
+// The component catalog: a dev-only preview of the starter's library (`bun run catalog`). It is not an app route and is
 // never built: `vite build` builds index.html only, and index.css doesn't scan this folder. Apps leave it out.
 // `?specimen=preset|topbar|topbar-brand|sidebar|sidebar-inset|bare|bare-centered` renders one specimen (the catalog's frames).
 import "@/lib/csp"

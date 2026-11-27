@@ -1,0 +1,40 @@
+# Bun, the one package manager, at its pinned version, and its install cache (~/.bun/install/cache, nothing else). Every
+# run restores the newest cache for its `cache` name; only a push to main saves one, in the job's own step after its
+# installs (actions/cache/save with this action's `key`), so a pull request reads main's cache and never writes one.
+# The key is the OS, architecture, Bun version, the job's name and every bun.lock: a new lock saves a fresh cache on main.
+# A setup-bun cache of the Bun binary is off (`no-cache`): only the install cache is kept.
+name: bun
+description: Install the pinned Bun and restore its install cache.
+inputs:
+  cache:
+    description: This job's cache name (a job installs its own packages, so it keeps its own cache).
+    required: true
+outputs:
+  key:
+    description: The cache key to save under on main.
+    value: ${{ steps.key.outputs.key }}
+  cache-hit:
+    description: Whether the exact key was restored.
+    value: ${{ steps.restore.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - id: setup
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version: 1.4.5
+        no-cache: true
+    - id: key
+      shell: bash
+      env:
+        PREFIX: bun-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup.outputs.bun-version }}-${{ inputs.cache }}-
+        LOCKS: ${{ hashFiles('**/bun.lock') }}
+      run: |
+        echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
+        echo "key=$PREFIX$LOCKS" >> "$GITHUB_OUTPUT"
+    - id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.bun/install/cache
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: ${{ steps.key.outputs.prefix }}

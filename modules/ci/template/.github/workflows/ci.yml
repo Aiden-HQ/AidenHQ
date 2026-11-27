@@ -44,6 +44,11 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.x
+      # Bun, the package manager (bun.lock), pinned; no cache of its binary.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.5
+          no-cache: true
       # The 7-day rule: everything is pinned, and what this PR adds or bumps (lockfile entries, images, actions, global
       # installs) is 7+ days old or a security exception in .github/supply-chain-exceptions.yaml. Before any install.
       # The checks come from the base commit, so a PR can't loosen its own check (the PR that adds them runs its
@@ -70,7 +75,7 @@ jobs:
           refs=$(git grep -l -F '.aidenhq/out' "$HEAD_SHA" -- . ':(exclude).aidenhq/**' ':(exclude).github/**' ':(exclude,glob)**/*.md' ':(exclude)e2e/**' ':(exclude,glob)playwright.config.*' ':(exclude).gitignore' ':(exclude).dockerignore' | sed "s/^$HEAD_SHA://" || true)
           [ -z "$refs" ] || { echo "::error::app code may not read an agent's evidence in .aidenhq/out/ (it is not reviewed as code): $(printf '%s' "$refs" | head -5 | tr '\n' ' ')"; exit 1; }
       - name: Test
-        run: npm ci && npm run --if-present lint && npm test
+        run: bun install --frozen-lockfile --ignore-scripts && bun run --if-present lint && bun run test
 
   # Secret scan over the PR's new commits: the pinned, checksummed scanner binary (no licence key, no secrets used).
   # Fake test values go in a .gitleaks.toml by exact value; it is read from the base commit, so land it in its own PR.
@@ -124,7 +129,7 @@ jobs:
             while IFS= read -r f; do
               case "$f" in "$prefix"*) ;; *) continue ;; esac
               case "${f##*/}" in
-                [Dd]ockerfile*|[Cc]ontainerfile*|*.dockerfile|.dockerignore|package.json|package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|requirements*.txt|poetry.lock|Pipfile.lock|uv.lock|go.mod|go.sum|Cargo.lock|Gemfile.lock)
+                [Dd]ockerfile*|[Cc]ontainerfile*|*.dockerfile|.dockerignore|package.json|bun.lock|bunfig.toml|package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|requirements*.txt|poetry.lock|Pipfile.lock|uv.lock|go.mod|go.sum|Cargo.lock|Gemfile.lock)
                   found="$found $df"; break ;;
               esac
             done <<< "$changed"

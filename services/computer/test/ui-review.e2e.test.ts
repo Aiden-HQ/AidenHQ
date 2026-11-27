@@ -1,6 +1,6 @@
 // The ui-review engine's end-to-end tests. The ones that drive Chrome skip without AGENT_BROWSER_EXECUTABLE_PATH (so CI skips them).
 // Run them in the agent-base image against this worktree's code (WT = the worktree's absolute path):
-//   docker run --rm --cpus 2 --memory 6g -v "$WT":/w aidenhq/computer-agent-base:current sh -c 'cd /w/services/computer/images/agent-base/ui-review && npm ci --ignore-scripts --no-audit --no-fund && cd /w/services/computer && perl -e "alarm shift; exec @ARGV" 900 node --test test/ui-review.e2e.test.ts'
+//   docker run --rm --cpus 2 --memory 6g -v "$WT":/w aidenhq/computer-agent-base:current sh -c 'cd /w/services/computer/images/agent-base/ui-review && bun install --frozen-lockfile --ignore-scripts && cd /w/services/computer && perl -e "alarm shift; exec @ARGV" 900 node --test test/ui-review.e2e.test.ts'
 // The lanes add their tests below (capture, queue, measurements, references), each skipped without Chrome:
 //   { skip: !process.env.AGENT_BROWSER_EXECUTABLE_PATH && "no Chrome" }
 import assert from "node:assert/strict";

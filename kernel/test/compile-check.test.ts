@@ -74,7 +74,7 @@ test("a target that compiles the instance is ok; one whose compiler refuses it a
   git(inst, "clone", "-q", "--bare", src, bare);
   const project = join(inst, "config");
   mkdirSync(project, { recursive: true });
-  // Offline, its deps come from this checkout's own install (the production reuse path: scripts/package-lock.json matched).
+  // Offline, its deps come from this checkout's own install (the production reuse path: scripts/bun.lock matched).
   const realModules = join(product, "scripts", "node_modules");
   const check = createCompileCheck({ repo: dir, main: async () => ({ base: git(bare, "rev-parse", "main") }), tree: checkoutTree(bare), inputs: { configDir: project, dataDir: join(inst, "data"), secretsDir: join(inst, "secrets") },
   // The real runner: the target's own compiler, staged (AIDENHQ_COMPILE_STAGE=1), as the apply runs it.
@@ -123,13 +123,13 @@ test("the target compiler gets no host secret: only the .env paths it reads, and
   assert.equal(env.PAPERCLIP_BOARD_KEY, undefined);
 });
 
-test("a target's npm install runs with no host path at all, unlike the compiler that follows it", () => {
+test("a target's install runs with no host path at all, unlike the compiler that follows it", () => {
   // The install runs the target's own lifecycle scripts before anything is checked: it gets a PATH, HOME, locale and temp only.
   const env = installEnv({ PATH: "/bin", HOME: "/home/u", LANG: "C", AIDENHQ_DIR: "/host/aidenhq", AIDENHQ_STATE_DIR: "/host/state",
     AIDENHQ_INSTANCE_REPO: "acme/i", TRANSCRIPTS_DIR: "/host/tr", VAULT_DIR: "/host/vault", AIDENHQ_SECRETS_DIR: "/host/secrets",
     AIDENHQ_CONFIG_DIR: "/host/config", AIDENHQ_DATA_DIR: "/host/data", AIDENHQ_KERNEL_KEY: "k", OPERATOR_KEY: "o", GITHUB_TOKEN: "t" });
   assert.deepEqual(Object.keys(env).sort(), ["HOME", "LANG", "PATH"]);
-  assert.equal(env.HOME, "/home/u", "npm's cache is the warm one the apply's own install uses");
+  assert.equal(env.HOME, "/home/u", "Bun's cache is the warm one the apply's own install uses");
 });
 
 test("a compiler that never finished (a timeout) is an operational error, not a refusal", async () => {

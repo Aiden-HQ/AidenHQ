@@ -1,9 +1,9 @@
-// Browser checks and screenshots: `npm run screens` (Playwright Test). Playwright starts the seeded app itself
-// (`npm run preview`: build, then server.mjs with its sample data on port 4173), waits for it, runs e2e/ in ten
+// Browser checks and screenshots: `bun run screens` (Playwright Test). Playwright starts the seeded app itself
+// (`bun run preview`: build, then server.mjs with its sample data on port 4173), waits for it, runs e2e/ in ten
 // projects (1440, 1920 and 2560 desktop, 768 tablet, 390 phone; light and dark) and stops it. Screenshots land in
 // .aidenhq/out/ (e2e/screens.spec.ts).
 // The browser: AidenHQ's pinned Chrome in its Engineer jobs (AGENT_BROWSER_EXECUTABLE_PATH in agent computers, under
-// AIDENHQ_BROWSER_DIR on the host), else Playwright's own (`npx playwright install chromium` once on a laptop).
+// AIDENHQ_BROWSER_DIR on the host), else Playwright's own (`bunx playwright install chromium` once on a laptop).
 import { defineConfig } from "@playwright/test"
 
 const PORT = Number(process.env.PREVIEW_PORT || 4173)
@@ -27,7 +27,7 @@ export default defineConfig({
     (["light", "dark"] as const).map((colorScheme) => ({ name: `${size}-${colorScheme}`, use: { ...use, colorScheme } })),
   ),
   webServer: {
-    command: "npm run preview",
+    command: "bun run preview",
     url: `http://127.0.0.1:${PORT}/api/health`,
     env: { PORT: String(PORT) },
     reuseExistingServer: false,

@@ -3,8 +3,8 @@
 # dir, one folder per version (${XDG_DATA_HOME:-~/.local/share}/aidenhq/bun-<version>/bun), so the unprivileged apply can
 # install it before it needs it and a version bump never touches the running one. Node (already on every host) checks and
 # unzips it, so no unzip or sha256sum is needed. aidenhq-distro's .github/release/install-bun.sh pins the same files.
-# Sourced by the kernel's compile check (kernel/src/compile-check.ts), so a release that moves to Bun (bun.lock) can be checked by
-# the kernel running before it. Run by hand (`. ops/lib/bun.sh && ensureBun`), it puts Bun on that shell's PATH.
+# Sourced by ops/apply-config-work.sh (before any checkout), scripts/bootstrap.sh and the kernel's compile check
+# (kernel/src/compile-check.ts). Run by hand (`. ops/lib/bun.sh && ensureBun`), it puts Bun on that shell's PATH.
 AIDENHQ_BUN_VERSION=1.4.5
 
 ensureBun() {

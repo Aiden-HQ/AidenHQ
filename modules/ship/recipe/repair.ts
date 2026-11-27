@@ -24,10 +24,11 @@ import { join } from "node:path";
 
 const OUT = process.env.AIDENHQ_OUT ?? "/aidenhq-out";
 const LOCK_CMD: Record<string, string> = {
+  "bun.lock": "bun install --lockfile-only --ignore-scripts",
   "package-lock.json": "npm install --package-lock-only --ignore-scripts --no-audit --no-fund",
   "pnpm-lock.yaml": "pnpm install --lockfile-only --ignore-scripts",
 };
-const LOCKS = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
+const LOCKS = ["bun.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "go.sum", "Cargo.lock", "poetry.lock", "uv.lock"];
 /** A failed command's words as github keeps them (its outcome holds 2,000 characters after its own prefix): the command, then the
  * tail of stderr (where the error is) and of stdout, each within its own budget. */
 const STDERR_TAIL = 1000, STDOUT_TAIL = 500, CMD_SHOWN = 200;

@@ -4,7 +4,7 @@
 // (scripts/sync-shared.ts). The diff is the merge-base with the base (default origin/main) plus uncommitted and untracked
 // files. The supply-chain checks run on every change, as in CI. --list prints the selection only.
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,7 +37,7 @@ async function main() {
   const sel = select(files);
   console.log(`Diff against ${base} (merge-base ${mergeBase.slice(0, 12)}): ${files.length} file(s)`);
   console.log(sel.all ? `Every suite: ${sel.why}` : sel.names.length ? "Suites touched by the changed files" : "No suite needs testing");
-  for (const s of sel.suites) console.log(`  ${s.name}${s.job ? ` (CI job ${s.job})` : ""}: ${s.run ?? "npm test"}`);
+  for (const s of sel.suites) console.log(`  ${s.name}${s.job ? ` (CI job ${s.job})` : ""}: ${s.run ?? "bun run test"}`);
   console.log("  supply-chain (always): npm-age.ts, pins.ts");
   if (list) return;
 
@@ -47,29 +47,27 @@ async function main() {
   const synced = lines(git("diff", "--name-only")).filter((f: string) => !before.has(f));
   if (synced.length) console.log(`sync-shared updated ${synced.length} copied file(s): commit them\n  ${synced.join("\n  ")}`);
 
-  // `npm ci` once per package (a suite's own `npm ci` is a no-op below): suites share kernel/.
+  // `bun install` once per package (a suite's own install is a no-op below): suites share kernel/. It is quick when
+  // nothing changed, so it always runs.
   const installs = new Set(sel.suites.length ? ["scripts"] : []);
   for (const s of sel.suites) {
     const dir = s.dir ?? s.name;
-    for (const [, cd] of (s.run ?? "").matchAll(/cd (\S+) && npm ci/g)) installs.add(join(dir, cd!));
-    if (/^npm ci|\) && npm ci/.test(s.run ?? "")) installs.add(dir);
+    for (const [, cd] of (s.run ?? "").matchAll(/cd (\S+) && bun install/g)) installs.add(join(dir, cd!));
+    if (/^bun install|\) && bun install/.test(s.run ?? "")) installs.add(dir);
     if (s.job === "modules") installs.add("kernel"); // module suites read the kernel's code, as CI's modules job installs it
     // the packages CI's packages job installs once for these suites (their runs don't)
     if (["scripts", "kernel", "kernel/sdk"].includes(dir)) installs.add("kernel");
     if (["kernel/sdk", "fixtures/twin"].includes(dir)) installs.add("kernel/sdk");
   }
   for (const d of installs) {
-    const dir = resolve(root, d);
-    const have = join(dir, "node_modules/.package-lock.json");
-    if (existsSync(have) && statSync(have).mtimeMs >= statSync(join(dir, "package-lock.json")).mtimeMs) continue;
-    console.log(`npm ci in ${d}`);
-    execFileSync("npm", ["ci"], { cwd: dir, stdio: "inherit" });
+    console.log(`bun install in ${d}`);
+    execFileSync("bun", ["install", "--frozen-lockfile", "--ignore-scripts", "--silent"], { cwd: resolve(root, d), stdio: "inherit" });
   }
 
   const tmp = mkdtempSync(join(tmpdir(), "ci-local-"));
   const shim = join(tmp, "bin");
   mkdirSync(shim);
-  writeFileSync(join(shim, "npm"), `#!/bin/sh\n[ "$1" = ci ] && exit 0\nPATH="\${PATH#${shim}:}" exec npm "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(shim, "bun"), `#!/bin/sh\n[ "$1" = install ] && exit 0\nPATH="\${PATH#${shim}:}" exec bun "$@"\n`, { mode: 0o755 });
   const env = {
     ...process.env,
     PATH: `${shim}:${process.env.PATH}`,
@@ -77,7 +75,7 @@ async function main() {
     GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "user.name", GIT_CONFIG_VALUE_0: "ci", GIT_CONFIG_KEY_1: "user.email", GIT_CONFIG_VALUE_1: "ci@example.com",
   };
 
-  const jobs = sel.suites.map((s: Suite) => ({ name: s.name, cwd: join(root, s.dir ?? s.name), cmd: s.run ?? "npm test" }));
+  const jobs = sel.suites.map((s: Suite) => ({ name: s.name, cwd: join(root, s.dir ?? s.name), cmd: s.run ?? "bun run test" }));
   jobs.push({ name: "supply-chain", cwd: root, cmd: `s=0; node scripts/supply-chain/npm-age.ts ${mergeBase} HEAD || s=1; node scripts/supply-chain/pins.ts ${mergeBase} HEAD || s=1; exit $s` });
   const run = (j: { name: string; cwd: string; cmd: string }) => new Promise<boolean>((done) => {
     const log = join(tmp, `${j.name.replace(/\W/g, "_")}.log`);

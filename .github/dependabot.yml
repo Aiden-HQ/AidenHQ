@@ -1,9 +1,10 @@
 # Version updates, weekly, never a version under 7 days old (the owner's supply-chain rule, wave 3 item 17).
 # Security updates are separate and not held by the cooldown; the CI check scripts/supply-chain/npm-age.ts fails them
-# until the owner approves an entry in .github/supply-chain-exceptions.yaml.
+# until the owner approves an entry in .github/supply-chain-exceptions.yaml. Bun is the package manager (bun.lock), so the
+# ecosystem is `bun`.
 version: 2
 updates:
-  - package-ecosystem: npm
+  - package-ecosystem: bun
     directories:
       - /scripts
       - /modules/apps-platform/apps-mcp
@@ -31,7 +32,7 @@ updates:
     open-pull-requests-limit: 5
     commit-message: { prefix: build, include: scope } # "build(deps): bump …", a Conventional Commit title (ci.yml pr-title)
     groups:
-      npm: { patterns: ["*"] }
+      bun: { patterns: ["*"] }
   - package-ecosystem: docker
     directories: ["/**/*"]
     schedule: { interval: weekly }

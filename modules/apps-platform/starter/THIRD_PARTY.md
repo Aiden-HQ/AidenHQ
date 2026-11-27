@@ -5,7 +5,7 @@ from. Only MIT or Apache-2.0 sources; no paid or "pro" templates.
 
 | What | Source | Licence |
 |---|---|---|
-| `src/components/ui/*` (every shadcn/ui component, added with `npx shadcn@4.23.0 add`, then adapted to the theme and CSP) | shadcn/ui, https://github.com/shadcn-ui/ui | MIT, Copyright (c) 2023 shadcn |
+| `src/components/ui/*` (every shadcn/ui component, added with `bunx shadcn@4.23.0 add`, then adapted to the theme and CSP) | shadcn/ui, https://github.com/shadcn-ui/ui | MIT, Copyright (c) 2023 shadcn |
 | `src/components/blocks/combobox.tsx`, `date-picker.tsx`, `command-palette.tsx`, `table-toolbar.tsx`, `settings.tsx` (patterns from shadcn's combobox, date picker, command, data-table example and settings blocks; code written here) | shadcn/ui, https://ui.shadcn.com | MIT, Copyright (c) 2023 shadcn |
 | `src/components/blocks/tracker.tsx`, `kpi.tsx` (after Tremor's Tracker and KPI cards; code written here, no Tremor code) | Tremor, https://github.com/tremorlabs/tremor | Apache-2.0 |
 | `src/components/blocks/stepper.tsx`, `timeline.tsx` (after Origin UI's stepper and timeline; code written here) | Origin UI (legacy, MIT), https://originui.com | MIT |
