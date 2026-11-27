@@ -198,7 +198,9 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const wake = async (kind: string, text: string) => {
     if (over(c.wakes, caps.wakes_per_head)) return hold(`woke the task ${c.wakes} times on this head (wakes_per_head)`, HOLD.cap);
     // The kernel keeps 2,000 characters of a wake.
-    text = text.slice(0, 2000);
+    // A wake that asks for a push ends with the repo's protected paths, kept whole.
+    const guard = s.protected.length && text.includes("aidenhq ship push") ? `\nProtected paths: ${s.protected.join(", ")}.` : "";
+    text = text.slice(0, 2000 - guard.length) + guard;
     // The first job files the adoption's task (which starts the Engineer on it); later ones wake that same task.
     if (!a!.task) a = { ...a!, task: await fileTask(d.kernel, pr, a!.generation, text) };
     // The wake's own key: a retry of one whose answer was lost posts nothing twice.
@@ -262,7 +264,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     a = { ...a!, approve: { ...ap!, dismissed: String(r.id) }, did: [...(a!.did ?? []), `asked to dismiss the App's approval of \`${ap!.head.slice(0, 12)}\` (made on another commit or under another review policy)`] };
     return "acted";
   };
-  const push = () => `Start from the PR's head with \`aidenhq ship checkout ${pr.url} ${pr.head}\`, commit your fix there, and push it with \`aidenhq ship push ${pr.url} ${pr.head} ${a!.generation}\`.${s.protected.length ? ` Protected paths: ${s.protected.join(", ")}.` : ""}`;
+  const push = () => `Start from the PR's head with \`aidenhq ship checkout ${pr.url} ${pr.head}\`, commit your fix there, and push it with \`aidenhq ship push ${pr.url} ${pr.head} ${a!.generation}\`.`;
   // Behind only, under `rebase: conflict`: brought up to date only at the front of the repo's merge order; the rest wait their turn.
   if (v.do === "repair" && !f.dirty && s.rebase === "conflict" && !f.front && !f.queue) return "nothing";
   // The repo's own commands and workflows for the stage this round needs (actions.ts), before ship's own step for it.
