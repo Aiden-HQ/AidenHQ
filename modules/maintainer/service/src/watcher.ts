@@ -12,7 +12,7 @@
  * - `issues.labeled` with `feature-request` (duty `features`): the same trust read, and a trusted one joins the repo's `featured` set,
  *   the valid reports the per-author triage cap leaves uncounted.
  * - `issues.opened` with none of the three labels (the fleet's own issues included), on a repo whose `triage` isn't off: one triage task
- *   (its repo and number only: the title is a stranger's text). An author who is not a member (the feed's `member`: the owner's login, an OWNER/MEMBER/COLLABORATOR association or write access; the fleet files as the owner) goes through the repo's per-author cap on invalid issues a day (`triage_cap_per_author_day`); members have no limit. Past it the issue is `held` and
+ *   (its repo and number only: the title is a stranger's text). An author who is not a member (the feed's `member`: the owner's login, an OWNER/MEMBER/COLLABORATOR association or write access; the fleet files as the owner) goes through the per-author cap on invalid issues a day (TRIAGE_CAP_PER_AUTHOR_DAY, 5); members have no limit. Past it the issue is `held` and
  *   filed once a slot frees (oldest first); a day on, the daily run has it (with `triage: new+backlog`; with `new` it waits for a slot). An issue is valid once it carries the fix label (trusted,
  *   in `fired`) or feature-request (`featured`), labels only a trusted collaborator adds.
  * - `issues.reopened`: the issue's labels are read afresh (a closed issue that already carried a label has no task yet), as for a label event.
@@ -27,11 +27,11 @@
  *
  * The cursor (the last log seq committed) moves only after a batch's effects are written to this service's state file (state.json), so a
  * crash or a refused filing redelivers it; every handler is idempotent (the fired, noted and triaged sets, and the task sources).
- * `contributor_prs` nudges are the ship module's (modules/ship/service/src/contributor.ts).
+ * `quiet_pr_days` nudges are the ship module's (modules/ship/service/src/contributor.ts).
  */
 import { readFileSync } from "node:fs";
 import { kernelClient, type FactIn } from "./aidenhq-sdk/kernel-client.ts";
-import { BUILD_LABEL, FEATURE_LABEL, type MaintainedRepo } from "./aidenhq-sdk/maintained-repos.ts";
+import { BUILD_LABEL, FEATURE_LABEL, TRIAGE_CAP_PER_AUTHOR_DAY, type MaintainedRepo } from "./aidenhq-sdk/maintained-repos.ts";
 
 const MIN = 60_000;
 const STATE_KEY = "maintainer_issues";
@@ -264,7 +264,7 @@ async function opened(d: PumpDeps, r: MaintainedRepo, ev: FeedEvent, st: RepoSta
   const valid = new Set([...(st.fired ?? []), ...(st.featured ?? [])]);
   const byAuthor = recent.filter((x) => x.author === author && !valid.has(x.issue!)).length;
   // An author with an issue already held queues behind it: a freed slot goes to the older one first.
-  if (outside && (byAuthor >= r.triage_cap_per_author_day || (st.held ?? []).some((h) => h.author === author))) {
+  if (outside && (byAuthor >= TRIAGE_CAP_PER_AUTHOR_DAY || (st.held ?? []).some((h) => h.author === author))) {
     d.log.info({ repo: r.repo, issue: number, author, invalid_today: byAuthor }, "triage limit reached (invalid issues per author): held until a slot frees");
     st.held = [...(st.held ?? []), { number, author, created_at: String(ev.data?.created_at ?? new Date().toISOString()) }].slice(-KEEP);
     return 0;
@@ -284,7 +284,7 @@ async function releaseHeld(d: PumpDeps, r: MaintainedRepo, st: RepoState): Promi
   let count = 0;
   // With the backlog on, a held issue is the daily run's after a day; with `new` alone nothing else takes it, so it waits for a slot (or its close).
   for (const h of st.held.filter((x) => !valid.has(x.number) && (r.triage === "new" || Date.now() - Date.parse(x.created_at) < DAY))) {
-    if (recent.filter((x) => x.author === h.author && !valid.has(x.issue!)).length >= r.triage_cap_per_author_day) held.push(h);
+    if (recent.filter((x) => x.author === h.author && !valid.has(x.issue!)).length >= TRIAGE_CAP_PER_AUTHOR_DAY) held.push(h);
     else if (!(await d.triage(r.repo, h.number).catch(() => false))) {
       d.log.warn({ repo: r.repo, issue: h.number }, "maintainer triage task not filed; the next look retries it");
       held.push(h);
@@ -345,8 +345,8 @@ const token = (env: NodeJS.ProcessEnv) => {
 
 /** The labelled-issue task's done condition, once, as "Done conditions" in the handbook says it: the grader's three criteria. */
 const ISSUE_DONE = [
-  "The issue is resolved on GitHub: closed, or parked by the repo's owner or a member in a comment on it.",
-  "Its resolution is shown there: closed as completed with a merged fixing PR cited, or as not planned or a duplicate with the reason, or the owner's parking word.",
+  "The issue is resolved on GitHub: closed; or left open with the Maintainer's verdict, as the repo's settings ask (a comment by an owner, member or collaborator carrying a `Not fixing: <reason>`, `Duplicate of <owner>/<repo>#<n>` or `Fixed by` line, with the `invalid`, `duplicate` or `fixed` label where it labelled, and the fix label off); or parked by the repo's owner or a member in a comment on it.",
+  "Its resolution is shown there: closed as completed with a merged fixing PR cited, or as not planned or a duplicate with the reason, or that verdict comment, or the owner's parking word.",
   "The task's comment names the issue as owner/name#number with its URL, the resolution and the close's citation.",
 ];
 
@@ -359,7 +359,7 @@ export function maintainerWake(env: NodeJS.ProcessEnv = process.env): Fire | und
 This feature request was labelled agent-build by a trusted actor. Build it, as "A build task" in your instructions says: re-read its agent-build label event first, then brief an Engineer with the issue and see the pull request through to a merge. This run is asked to write on that issue with the GitHub tools, each write its own tool call (a close and its note are one call), and stays open, blocked on the Engineer's task, until the issue is closed as completed with the merged PR cited, as "Done conditions" in your instructions says.`, `maintainer-issue:${repo}#${issue.number}`, { deliverable: { kind: "issue", ref: `${repo}#${issue.number}` }, rubric: ISSUE_DONE })
     : fileTask(env, `Maintainer: ${repo}#${issue.number} is labelled for a fix`, `${repo}#${issue.number}
 
-This issue was labelled for a fix by a trusted actor. Validate it and see it through, as "Each run — a labelled issue" in your instructions says. This run is asked to write on that issue with the GitHub tools, each write its own tool call (a close and its note are one call): comment the verdict with its evidence, change its label, close it (completed once its fix is merged, with a note citing the PR and the merge commit, unless the PR's Fixes line closed it; not_planned with a note carrying the line "Not fixing: <what disproves it>", or "Duplicate of <owner>/<repo>#<n>"). It also briefs the engineer on a real fix and waits for its merge, and stays open, blocked on that task, until the issue is resolved as "Done conditions" in your instructions says: a verdict or a delegated fix is progress, the issue closed with its citation is done.`, `maintainer-issue:${repo}#${issue.number}`, { deliverable: { kind: "issue", ref: `${repo}#${issue.number}` }, rubric: ISSUE_DONE }) : undefined;
+This issue was labelled for a fix by a trusted actor. Validate it and see it through, as "Each run — a labelled issue" in your instructions says. This run is asked to write on that issue with the GitHub tools, each write its own tool call (a close and its note are one call): comment the verdict with its evidence, change its label, close it (completed once its fix is merged, with a note citing the PR and the merge commit, unless the PR's Fixes line closed it). A not-real, duplicate or already-fixed verdict takes the repo's action for it (its settings' actions: comment, label or close, as the skill "triage" says). It also briefs the engineer on a real fix and waits for its merge, and stays open, blocked on that task, until the issue is resolved as "Done conditions" in your instructions says: a delegated fix is progress; the issue closed with its citation, or given its verdict under the repo's comment or label action, is done.`, `maintainer-issue:${repo}#${issue.number}`, { deliverable: { kind: "issue", ref: `${repo}#${issue.number}` }, rubric: ISSUE_DONE }) : undefined;
 }
 
 /** A new unlabelled issue's triage task. Undefined until the token file is filled. */

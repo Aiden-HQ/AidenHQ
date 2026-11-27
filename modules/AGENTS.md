@@ -41,10 +41,27 @@ purpose: each line links the rule's home, and [CLAUDE.md](../CLAUDE.md) "Convent
 - **A module's user-facing features are configured from its own page (under Team); the module-settings screen is for advanced settings only.**
   Declare the page in `module.yaml` and ship it as a module view; the how-to is in
   [board-ui.md](../docs/design/board-ui.md) "Modules". One editor per setting: moving a feature setting to its page removes
-  it from the generic screens in the same change (CLAUDE.md "One way to do each thing").
+  it from the generic screens in the same change (CLAUDE.md "One way to do each thing"). Lay it out as "Settings pages" below says.
 - **Saves are validated against the module's declared settings on every path.** An owner's Fleet save goes through the
   board's `/api/pages/<id>/save`, limited to the page's declared settings, as the owner's own change; an agent's change goes
   through the kernel's tiered settings-change path (`/v1/settings/agent`, [settings-changes.md](../docs/design/settings-changes.md)).
+
+### Settings pages
+
+The Maintainer page (`modules/maintainer/service/src/page.html`) is the reference.
+- Group settings by what the owner wants done (Issues, Cleanup, Pull requests), never by how the code is built.
+- One row per setting: its name, a one-line description, and the control flush right. Every control in a card has the same width.
+- Use one control kind, a segmented choice (`editor({ kind: "seg" })`), for every choice, booleans included.
+- A field that applies to one option alone (a number of days for Close) appears under that row's description, only while
+  the option is picked. No column is reserved for it.
+- Give each item (a repo, an app) a plain-language summary line built from its settings, and show collapsed items with Edit.
+- Choose good defaults instead of offering presets. Fold near-duplicate settings into one, and make rarely-changed numbers product
+  constants.
+- Advanced holds at most a few settings and starts collapsed.
+- Keep one local draft and propose it whole on each change, so the board's bar is the one Save/Discard. Drop per-field resets
+  and override badges.
+- Before review, check the page in a browser at 1512, 1920, 820 and 390 px in every layout-changing state (each optional
+  field shown, Advanced open). Controls share one x, end at the card's inner edge, and nothing overflows.
 
 ## Connections are MCP servers
 

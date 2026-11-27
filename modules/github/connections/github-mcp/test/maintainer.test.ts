@@ -1027,7 +1027,7 @@ it("reads the tree and one file, and errors rather than truncating an oversized 
 it("the label tool changes only agent-fix", async () => {
   const f = fake({ issues: [{ number: 1, updated_at: "2026-01-01T00:00:00Z" }], timelines: { 1: [labeled("owner1", "2026-01-01T00:00:00Z")] } });
   const m = maintainer(f);
-  await expect(m.label(PRODUCT, 1, "add", "bug")).rejects.toThrow(/only the agent-fix and feature-request labels may be changed/);
+  await expect(m.label(PRODUCT, 1, "add", "bug")).rejects.toThrow(/only the agent-fix, feature-request, duplicate, invalid, fixed labels may be changed/);
   expect(await m.label(PRODUCT, 1, "remove")).toMatchObject({ changed: true });
   expect(f.posted[0]!.path).toBe(`/repos/${PRODUCT}/issues/1/labels/agent-fix`);
 });
@@ -1044,21 +1044,22 @@ it("maintainer_repos: defaults, bare repos, and a role outside admin, maintain o
     [PRODUCT, "agent-fix", ["admin", "maintain"]],
     [OTHER, "fix-me", ["write"]],
   ]);
-  // Duties are opt-in (issues aside), and a quiet PR waits a week.
-  expect(parseRepos(PRODUCT)[0]).toMatchObject({ fixes: true, features: false, dependabot: "failing", contributor_prs: false, stale_days: 7, preset: "quiet", triage: "off", triage_cap_per_author_day: 5, triage_labels: true, close: ["duplicate"], needs_info_close_days: null, stale_issues: null, resolved_check: { max_closes: 10, exempt_labels: ["roadmap", "wip", "blocked"] } });
-  expect(parseRepos(JSON.stringify([{ repo: PRODUCT, features: true, fixes: false, stale_days: 14 }]))[0]).toMatchObject({ fixes: false, features: true, stale_days: 14 });
-  expect(() => parseRepos(JSON.stringify([{ repo: PRODUCT, contributor_pr: true }]))).toThrow("maintainer_repos[0]: unknown key contributor_pr");
+  // Duties are opt-in (fixes and new-issue triage aside), and every verdict labels.
+  expect(parseRepos(PRODUCT)[0]).toMatchObject({ fixes: true, triage: "new", features: false, dependabot: "off", quiet_pr_days: null, actions: { duplicate: "label", invalid: "label", fixed: "label" }, no_reply_days: null, inactive_issue_days: null, protected_labels: ["roadmap", "wip", "blocked"] });
+  expect(parseRepos(JSON.stringify([{ repo: PRODUCT, features: true, fixes: false, quiet_pr_days: 14, actions: { fixed: "close" } }]))[0]).toMatchObject({ fixes: false, features: true, quiet_pr_days: 14, actions: { duplicate: "label", invalid: "label", fixed: "close" } });
+  expect(() => parseRepos(JSON.stringify([{ repo: PRODUCT, contributor_prs: true }]))).toThrow("maintainer_repos[0]: unknown key contributor_prs (it is now quiet_pr_days)");
   for (const bad of [
-    [{ repo: PRODUCT, stale_days: 0 }],
+    [{ repo: PRODUCT, quiet_pr_days: 0 }],
+    [{ repo: PRODUCT, quiet_pr_days: "x" }],
     [{ repo: PRODUCT, dependabot: true }],
     [{ repo: PRODUCT, issues: true }],
     [{ repo: PRODUCT, label: "x" }],
-    [{ repo: PRODUCT, preset: "loud" }],
-    [{ repo: PRODUCT, close: ["spam"] }],
-    [{ repo: PRODUCT, needs_info_close_days: 0 }],
-    [{ repo: PRODUCT, stale_issues: { days: 0 } }],
-    [{ repo: PRODUCT, stale_issues: { days: 30, nope: 1 } }],
-    [{ repo: PRODUCT, stale_days: "x" }],
+    [{ repo: PRODUCT, preset: "full" }],
+    [{ repo: PRODUCT, actions: { spam: "close" } }],
+    [{ repo: PRODUCT, actions: { duplicate: "delete" } }],
+    [{ repo: PRODUCT, no_reply_days: 0 }],
+    [{ repo: PRODUCT, inactive_issue_days: -1 }],
+    [{ repo: PRODUCT, fix_label: "invalid" }],
     [{ repo: PRODUCT, features: "yes" }],
     [{ repo: PRODUCT, trusted: ["triage"] }],
     [{ repo: PRODUCT, trusted: ["read"] }],
@@ -1070,18 +1071,11 @@ it("maintainer_repos: defaults, bare repos, and a role outside admin, maintain o
   ]) expect(() => parseRepos(JSON.stringify(bad))).toThrow(/maintainer_repos\[\d\]/);
 });
 
-it("a preset sets features and triage unless the entry says; settings have no upper limit; stale_issues fills its own defaults", () => {
+it("days have no upper limit and null is off; protected labels take any text", () => {
   const at = (e: object) => parseRepos(JSON.stringify([{ repo: PRODUCT, ...e }]))[0]!;
   expect(at({ dependabot: "all" }).dependabot).toBe("all");
-  expect(at({ dependabot: "off" }).dependabot).toBe("off");
-  expect(at({ preset: "triage" })).toMatchObject({ features: false, triage: "new" });
-  expect(at({ preset: "full" })).toMatchObject({ features: true, triage: "new+backlog" });
-  expect(at({ preset: "full", features: false, triage: "off" })).toMatchObject({ features: false, triage: "off" });
-  expect(at({ stale_days: 365, needs_info_close_days: 400 })).toMatchObject({ stale_days: 365, needs_info_close_days: 400 });
-  expect(at({ stale_issues: {} }).stale_issues).toEqual({ days: 60, grace_days: 14, exempt_labels: ["roadmap", "wip", "blocked"] });
-  expect(at({ stale_issues: { days: 30, exempt_labels: ["pinned"] } }).stale_issues).toEqual({ days: 30, grace_days: 14, exempt_labels: ["pinned"] });
-  expect(at({ resolved_check: { max_closes: 0 } }).resolved_check.max_closes).toBe(0);
-  expect(at({ stale_issues: { exempt_labels: ["🚧 in progress"] } }).stale_issues!.exempt_labels).toEqual(["🚧 in progress"]);
+  expect(at({ quiet_pr_days: 365, no_reply_days: 400, inactive_issue_days: null })).toMatchObject({ quiet_pr_days: 365, no_reply_days: 400, inactive_issue_days: null });
+  expect(at({ protected_labels: ["🚧 in progress"] }).protected_labels).toEqual(["🚧 in progress"]);
 });
 
 it("inMaintained matches a listed repo in any case", () => {
@@ -1118,7 +1112,7 @@ it("a repo's own label is the one listed, trusted and the only one changed", asy
   const m = maintainer(f, [], [{ repo: OTHER, fix_label: "fix-me" }]);
   expect((await m.repoSince(OTHER)).issues.map((i) => i.number)).toEqual([3]);
   expect(f.calls.some((c) => c.url.includes(`/repos/${OTHER}/issues?state=open&labels=fix-me`))).toBe(true);
-  await expect(m.label(OTHER, 3, "add", "agent-fix")).rejects.toThrow(/only the fix-me and feature-request labels/);
+  await expect(m.label(OTHER, 3, "add", "agent-fix")).rejects.toThrow(/only the fix-me, feature-request, duplicate, invalid, fixed labels/);
   expect(await m.label(OTHER, 3, "remove")).toMatchObject({ label: "fix-me", changed: true });
   expect(f.posted[0]!.path).toBe(`/repos/${OTHER}/issues/3/labels/fix-me`);
 });
