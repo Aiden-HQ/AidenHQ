@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { parseRepos } from "../service/src/aidenhq-sdk/maintained-repos.ts";
 import { applyRepoChange, configTools, defaults, rawRepos } from "../service/src/config-tool.ts";
 
 const owner = { agent: "", roles: [], kind: "owner" };
@@ -12,7 +13,7 @@ test("maintainer_configure for the owner proposes merged field edits, refuses an
     { kind: "setting", key: "maintainer_repos", value: [{ repo: "a/b", dependabot: "all", fixes: false, triage: "new+backlog", actions: { duplicate: "close", invalid: "label", fixed: "comment" } }, { repo: "c/d", features: true }] },
   ]);
   await assert.rejects(t.run({ edits: { repos: { "a/b": { dependabot: true } } } }, { agent: "x", roles: ["maintainer"] }), /owner's/);
-  assert.throws(() => applyRepoChange(rawRepos("a/b"), { fields: { "x/y": { fixes: true } } }), /add it from the Ship page/);
+  assert.throws(() => applyRepoChange(rawRepos("a/b"), { fields: { "x/y": { fixes: true } } }), /add it first/);
   assert.throws(() => applyRepoChange(rawRepos("a/b"), { fields: { "a/b": { nope: true } } }), /fields/);
   assert.throws(() => applyRepoChange(rawRepos("a/b"), { fields: { "a/b": { triage: "sometimes" } } }), /triage must be one of/);
   assert.throws(() => applyRepoChange(rawRepos("a/b"), { fields: { "a/b": { inactive_issue_days: 0 } } }), /inactive_issue_days/);
@@ -37,4 +38,14 @@ test("maintainer_config answers each repo's own entry, what applies and the defa
   assert.deepEqual([r.repos[1].effective.triage, r.repos[1].effective.features, r.repos[1].effective.actions], ["new", true, { duplicate: "label", invalid: "close", fixed: "label" }]);
   assert.deepEqual([defaults().base.dependabot, defaults().base.quiet_pr_days, defaults().base.protected_labels], ["off", null, ["roadmap", "wip", "blocked"]]);
   await assert.rejects(t.run({}, { agent: "x", roles: ["maintainer"] }), /owner's/);
+});
+
+test("add lists a repo with the Maintainer's defaults (the same addListed as Ship's Add repo), and refuses a malformed or listed one", async () => {
+  const t = tools('["a/b"]').maintainer_configure!;
+  const r = (await t.run({ add: ["c/d"], edits: { repos: { "c/d": { features: true } } } }, owner)) as any;
+  assert.deepEqual(r._aidenhq.settings_change[0].value, [{ repo: "a/b" }, { repo: "c/d", features: true }]);
+  assert.deepEqual(parseRepos(JSON.stringify(r._aidenhq.settings_change[0].value))[0]!.fixes, true);
+  await assert.rejects(t.run({ add: ["nope"] }, owner), /isn't owner\/name/);
+  await assert.rejects(t.run({ add: ["A/B"] }, owner), /already listed/);
+  await assert.rejects(t.run({ add: ["c/d"] }, { agent: "x", roles: ["maintainer"] }), /owner's/);
 });

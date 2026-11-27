@@ -42,13 +42,21 @@
   .sec.last { padding-bottom: 8px; }
   .mc.seen { animation: none; }
   .tag.edit { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+  .bar { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; }
+  .adder.card { max-width: 1360px; }
+  .adder .add { border-top: 0; padding: 14px 20px 6px; }
+  .adder .add input { max-width: 360px; }
+  .adder .msg { margin: 0; padding: 0 20px 14px; min-height: 20px; color: var(--soft); font-size: 13px; }
+  .adder .msg.err { color: var(--color-text-danger, #b00020); }
   @media (max-width: 1000px) { .mc { --ctl: 100%; } .srow { grid-template-columns: minmax(0, 1fr); gap: 4px; } .ctl { margin-top: 6px; } }
   @media (max-width: 520px) { .sec, .mc .top { padding-left: 14px; padding-right: 14px; } .sech small { display: none; } .adv span { display: none; } }
 </style>
 </head>
 <body>
 <div class="wrap">
-<p class="intro">What the Maintainer does on each repo you list. Everything it does on GitHub comes with a comment saying why. Add a repo from the Ship page.</p>
+<div class="bar"><p class="intro">What the Maintainer does on each repo you list. Everything it does on GitHub comes with a comment saying why.</p>
+  <button type="button" class="primary" id="addbtn" aria-expanded="false" aria-controls="adder">+ Add repo</button></div>
+<div class="card adder" id="adder" hidden></div>
 <div id="rows"><div class="card"><div class="empty">Loading the repos…</div></div></div>
 <div class="note" id="note" role="status"></div>
 </div>
@@ -57,9 +65,11 @@
   const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   let cfg = { repos: [], defaults: null };
   // One local draft per repo (its whole effective settings); the page proposes every repo's draft at once, and the board's bar saves it.
-  let drafts = {}, lastGood = { drafts: {}, removing: null }, sentRev = 0, removing = null, openRepo = null, drawn = false;
+  // `added` are repos listed on this page and not saved yet: the proposal carries them, and each is drawn from the Maintainer's defaults.
+  let added = [], drafts = {}, lastGood = { drafts: {}, removing: null, added: [] }, sentRev = 0, removing = null, openRepo = null, drawn = false;
   const advOpen = new Set();
-  const saved = (repo) => cfg.repos.find((r) => r.repo === repo).effective;
+  const repos = () => [...cfg.repos, ...added.map((repo) => ({ repo, effective: { repo, ...cfg.defaults.base } }))];
+  const saved = (repo) => repos().find((r) => r.repo === repo).effective;
   const draft = (repo) => (drafts[repo] ??= structuredClone(saved(repo)));
   const dirty = (repo) => repo in drafts && !eq(drafts[repo], saved(repo));
   // What a Close needs a number for, and the number it starts from.
@@ -68,7 +78,7 @@
   // The proposal: each changed field (a field back at its default is null, so the entry stays as short as it can).
   function edits() {
     const base = cfg.defaults.base, out = {};
-    for (const r of cfg.repos) {
+    for (const r of repos()) {
       if (r.repo === removing || !dirty(r.repo)) continue;
       const d = drafts[r.repo], s = saved(r.repo), e = {};
       for (const k of Object.keys(d)) if (k !== "repo" && !eq(d[k], s[k])) e[k] = eq(d[k], base[k]) ? null : d[k];
@@ -81,10 +91,10 @@
   function propose(live) {
     const repos = edits();
     // Always propose, an unchanged draft included, so the board's bar holds exactly what the page shows; a refused draft goes back to the last one proposed.
-    const sent = { drafts: structuredClone(drafts), removing }, rev = ++sentRev;
+    const sent = { drafts: structuredClone(drafts), removing, added: [...added] }, rev = ++sentRev;
     inOrder(async () => {
-      try { await tool("maintainer_configure", { edits: { repos }, ...(sent.removing ? { remove: sent.removing } : {}) }); lastGood = sent; say(Object.keys(repos).length || sent.removing ? "Changes are proposed: Save in the bar above applies them." : ""); }
-      catch (e) { if (rev === sentRev) { drafts = structuredClone(lastGood.drafts); removing = lastGood.removing; redraw(); } say(e.message, true); }
+      try { await tool("maintainer_configure", { edits: { repos }, ...(sent.added.length ? { add: sent.added } : {}), ...(sent.removing ? { remove: sent.removing } : {}) }); lastGood = sent; say(Object.keys(repos).length || sent.removing || sent.added.length ? "Changes are proposed: Save in the bar above applies them." : ""); }
+      catch (e) { if (rev === sentRev) { drafts = structuredClone(lastGood.drafts); removing = lastGood.removing; added = [...lastGood.added]; redraw(); } say(e.message, true); }
     });
   }
   const change = (repo, patch, live) => { Object.assign(draft(repo), patch); if (!live) soon(redraw); propose(live); };
@@ -169,26 +179,52 @@
 
   function card(r) {
     const repo = r.repo, open = openRepo === repo, d = draft(repo), gone = removing === repo;
-    const tags = [dirty(repo) ? h("span", { className: "tag edit", textContent: "Edited" }) : null, gone ? h("span", { className: "tag failed", textContent: "Removed on Save" }) : null];
+    const fresh = added.includes(repo);
+    const tags = [fresh ? h("span", { className: "tag edit", textContent: "Added on Save" }) : dirty(repo) ? h("span", { className: "tag edit", textContent: "Edited" }) : null, gone ? h("span", { className: "tag failed", textContent: "Removed on Save" }) : null];
     const btn = (text, fn, cls = "") => { const b = h("button", { type: "button", textContent: text, className: cls }); b.addEventListener("click", fn); return b; };
     const acts = gone ? [btn("Keep", () => { removing = null; redraw(); propose(); })]
+      : open && fresh ? [btn("Discard", () => { added = added.filter((x) => x !== repo); delete drafts[repo]; redraw(); propose(); })]
       : open ? [btn("Remove", () => { removing = repo; redraw(); propose(); })]
       : [btn("Edit", () => { openRepo = repo; redraw(); })];
     const top = h("div", { className: "top" }, h("div", { className: "who" }, h("div", { className: "name" }, h("span", { textContent: repo }), ...tags.filter(Boolean)), h("div", { className: "sum", textContent: summary(d) })), h("div", { className: "acts" }, ...acts));
     return h("div", { className: `card mc${open && !gone ? " open" : ""}${drawn ? " seen" : ""}` }, top, ...(open && !gone ? body(repo) : []));
   }
 
+  // ---- Add repo: a name field under the page's header. Adding lists the repo with the Maintainer's defaults and opens it to adjust; Save applies it.
+  const NAME = /^[\w.-]{1,100}\/[\w.-]{1,100}$/;
+  const nameError = (v) => !v ? "" : !NAME.test(v) ? "Use owner/name, for example acme/api." : repos().some((r) => r.repo.toLowerCase() === v.toLowerCase()) ? `${v} is already listed: change it below.` : "";
+  function closeAdder() { $("adder").hidden = true; $("adder").replaceChildren(); $("addbtn").setAttribute("aria-expanded", "false"); }
+  function openAdder() {
+    if (!$("adder").hidden) return $("adder").querySelector("input").focus();
+    const input = h("input", { type: "text", placeholder: "owner/name", ariaLabel: "Repo to add", autocomplete: "off", spellcheck: false });
+    const msg = h("p", { className: "msg", role: "status" }), go = h("button", { type: "button", className: "primary", textContent: "Add" }), cancel = h("button", { type: "button", textContent: "Cancel" });
+    const check = (typed) => { const v = input.value.trim(), bad = nameError(v); msg.textContent = bad && (typed || v) ? bad : "Lists it with the Maintainer's defaults: fixes labelled issues, triages new ones. Save in the bar above applies it."; msg.className = bad ? "msg err" : "msg"; return !bad && !!v; };
+    const submit = () => {
+      const v = input.value.trim();
+      if (!v) { msg.textContent = "Type the repo as owner/name, for example acme/api."; msg.className = "msg err"; return input.focus(); }
+      if (!check()) return input.focus();
+      const slug = v; added = [...added, slug]; openRepo = slug; closeAdder(); redraw(); propose();
+    };
+    input.addEventListener("input", () => check(true));
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); else if (e.key === "Escape") closeAdder(); });
+    go.addEventListener("click", submit); cancel.addEventListener("click", closeAdder);
+    $("adder").replaceChildren(h("div", { className: "add" }, input, go, cancel), msg);
+    $("adder").hidden = false; $("addbtn").setAttribute("aria-expanded", "true"); check(); input.focus();
+  }
+  $("addbtn").addEventListener("click", openAdder);
+
   const redraw = () => keepFocus(draw);
   function draw() {
     closeHelp();
-    if (!cfg.repos.length) return $("rows").replaceChildren(h("div", { className: "card" }, h("div", { className: "empty" }, h("b", { textContent: "No repos yet. " }), "Add one from the Ship page (Add repo); if the page is missing, add the Ship module under Fleet, Modules first. Then choose what the Maintainer does on it here.")));
-    if (!cfg.repos.some((r) => r.repo === openRepo)) openRepo = cfg.repos[0].repo;
-    $("rows").replaceChildren(h("div", { className: "wrap" }, ...cfg.repos.map(card)));
+    const all = repos();
+    if (!all.length) return $("rows").replaceChildren(h("div", { className: "card" }, h("div", { className: "empty" }, h("b", { textContent: "No repos yet. " }), "Choose + Add repo above, then pick what the Maintainer does on it here.")));
+    if (!all.some((r) => r.repo === openRepo)) openRepo = all[0].repo;
+    $("rows").replaceChildren(h("div", { className: "wrap" }, ...all.map(card)));
     drawn = true;
   }
 
   async function load() {
-    try { cfg = await tool("maintainer_config", {}); drafts = {}; lastGood = { drafts: {}, removing: null }; removing = null; draw(); } catch (e) { say(e.message, true); }
+    try { cfg = await tool("maintainer_config", {}); drafts = {}; added = []; lastGood = { drafts: {}, removing: null, added: [] }; removing = null; draw(); } catch (e) { say(e.message, true); }
   }
   start("maintainer", load);
 </script>
