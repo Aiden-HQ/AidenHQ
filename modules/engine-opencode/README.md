@@ -7,6 +7,22 @@ session computer, driven over opencode's HTTP API (`prompt_async`, `/event`, `/s
 in tmux behind ttyd. It never emits `final`: a session ends only when the kernel stops its job. Each finished turn emits a `reply` (its last text, unless the turn called `task_comment`), which the job's dispatcher posts on the task once. A stop (SIGTERM) aborts the
 turn and exits 143, so a replaced box makes dispatch resume the same opencode session (`spec.session`).
 
+Not the default engine (engine-codex is `default: true`): only an agent that names `engine: opencode` runs on it.
+
+## Connect
+
+Nothing to connect. The models come from `models-openrouter`.
+
+## What agents get
+
+No tools. It provides an `engine` for an agent that names `engine: opencode`.
+
+## New installs
+
+In the default bundle with `sessions`. It runs only when a session job starts.
+
+## How it is set up
+
 It is fully set up from the job alone, with no config file to maintain. `src/config.ts` builds `opencode.json` in the engine's
 state folder on every start:
 
@@ -21,8 +37,6 @@ state folder on every start:
 - **Skills and instructions.** The kernel places the agent's `skills/` and `AGENTS.md` in the state folder, which is
   `OPENCODE_CONFIG_DIR`: opencode lists the skills (name and description) and loads `AGENTS.md` through `instructions`.
 - Self-update, sharing, model-list fetching and plugin self-updates are off; nothing is fetched at run time.
-
-Not the default engine (engine-codex is `default: true`): only an agent that names `engine: opencode` runs on it.
 
 ## Checked on opencode 1.19.6
 
@@ -59,15 +73,3 @@ Supply chain: opencode is `1.19.6` (2026-11-17), both plugins are older than 7 d
 `test/config.test.ts` and `test/engine.test.ts` run anywhere (a stand-in `opencode`, `tmux`, `ttyd` and `setsid` in
 `test/bin`). `test/fresh-session.e2e.test.ts` runs the real opencode 1.19.6 and is skipped where it is not on PATH:
 `docker run --rm -v "$PWD":/m -w /m aidenhq/computer-session node --test test/fresh-session.e2e.test.ts`.
-
-## Connect
-
-Nothing to connect. The models come from `models-openrouter`.
-
-## What agents get
-
-No tools. It provides an `engine` for an agent that names `engine: opencode`.
-
-## New installs
-
-In the default bundle once the `sessions` module lands. It runs only when a session job starts.

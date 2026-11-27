@@ -3,13 +3,14 @@
 ## What it does
 
 Your daily surface: chat with Aiden, approvals, tasks, apps, costs and each module's settings. Other modules extend it
-through three declared points, so a module adds no board code of its own:
+through four declared points, so a module adds no board code of its own:
 
 - `board.signins`: a vendor sign-in shown as a banner, connected in one click.
 - `board.setup_flows`: a guided setup for what you must do elsewhere first.
 - `board.pages`: a Fleet page ([board-ui.md](../../docs/design/board-ui.md) "Modules").
+- `board.reads`: a read tool the board calls for your own view (Home), by id.
 
-Its schemas are in `schemas/`. It also contributes the task labels `needs-review`, `daily-brief`, `todo`,
+Their schemas are in `schemas/`. It also contributes the task labels `needs-review`, `daily-brief`, `todo`,
 `needs-response` and `recurring`.
 
 ## Connect

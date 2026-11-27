@@ -114,7 +114,7 @@ stay out unless an app needs them (guidelines: the stack).
   `npm uninstall cn`, and revert any change it made to `src/index.css` (the theme comes from `shadcn.css`; never add a
   `.dark` block or literal colours there). Then set any new dependency to an exact, 7-day-old version. A `<style>` tag
   the new component renders needs `nonce={cspNonce}`.
-- **Dependencies:** pinned exactly, each published at least 7 days ago (`node .github/supply-chain/best-version.mjs npm
+- **Dependencies:** pinned exactly, each published at least 7 days ago (`node .github/supply-chain/best-version.ts npm
   <pkg>` from the CI template), installed with `npm install --save-exact --before=<7 days ago>` so transitive versions
   pass too, lockfile committed.
 - **Review states:** `?preview=loading|error|empty` shows that state of the example page with the sample data, and

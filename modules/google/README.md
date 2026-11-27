@@ -15,7 +15,7 @@ sign-in. By hand: `scripts/google-auth.sh <client.json>`.
 
 ## What agents get
 
-The `google_workspace` connection. Read: `calendar_list_events`, `calendar_search_events`, `calendar_get_event`,
+The `google_workspace` connection. Read: `calendar_list_events`, `calendar_search_events`, `calendar_get_event`, `calendar_today`,
 `drive_list_recent_files`, `drive_list_meeting_documents`, `drive_search_files`, `drive_read_file`, `gmail_search`,
 `gmail_read_thread`, `docs_read`, and `gmail_inbox_new` (the inbox since the caller's cursor, automated mail set aside in
 code) with `gmail_inbox_ack` (moves that cursor). Glean finds Drive documents faster; read them here for the exact current text.
