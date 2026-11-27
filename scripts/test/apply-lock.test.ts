@@ -84,6 +84,7 @@ test("a second apply waits for the first, then runs: never refused for being sec
     await until(() => said.includes("waits its turn")); // it says so just before it blocks on the lock
   } finally {
     writeFileSync(join(dir, "bin/git.release"), ""); // a failed wait must not leave the first apply held in its git
+    await Promise.all([first, second]); // and no apply outlives the fixture
   }
   const [a, b] = [await first, await second];
   assert.match(b.out, /another apply is running: this one waits its turn/, b.out);
