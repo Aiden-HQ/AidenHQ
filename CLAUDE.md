@@ -49,14 +49,16 @@ line here. Docs say how the product works now: no history notes; history goes to
   `docs/operations/` (apply, backups, retention, moving hosts, hand-pinned releases), `ops/vault/README.md` (the vault).
 - Building modules: `modules/AGENTS.md` (how modules, connections, agents, teammates, settings pages are built),
   `modules/README.md` (every module, the default bundle), `modules/<name>/README.md` (what it does, connect, what agents
-  get; in step with its `module.yaml`), `docs/modules.md` (kernel routes a module service calls), `kernel/sdk/README.md`. Module internals live in the
-  module's README (e.g. the change feed in `modules/github`, how a PR moves in `modules/ship`, CI runners in `modules/ci`).
+  get; in step with its `module.yaml`), `docs/modules.md` (kernel routes a module service calls), `kernel/sdk/README.md`,
+  `docs/design/sharing.md` (publishing one of the instance's own modules). Module internals live in the module's README
+  (e.g. the change feed in `modules/github`, how a PR moves in `modules/ship`, CI runners in `modules/ci`).
 - How features work: `docs/design/` (one doc per feature, describing it as built): access and exposure (`access.md`,
   `app-doors.md`, `app-identity.md`), approvals and settings (`approvals.md`, `settings-changes.md`), code
-  (`code-review.md`, `codehost-local.md`, `sandboxing.md`, `codex-openrouter-engine.md`, `sessions.md`), setup
-  (`guided-setup.md`, `connections-simple.md`, `release-updates.md`, `quiet-start.md`), data (`flow.md`,
-  `flow-insights.md`, `monitoring.md`, `sources.md`, `task-search.md`), UI (`board-ui.md`, `agent-work-board.md`,
-  `agent-and-module-pages.md`, `design-system.md`).
+  (`code-review.md`, `codehost-local.md`, `sandboxing.md`, `codex-openrouter-engine.md`, `sessions.md`,
+  `conversational-engineers.md`), agents and the fleet (`agent-coach.md`), setup
+  (`guided-setup.md`, `connections-simple.md`, `release-updates.md`, `quiet-start.md`,
+  `minimal-core-install.md`), data (`flow.md`, `flow-insights.md`, `monitoring.md`, `sources.md`, `task-search.md`), UI
+  (`board-ui.md`, `agent-work-board.md`, `agent-and-module-pages.md`, `design-system.md`).
 - Designs in flight: `docs/superpowers/specs/`. Once built, the design goes into the live doc above and the spec moves to
   the instance repo's `docs/product-history/superpowers/`.
 - Runtime content (agents read it, tests assert it): handbooks (`modules/*/agents/`), skills, `*/prompts/`, grading
