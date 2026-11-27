@@ -14,9 +14,8 @@ describe("Home", () => {
     expect(el.textContent).not.toContain("Today");
   });
 
-  it("approves the card row on J, J, J, E with its digest, and shows a receipt with no Undo", async () => {
+  it("approves the card row on J, J, E (newest first) with its digest, and shows a receipt with no Undo", async () => {
     const { el, sent } = await mountApp("#/");
-    await key("j");
     await key("j");
     await key("j");
     await key("e");
@@ -33,11 +32,11 @@ describe("Home", () => {
     await key("j");
     await key("s");
     await settle();
-    expect(sent.find((s) => s.path === "/api/home/snooze")?.body).toEqual({ id: "id-841:2026-11-21T08:00:00Z", on: true });
-    const undo = [...el.querySelectorAll<HTMLButtonElement>("#need-id-841 button")].find((b) => b.textContent === "Undo")!;
+    expect(sent.find((s) => s.path === "/api/home/snooze")?.body).toEqual({ id: "id-815:2026-11-26T07:00:00Z", on: true });
+    const undo = [...el.querySelectorAll<HTMLButtonElement>("#need-id-815 button")].find((b) => b.textContent === "Undo")!;
     await act(async () => undo.click());
     await settle();
-    expect(sent.filter((s) => s.path === "/api/home/snooze").map((s) => s.body)).toContainEqual({ id: "id-841:2026-11-21T08:00:00Z", on: false });
+    expect(sent.filter((s) => s.path === "/api/home/snooze").map((s) => s.body)).toContainEqual({ id: "id-815:2026-11-26T07:00:00Z", on: false });
   });
 
   it("marks the snapshot seen once, and refetches keep the visit's window", async () => {

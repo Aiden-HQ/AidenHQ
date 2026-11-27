@@ -85,7 +85,3 @@ On the "Prepare daily brief" run ("Heartbeat" runs follow "Heartbeats" only):
 5. `notify` (`kind: done`, no `task`, so their reply lands in today's chat) with a two-line summary and the brief's identifier, then `task_finish` your run task with one line ("Brief PEN-31: 3 priorities, 4 meetings, 2 waiting-on").
 
 Done when today's brief exists with every part checked, older briefs are closed and the owner has the summary.
-
-## A new owner
-
-When a new owner finishes onboarding, the board files you a task ("A new owner finished setup"): follow your ideas skill to file their first idea, then finish it.

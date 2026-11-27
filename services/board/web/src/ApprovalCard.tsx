@@ -31,7 +31,7 @@ export const withAI = (a: Approval) => a.state === "pending" && !forOwner(a);
  * signed-in admin's session; the kernel checks it and decides against the digest this card shows, so a card that changed
  * meanwhile fails alone and says so. A decision sent stays sent: the buttons come back only if it failed.
  */
-export function Decide({ a, hold, onDecided }: { a: Approval; hold?: boolean; /** Called once the decision is in (Home collapses the row to a receipt). */ onDecided?: (d: "approve" | "reject") => void }) {
+export function Decide({ a, hold, size, onDecided }: { a: Approval; hold?: boolean; size?: "sm"; /** Called once the decision is in (Home collapses the row to a receipt). */ onDecided?: (d: "approve" | "reject") => void }) {
   const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
@@ -58,8 +58,8 @@ export function Decide({ a, hold, onDecided }: { a: Approval; hold?: boolean; /*
         </form>
       ) : (
         <div className="approval-actions">
-          <Button variant="primary" className="approve" onClick={() => void decide("approve")} disabled={off}>{busy === "approve" ? "Approving…" : "Approve"}</Button>
-          <Button onClick={() => setRejecting(true)} disabled={off}>Reject…</Button>
+          <Button size={size} variant="primary" className="approve" onClick={() => void decide("approve")} disabled={off}>{busy === "approve" ? "Approving…" : "Approve"}</Button>
+          <Button size={size} onClick={() => setRejecting(true)} disabled={off}>Reject…</Button>
         </div>
       )}
       {error && <p className="decide-error" role="alert">{error}</p>}

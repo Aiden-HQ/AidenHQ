@@ -5,15 +5,12 @@
 .home-head h1 { margin: 0; font-size: var(--text-3xl); font-weight: 700; letter-spacing: -0.025em; line-height: 1.2; text-wrap: balance; }
 .home-banner-actions { display: flex; gap: 6px; }
 
-/* Needs you beside the detail pane or Next up; one column under 1100px. */
-.home-top { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--stack); align-items: start; }
-@media (min-width: 1100px) { .home-top:not(.home-top-solo) { grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); } }
-.home-side { display: grid; gap: var(--stack); align-content: start; min-width: 0; }
-.home-side > .ui-detail { width: auto; }
-/* Since and the idea on Your world's columns (1.45fr / 1fr), so the gutters line up; a lone one takes the row; stacked on a phone. */
+/* Needs you (left) and Since (right) on Your world's columns (1.45fr / 1fr), so the gutters line up; a lone cell takes the row; stacked on a phone in that order. */
 .home-pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--stack); align-items: start; }
 @media (min-width: 1100px) { .home-pair:has(> :nth-child(2)) { grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); } }
 .home-pair-cell { min-width: 0; }
+.home-side { display: grid; gap: var(--stack); align-content: start; }
+.home-side > .ui-detail, .home-side > div > .ui-detail { width: auto; }
 .home-bone { display: block; width: 100%; border-radius: var(--radius); }
 
 .home-keys { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
@@ -22,9 +19,8 @@
 .home-keys .ui-kbd:nth-child(2) { margin-left: 2px; }
 @media (max-width: 860px) { .home-keys { display: none; } }
 .home-clear { margin: 0; padding: 18px 16px; color: var(--muted); font-size: var(--text-md); }
-.home-reads { font-size: var(--text-sm); color: var(--faint); }
 .home-needs [role="option"] { outline: none; }
-.home-needs [role="option"] + [role="option"] .ui-dr { border-top: 1px solid var(--border); }
+.home-needs [role="option"] + [role="option"] .ui-digest-row { border-top: 1px solid var(--border); }
 .home-needs .approval-decide, .home-needs .approval-actions { display: contents; }
 .home-all { font-size: var(--text-sm); font-weight: 600; color: var(--accent); }
 .home-more { color: var(--faint); font-size: var(--text-sm); white-space: nowrap; }
@@ -43,8 +39,6 @@
 .home-since-all section { display: grid; gap: 4px; }
 .home-since-all .ui-digest-row { padding-inline: 0; }
 
-.home-idea { margin: 0; font-size: var(--text-body); line-height: 1.5; }
-.home-idea-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* Your world and your team: fluid grids that add columns as the screen grows. */
 .home-h2 { margin: 0; font-size: var(--text-lg); font-weight: 650; letter-spacing: -0.01em; }

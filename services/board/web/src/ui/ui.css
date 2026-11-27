@@ -346,15 +346,24 @@ button.ui-dr-top:hover .ui-dr-q { color: var(--accent); }
 
 /* Digest (DigestList.tsx): one line per thing that happened, its link on the right. */
 .ui-digest { display: flex; flex-direction: column; min-width: 0; }
-.ui-digest-row { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 8px 16px; border-top: 1px solid var(--border); font-size: var(--text-md); line-height: 1.4; transition: background-color var(--fast) var(--ease-out); }
+.ui-digest-row { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 16px; border-top: 1px solid var(--border); font-size: var(--text-md); line-height: 1.4; transition: background-color var(--fast) var(--ease-out), box-shadow var(--fast) var(--ease-out); }
 .ui-digest-row:first-child { border-top: 0; }
 .ui-digest-row:hover { background: color-mix(in srgb, var(--hover) 50%, transparent); }
-.ui-digest-text { flex: 1; min-width: 0; }
+.ui-digest-row.openable { cursor: pointer; }
+.ui-digest-row.on, .ui-digest-row.on:hover { background: color-mix(in srgb, var(--accent) 5%, var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 32%, var(--border)); }
+.ui-digest-text { flex: 1; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+.ui-digest-text b { font-weight: 600; }
+.ui-digest-receipt { display: flex; align-items: center; gap: 8px; color: var(--ok-text); font-weight: 600; }
+.ui-digest-meta { flex: none; min-width: 5.5em; text-align: right; font-size: var(--text-sm); color: var(--faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .ui-digest-row > a { flex: none; font-size: var(--text-sm); text-decoration: none; white-space: nowrap; }
 .ui-digest-row > a:hover, .ui-digest-more:hover { text-decoration: underline; }
-.ui-digest-actions { flex: none; display: inline-flex; gap: 4px; }
-@media (hover: hover) and (pointer: fine) { .ui-digest-actions { opacity: 0; transition: opacity var(--fast) var(--ease-out); } .ui-digest-row:hover .ui-digest-actions, .ui-digest-row:focus-within .ui-digest-actions { opacity: 1; } }
+.ui-digest-actions { flex: none; display: inline-flex; align-items: center; gap: 6px; }
+.ui-digest-actions .btn { white-space: nowrap; max-width: 14rem; overflow: hidden; text-overflow: ellipsis; }
+@media (hover: hover) and (pointer: fine) { .ui-digest-actions:not(.persist) { opacity: 0; transition: opacity var(--fast) var(--ease-out); } .ui-digest-row:hover .ui-digest-actions, .ui-digest-row:focus-within .ui-digest-actions { opacity: 1; } }
+@media (hover: hover) and (pointer: fine) { .ui-digest-actions.persist .btn.quiet { opacity: 0.55; transition: opacity var(--fast) var(--ease-out); } .ui-digest-row:hover .ui-digest-actions .btn.quiet, .ui-digest-row:focus-within .ui-digest-actions .btn.quiet, .ui-digest-actions .btn.quiet:focus-visible { opacity: 1; } }
 @media (any-pointer: coarse) { .ui-digest-actions { opacity: 1; } }
+/* Narrow cards and phones: the buttons go below the text, under it and not under the face. */
+@media (max-width: 640px) { .ui-digest-row { flex-wrap: wrap; } .ui-digest-actions { order: 3; flex: 1 0 100%; flex-wrap: wrap; padding-left: 36px; } }
 .ui-digest-more { align-self: flex-end; padding: 8px 16px 10px; font-size: var(--text-sm); font-weight: 600; text-decoration: none; }
 
 /* Panes (DetailPane.tsx, SidePanel.tsx): slide in from the right, leave faster. On a phone, the whole screen. */

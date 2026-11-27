@@ -72,7 +72,7 @@ const PageLoading = () => <main className="page wide" aria-busy="true" />;
 type Items = Record<Bucket, Card[]>;
 export type Route =
   | { kind: "home"; /** One approval card (#/approvals/<id>), opened in Home's pane. */ card?: string }
-  | { kind: "tasks"; /** A saved board (#/tasks?view=<id>). */ saved?: string }
+  | { kind: "tasks"; /** A saved board (#/tasks?view=<id>). */ saved?: string; /** Home's "View all": #/tasks?show=needs (the Needs you lane) or ?show=waiting (the waiting-on label). */ show?: "needs" | "waiting" }
   | { kind: "sessions"; ref?: string; fresh?: boolean }
   | { kind: "apps"; name?: string }
   | { kind: "team" }
@@ -195,7 +195,8 @@ function parseRoute(): Route {
   // #/tasks?view=<id>: Tasks on a saved board (TaskTools.tsx); an unknown id falls back to All tasks.
   if (path === "tasks") {
     const saved = /^view=([0-9a-f-]{36})$/.exec(query);
-    return { kind: "tasks", ...(saved ? { saved: saved[1]! } : {}) };
+    const show = /^show=(needs|waiting)$/.exec(query);
+    return { kind: "tasks", ...(saved ? { saved: saved[1]! } : {}), ...(show ? { show: show[1] as "needs" | "waiting" } : {}) };
   }
   // #/tasks/sessions[/<identifier>][?new=1]: Sessions; ?new=1 after Start, while the computer admits it.
   const ses = /^tasks\/sessions(?:\/([A-Za-z0-9-]{1,40}))?$/.exec(path);
@@ -408,6 +409,15 @@ export function App() {
   }, []);
   // What Tasks shows: the layout, the filters (the search field is their text) and the saved boards (tabs once the session is confirmed).
   const tb = useTaskBoard({ ready: !!session?.account, routed: route.kind === "tasks" ? route.saved ?? null : undefined, toast, go });
+  // #/tasks?show=…: All tasks on the Agent work layout, filtered to that set once the board's labels are known; the address
+  // then drops the query, so the filter is the page's own to change.
+  const show = route.kind === "tasks" ? route.show : undefined;
+  useEffect(() => {
+    if (!show || !board) return;
+    const wait = board.labels.find((l) => l.name === "waiting-on")?.id;
+    tb.select(null, undefined, "work");
+    tb.setFilters(show === "needs" ? { state: ["needs_you"] } : { label: wait ? [wait] : [] });
+  }, [show, !!board]);
   const query = tb.filters.text ?? "";
   const setQuery = (text: string) => tb.setFilters((f) => ({ ...f, text }));
   // The search field's answer (search.ts): the hits every filter's text term reads, and the closed hits Done shows.
