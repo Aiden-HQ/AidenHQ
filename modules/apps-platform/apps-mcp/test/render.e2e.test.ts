@@ -1,6 +1,6 @@
 // The real renderers (view and the post-deploy check) in the real browser image, against a fixture app in its own container,
 // through renderArgs exactly as apps-mcp runs them. Needs Docker and the built browser image, so it runs only when asked:
-//   AIDENHQ_BROWSER_E2E=1 [AIDENHQ_BROWSER_IMAGE=<tag>] npx vitest run test/render.e2e.test.ts
+//   AIDENHQ_BROWSER_E2E=1 [AIDENHQ_BROWSER_IMAGE=<tag>] bunx vitest run test/render.e2e.test.ts
 import { execFileSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CHECK_SCRIPT, judgePage, type PageFacts } from "../src/checks.js";

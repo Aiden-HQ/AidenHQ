@@ -2,7 +2,7 @@
  "name": "app-new-page-screens",
  "routine": "app",
  "why": "A new page lives at its own URL, is in the feature map and PAGES, and is reviewed from screenshots before publishing.",
- "input": "Your job's task, as the dispatcher gave it. Today is 2026-11-18.\n\ntask T-31 -> {\"title\":\"Add an Items page to acme-agents/inventory\",\"description\":\"Add a /items page: a table of items with a status filter that lives in the URL (?status=). Done: the PR is merged.\"}\nworkspace: /workspace/inventory (acme-agents/inventory at 41de7f0), the app starter's layout (navigation.tsx, feature-map.json, server.mjs PAGES).\nThe page is built; SCREENS=/,/items npm run screens produced the screenshots in .aidenhq/out/.",
+ "input": "Your job's task, as the dispatcher gave it. Today is 2026-11-18.\n\ntask T-31 -> {\"title\":\"Add an Items page to acme-agents/inventory\",\"description\":\"Add a /items page: a table of items with a status filter that lives in the URL (?status=). Done: the PR is merged.\"}\nworkspace: /workspace/inventory (acme-agents/inventory at 41de7f0), the app starter's layout (navigation.tsx, feature-map.json, server.mjs PAGES).\nThe page is built; SCREENS=/,/items bun run screens produced the screenshots in .aidenhq/out/.",
  "expect": [
   {
    "tool": "aidenhq_publish",

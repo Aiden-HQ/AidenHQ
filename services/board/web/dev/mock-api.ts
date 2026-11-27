@@ -1,5 +1,5 @@
 // A fixture-backed stand-in for the board's API, for working on the web UI without a kernel or Paperclip:
-//   node web/dev/mock-api.ts & npm run dev:web     (vite proxies /api to :3120)
+//   node web/dev/mock-api.ts & bun run dev:web     (vite proxies /api to :3120)
 // Neutral sample data only. Writes answer ok and change nothing (an answer to WOR-821 is refused 409, the "already answered" case). GET /__mock?welcome=1|0 starts or ends onboarding
 // (a fresh install: only Aiden on the team; hiring and onboarding's writes are kept in memory, a module change goes live in 5 s, a trial finds 4 tasks in 3 s,
 // none with ?empty=1); ?connected=1 marks every setup flow done; ?key=1 shows the recovery key screen first;
@@ -841,7 +841,7 @@ function fakeScreen(kind: "term" | "web", title: string) {
   {"state":"MERGED","statusCheckRollup":[{"conclusion":"SUCCESS"}]}
 <span style="color:#8b93a7">  $ git fetch origin &amp;&amp; git rebase origin/main</span>
   Successfully rebased and updated refs/heads/stack-413.
-<span style="color:#8b93a7">  $ npm test -- --run</span>
+<span style="color:#8b93a7">  $ bun run test</span>
   <span style="color:#4ade80">✓</span> 214 tests passed (38.2s)
 
   #412 merged. Merging #413 now.
