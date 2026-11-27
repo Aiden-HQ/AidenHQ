@@ -75,7 +75,7 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
     setAgentSent: db.prepare(`INSERT OR IGNORE INTO agent_sent (chat_id, message_id) VALUES (?, ?)`),
     // An agent's send whose success update a crash lost comes back as a plain outgoing message: its text, in that chat, within
     // the hour, from an executor record still sending or unknown, keeps it from firing an event (a stored row either way).
-    agentWrite: db.prepare(`SELECT 1 FROM writes WHERE chat_id = ? AND text = ? AND at > ? AND state IN ('sending', 'unknown') LIMIT 1`),
+    agentWrite: db.prepare(`SELECT 1 FROM writes WHERE chat_id = ? AND body = ? AND at > ? AND state IN ('sending', 'unknown') LIMIT 1`),
   };
 
   const chats = new Map<number, ChatState>();

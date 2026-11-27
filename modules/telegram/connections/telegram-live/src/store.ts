@@ -52,7 +52,8 @@ export function openStore(path: string): Store {
     CREATE TABLE IF NOT EXISTS writes (
       id TEXT PRIMARY KEY,
       state TEXT NOT NULL CHECK (state IN ('sending', 'done', 'failed', 'unknown')),
-      chat_id INTEGER, message_id INTEGER, text TEXT, at INTEGER NOT NULL);
+      chat_id INTEGER, message_id INTEGER, text TEXT, at INTEGER NOT NULL,
+      body TEXT); -- text: the outcome words; body: the message text being sent (ingest's crash-recovery match); at: epoch ms
 
     -- the send rate cap
     CREATE TABLE IF NOT EXISTS send_log (at INTEGER NOT NULL, chat_id INTEGER NOT NULL);

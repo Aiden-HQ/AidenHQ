@@ -124,7 +124,7 @@ export function sender(d: {
       if (last.at !== null && t - last.at < CHAT_GAP_MS) return { ok: false, text: `Send cap reached (one action per chat every ${CHAT_GAP_MS / 1000} s): try again after ${fmt(last.at + CHAT_GAP_MS)}.` };
 
       d.store.tx(() => {
-        db.prepare(`INSERT INTO writes (id, state, chat_id, at) VALUES (?, 'sending', ?, ?)`).run(rec.id, chatId, t);
+        db.prepare(`INSERT INTO writes (id, state, chat_id, at, body) VALUES (?, 'sending', ?, ?, ?)`).run(rec.id, chatId, t, a.text ?? null);
         db.prepare(`INSERT INTO send_log (at, chat_id) VALUES (?, ?)`).run(t, chatId);
       });
 

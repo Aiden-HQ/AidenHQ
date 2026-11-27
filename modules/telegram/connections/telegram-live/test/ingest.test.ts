@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { READ_STATE_METHODS } from "../src/td.js";
-import { chat, ingestOn, msg, newMessage, openStore, outbox, scriptedTd, tmpDb } from "./helpers.js";
+import { NOW_MS, chat, ingestOn, msg, newMessage, openStore, outbox, scriptedTd, tmpDb } from "./helpers.js";
 
 describe("ingest", () => {
   it("agent send fires nothing", async () => {
@@ -26,6 +26,21 @@ describe("ingest", () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ connection: "telegram_account", resource: "-100", id: "-100:2097152", kind: "message", labels: ["group", "outgoing"], data: { outgoing: true } });
     expect(methods.filter((m) => READ_STATE_METHODS.has(m))).toEqual([]);
+    ingest.stop();
+  });
+
+  it("an agent send whose success update was lost fires nothing: matched on its text from the sending record", async () => {
+    const t0 = NOW_MS - 60_000;
+    const store = openStore(tmpDb());
+    const { td } = scriptedTd([chat(-100, "supergroup")], {});
+    const ingest = ingestOn(store, td);
+    store.db.prepare(`INSERT INTO writes (id, state, chat_id, at, body) VALUES ('k-1', 'sending', -100, ?, 'on it')`).run(t0);
+    td.emit(newMessage(msg(-100, 1048576, { outgoing: true, text: "on it" })));
+    await ingest.idle();
+    expect(outbox(store, "kernel")).toEqual([]);
+    td.emit(newMessage(msg(-100, 2097152, { outgoing: true, text: "something else" })));
+    await ingest.idle();
+    expect(outbox(store, "kernel")).toHaveLength(1);
     ingest.stop();
   });
 
