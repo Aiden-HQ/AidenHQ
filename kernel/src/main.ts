@@ -42,6 +42,7 @@ import { createReplyRelay } from "./relay.ts";
 import { KERNEL_STAGES, type Stage } from "./flow-stages.ts";
 import { journeysOf } from "./journeys.ts";
 import { createChannels, type Api, type ModulesFile } from "./channels.ts";
+import { zone } from "../sdk/src/owner-day.ts";
 import { createLane } from "./lane.ts";
 import { checksFile, createChecks } from "./checks.ts";
 import { createAsCaller, createBoardCp, createCp } from "./cp.ts";
@@ -137,7 +138,7 @@ const issueOf = async (task: string) => { const r = await cpApi(`/api/issues/${e
 const cpJson = async (p: string) => { const r = await cpApi(p); if (!r.ok) throw Object.assign(new Error(`control plane GET ${p} → ${r.status}`), { status: r.status }); return r.json(); };
 const records = openRecords(path.join(dataDir, "kernel", "kernel.db"));
 // Agents' memory (memory.ts): one document per agent, filled into a job's handbook when it starts.
-const memory = createMemory({ dir: path.join(dataDir, "kernel", "memory") });
+const memory = createMemory({ dir: path.join(dataDir, "kernel", "memory"), timezone: () => modulesFile().owner?.timezone });
 // The event router (events.ts): source events become routine runs through Paperclip's own /run as the owner (routineRun).
 const events = createEvents({
   db: records.db, grants: grantsTable as never, connections: connections as never, log,
@@ -393,7 +394,7 @@ const reviewLoop = createReviewLoop({
 });
 every(() => void reviewLoop.tick(), 30_000);
 once(() => void reviewLoop.tick(), 5_000);
-const brake = createBrake({ db: records.db, owner: ownerApi });
+const brake = createBrake({ db: records.db, owner: ownerApi, timezone: () => modulesFile().owner?.timezone });
 // The owner's typed settings changes from the board and agents' changes to themselves (settings-change.ts): written by the
 // instance repo's code host, filed as a kernel.apply.
 const settingsChange = createSettingsChanges({
@@ -415,6 +416,7 @@ const routing = createRouting({
   db: records.db, records, instanceRepo: () => repos().instance, main: checkoutMain(instanceDir), write: applyHost.codehost.write, owner: ownerApi, log,
   file: (args, task, requester) => writes.fileKernel("kernel.apply", { args, task, requester }),
   grants: () => (grantsTable().agents ?? {}) as never,
+  timezone: () => modulesFile().owner?.timezone,
 });
 // The job settings as configured here (jobs run in their agents' computers; no repo code runs on the host).
 const sandbox = sandboxConfig(env);
@@ -598,7 +600,7 @@ const fleetOps = createFleetOps({
   },
   recreate: (services) => composeRecreate({ dir: env("AIDENHQ_DIR", repo), composeFile: env("COMPOSE_FILE", "") })(services),
 });
-const work = createWork({ db: records.db, records, sessionAgents: () => Object.entries(grantsTable().agents ?? {}).filter(([, g]) => String((g as { profile?: unknown }).profile) === "session").map(([id]) => id), pauses: () => fleetOps.pauses(), generationsFile: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl"), capacity: () => Number(computers().max) || 0 });
+const work = createWork({ db: records.db, records, timezone: () => zone(modulesFile().owner?.timezone), sessionAgents: () => Object.entries(grantsTable().agents ?? {}).filter(([, g]) => String((g as { profile?: unknown }).profile) === "session").map(([id]) => id), pauses: () => fleetOps.pauses(), generationsFile: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "generations.jsonl"), capacity: () => Number(computers().max) || 0 });
 // Flow: what the kernel kept before the fact log, once per install (kernel_once marks it done; every record and job since
 // writes its own facts), and the host's deploys as they settle (generations.ts).
 records.db.exec("CREATE TABLE IF NOT EXISTS kernel_once (name TEXT PRIMARY KEY, at TEXT NOT NULL)");

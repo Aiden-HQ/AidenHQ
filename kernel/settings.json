@@ -72,14 +72,14 @@
   },
   "spend_day_usd": {
     "default": 50,
-    "doc": "The install's spend limit on every model call (agents, checks, reviews, CI, everything the gateway meters), USD per UTC day. Past it every call is refused and the owner is told once. Raising it is the owner's."
+    "doc": "The install's spend limit on every model call (agents, checks, reviews, CI, everything the gateway meters), USD per day (midnight in the owner's timezone). Past it every call is refused and the owner is told once. Raising it is the owner's."
   },
   "spend_month_usd": {
     "default": 1000,
-    "doc": "The install's spend limit on every model call, USD per calendar month (UTC). Past it every call is refused and the owner is told once. Raising it is the owner's."
+    "doc": "The install's spend limit on every model call, USD per calendar month (the owner's). Past it every call is refused and the owner is told once. Raising it is the owner's."
   },
   "task_usd": {
     "default": 20,
-    "doc": "The most an agent's model calls on one task may spend, USD (a chat or routine task: per UTC day). Past it the task's calls are refused and whoever asked for the task is told. Raising it is the owner's."
+    "doc": "The most an agent's model calls on one task may spend, USD (a chat or routine task: per owner's day). Past it the task's calls are refused and whoever asked for the task is told. Raising it is the owner's."
   }
 }

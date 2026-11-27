@@ -128,7 +128,7 @@
   const FIELDS = ["name", "url", "repo", "aidenhq_app", "live_mode", "schedule", "day_cap_usd", "spend", "models", "recording"];
   const DEFAULTS = { aidenhq_app: false, live_mode: "read", schedule: "on-request", day_cap_usd: 5, spend: "standard", recording: false };
   const SCHED = { "on-request": "On request", "after-deploy": "After deploy", always: "24/7" };
-  const SCHED_HELP = { "on-request": "Only when you press Run now (or ask Aiden). The default.", "after-deploy": "After each healthy AidenHQ deploy of the app or a push to its repo's default branch, up to the daily cap.", always: "Pass after pass, each resuming the coverage where the last stopped, until the daily cap; then it waits for the next UTC day." };
+  const SCHED_HELP = { "on-request": "Only when you press Run now (or ask Aiden). The default.", "after-deploy": "After each healthy AidenHQ deploy of the app or a push to its repo's default branch, up to the daily cap.", always: "Pass after pass, each resuming the coverage where the last stopped, until the daily cap; then it waits for the next day." };
   const SPEND_HELP = { scan: "Captures and a design review: no fixes, no clicking.", standard: "Plus the top 3 rendered fixes and one clicking pass. The default.", thorough: "The review on Claude Opus, the top 5 fixes and two clicking passes." };
   const MODE_HELP = { read: "Loads pages only: no write of any kind. The default.", "test-write": "The test account may change its own data; deletes and paths like pay, send or invite stay blocked. Only for a test account holding test data alone.", any: "Allows everything." };
   const STATUS = { running: ["busy", "Running"], done: ["done", "Done"], failed: ["failed", "Failed"], superseded: ["", "Replaced"], stopped: ["", "Stopped"] };
@@ -195,7 +195,7 @@
     try { await tool("design_pass_stop", { app: name }); say(`Stopping ${name}'s pass: its slot frees once the run has ended.`); }
     catch (e) { stopping.delete(name); render(); fail(e); }
   }
-  // Passes under way are followed every 8 s, and a pass started elsewhere (a deploy, Aiden) or a new UTC day shows within 40 s.
+  // Passes under way are followed every 8 s, and a pass started elsewhere (a deploy, Aiden) or a new day shows within 40 s.
   // A playing recording or an edit in progress is never redrawn under the owner.
   let polls = 0, opening = false, startCtx = null;
   setInterval(() => {
@@ -305,7 +305,7 @@
         fld("Repository", "owner/name: a pass may build its default branch, never a PR head. Pushes to the default branch start an after-deploy pass.", {}, text("repo", "owner/name (optional)")),
         h("div", { className: "fld wide" }, h("div", { className: "fl" }, help("Schedule", "When passes start. Only one pass runs per app at a time.", { options: SCHED_HELP, current: a.schedule })), seg("Schedule", ["on-request", "after-deploy", "always"], a.schedule ?? "on-request", set("schedule"))),
         h("div", { className: "fld" }, h("div", { className: "fl" }, help("Spend mode", "How much each pass does.", { options: SPEND_HELP, current: a.spend })), seg("Spend mode", ["scan", "standard", "thorough"], a.spend ?? "standard", set("spend"))),
-        fld("Daily cap (USD)", "Per UTC day, 0 to 100. No pass starts once the app's passes billed this much today; one already running finishes.", {}, cap, t("span", "fine", `${usd(l?.today_usd ?? 0)} spent today`)),
+        fld("Daily cap (USD)", "Per day (midnight in the owner's timezone), 0 to 100. No pass starts once the app's passes billed this much today; one already running finishes.", {}, cap, t("span", "fine", `${usd(l?.today_usd ?? 0)} spent today`)),
         h("div", { className: "fld" }, h("div", { className: "fl" }, help("Live-app mode", "The most a pass may do on the live app.", { options: MODE_HELP, current: a.live_mode })), seg("Live-app mode", ["read", "test-write", "any"], a.aidenhq_app ? "read" : (a.live_mode ?? "read"), set("live_mode"), undefined, a.aidenhq_app),
           a.aidenhq_app ? t("span", "fine", "AidenHQ apps are always read-only.") : null),
         h("div", { className: "fld wide" }, h("div", { className: "fl" }, help("Models", "OpenRouter model ids for this app's passes; blank keeps the default.")), h("div", { className: "models" }, model("design", "Design review"), model("fixes", "Fixes"), model("clicking", "Clicking"))),

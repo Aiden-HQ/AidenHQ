@@ -31,7 +31,7 @@ describe("the catalog behind the cache savings", () => {
     const now = Date.now();
     // The kernel's summary report with one call in the range.
     const group = { model: "openrouter/openai/gpt-sol", lane: "agent", agentId: "ag1", usd: 1, calls: 1, input: 1_000_000, cached: 1_000_000, output: 0, errors: 0, interrupted: 0, msSum: 0, msN: 0 };
-    const summary = { earliest: null, groups: [group], series: [], windows: Array.from({ length: 9 }, () => ({ usd: 0, calls: 0 })), modelOrder: [], tasks: { count: 0, usd: 0, top: [] }, failed: [], loops: [] };
+    const summary = { earliest: null, groups: [group], series: [], windows: Array.from({ length: 11 }, () => ({ usd: 0, calls: 0 })), modelOrder: [], tasks: { count: 0, usd: 0, top: [] }, failed: [], loops: [] };
     const report = (async () => summary) as unknown as CostReport;
     const deps = { report, agents: async () => [], key: async () => "no key on this board", spend: async () => null };
     const range = ledgerRange(new URLSearchParams(), now);

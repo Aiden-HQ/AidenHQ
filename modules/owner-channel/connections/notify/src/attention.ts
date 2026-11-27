@@ -18,7 +18,10 @@ export type Attend = { do: "pass" } | { do: "block" | "limit"; note: string } | 
 /** A digest line, with what the ledger records once it goes out: `source` is the agent key ("kernel" for the kernel's), `at` when it was queued. */
 type Item = { id?: string; agent: string; task?: string; text: string; source?: string; kind?: string; at?: number; told?: true };
 
-const dayOf = (now: number) => new Date(now).toISOString().slice(0, 10);
+/** The owner's calendar day: the daily cap resets at midnight in their timezone. */
+const dayOf = (now: number, timezone: string) => {
+  try { return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now); } catch { return new Date(now).toISOString().slice(0, 10); } // an unknown zone reads as UTC
+};
 
 /** What happens to one normal message. `conversing`: the owner is writing on its chat, so the reply goes straight back. */
 export function attend(store: Store, cfg: AttentionConfig, who: { id: string; key: string; roles: string[] } | undefined, kind: Kind, o: { conversing: boolean; buttons: boolean }, now = Date.now()): Attend {
@@ -28,7 +31,7 @@ export function attend(store: Store, cfg: AttentionConfig, who: { id: string; ke
   if (!cos && cfg.blocked.includes(who.key)) return { do: "block", note: "The owner muted messages from you, so nothing was sent. That is expected: put it in your task result instead." };
   if (kind === "decision") return { do: "pass" };
   let out: Attend = { do: "pass" };
-  const day = dayOf(now);
+  const day = dayOf(now, cfg.timezone);
   const counts = JSON.parse(store.getKv("attn:counts") || "{}") as { day?: string; n?: Record<string, number> };
   const n = counts.day === day ? (counts.n ?? {}) : {};
   if ((n[who.id] ?? 0) >= cfg.dailyCap) out = { do: "limit", note: `Daily limit reached: ${cfg.dailyCap} routine messages today. Nothing was sent; put it in your task result or send it tomorrow.` };

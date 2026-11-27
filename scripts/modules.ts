@@ -1478,7 +1478,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // The model gateway's CI review and spend limits (config/gateway.json, re-read per call; prices come from OpenRouter itself):
   // the install's day and month on every model call, and one cap per task.
   for (const k of ["spend_day_usd", "spend_month_usd", "task_usd"]) if (!(typeof settings[k] === "number" && settings[k] > 0 && settings[k] <= 100_000)) fail(`settings.${k}: USD, above 0`);
-  const gateway = { ...(enabled.includes("ci") ? { ci: ciReview(settings, settings.code_review) } : {}), install_day_usd: settings.spend_day_usd, install_month_usd: settings.spend_month_usd, task_usd: settings.task_usd };
+  const gateway = { ...(enabled.includes("ci") ? { ci: ciReview(settings, settings.code_review) } : {}), timezone: settings.timezone, install_day_usd: settings.spend_day_usd, install_month_usd: settings.spend_month_usd, task_usd: settings.task_usd };
   // Last, after the specific checks above: nothing may be left dangling (spec §5.7.1): an agent's engine, grants, jobcaps and roles, a module's requires, grants,
   // joins and shares, the instance's reviewer and write floors all name something an enabled module declares.
   const dangling = danglingBindings(enabledDefs, { reviewer: instance.reviewer, writes: instance.writes });

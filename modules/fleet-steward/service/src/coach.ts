@@ -9,6 +9,7 @@ import { agentPaused } from "./aidenhq-sdk/agent-paused.ts";
 import type { KernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { detectorState, type Kv } from "./detector.ts";
 import { scorecard, type Closed } from "./scorecard.ts";
+import { addDays, dayStart, ownerDay, ownerZone } from "./aidenhq-sdk/owner-day.ts";
 
 type Agent = { id: string; name: string; status: string; lifecycleHolds?: string[]; createdAt?: string; metadata?: { setupKey?: string; model?: unknown; engine?: unknown } };
 type Issue = { id: string; identifier: string; title: string; description?: string | null; descriptionTruncated?: boolean; status: string; createdAt?: string; updatedAt: string; assigneeAgentId?: string | null; completedAt?: string | null };
@@ -206,7 +207,7 @@ export function coachReads(d: { kernel: KernelClient; kv: Pick<Kv, "get">; apps:
         wakes.push({ task: ids.get(task) ?? task, runs: n, repeated_comments: mine.length - new Set(mine).size });
       }
       const card = await part("scorecard", async () => {
-        const from = new Date(Date.parse(new Date(now).toISOString().slice(0, 10)) - 13 * DAY).toISOString();
+        const tz = ownerZone(), from = new Date(dayStart(addDays(ownerDay(now, tz), -13), tz)).toISOString();
         const closed: Closed[] = [];
         for (const c of await companies()) closed.push(...((await d.kernel.read(`/api/companies/${c.id}/issues?status=done,cancelled&assigneeAgentId=${a.id}&limit=500&excludeRoutineExecutions=true&updatedSince=${encodeURIComponent(from)}`)) as Issue[]).filter((i) => i.assigneeAgentId === a.id));
         // The ledger is read again here, after the closed set: a task that closed while the packet was being collected is
@@ -223,7 +224,7 @@ export function coachReads(d: { kernel: KernelClient; kv: Pick<Kv, "get">; apps:
         if (!Array.isArray(ledger)) throw new Error("the job ledger answered no jobs, so a done task can't be told from one the agent never ran");
         const since = await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(from)}`);
         // The scorecard counts a done task as work only when this agent ran it: the job's task id is what matches the two.
-        return scorecard({ closed, records: since.records, usage: since.usage, jobs: ledger.map((j) => ({ state: j.state, started_at: j.started_at, task: j.task, started: j.started })) }, { id: a.id, key: keyOf(a) }, now);
+        return scorecard({ closed, records: since.records, usage: since.usage, jobs: ledger.map((j) => ({ state: j.state, started_at: j.started_at, task: j.task, started: j.started })) }, { id: a.id, key: keyOf(a) }, now, tz);
       });
       const fixes = await part("corrections", () => corrections(now));
       const s = detectorState(d.kv);

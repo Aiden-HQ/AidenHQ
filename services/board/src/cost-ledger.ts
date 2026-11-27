@@ -8,6 +8,7 @@ import { BadRequest } from "./board.js";
 import { departmentOf } from "./activity.js";
 import type { CostReport, KeyUsage, SpendSummary } from "./costs.js";
 import type { Agent } from "./paperclip.js";
+import { addDays, dayStart, ownerDay } from "./aidenhq-sdk/owner-day.js";
 import type { CatalogModel } from "./model-catalog.js";
 
 const DAY = 864e5;
@@ -78,7 +79,7 @@ export interface LedgerRange {
   from: string;
   to: string;
   bucket: Bucket;
-  /** The viewer's offset from UTC in minutes (east positive): the time chart buckets by their clock. Caps and "today" stay UTC. */
+  /** The viewer's offset from UTC in minutes (east positive): the time chart buckets by their clock. The overview's "today" is the owner's day (the limits' day); the OpenRouter coverage stays on UTC days. */
   offset: number;
 }
 
@@ -108,6 +109,8 @@ export type TaskNames = { identifier: string | null; title: string | null; statu
 
 export interface LedgerDeps {
   report: CostReport;
+  /** The owner's timezone: the overview's "today" and "yesterday" are their days, as the install's day limit counts. */
+  timezone?: string;
   agents: () => Promise<Agent[]>;
   key: () => Promise<KeyUsage | string>;
   /** The kernel's spend summary (the install's day and month against its limits); without it no limit shows. */
@@ -130,7 +133,9 @@ export async function ledgerSummary(d: LedgerDeps, r: LedgerRange, now = Date.no
   const from = Date.parse(r.from), to = Date.parse(r.to);
   const monthStart = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth(), 1);
   const monday = midnight - ((new Date(now).getUTCDay() + 6) % 7) * DAY;
-  const W = { today: [midnight, end], yesterday: [midnight - DAY, end - DAY], week: [week, end], prevWeek: [2 * week - end, week], month: [month, end], prevMonth: [2 * month - end, month], prev: [2 * from - to, from], monthStart: [monthStart, end], monday: [monday, end] } satisfies Record<string, [number, number]>;
+  // The owner's day so far, against yesterday up to the same quarter hour (a 23- or 25-hour day shifts the match by an hour).
+  const tz = d.timezone ?? "UTC", ownerMidnight = dayStart(ownerDay(now, tz), tz), ownerYesterday = dayStart(addDays(ownerDay(now, tz), -1), tz);
+  const W = { today: [midnight, end], yesterday: [midnight - DAY, end - DAY], ownerToday: [ownerMidnight, end], ownerYesterday: [ownerYesterday, Math.min(floor(end - (ownerMidnight - ownerYesterday)), ownerMidnight)], week: [week, end], prevWeek: [2 * week - end, week], month: [month, end], prevMonth: [2 * month - end, month], prev: [2 * from - to, from], monthStart: [monthStart, end], monday: [monday, end] } satisfies Record<string, [number, number]>;
   const names = Object.keys(W) as (keyof typeof W)[];
   const [agents, key, spend, s] = await Promise.all([
     d.agents().catch(() => [] as Agent[]),
@@ -163,8 +168,8 @@ export async function ledgerSummary(d: LedgerDeps, r: LedgerRange, now = Date.no
     offset: r.offset,
     earliest,
     overview: {
-      // Today is the UTC day so far (as OpenRouter and the gateway's day limit count), set against yesterday up to the same quarter hour.
-      today: period("today", "yesterday"),
+      // Today is the owner's day so far (as the gateway's day limit counts), set against yesterday up to the same quarter hour.
+      today: period("ownerToday", "ownerYesterday"),
       week: period("week", "prevWeek"),
       month: period("month", "prevMonth"),
       // OpenRouter's own figures for the key (every caller of it), and its limit when one is set.

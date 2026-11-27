@@ -14,7 +14,7 @@
 //                            routine run and the records the agent filed while it ran: { jobs }. `brief=1` leaves the timeline
 //                            out: one query for a caller that needs only each job's task and how it went.
 //   GET /v1/work?since=<iso>[&to=<iso>]  the records filed or decided since then (tier 1 and 2) and the billed cost per agent and
-//                            UTC day from the gateway ledger: { records, usage, spend_components, spend_subjects } (usage and the last two: confirmed spend only; each day's
+//                            owner's day (midnight in the owner's timezone) from the gateway ledger: { records, usage, spend_components, spend_subjects } (usage and the last two: confirmed spend only; each day's
 //                            five costliest components and subjects; the Fleet Steward's scorecards and spend check; each record says
 //                            whether it is a `judged` rejection: the AI reviewer's, not code's)
 //   GET /v1/work?generations=1  the host's apply generations: the current product pin and the last 20 applies (generations.ts)
@@ -22,12 +22,13 @@
 //                            a time (default 20, at most 100; `next` is the id to pass as `after`): what interrupted the owner, for
 //                            the Fleet Steward's daily interruption pass. The card's sentence and who filed it, never its args.
 //   GET /v1/work?pauses=1    the Fleet Steward's open pauses (fleet-ops.ts): the detector keeps each one an incident
-//   GET /v1/work?spend_tasks=<prefix>&day=<UTC date>  (a module only) the confirmed charges in that UTC day (by each call's `at`) on
-//                            the tasks that module filed under a source starting with <prefix> (task_filers): { day, by_task }. A closed
+//   GET /v1/work?spend_tasks=<prefix>[&day=<owner's date>]  (a module only) the confirmed charges in that owner's day (default today; by each call's `at`) on
+//                            the tasks that module filed under a source starting with <prefix> (task_filers): { day, from (the instant the day began), by_task }. A closed
 //                            task counts like an open one, and a task spending past midnight counts on the day it spent.
 //   GET /v1/work/metrics     Prometheus text (aidenhq_kernel_jobs_*, aidenhq_kernel_session_*) over the same rows
 import type { DatabaseSync } from "node:sqlite";
 import { fleetGenerations } from "./generations.ts";
+import { addDays, dayStart, ownerDay } from "../sdk/src/owner-day.ts";
 import { MALICE } from "./tier.ts";
 import type { Records } from "./records.ts";
 
@@ -43,7 +44,7 @@ const FINAL_HEAD = "substr(final, 1, 400) AS final";
 const SETTLED = "status NOT IN ('reserved', 'unsettled') AND cost_usd IS NOT NULL AND (cost_usd = 0 OR input > 0 OR cached > 0 OR output > 0)";
 const iso = (ms: unknown) => (typeof ms === "number" && ms > 0 ? new Date(ms).toISOString() : null);
 
-export function createWork({ db, records, generationsFile = "", capacity = () => 0, pauses = async () => [], sessionAgents = () => [] }: { db: DatabaseSync; records: Records; generationsFile?: string; capacity?: () => number; /** The agents whose grants have profile `session` (grants table): their tasks are the board's Sessions. */ sessionAgents?: () => string[]; pauses?: () => Promise<{ target: string; kind: string; name: string; at: string }[]> }) {
+export function createWork({ db, records, timezone = () => "UTC", generationsFile = "", capacity = () => 0, pauses = async () => [], sessionAgents = () => [] }: { db: DatabaseSync; records: Records; /** The owner's timezone: the day edge of the usage and spend rows. */ timezone?: () => string; generationsFile?: string; capacity?: () => number; /** The agents whose grants have profile `session` (grants table): their tasks are the board's Sessions. */ sessionAgents?: () => string[]; pauses?: () => Promise<{ target: string; kind: string; name: string; at: string }[]> }) {
   const rows = (sql: string, ...args: (string | number)[]) => db.prepare(sql).all(...args) as Record<string, any>[];
   // `started`: whether the run got a shell. A row is written `admitted` with pid 0 and only `start()` sets the pid, so a job
   // that failed or was cancelled before launching is `failed`/`cancelled` with pid 0, and nothing about it ran.
@@ -132,24 +133,41 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       from = utc(from);
       to = utc(to);
       const recs = records.since(from).map((r) => ({ id: r.id, kind: r.kind, state: r.state, tier: r.tier, requester: r.requester?.key || r.requester?.module || null, task: r.task, identifier: r.identifier ?? null, decided_by: r.decided_by ?? null, outcome_ok: r.outcome?.ok ?? null, judged: judged(r), outcome_text: r.outcome?.text ?? null, created_at: r.created_at, decided_at: r.decided_at ?? null }));
-      const usage = rows(`SELECT agent_id AS agent, day, COALESCE(SUM(CASE WHEN ${SETTLED} THEN cost_usd END), 0) AS cost_usd, COUNT(*) AS calls, COUNT(CASE WHEN ${SETTLED} THEN 1 END) AS priced FROM calls WHERE at >= ? AND at < ? GROUP BY agent_id, day`, from, to);
+      // Days are the owner's (midnight in their timezone), placed from each call's own `at` in 15-minute UTC buckets (every zone's
+      // day edge is a bucket edge), so history before the owner's day was adopted is placed on it too, never on its old UTC day.
+      const quarter = "substr(at, 1, 14) || CASE WHEN substr(at, 15, 2) < '15' THEN '00' WHEN substr(at, 15, 2) < '30' THEN '15' WHEN substr(at, 15, 2) < '45' THEN '30' ELSE '45' END";
+      const dayOf = (b: string) => ownerDay(Date.parse(`${b}:00Z`), timezone());
+      const fold = <R extends Record<string, any>>(rs: R[], keys: string[], sums: string[]) => {
+        const m = new Map<string, Record<string, any>>();
+        for (const { b, ...r } of rs) {
+          const day = dayOf(b), k = [day, ...keys.map((x) => r[x])].join("\u0000"), o = m.get(k);
+          if (!o) m.set(k, { ...r, day });
+          else for (const f of sums) o[f] += r[f];
+        }
+        return [...m.values()];
+      };
+      const usage = fold(rows(`SELECT agent_id AS agent, ${quarter} AS b, COALESCE(SUM(CASE WHEN ${SETTLED} THEN cost_usd END), 0) AS cost_usd, COUNT(*) AS calls, COUNT(CASE WHEN ${SETTLED} THEN 1 END) AS priced FROM calls WHERE at >= ? AND at < ? GROUP BY agent_id, b`, from, to), ["agent"], ["cost_usd", "calls", "priced"]);
       // What the spend was on, per day: the five costliest components and subjects (a check run's `code-review:<run>`, a task) of each day,
       // so a spike names its cause (the Fleet Steward's spend check reads them with the totals above).
-      const top = (col: string) => rows(`SELECT day, name, cost_usd, calls FROM (SELECT day, ${col} AS name, SUM(cost_usd) AS cost_usd, COUNT(*) AS calls, ROW_NUMBER() OVER (PARTITION BY day ORDER BY SUM(cost_usd) DESC) AS n FROM calls WHERE at >= ? AND at < ? AND ${SETTLED} AND ${col} IS NOT NULL GROUP BY day, ${col}) WHERE n <= 5 ORDER BY day, cost_usd DESC`, from, to);
+      const top = (col: string) => {
+        const byDay = fold(rows(`SELECT ${quarter} AS b, ${col} AS name, SUM(cost_usd) AS cost_usd, COUNT(*) AS calls FROM calls WHERE at >= ? AND at < ? AND ${SETTLED} AND ${col} IS NOT NULL GROUP BY b, ${col}`, from, to), ["name"], ["cost_usd", "calls"]);
+        const days = [...new Set(byDay.map((r) => r.day as string))].sort();
+        return days.flatMap((d) => byDay.filter((r) => r.day === d).sort((x, y) => y.cost_usd - x.cost_usd).slice(0, 5));
+      };
       return { records: recs, usage, spend_components: top("component"), spend_subjects: top("task_subject") };
     },
     /**
-     * A UTC day's confirmed charges on the tasks `module` filed under a source starting with `prefix` (task_filers: the ledger keys
+     * An owner's day's confirmed charges on the tasks `module` filed under a source starting with `prefix` (task_filers: the ledger keys
      * an agent's calls by task id, never by source), by the call's own `at`, so a closed task counts and a task that spends past
      * midnight counts on the day it spent.
      */
     spendTasks(module: string, prefix: string, day: string) {
-      const from = `${day}T00:00:00.000Z`, to = new Date(Date.parse(from) + 86_400_000).toISOString();
+      const tz = timezone(), start = dayStart(day, tz), from = new Date(start).toISOString(), to = new Date(dayStart(addDays(day, 1), tz)).toISOString();
       const by_task = rows(`SELECT f.source AS source, c.issue_id AS task, SUM(c.cost_usd) AS cost_usd FROM calls c JOIN task_filers f ON f.task = c.issue_id
         WHERE f.filer = ? AND substr(f.source, 1, ?) = ? AND c.issue_id IS NOT NULL AND c.agent_id IS NOT NULL AND c.at >= ? AND c.at < ? AND ${SETTLED}
         GROUP BY f.source, c.issue_id ORDER BY f.source`, `module:${module}`, prefix.length, prefix, from, to)
         .map((r) => ({ task: String(r.task), source: String(r.source), cost_usd: Number(r.cost_usd) }));
-      return { day, by_task };
+      return { day, from, by_task };
     },
     /**
      * The board's Sessions (GET /v1/work?sessions=1, or ?session=<task>): a session task's newest job, read-only. `lease` is the

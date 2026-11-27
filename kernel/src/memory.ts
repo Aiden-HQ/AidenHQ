@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { ownerDay } from "../sdk/src/owner-day.ts";
 export { fillMemory } from "../sdk/src/fence.ts";
 
 export const MEMORY_MAX = 4096, FACT_MAX = 500, SOURCE_MAX = 300, WRITES_PER_JOB = 10;
@@ -65,7 +66,7 @@ export const view = (d: Doc) => d.facts.map(lineOf).join("\n");
 const bytes = (d: Doc) => Buffer.byteLength(view(d));
 const same = (a: Line, b: Line) => a.date === b.date && a.src === b.src && a.fact === b.fact;
 
-export function createMemory(o: { dir: string; now?: () => number }) {
+export function createMemory(o: { dir: string; now?: () => number; /** The owner's timezone: a fact's date is the owner's day. */ timezone?: () => unknown }) {
   const now = o.now ?? Date.now;
   const root = join(o.dir, "agents");
   const used = new Map<string, number>();
@@ -95,7 +96,7 @@ export function createMemory(o: { dir: string; now?: () => number }) {
     used.set(job, n + 1);
     for (const old of used.keys()) { if (used.size <= 5000) break; used.delete(old); }
   };
-  const today = () => new Date(now()).toISOString().slice(0, 10);
+  const today = () => ownerDay(now(), o.timezone?.());
   const known = (d: Doc, fact: string) => {
     const n = norm(fact);
     if (d.facts.some((l) => norm(l.fact) === n)) throw new MemoryError(409, "that fact is already in memory");

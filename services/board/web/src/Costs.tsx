@@ -143,7 +143,7 @@ export function CostsView({ onSignIn }: { onSignIn: () => void }) {
   const { from, to } = bounds(view);
   const bucket = bucketOf(view, to - from);
   const rangeKey = `${view.range}|${view.from}|${view.to}|${bucket}|${tick}`;
-  // The time chart buckets by the viewer's clock; the limits, "today" and the custom dates stay UTC.
+  // The time chart buckets by the viewer's clock; the custom dates stay UTC; "today" and the limits are the owner's day.
   const query = () => new URLSearchParams({ from: new Date(from).toISOString(), to: new Date(to).toISOString(), bucket, offset: String(-new Date().getTimezoneOffset()) });
   const ledger = useLoad<CostLedger>(rangeKey, () => api.costLedger(query()), onSignIn);
   const focus: Record<string, string> | null = view.agent ? { agent: view.agent } : view.model ? { model: view.model } : null;
@@ -246,7 +246,7 @@ function Overview({ d }: { d: CostLedger }) {
     <section className="cost-overview" aria-label="Overview">
       {tiles.map(([label, p, vs]) => (
         <div key={label} className="cost-tile">
-          <span className="cost-tile-label" title={label.startsWith("Today") ? "The UTC day so far: the same day OpenRouter and the install's day limit counts" : undefined}>{label}</span>
+          <span className="cost-tile-label" title={label.startsWith("Today") ? "The owner's day so far: the day the install's day limit counts (midnight in the owner's timezone)" : undefined}>{label}</span>
           <span className="cost-tile-value">{usd(p.usd)}</span>
           <Delta cur={p.usd} prev={p.prev} vs={vs} />
           {label.startsWith("Today") && key && <span className="cost-tile-note" title="OpenRouter's own figure for the key: every caller of it, itemised here or not">OpenRouter shows {usd(key.today)} today</span>}
@@ -261,9 +261,9 @@ function Overview({ d }: { d: CostLedger }) {
         )}
         {o.limits ? (
           <>
-            <Meter label="Install, today (UTC)" used={o.limits.day.spent} cap={o.limits.day.cap} />
-            <Meter label="Install, this month (UTC)" used={o.limits.month.spent} cap={o.limits.month.cap} />
-            <span className="cost-tile-note">The install's spend limits (settings spend_day_usd spend_month_usd and task_usd): model calls stop at a limit.</span>
+            <Meter label="Install, today" used={o.limits.day.spent} cap={o.limits.day.cap} />
+            <Meter label="Install, this month" used={o.limits.month.spent} cap={o.limits.month.cap} />
+            <span className="cost-tile-note">The install's spend limits (settings spend_day_usd spend_month_usd and task_usd): model calls stop at a limit. The day and month reset at midnight in the owner's timezone.</span>
           </>
         ) : (
           <span className="cost-tile-note">The install's spend limits are not available.</span>

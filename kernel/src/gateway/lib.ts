@@ -32,7 +32,7 @@
 // system token of the same format (reviewer/grader/source/check), a fast chat lane's turn token (same format, signed with
 // gateway_lane_secret, agent kind only), or the source writers' key (gateway_source_key). The run key is the credential's sha256.
 // Spend (spec §5.12): one limit for the whole install, on every call of every kind (agents, checks, the reviewer, the grader,
-// CI, sources): a UTC day's and a UTC calendar month's real cost (config/gateway.json `install_day_usd` and
+// CI, sources): the owner's day's and calendar month's real cost (midnight in settings.timezone) (config/gateway.json `install_day_usd` and
 // `install_month_usd`, from settings.spend_day_usd and spend_month_usd). A call goes ahead while what is spent is below both
 // (so one call can take a limit past it, never two in a row); its output is bounded to what the tighter limit's room buys at
 // the model's price on OpenRouter's own models list (prices.ts: the dearest tier it lists; an id it doesn't list is refused),
@@ -48,12 +48,13 @@
 // every call is refused, and the owner is told once per limit, period and value (`notifyOwner`); a limit filled only by
 // calls in flight answers a retryable 503 (`spend_held`) instead, recording and telling nothing.
 // Besides those, one cap per task (config/gateway.json `task_usd`, settings.task_usd): what an agent's calls on one task have
-// spent (a chat or routine task's, by the UTC day). Past it that task's calls are refused and whoever asked for the task is
+// spent (a chat or routine task's, by the owner's day). Past it that task's calls are refused and whoever asked for the task is
 // told once per task and value (`tellDelegator`); nothing is filed for the owner.
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { addDays, dayStart, ownerDay, ownerMonth, zone } from "../../sdk/src/owner-day.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { CI_KIND, CI_PREFIX, ciBodyProblem, githubKeys, verifyGithubOidc } from "./ci.ts";
@@ -126,8 +127,6 @@ const CI_TOKENS_PER_MIN = 20;
 const CI_REFUSALS_LOGGED = 20;
 
 export const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
-const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
-const month = (ms: number) => new Date(ms).toISOString().slice(0, 7);
 const same = (a: string, b: string) => {
   const x = Buffer.from(a), y = Buffer.from(b);
   return Boolean(a && b) && x.length === y.length && timingSafeEqual(x, y);
@@ -216,7 +215,7 @@ export function openLedger(file: string, legacy?: string): { db: DatabaseSync; m
 
 /**
  * The spend totals, kept by the database for every connection and process (a draining peer kernel's too, whatever code it
- * runs): per UTC day (the call's start day), agent ('' for none) and kind, every call's cost (`nano`), its billed part and
+ * runs): per owner's day (the call's start day), agent ('' for none) and kind, every call's cost (`nano`), its billed part and
  * its refusals; and per task subject, an agent's calls only. Integer nano-dollars, NEW − OLD on every insert, update and
  * delete (the prune included), with a row count so a total with no call left goes. Made and filled from the ledger once,
  * in one write transaction with its triggers, so no call is counted twice or missed.
@@ -498,6 +497,11 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
   // The limits (settings.spend_day_usd, spend_month_usd, task_usd; compile writes all three). One missing or unreadable is its
   // kernel default (kernel/settings.json), never no limit.
   const usd = (v: unknown, d: number) => (Number(v) > 0 ? Number(v) : d);
+  // The owner's day: every day and month key below, and so every limit's reset, is at midnight in settings.timezone (gateway.json
+  // `timezone`, UTC when it is missing or unknown). Stored times stay UTC instants.
+  const tz = watched(settingsFile, (j) => zone(j.timezone), "UTC");
+  const day = (ms: number) => ownerDay(ms, tz());
+  const month = (ms: number) => ownerMonth(ms, tz());
   const limitsSet = watched(settingsFile, (j) => ({ day: usd(j.install_day_usd, SPEND_DEFAULTS.day), month: usd(j.install_month_usd, SPEND_DEFAULTS.month), task: usd(j.task_usd, SPEND_DEFAULTS.task) }), SPEND_DEFAULTS);
   const keyFor = githubKeys(githubJwksUrl, now);
   const q = {
@@ -521,7 +525,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     trueUp: db.prepare("UPDATE calls SET status = 'interrupted', model = ?, input = ?, cached = ?, output = ?, cost_usd = ? WHERE key = ? AND status = 'unsettled'"),
     ciToken: db.prepare("SELECT * FROM ci_tokens WHERE hash = ?"),
     addCiToken: db.prepare("INSERT OR IGNORE INTO ci_tokens (hash, repo, pr, head, gh_run, attempt, exp, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
-    ciIssued: db.prepare("SELECT COUNT(*) AS n FROM ci_tokens WHERE repo = ? AND substr(at, 1, 10) = ?"),
+    ciIssued: db.prepare("SELECT COUNT(*) AS n FROM ci_tokens WHERE repo = ? AND at >= ? AND at < ?"),
     ciSpent: db.prepare("SELECT COALESCE(SUM(nano), 0) AS n FROM spend_day WHERE kind = 'ci-code-review' AND day = ?"),
     // Today's billed spend and refusals by agent and kind (the metrics).
     dayRows: db.prepare("SELECT agent, kind, billed, refused FROM spend_day WHERE day = ?"),
@@ -531,7 +535,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     refusedRun: db.prepare("SELECT key, rowid AS n FROM calls WHERE run_key = ? AND status = 'cap_reached' ORDER BY rowid"),
   };
   const spend = spendOf(db);
-  const reports = costReports(db, snapshot);
+  const reports = costReports(db, snapshot, tz);
   const prune = () => {
     pruneCalls(db, now());
     db.prepare("DELETE FROM filed WHERE at < ?").run(new Date(now() - CALLS_KEPT_MS).toISOString());
@@ -669,7 +673,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     const as = (row: RunIdentity | null | undefined, kind: string, component: string) => ({ runKey, agentId: row?.agent_id ?? null, runId: row?.run_id ?? null, issueId: row?.issue_id ?? null, perpetual: Boolean(row?.perpetual), rev: row?.rev ?? null, kind, component }) as Caller;
     if (same(cred, secret("gateway_source_key"))) return as(null, "source", SYSTEM.source);
     if (same(cred, secret("gateway_board_key"))) {
-      // The board's side chat ("ask about this task"): no agent and no task run, so its "run" is the UTC day.
+      // The board's side chat ("ask about this task"): no agent and no task run, so its "run" is the owner's day.
       return { ...as(null, "aside", "Board side chat"), runKey: `board-aside:${day(now())}` as RunKey } as Caller;
     }
     if (cred.startsWith("ahqj_")) {
@@ -689,7 +693,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         let row = q.run.get(runKey) as RunRow | undefined;
         if (!row) {
           const t = await taskOf(p.i);
-          // A session's task lives for days (the job's frozen profile): its cap is per UTC day, as a chat task's.
+          // A session's task lives for days (the job's frozen profile): its cap is per owner's day, as a chat task's.
           row = settle(runKey, { agentId: p.a, runId: String(p.id), issueId: t.issueId, perpetual: t.perpetual || jobProfile(String(p.id)) === "session" });
         }
         return as(row, routeKind, "agent");
@@ -821,7 +825,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     issued.byRepo.set(claims.repo, n);
     if (n > CI_TOKENS_PER_MIN) throw fail(429, "too_many_tokens", `${claims.repo} has had ${CI_TOKENS_PER_MIN} CI tokens this minute`);
     const t = now();
-    if ((q.ciIssued.get(claims.repo, day(t)) as { n: number }).n >= CI_TOKENS_PER_DAY) throw fail(429, "too_many_tokens", `${claims.repo} has had ${CI_TOKENS_PER_DAY} CI tokens today`);
+    if ((q.ciIssued.get(claims.repo, new Date(dayStart(day(t), tz())).toISOString(), new Date(dayStart(addDays(day(t), 1), tz())).toISOString()) as { n: number }).n >= CI_TOKENS_PER_DAY) throw fail(429, "too_many_tokens", `${claims.repo} has had ${CI_TOKENS_PER_DAY} CI tokens today`);
     const token = `${CI_PREFIX}${randomBytes(32).toString("base64url")}`;
     const head = /^[0-9a-f]{40}$/.test(String(body.head ?? "")) ? (body.head as string) : null; // advisory: the job says so
     const exp = new Date(t + CI_TTL_MS).toISOString();
@@ -847,14 +851,14 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     try {
       if (!to || !q.file.run(...key, new Date(now()).toISOString()).changes) return;
       if (task) await to(`Task spend cap reached: this task's calls have spent $${over.spent.toFixed(2)} of $${over.cap.toFixed(2)} (settings.task_usd), so its agent stops here. Split what is left into new tasks, or the owner can raise task_usd in Settings.`);
-      else await to(`AidenHQ reached its ${over.scope === "day" ? "daily" : "monthly"} spend limit ($${over.spent.toFixed(2)} of $${over.cap.toFixed(2)}, settings.spend_${over.scope}_usd), so every model call is refused until the ${over.scope === "day" ? "next UTC day" : "next month (UTC)"}. Raise it in Settings to carry on now.`);
+      else await to(`AidenHQ reached its ${over.scope === "day" ? "daily" : "monthly"} spend limit ($${over.spent.toFixed(2)} of $${over.cap.toFixed(2)}, settings.spend_${over.scope}_usd), so every model call is refused until the ${over.scope === "day" ? "next day" : "next month"} (${zone(tz())}). Raise it in Settings to carry on now.`);
     } catch (e) {
       try { q.unfile.run(...key); } catch {} // the next refusal tells again
       log("spend limit notice failed", { err: String((e as Error).message).slice(0, 300) });
     }
   }
 
-  // Stamped when the call ends (the board pulls by that time); counted on the UTC day it started.
+  // Stamped when the call ends (the board pulls by that time); counted on the owner's day it started.
   function record(who: Caller, r: Partial<Usage> & { key?: string; t?: number; model?: unknown; costUsd?: number | null; ms?: number | null; status: string }) {
     const t = r.t ?? now();
     q.add.run(r.key ?? `gw:${randomUUID()}`, new Date(now()).toISOString(), day(t), who.runKey, who.runId, who.agentId, who.issueId, who.ci?.subject ?? who.check?.subject ?? taskSubject(who, t), who.rev, who.kind, who.component, String(r.model ?? "").slice(0, 120) || "unknown", r.input ?? 0, r.cached ?? 0, r.output ?? 0, r.costUsd ?? null, r.ms ?? null, r.status, me);
@@ -1130,12 +1134,12 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       }
       return [...m.values()];
     };
-    metric("aidenhq_gateway_spend_usd_today", "Billed model spend since 00:00 UTC, by agent key and call kind.", by((r) => r.billed / 1e9));
+    metric("aidenhq_gateway_spend_usd_today", "Billed model spend today (owner's day), by agent key and call kind.", by((r) => r.billed / 1e9));
     const install = limits({ agentId: null, issueId: null, perpetual: false }, now());
-    metric("aidenhq_gateway_install_spend_usd", "The install's spend in the limit's period (UTC day or month), in flight included.", install.map((l) => [{ period: l.scope }, l.spent]));
+    metric("aidenhq_gateway_install_spend_usd", "The install's spend in the limit's period (owner's day or month), in flight included.", install.map((l) => [{ period: l.scope }, l.spent]));
     metric("aidenhq_gateway_install_limit_usd", "The install's spend limit for the period (settings.spend_day_usd, spend_month_usd).", install.map((l) => [{ period: l.scope }, l.cap]));
-    metric("aidenhq_gateway_cap_refusals_today", "Runs refused over a spend limit or task cap since 00:00 UTC (one per run, limit and period).", by((r) => r.refused));
-    metric("aidenhq_gateway_ci_spend_usd_today", "App CI code review spend since 00:00 UTC.", [[{}, (q.ciSpent.get(today) as Nano).n / 1e9]]);
+    metric("aidenhq_gateway_cap_refusals_today", "Runs refused over a spend limit or task cap today (owner's day; one per run, limit and period).", by((r) => r.refused));
+    metric("aidenhq_gateway_ci_spend_usd_today", "App CI code review spend today (owner's day).", [[{}, (q.ciSpent.get(today) as Nano).n / 1e9]]);
     metric("aidenhq_gateway_inflight", "Model calls in flight.", [[{}, (q.inflight.get() as { n: number }).n]]);
     return out.join("\n") + "\n";
   }
@@ -1206,7 +1210,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
    * month. Each is told as a refused call's is (once), so a limit a last call crossed is never silent.
    */
   const exhausted = (agentId: string, task: string) => {
-    // Admission doesn't know whether the task is a chat or routine one (its cap by the UTC day): both subjects are read. A
+    // Admission doesn't know whether the task is a chat or routine one (its cap by the owner's day): both subjects are read. A
     // session agent's calls are only ever by the day (identify), so only that subject is.
     const t = now(), who = { agentId, issueId: task };
     const all = grants()[agentId]?.profile === "session" ? limits({ ...who, perpetual: true }, t) : [...limits({ ...who, perpetual: false }, t), ...limits({ ...who, perpetual: true }, t).filter((o) => o.scope === "task")];

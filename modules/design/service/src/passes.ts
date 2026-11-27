@@ -1,8 +1,9 @@
 // The apps the UI Reviewer tests (settings.ui_testing) and their passes: startPass is the one function that files a pass (an
 // owner's or an agent's request, a deploy, a 24/7 app's next pass: schedule.ts). A pass is a run of kind `pass` in the store and
 // one module task for the holder of role `ui-login`, keyed by source `design:pass:<app>:<run>`; one runs per app at a time (the
-// store's unique index), and none starts once the app's passes billed its day cap (the kernel's ledger, per UTC day). The job
+// store's unique index), and none starts once the app's passes billed its day cap (the kernel's ledger, per owner's day). The job
 // tools (jobtools.ts) release a supplied login only to that task while the run is the app's running pass.
+import { dayStart, ownerDay, ownerZone } from "./aidenhq-sdk/owner-day.ts";
 import type { PassRow, Store } from "./store.ts";
 
 export const MODES = ["read", "test-write", "any"] as const;
@@ -122,7 +123,7 @@ export interface PassKernel {
   fileTask: (t: { title: string; description: string; role: string; source: string }) => Promise<{ id: string; agent: string }>;
   /** Closes a task this module filed (POST /v1/tasks/:task/close, cancelled): the dispatcher stops its job. */
   closeTask: (task: string, body: string) => Promise<void>;
-  /** The confirmed ledger charges of one UTC day on this module's tasks of a source prefix (GET /v1/work?spend_tasks=&day=). */
+  /** The confirmed ledger charges of one owner's day on this module's tasks of a source prefix (GET /v1/work?spend_tasks=&day=). */
   spend: (prefix: string, day: string) => Promise<{ task: string; source: string; cost_usd: number }[]>;
 }
 
@@ -136,8 +137,10 @@ export interface PassDeps {
 
 export type PassStart = { run: string; task: string } | { refused: "already running"; run: string } | { refused: "cap reached today" | "unknown app" | string; /** a transient failure: the trigger may be tried again */ retry?: true };
 
-/** The UTC day of an instant, as the ledger's charges are counted. */
-export const utcDay = (t: number) => new Date(t).toISOString().slice(0, 10);
+/** The owner's day of an instant, as the ledger's charges are counted (the kernel reads the same timezone). */
+export const ownerToday = (t: number) => ownerDay(t, ownerZone());
+/** The instant the owner's day of `t` began (ISO). */
+export const ownerDayStart = (t: number) => new Date(dayStart(ownerToday(t), ownerZone())).toISOString();
 /** The source prefix of an app's pass tasks (the ledger's spend on them, the reconcile's listing of all with `design:pass:`). */
 export const passSource = (app: string) => `design:pass:${app}:`;
 
@@ -145,9 +148,9 @@ export function createPasses(d: PassDeps) {
   const now = d.now ?? Date.now;
   const app = (name: string) => d.apps().find((a) => a.name === name);
 
-  /** What the app's passes billed today (UTC), from the kernel's ledger: the cap's sum, and the page's. */
+  /** What the app's passes billed today (the owner's day), from the kernel's ledger: the cap's sum, and the page's. */
   async function spentToday(name: string): Promise<number> {
-    const rows = await d.kernel.spend(passSource(name), utcDay(now()));
+    const rows = await d.kernel.spend(passSource(name), ownerToday(now()));
     return Math.round(rows.reduce((n, r) => n + (Number(r.cost_usd) || 0), 0) * 1e6) / 1e6;
   }
 

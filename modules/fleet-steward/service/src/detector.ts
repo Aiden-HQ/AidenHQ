@@ -5,6 +5,7 @@
 import { createHash } from "node:crypto";
 import { fence } from "./aidenhq-sdk/fence.ts";
 import type { KernelClient } from "./aidenhq-sdk/kernel-client.ts";
+import { addDays, dayStart, ownerDay, ownerZone } from "./aidenhq-sdk/owner-day.ts";
 
 const MIN = 60_000;
 const DAY_MS = 24 * 60 * MIN;
@@ -50,19 +51,19 @@ const SPEND_FACTOR = 2; // a day's billed spend over this many times the average
 const SPEND_BASELINE_DAYS = 3; // priced days (of those 7) a baseline needs: a new install has none and stays silent
 const SPEND_FLOOR_USD = 10; // below this a doubling is noise, not spend
 /**
- * A day's billed spend (UTC) above 2x the average of the 7 complete days before it that had priced spend, once at least 3
+ * A day's billed spend (the owner's day) above 2x the average of the 7 complete days before it that had priced spend, once at least 3
  * such days exist. Today and yesterday are both checked (a spike after the last poll before midnight, or a call settling after
  * it, is seen against yesterday's own baseline). One incident, `spike`, for the worst day, whose evidence is refreshed each poll
  * (`refresh`); it recovers when neither day trips, so a spike ageing out of the two days while the spend goes on stays open. It
  * names the day's costliest components and subjects; subjects can carry a caller's text (a check's name), so they are fenced.
  */
-export function spendSpike(r: SpendRead, t: number): Incident[] {
-  const dayOf = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+export function spendSpike(r: SpendRead, t: number, tz = "UTC"): Incident[] {
+  const dayOf = (ms: number) => ownerDay(ms, tz);
   const byDay = new Map<string, number>();
   for (const u of r.usage ?? []) if (u.priced > 0 && u.cost_usd > 0) byDay.set(u.day, (byDay.get(u.day) ?? 0) + u.cost_usd); // per agent and day: summed
   let worst: { day: string; spent: number; avg: number; n: number } | undefined;
-  for (const day of [dayOf(t - DAY_MS), dayOf(t)]) {
-    const from = dayOf(Date.parse(day) - 7 * DAY_MS);
+  for (const day of [addDays(dayOf(t), -1), dayOf(t)]) {
+    const from = addDays(day, -7);
     const prior = [...byDay].filter(([d, usd]) => d >= from && d < day && usd > 0).map(([, usd]) => usd);
     const spent = byDay.get(day) ?? 0;
     if (prior.length < SPEND_BASELINE_DAYS) continue;
@@ -928,8 +929,8 @@ export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string
     // Billed spend today far above the recent days' (the kernel's one work read, which carries the day's top components and subjects).
     async spend() {
       const t = now();
-      const from = new Date(Date.parse(new Date(t).toISOString().slice(0, 10)) - 8 * DAY_MS).toISOString();
-      return spendSpike((await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(from)}`)) as SpendRead, t);
+      const tz = ownerZone(), from = new Date(dayStart(addDays(ownerDay(t, tz), -8), tz)).toISOString();
+      return spendSpike((await d.kernel.call("GET", `/v1/work?since=${encodeURIComponent(from)}`)) as SpendRead, t, tz);
     },
     // Monitoring alerts (alerts.ts): one incident per firing alert, recovered when it resolves.
     alert: d.alerts,

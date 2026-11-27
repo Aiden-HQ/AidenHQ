@@ -5,10 +5,11 @@
  *                          open incidents and firing alerts are the fleet-steward service's own /metrics.
  */
 import type { Approval, Records } from "./records.js";
+import { dayStart, ownerDay } from "./aidenhq-sdk/owner-day.js";
 
 /** Prometheus text exposition (version 0.0.4). */
-export async function metricsText(records: Pick<Records, "list">, now = Date.now()): Promise<string> {
-  const since = `${new Date(now).toISOString().slice(0, 10)}T00:00:00`;
+export async function metricsText(records: Pick<Records, "list">, tz: string, now = Date.now()): Promise<string> {
+  const since = new Date(dayStart(ownerDay(now, tz), tz)).toISOString();
   const cards = await records.list("recent", { limit: 1000 });
   const count = (xs: Approval[], by: (a: Approval) => Record<string, string | number>): [Record<string, string | number>, number][] => {
     const n = new Map<string, [Record<string, string | number>, number]>();
@@ -23,8 +24,8 @@ export async function metricsText(records: Pick<Records, "list">, now = Date.now
       out.push(`${name}${l ? `{${l}}` : ""} ${v}`);
     }
   };
-  metric("aidenhq_board_cards_created_today", "Approval cards created since 00:00 UTC, by tier.", "gauge", count(cards.filter((a) => a.createdAt >= since), (a) => ({ tier: a.tier })));
-  metric("aidenhq_board_cards_decided_today", "Approval cards decided since 00:00 UTC, by tier and outcome state.", "gauge", count(cards.filter((a) => (a.decidedAt ?? "") >= since), (a) => ({ tier: a.tier, state: a.state })));
+  metric("aidenhq_board_cards_created_today", "Approval cards created today (the owner's day), by tier.", "gauge", count(cards.filter((a) => a.createdAt >= since), (a) => ({ tier: a.tier })));
+  metric("aidenhq_board_cards_decided_today", "Approval cards decided today (the owner's day), by tier and outcome state.", "gauge", count(cards.filter((a) => (a.decidedAt ?? "") >= since), (a) => ({ tier: a.tier, state: a.state })));
   metric("aidenhq_board_cards_pending", "Approval cards waiting for a decision, by tier.", "gauge", [1, 2].map((t) => [{ tier: t }, cards.filter((a) => a.state === "pending" && a.tier === t).length]));
   return out.join("\n") + "\n";
 }

@@ -1,5 +1,5 @@
 // The routing learning loop (docs/design/settings-changes.md, Routing tuning): the Fleet Steward (role routing-tuner) reviews
-// yesterday's team routing decisions (team_routes, wakes.ts) against trusted outcomes and files at most one change a UTC day to
+// yesterday's team routing decisions (team_routes, wakes.ts) against trusted outcomes and files at most one change an owner's day to
 // a team's member `repos` patterns and `routing.weights`, as one experiment. Its route is POST /v1/routing/<op>, the
 // fleet-steward module's own token plus the caller assertion of the Steward job's tool call in flight (backplane.ts).
 // - evidence: the decisions in a window, each with outcomes the kernel recorded (task status and completion time, reopen wakes,
@@ -11,7 +11,7 @@
 //   here, never escalated.
 // - judge: the open experiment against its revert criterion (a finite schema); a revert rolls back only its own leaves still at
 //   their applied values, through the same reviewed apply.
-// One experiment is open at a time and one proposal is filed per UTC day: both held by unique indexes in kernel.db.
+// One experiment is open at a time and one proposal is filed per owner's day: both held by unique indexes in kernel.db.
 import { createHash, randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import YAML from "yaml";
@@ -23,6 +23,7 @@ import { yamlText } from "./settings-change.ts";
 import { DEFAULT_WEIGHTS, pickMember, type Candidate, type Weights } from "./team-routing.ts";
 import { openFacts } from "./facts.ts";
 import type { RouteSnapshot } from "./wakes.ts";
+import { addDays, dayStart, ownerDay } from "../sdk/src/owner-day.ts";
 
 export class Refused extends Error { status = 422; }
 const refuse = (msg: string): never => { throw new Refused(msg); };
@@ -98,6 +99,7 @@ export type RoutingDeps = {
   grants: () => Record<string, { key?: string; team?: { name: string } } | undefined>;
   /** The control plane as the owner (task status and completion time only). */
   owner: Api;
+  /** The owner's timezone: a routing change is filed once a day of theirs. */ timezone?: () => unknown;
   now?: () => number; log?: (msg: string, f?: Record<string, unknown>) => void;
 };
 
@@ -111,7 +113,7 @@ export function createRouting(d: RoutingDeps) {
   /** The team's name in instance.yaml and its record's key (team_routes.team) both ways. */
   const teams = () => Object.values(d.grants()).flatMap((g) => (g?.team && g.key ? [{ name: g.team.name, key: g.key }] : []));
   const recordKey = (name: string) => teams().find((t) => t.name === name)?.key ?? refuse(`there is no team ${name}`);
-  const day = (t: number) => new Date(t).toISOString().slice(0, 10);
+  const day = (t: number) => ownerDay(t, d.timezone?.());
 
   /** The decisions of a team (its record key) in [since, until), with what the kernel recorded of each task since. */
   async function outcomes(key: string, since: number, until: number): Promise<Outcome[]> {
@@ -206,21 +208,21 @@ export function createRouting(d: RoutingDeps) {
   const serial = <T>(f: () => Promise<T>): Promise<T> => { const run = lock.then(f); lock = run.catch(() => {}); return run; };
 
   return {
-    /** The decisions of [since, until) (default: the previous UTC day; `days` back from today, up to 7) with their outcomes. */
+    /** The decisions of [since, until) (default: the previous owner's day; `days` back from today, up to 7) with their outcomes. */
     async evidence(b: Dict) {
       sync();
       const days = b.days == null ? 1 : Number(b.days);
       if (!Number.isInteger(days) || days < 1 || days > 7) refuse("days: 1 to 7");
-      const today = Date.parse(`${day(now())}T00:00:00Z`);
+      const tz = d.timezone?.(), today = dayStart(day(now()), tz), since = dayStart(addDays(day(now()), -days), tz);
       const { base, texts } = await d.main(["instance.yaml"]);
       const current = (YAML.parse(texts.get("instance.yaml") ?? "") ?? {}).teams ?? {};
       const out: Dict = {};
       for (const t of teams()) {
         const c = current[t.name] ?? {};
-        out[t.name] = { weights: { ...DEFAULT_WEIGHTS, ...(c.routing?.weights ?? {}) }, members: Object.fromEntries(Object.entries(isMap(c.members) ? c.members : {}).map(([k, m]) => [k, { repos: (m as Dict)?.repos ?? [] }])), decisions: await outcomes(t.key, today - days * DAY_MS, today) };
+        out[t.name] = { weights: { ...DEFAULT_WEIGHTS, ...(c.routing?.weights ?? {}) }, members: Object.fromEntries(Object.entries(isMap(c.members) ? c.members : {}).map(([k, m]) => [k, { repos: (m as Dict)?.repos ?? [] }])), decisions: await outcomes(t.key, since, today) };
       }
       const filedToday = (q("SELECT COUNT(*) AS n FROM routing_experiments WHERE day = ? AND state != 'abandoned'").get(day(now())) as { n: number }).n;
-      return { base_sha: base, window: { since: new Date(today - days * DAY_MS).toISOString(), until: new Date(today).toISOString() }, teams: out, open_experiment: view(open()) ?? null, may_propose_today: !open() && !filedToday, metrics: METRICS };
+      return { base_sha: base, window: { since: new Date(since).toISOString(), until: new Date(today).toISOString() }, teams: out, open_experiment: view(open()) ?? null, may_propose_today: !open() && !filedToday, metrics: METRICS };
     },
 
     /** The recorded decisions of the last `days` days (default 7, up to 30) re-run with a change: code's replay, never the asker's. */
@@ -253,7 +255,7 @@ export function createRouting(d: RoutingDeps) {
         if (no) refuse(`experiment ${no.id} for team ${team} was turned down: no routing change for that team until ${new Date(no.rejected_at + REJECT_COOLDOWN_MS).toISOString()}`);
         const o = open();
         if (o) refuse(`experiment ${o.id} (team ${o.team}) is still ${o.state}: one experiment at a time (routing_judge settles it)`);
-        if ((q("SELECT COUNT(*) AS n FROM routing_experiments WHERE day = ? AND state != 'abandoned'").get(day(now())) as { n: number }).n) refuse("a routing change was already proposed today (UTC): one a day");
+        if ((q("SELECT COUNT(*) AS n FROM routing_experiments WHERE day = ? AND state != 'abandoned'").get(day(now())) as { n: number }).n) refuse("a routing change was already proposed today: one a day");
 
         const { base, texts } = await d.main(["instance.yaml"]);
         if (base !== b.base_sha) refuse(`the instance repo's main moved (${base.slice(0, 12)}): read routing_evidence again`);

@@ -21,6 +21,7 @@
 //   kernel/sdk/src/source-store.ts   the shared-sources writer side, in every source writer
 //   kernel/sdk/src/quality.ts        the revert and incident linker, in the board (the kernel's flow DORA imports it)
 //   kernel/sdk/src/task-state-types.ts  a task's state as the kernel serves it, in the board
+//   kernel/sdk/src/owner-day.ts      the owner's day (midnight in the owner's timezone), in the board, fleet-steward, design and code-review (the kernel imports it)
 //   kernel/sdk/src/agent-paused.ts   the one paused rule (lifecycle holds), in the board, the Telegram channel and the Fleet Steward
 //   services/shared/reason-codes.ts  reason codes on approvals and refusals, in the board
 //   services/shared/url-setting.ts   the URL setting check, in the board (the compiler imports the original)
@@ -75,6 +76,8 @@ export function sharedCopies(root = repo) {
   "modules/ship/service/src/mcp.ts": ["modules/maintainer/service/src/mcp.ts", "modules/code-review/service/src/mcp.ts", "modules/sessions/service/src/mcp.ts", "modules/design/service/src/mcp.ts"],
   // The Fleet pages' shared kit (the common styles and bridge script), inlined into each module's page.html when it is served (mcp.ts pageHtml).
   ...Object.fromEntries(["page-kit.css", "page-kit.js"].map((f) => [`services/shared/${f}`, [`modules/ship/service/src/${f}`, `modules/maintainer/service/src/${f}`, `modules/code-review/service/src/${f}`, `modules/design/service/src/${f}`]])),
+  // The owner's day: the board and the services that count a day.
+  "kernel/sdk/src/owner-day.ts": ["services/board/src", "modules/fleet-steward/service/src", "modules/design/service/src", "modules/code-review/service/src"].map((d) => `${d}/aidenhq-sdk/owner-day.ts`),
   // The box's one MCP client (code mode): the engineer image's /opt/aidenhq/lib/tools.ts, which the in-box `aidenhq` CLI and a
   // session's generated tool files import; and the ui-review engine's (`ui-review put` and `get`: evidence files to the design tools).
   "kernel/sdk/src/tools-client.ts": ["services/computer/images/engineer/lib/tools.ts", "services/computer/images/agent-base/ui-review/tools-client.ts"],

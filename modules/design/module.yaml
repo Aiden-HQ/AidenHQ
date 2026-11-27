@@ -126,7 +126,7 @@ settings:
   # a local build uses its default branch, never a PR head), aidenhq_app? (true: an app on this AidenHQ, named as it is there; it signs
   # in through the test-user session, so settings.edge.test_user.apps must list it, and is always read-only, whatever live_mode says), live_mode: read | test-write | any,
   # schedule: on-request (the default) | after-deploy (its healthy AidenHQ deploy or a push to its repo's default branch) | always
-  # (back to back), day_cap_usd (default 5, at most 100: no pass starts once its passes billed that much in the UTC day; a running
+  # (back to back), day_cap_usd (default 5, at most 100: no pass starts once its passes billed that much in the owner's day; a running
   # one ends on its own), spend: scan | standard (the default) | thorough (passes.ts SPEND), models: { design?, fixes?, clicking? }
   # (OpenRouter ids), recording (default false) }] }. One pass runs per app at a time. live_mode is the
   # most a pass may do: read (the default) loads pages only, no write of any kind; test-write lets the test account change its own
@@ -155,6 +155,7 @@ services:
       data: ["evidence:/data"]
       env:
         DESIGN_DATA: /data
+        OWNER_TIMEZONE: "${settings.timezone}"
         DESIGN_SERVICE_KEY_FILE: ${secrets.design_service_key}
         DESIGN_TOKEN_FILE: ${secrets.design_token}
         DESIGN_UI_LOGINS_FILE: ${secrets.ui_logins}

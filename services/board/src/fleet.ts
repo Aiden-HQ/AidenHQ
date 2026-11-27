@@ -9,6 +9,7 @@ import { OPEN, type Agent, type Issue, type Paperclip, type Routine } from "./pa
 import { isLive, type Records } from "./records.js";
 import { lastRunsOf, liveRunsOf, type KernelActivity } from "./runs.js";
 import type { CostReport } from "./costs.js";
+import { addDays, dayStart, ownerDay } from "./aidenhq-sdk/owner-day.js";
 import type { Store } from "./store.js";
 
 export class Refused extends Error {}
@@ -222,16 +223,16 @@ export function boundedFleetStatus<T extends Record<string, unknown>>(reply: T, 
 export const NOTE = "Usage from the model gateway's ledger (every model call, as the kernel's cost reports sum it). runs counts the gateway's model calls, not agent jobs: one job can make several. costCents sums the calls OpenRouter priced, rounded to the cent; calls it gave no cost add nothing, and 0 does not mean free (a few priced cents round there too): use tokens and runs for volume.";
 
 /**
- * Token usage per agent per UTC day over the last `days` days (today included), from the kernel's daily cost report on the model
+ * Token usage per agent per owner's day over the last `days` days (today included), from the kernel's daily cost report on the model
  * gateway's ledger, which is where every agent run spends. Paperclip records no agent spend of its own.
  * One row per agent and day, summed across models and lanes. `runs` is the ledger's call count (a model call, not an agent
  * job) and `costCents` only the calls OpenRouter priced, so the tokens and runs are the reliable figures.
  */
-export async function fleetCosts(pc: Paperclip, costs: CostReport, days?: number) {
+export async function fleetCosts(pc: Paperclip, costs: CostReport, tz: string, days?: number) {
   const n = Math.min(Math.max(Math.floor(days ?? 7) || 7, 1), 31);
-  const today = Date.parse(new Date().toISOString().slice(0, 10));
-  const from = new Date(today - (n - 1) * DAY).toISOString();
-  const to = new Date(today + DAY).toISOString();
+  const today = ownerDay(Date.now(), tz);
+  const from = new Date(dayStart(addDays(today, -(n - 1)), tz)).toISOString();
+  const to = new Date(dayStart(addDays(today, 1), tz)).toISOString();
   const [agents, cells] = await Promise.all([
     pc.request<Agent[]>("GET", `/api/companies/${pc.companyId}/agents`),
     costs<{ agentId: string | null; day: string; usd: number; calls: number; input: number; cached: number; output: number }[]>("daily", { from, to }),
