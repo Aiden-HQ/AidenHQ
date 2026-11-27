@@ -278,7 +278,7 @@ export interface Board {
   /** Google sign-in per account; null when the board can't ask. */
   google: { accounts: GoogleAccount[]; error?: string; client?: boolean } | null;
   /** The modules' sign-ins (board.signins): each one's banner text and state (null when the board can't ask). */
-  signIns: { id: string; label: string; missing: string; stopped: string; status: SignInStatus | null; offer?: boolean; mode?: "device" }[];
+  signIns: { id: string; label: string; missing: string; stopped: string; status: SignInStatus | null; offer?: boolean; mode?: "device" | "qr"; disconnect?: true }[];
 }
 
 /** A sign-in through an MCP proxy (Glean, Grafana, ClickHouse, Jira). */

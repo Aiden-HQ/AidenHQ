@@ -33,10 +33,13 @@ export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: Con
   const ok = rows.filter((x) => x.v.status === "connected");
   const idle = rows.filter((x) => x.v.status === "not_connected");
   const built = rows.filter((x) => x.v.status === "builtin");
+  // A ?connect= link opens one dialog: the row whose sign-in it names, else the row of that name.
+  const want = q.get("connect");
+  const target = want ? (rows.find((x) => x.r.signIn?.id === want) ?? rows.find((x) => x.r.name === want))?.r.name : undefined;
   const tiles = (list: typeof rows) => (
     <TileGrid>
       {list.map(({ r, v }) => (
-        <ConnectionTile key={r.name} r={r} v={v} can={can} connect={q.get("connect") === r.name ? { error: q.get("error"), account: q.get("account") } : undefined} onAsked={clear} />
+        <ConnectionTile key={r.name} r={r} v={v} can={can} connect={target === r.name ? { error: q.get("error"), account: q.get("account") } : undefined} onAsked={clear} />
       ))}
     </TileGrid>
   );
@@ -81,7 +84,7 @@ export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: Con
 /** One connection: a tile with its state and its one action (Connect, Reconnect, Set up); everything else in its dialog. */
 function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionRow; v: Verdict; can: Can; connect?: { error: string | null; account?: string | null }; onAsked: () => void }) {
   const [open, setOpen] = useState(false);
-  const c = { id: r.name, label: displayName(r.name), signIn: r.signIn };
+  const c = { id: r.signIn?.id ?? r.name, label: displayName(r.name), signIn: r.signIn };
   // A module sign-in connects in one click (Connect.tsx); Google's own Connect is a link; one that needs its client made first
   // (a setup flow) says Set up.
   const connect = v.action ? (
@@ -129,7 +132,8 @@ function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionR
           </p>
           {v.hint && <p className="st-hint">{v.hint}</p>}
           <SignInLines c={c} can={can.signIn} />
-          {r.signIn?.state === "ok" && <TestSignIn id={r.name} />}
+          {r.signIn?.state === "ok" && <TestSignIn id={r.signIn.id ?? r.name} />}
+          {r.signIn?.state === "ok" && r.signIn.disconnect && can.signIn && <DisconnectSignIn id={r.signIn.id ?? r.name} label={displayName(r.name)} />}
           {r.google?.accounts.some((a) => a.state === "ok") && <TestSignIn id={r.name} google />}
           {!connect && r.setup && v.status === "not_configured" && <p className="st-hint">{r.setup}</p>}
           <Facts r={r} />
@@ -137,6 +141,37 @@ function ConnectionTile({ r, v, can, connect: asked, onAsked }: { r: ConnectionR
         </div>
       </Dialog>
     </>
+  );
+}
+
+/** Disconnect: revokes the sign-in at the vendor (a service that serves /auth/disconnect), after a confirm; reconnecting needs a new sign-in. */
+function DisconnectSignIn({ id, label }: { id: string; label: string }) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState("");
+  const confirm = () => {
+    setBusy(true);
+    setProblem("");
+    api.disconnect(id).then(() => setAsking(false), (e: Error) => setProblem(e.message)).finally(() => setBusy(false));
+  };
+  return (
+    <div className="st-test">
+      <Button size="sm" variant="quiet" onClick={() => setAsking(true)}>Disconnect</Button>
+      <Dialog
+        open={asking}
+        onClose={() => setAsking(false)}
+        title={`Disconnect ${label}`}
+        actions={
+          <>
+            <Button onClick={() => setAsking(false)}>Cancel</Button>
+            <Button variant="primary" disabled={busy} onClick={confirm}>{busy ? "Disconnecting…" : "Disconnect"}</Button>
+          </>
+        }
+      >
+        {problem && <Banner tone="danger">{problem}</Banner>}
+        <p>Disconnect {label}? This signs AidenHQ out at {label}; reconnecting needs a new sign-in.</p>
+      </Dialog>
+    </div>
   );
 }
 

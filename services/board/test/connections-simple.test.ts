@@ -8,6 +8,7 @@ import { createApp } from "../src/app.js";
 import { createKernelAuth } from "../src/kernel-auth.js";
 import { Paperclip } from "../src/paperclip.js";
 import { Store } from "../src/store.js";
+import { McpAuthFailed } from "../src/mcpauth.js";
 import { fakeRecords } from "./fake-records.js";
 import { BOARD_KEY, fakeKernel, type FakeAccount } from "./kernel.js";
 
@@ -24,6 +25,25 @@ const chat = {
   deviceCancel: async () => void deviceCalls.push("cancel"),
 };
 
+const logged: string[] = [];
+let qrStates: Record<string, unknown>[] = [];
+const secrets: string[] = [];
+let disconnects = 0;
+const tg = {
+  status: async () => ({ state: "missing", configured: true }),
+  scopes: async () => undefined,
+  offers: async () => false,
+  deviceStart: async () => ({ qr: "tg://login?token=abc", expires_in: 30, interval: 2 }),
+  deviceState: async () => (qrStates.length > 1 ? qrStates.shift()! : qrStates[0]!),
+  deviceCancel: async () => {},
+  deviceSecret: async (v: string) => {
+    secrets.push(v);
+    if (v === "wrong") throw new McpAuthFailed("PASSWORD_HASH_INVALID");
+    qrStates = [{ state: "ok" }];
+  },
+  disconnect: async () => void disconnects++,
+};
+
 describe("simple connections", () => {
   const store = new Store(":memory:");
   let app: ReturnType<typeof createApp>;
@@ -34,9 +54,10 @@ describe("simple connections", () => {
     const accounts = createKernelAuth({ kernel: { url: kernel.url, token: BOARD_KEY }, adminUrl: "http://localhost:3120" });
     const paperclip = new Paperclip("http://paperclip", "00000000-0000-4000-8000-000000000001", "k", (async () => new Response("[]")) as unknown as typeof fetch);
     const pair = (async () => Response.json({ paired: false })) as unknown as typeof fetch;
-    app = createApp({ paperclip, store, records: fakeRecords(), log: pino({ level: "silent" }), staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3121", "lan.example.com:3121"], mode: "lan", lan: { url: "https://aiden.example.com" },
+    app = createApp({ paperclip, store, records: fakeRecords(), log: pino({ level: "trace" }, { write: (l: string) => void logged.push(l) }), staticDir: "/nonexistent", timezone: "UTC", accounts, allowedHosts: ["localhost:3121", "lan.example.com:3121"], mode: "lan", lan: { url: "https://aiden.example.com" },
       signIns: [
         { id: "chat", label: "Chat", connect: "/chat/connect", callback: "/chat/callback", mode: "device", missing: "m", stopped: "s", fields: [], auth: chat as never },
+        { id: "telegram", label: "Telegram", connect: "/telegram/connect", callback: "/telegram/callback", mode: "qr", disconnect: true, missing: "m", stopped: "s", fields: [], auth: tg as never },
         { id: "team", label: "Team", connect: "/team/connect", callback: "/team/callback", httpsOnly: true, missing: "m", stopped: "s", fields: [], auth: { ...chat, status: async () => ({ state: "missing", configured: true }) } as never },
       ],
       setupFlows: { flows: flows.map((f) => ({ ...f, token: "pair-secret" })), fetchImpl: pair }, organisations });
@@ -97,4 +118,27 @@ describe("simple connections", () => {
     device = { state: "ok" };
   });
 
+  it("qr sign-in with a secret step", async () => {
+    qrStates = [{ state: "pending", qr: "tg://login?token=def" }, { state: "secret", secret: { label: "Two-step verification password", hint: "pet" } }];
+    expect((await owner("POST", "/api/sign-ins/telegram/device")).json).toEqual({ qr: "tg://login?token=abc", expires_in: 30, interval: 2 });
+    expect((await owner("GET", "/api/sign-ins/telegram/device")).json).toEqual({ state: "pending", qr: "tg://login?token=def" });
+    const sec = (await owner("GET", "/api/sign-ins/telegram/device")).json;
+    expect(sec.state).toBe("secret");
+    expect(sec.secret.hint).toBe("pet");
+    expect((await second("POST", "/api/sign-ins/telegram/device/secret", { value: "right-pw-123" })).status).toBe(404);
+    expect((await owner("POST", "/api/sign-ins/telegram/device/secret", { value: "wrong" })).status).toBe(400);
+    expect((await owner("GET", "/api/sign-ins/telegram/device")).json.state).toBe("secret");
+    expect((await owner("POST", "/api/sign-ins/telegram/device/secret", { value: "right-pw-123" })).status).toBe(200);
+    expect((await owner("GET", "/api/sign-ins/telegram/device")).json).toEqual({ state: "ok" });
+    expect(secrets).toEqual(["wrong", "right-pw-123"]);
+    const all = logged.join("\n");
+    expect(all).not.toContain("wrong");
+    expect(all).not.toContain("right-pw-123");
+  });
+
+  it("disconnect", async () => {
+    expect((await owner("POST", "/api/sign-ins/telegram/disconnect")).status).toBe(200);
+    expect(disconnects).toBe(1);
+    expect((await owner("POST", "/api/sign-ins/team/disconnect")).status).toBe(404);
+  });
 });

@@ -170,6 +170,10 @@
       "source": "./tasks"
     },
     {
+      "name": "telegram",
+      "source": "./telegram"
+    },
+    {
       "name": "voice",
       "source": "./voice"
     },
@@ -212,6 +216,7 @@
     "ship",
     "slack",
     "tasks",
+    "telegram",
     "warehouse"
   ],
   "organisations": [

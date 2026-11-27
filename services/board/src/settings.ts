@@ -285,6 +285,8 @@ export interface ConnectionRow {
 }
 
 export interface SignIn {
+  /** The board.signins id: its Connect, Test and Disconnect paths. */
+  id?: string;
   state: string;
   configured: boolean;
   since: string;
@@ -306,6 +308,13 @@ export function connectionsView(input: {
 }) {
   const c = input.compiled ?? {};
   const moduleOf = new Map(input.catalog.flatMap((m) => (m.connections ?? []).map((n) => [n, m.name] as const)));
+  // A sign-in belongs to the module it names (board.signins id = module name). A connection named like its module takes it; a
+  // module with no connection of that name (telegram: telegram_account) gives it to each of its connections, so another
+  // module's connection that happens to share the id (channel-telegram's `telegram`) never does.
+  const signInOf = (name: string, mod: string) => {
+    if (!mod || mod === name) return input.signIns[name] ?? null;
+    return moduleOf.get(mod) === mod ? null : (input.signIns[mod] ?? null);
+  };
   const rows: ConnectionRow[] = Object.entries(c.mcp_servers ?? {}).map(([name, m]) => {
     const write = new Set([...(m.tools?.write ?? []), ...(m.tools?.destructive ?? [])]);
     const grants = Object.entries(c.agents ?? {})
@@ -323,7 +332,7 @@ export function connectionsView(input: {
       grants,
       setup: m.setup ?? null,
       probe: m.url ? (input.probes[name] ?? null) : null,
-      signIn: input.signIns[name] ?? null,
+      signIn: signInOf(name, moduleOf.get(name) ?? ""),
       ...(name === "google_workspace" ? { google: input.google ?? null } : {}),
     };
   });

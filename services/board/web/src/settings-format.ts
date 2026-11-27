@@ -91,10 +91,14 @@ const listText = (v: unknown[], word: string) => {
 /** A setting's short title: its declared `title`, else its key in words ("app_login" is "App login"). Never its help text. */
 export const settingTitle = (s: Pick<SettingRow, "key" | "title">) => s.title ?? s.key.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
 
-/** A setting's value in one plain line: On/Off, a list as "N items: a, b, c +N more", an object as its key fields, "Not set" when empty. */
-export function settingSummary(v: unknown): string {
+/** A choice's stored value in words ("header-jwt" is "Header jwt"). */
+const choiceWords = (v: string) => v.replace(/[-_]+/g, " ").replace(/^./, (c) => c.toUpperCase());
+
+/** A setting's value in one plain line: On/Off, a choice in words, a list as "N items: a, b, c +N more", an object as its key fields, "Not set" when empty. `choices` is the setting's declared `values`: only a value picked from them is reworded. */
+export function settingSummary(v: unknown, choices?: unknown[]): string {
   if (typeof v === "boolean") return v ? "On" : "Off";
   if (isEmpty(v)) return "Not set";
+  if (typeof v === "string" && choices?.includes(v)) return choiceWords(v);
   if (Array.isArray(v)) return listText(v, "item");
   if (v && typeof v === "object") {
     const filled = Object.entries(v).filter(([, x]) => !isEmpty(x));

@@ -42,6 +42,9 @@ contributors, under the AGPL as above.
 This product runs Paperclip (https://github.com/paperclipai/paperclip) as a separate component,
 Copyright (c) 2025 Paperclip AI, used under the MIT License (see LICENSES/paperclip-MIT.txt).
 
+The telegram module (modules/telegram/) links TDLib (https://github.com/tdlib/td, Copyright Aliaksei Levin and Arseny
+Smirnov), used under the Boost Software License 1.0, through the tdl and prebuilt-tdlib npm packages (MIT).
+
 The app starter (modules/apps-platform/starter/) includes code and designs from shadcn/ui, Origin UI,
 Radix Colors, cmdk, react-day-picker (MIT), Tremor and tweakcn (Apache-2.0); its THIRD_PARTY.md
 lists each file and its licence. npm, container and other dependencies keep their own licences.

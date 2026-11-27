@@ -28,6 +28,8 @@ agents:
       # The CRM (hubspot module): reads, plus manage_crm_objects (a note, a task, a deal update): a kernel record the AI
       # reviewer decides first, and the owner when it touches more than 5 records.
       hubspot?: [ get_user_details, get_organization_details, discover_hubspot_schema, search_crm_objects, get_crm_objects, query_crm_data, search_properties, get_properties, search_owners, tool_guidance, manage_crm_objects ]
+      # The owner's Telegram (telegram module): reads, drafts, and reviewed sends and replies only when the owner asks.
+      telegram_account?: [ telegram_list_chats, telegram_read_chat, telegram_search, telegram_get_message, telegram_chat_info, telegram_owner, telegram_save_draft, telegram_send, telegram_reply ]
       owner_channel: [ notify, notify_recent ]
       # Product bugs as issues on the product repo, as the owner labelled as AidenHQ, with the github module:
       # report one (deduped by fingerprint) and read their state. No other GitHub reads, and no repo input.

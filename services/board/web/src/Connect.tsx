@@ -4,8 +4,9 @@
 // board turns Connected when it lands (the server's `connections` event). Before that, in the same dialog and only when
 // needed: the sign-in's per-install values (its `secrets`: saved to the vault, then the proxy restarts with them) and the
 // choice of scopes the vendor offers. One click (back to the board's https address) stays as a link where it exists.
-import { useEffect, useMemo, useState } from "react";
-import { SignInRequired, api, type DeviceCode, type SignInView } from "./api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import qrcode from "qrcode-generator";
+import { SignInRequired, api, type DeviceCode, type DeviceProgress, type SignInView } from "./api";
 import { connectionStatus, displayName, type SignIn } from "./connections";
 import { useEvents } from "./events";
 import { changes, groupScopes } from "./scopes";
@@ -30,7 +31,7 @@ export function useConnectNeeded(can: Can): Map<string, { c: Connectable; word: 
           new Map(
             d.connections.flatMap((r) => {
               const v = connectionStatus(r, can);
-              return r.signIn && v.action ? [[r.module, { c: { id: r.name, label: displayName(r.name), signIn: r.signIn }, word: v.action.label }] as const] : [];
+              return r.signIn && v.action ? [[r.module, { c: { id: r.signIn.id ?? r.name, label: displayName(r.name), signIn: r.signIn }, word: v.action.label }] as const] : [];
             }),
           ),
         ),
@@ -62,7 +63,7 @@ export function ConnectButton({ c, variant, size, word, open: startOpen, error, 
   const [open, setOpen] = useState(Boolean(startOpen));
   const [started, setStarted] = useState<Started | undefined>();
   // Nothing to ask: straight to the vendor, and the dialog waits for the address the sign-in ends on.
-  const direct = !c.signIn?.fields?.length && !c.signIn?.offer && !error && c.signIn?.mode !== "device";
+  const direct = !c.signIn?.fields?.length && !c.signIn?.offer && !error && c.signIn?.mode !== "device" && c.signIn?.mode !== "qr";
   const close = () => (setOpen(false), setStarted(undefined), onClose?.());
   const press = () => {
     if (direct) {
@@ -153,7 +154,9 @@ export function ConnectDialog({ c, error, started, onClose }: { c: Connectable; 
   const connect = async () => {
     setTouched(true);
     if (!view || bad.length || (on && !on.size)) return;
-    const w = newTab();
+    // A device or QR sign-in continues in this dialog once its fields are saved: no tab.
+    const inDialog = view.mode === "device" || view.mode === "qr";
+    const w = inDialog ? null : newTab();
     setProblem("");
     try {
       if (fields.length) {
@@ -171,6 +174,7 @@ export function ConnectDialog({ c, error, started, onClose }: { c: Connectable; 
         // A pasted token that Primer accepts is the whole sign-in; one it refused says why, and stays to be pasted again.
         if (fresh.asks) throw new Error(fresh.detail ?? "That value didn't work.");
         if (fresh.state === "ok") return (w?.close(), onClose());
+        if (inDialog) return (setView(fresh), setBusy(""));
         // Its scopes are on offer only once it knows its address: the picker comes now, and Connect again.
         if (fresh.scopes && !on) {
           w?.close();
@@ -196,7 +200,7 @@ export function ConnectDialog({ c, error, started, onClose }: { c: Connectable; 
 
   const label = view?.label ?? c.label;
   // A device sign-in: a code to type on the vendor's page, followed here until it lands (nothing opens, nothing to paste).
-  if (view?.mode === "device" && !(view.asks && fields.length)) return <DeviceSignIn c={c} label={label} onClose={onClose} />;
+  if ((view?.mode === "device" || view?.mode === "qr") && !(view.asks && fields.length)) return <DeviceSignIn c={c} label={label} onClose={onClose} />;
   return (
     <Dialog
       open
@@ -335,35 +339,52 @@ const minutes = (ms: number) => (ms < 60_000 ? "under a minute" : `${Math.ceil(m
 
 /**
  * A device sign-in (board.signins `mode: device`, GitHub's model): the board asks for a code, the person types it on the vendor's
- * page, and the board follows it until the token lands. The code belongs to this session; closing cancels it.
+ * page, and the board follows it until the token lands. `mode: qr` shows a link as a QR code to scan in the vendor's app instead
+ * (it refreshes while pending) and may stop on a secret step: one password the proxy asks for, passed on and never kept. The
+ * code belongs to this session; closing cancels it.
  */
 export function DeviceSignIn({ c, label, onClose }: { c: Connectable; label: string; onClose: () => void }) {
   const [code, setCode] = useState<(DeviceCode & { until: number }) | null>(null);
+  const [link, setLink] = useState("");
+  const [secret, setSecret] = useState<NonNullable<DeviceProgress["secret"]> | null>(null);
+  const [value, setValue] = useState("");
+  const [wrong, setWrong] = useState("");
   const [problem, setProblem] = useState("");
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [now, setNow] = useState(Date.now());
+  const lastOk = useRef(Date.now());
   const say = (e: unknown) => setProblem(e instanceof SignInRequired ? "Your session ended. Sign in again, then press Connect." : (e as Error).message);
   const start = () => {
     setBusy(true);
     setProblem("");
-    api.deviceStart(c.id).then((r) => setCode({ ...r, until: Date.now() + r.expires_in * 1000 }), say).finally(() => setBusy(false));
+    setSecret(null);
+    setWrong("");
+    api.deviceStart(c.id).then((r) => {
+      lastOk.current = Date.now();
+      setLink("qr" in r ? r.qr : "");
+      setCode({ ...r, until: Date.now() + r.expires_in * 1000 });
+    }, say).finally(() => setBusy(false));
   };
   useEffect(start, [c.id]);
   // Follow it: the board asks the connection, which polls the vendor itself.
   useEffect(() => {
     if (!code) return;
+    const isQr = "qr" in code;
     const t = setInterval(() => {
       setNow(Date.now());
       void api.deviceProgress(c.id).then((p) => {
+        lastOk.current = Date.now();
         if (p.state === "ok") return onClose();
-        if (p.state === "pending") return;
+        if (p.state === "pending") return p.qr ? setLink(p.qr) : undefined;
+        if (p.state === "secret") return p.secret ? setSecret(p.secret) : undefined;
         setCode(null);
-        setProblem(p.state === "expired" ? "The code expired before it was entered. Get a new one." : `${p.detail ?? "The sign-in stopped."} Get a new code to try again.`);
+        setSecret(null);
+        setProblem(p.state === "expired" ? (isQr ? "The sign-in expired. Get a new code." : "The code expired before it was entered. Get a new code.") : `${p.detail ?? "The sign-in stopped."} Get a new code to try again.`);
       }, (e) => {
-        // A blip keeps polling while the code is good; an ended session or an expired code stops.
+        // A blip keeps polling while the code is good (a QR refreshes, so: while it answered lately); an ended session or an expired code stops.
         const ended = e instanceof SignInRequired;
-        if (!ended && Date.now() < code.until) return;
+        if (!ended && (isQr ? Date.now() - lastOk.current < 60_000 : Date.now() < code.until)) return;
         setCode(null);
         setProblem(ended ? "Your session ended. Sign in again, then press Connect." : "Couldn't check the sign-in before the code expired. Get a new code to try again.");
       });
@@ -374,7 +395,14 @@ export function DeviceSignIn({ c, label, onClose }: { c: Connectable; label: str
     if (code) void api.deviceCancel(c.id).catch(() => {});
     onClose();
   };
-  const copy = () => void navigator.clipboard?.writeText(code!.user_code).then(() => (setCopied(true), setTimeout(() => setCopied(false), 1500)), () => {});
+  const submit = () => {
+    if (!value || busy) return;
+    setBusy(true);
+    setWrong("");
+    api.deviceSecret(c.id, value).then(() => undefined, (e) => (e instanceof SignInRequired ? say(e) : setWrong((e as Error).message))).finally(() => (setValue(""), setBusy(false)));
+  };
+  const qr = code && "qr" in code;
+  const copy = () => void navigator.clipboard?.writeText((code as { user_code: string }).user_code).then(() => (setCopied(true), setTimeout(() => setCopied(false), 1500)), () => {});
   return (
     <Dialog
       open
@@ -383,22 +411,43 @@ export function DeviceSignIn({ c, label, onClose }: { c: Connectable; label: str
       actions={
         <>
           <Button onClick={close}>Cancel</Button>
-          {code ? (
-            <a className="btn primary" href={code.verification_uri_complete ?? code.verification_uri} target="_blank" rel="noopener noreferrer">
-              Open {host(code.verification_uri)}
+          {secret ? (
+            <Button variant="primary" disabled={busy || !value} onClick={submit}>{busy ? "Checking…" : "Submit"}</Button>
+          ) : code && !qr ? (
+            <a className="btn primary" href={(code as { verification_uri_complete?: string; verification_uri: string }).verification_uri_complete ?? (code as { verification_uri: string }).verification_uri} target="_blank" rel="noopener noreferrer">
+              Open {host((code as { verification_uri: string }).verification_uri)}
             </a>
-          ) : (
+          ) : !code ? (
             <Button variant="primary" disabled={busy} onClick={start}>{busy ? "Getting a code…" : "Get a new code"}</Button>
-          )}
+          ) : null}
         </>
       }
     >
       {problem && <Banner tone="danger">{problem}</Banner>}
-      {code && (
+      {code && secret && (
+        <form className="devsign" onSubmit={(e) => (e.preventDefault(), submit())}>
+          <label className="ui-field">
+            <span className="ui-field-label">{secret.label}</span>
+            <input className="ui-input" type="password" autoComplete="off" spellCheck={false} autoFocus value={value} aria-invalid={Boolean(wrong)} onChange={(e) => setValue(e.target.value)} />
+            {wrong ? <span className="ui-field-error">{wrong}</span> : secret.hint && <span className="ui-field-help">Hint: {secret.hint}</span>}
+          </label>
+        </form>
+      )}
+      {code && !secret && qr && link && (
         <div className="devsign">
-          <p className="devsign-lead">Enter this code on {host(code.verification_uri)} and allow access.</p>
+          <p className="devsign-lead">Open {label} on your phone and scan this code from its linked devices settings.</p>
+          <QrCode text={link} label={`Scan to sign in to ${label}`} className="devsign-qr" />
+          <p className="devsign-wait">
+            <span className="devsign-pulse" aria-hidden />
+            Waiting for {label}. The code refreshes by itself.
+          </p>
+        </div>
+      )}
+      {code && !qr && (
+        <div className="devsign">
+          <p className="devsign-lead">Enter this code on {host((code as { verification_uri: string }).verification_uri)} and allow access.</p>
           <div className="devsign-code">
-            <output aria-label="Your code">{code.user_code}</output>
+            <output aria-label="Your code">{(code as { user_code: string }).user_code}</output>
             <Button size="sm" variant="quiet" onClick={copy}>{copied ? "Copied" : "Copy"}</Button>
           </div>
           <p className="devsign-wait">
@@ -468,5 +517,24 @@ export function GoogleConnect({ account, error, onClose }: { account?: string | 
         </label>
       )}
     </Dialog>
+  );
+}
+
+/** A link as a QR code (a phone's camera opens it), drawn as one SVG path from the encoder's modules. */
+export function QrCode({ text, label, className = "setup-qr" }: { text: string; label: string; className?: string }) {
+  const { size, d } = useMemo(() => {
+    const qr = qrcode(0, "M");
+    qr.addData(text);
+    qr.make();
+    const count = qr.getModuleCount();
+    let path = "";
+    for (let r = 0; r < count; r++) for (let c = 0; c < count; c++) if (qr.isDark(r, c)) path += `M${c + 4} ${r + 4}h1v1h-1z`;
+    return { size: count + 8, d: path };
+  }, [text]);
+  return (
+    <svg className={className} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={label} shapeRendering="crispEdges">
+      <rect width={size} height={size} fill="#fff" />
+      <path d={d} fill="#000" />
+    </svg>
   );
 }

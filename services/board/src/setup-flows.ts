@@ -121,7 +121,7 @@ export interface SetupFlowDeps {
   /** Whether the sign-in `id` offers a choice of scopes: its Connect opens the picker, and its Reconnect reads "Change access". */
   scopeChoice: (id: string) => Promise<boolean>;
   /** How the sign-in `id` signs in: its Connect opens a device code dialog rather than the vendor's page. */
-  signInMode?: (id: string) => "redirect" | "device";
+  signInMode?: (id: string) => "redirect" | "device" | "qr";
   /** A connect path's connection: true when signed in, undefined when the board serves no such path. */
   connected: (path: string) => Promise<boolean | undefined>;
   /** The board's own address, where its sign-ins return (the flows' {board_url}). */
@@ -337,7 +337,8 @@ export function setupFlowRoutes(d: SetupFlowDeps): { routes: SetupRoute[]; state
             const redirect_url = f.signin ? d.redirectUrl(f.signin, host) : undefined;
             const choose = full.choose ? { choose: chooseView(full.choose, f.module) } : {};
             const app = appSpec ? { app: { label: appSpec.label, pattern: appSpec.pattern, help: appSpec.help, ...(appSpec.console_url ? { console_url: appSpec.console_url } : {}), status: (await appStatusOf(full)) ?? null, org_secrets: (d.orgSecrets?.(f.module) ?? []).filter((x) => [...(f.secrets ?? []), ...(advanced?.secrets ?? [])].includes(x)) } } : {};
-            const signinMode = f.signin && d.signInMode?.(f.signin) === "device" ? { signin_mode: "device" as const } : {};
+            const mode = f.signin ? d.signInMode?.(f.signin) : undefined;
+            const signinMode = mode === "device" || mode === "qr" ? { signin_mode: mode } : {};
             // How long the wait has left, not when it ends: the page counts it down on its own clock, which need not agree with the board's.
             const restarting_for = Number(d.store.meta(RESTARTING(f.module)) ?? 0) - Date.now();
             return { ...f, ...choose, ...app, ...signinMode, ...(adv ? { advanced: adv } : {}), ...(connected !== undefined ? { connect_url } : {}), ...(redirect_url ? { redirect_url } : {}), present, signedIn, scopes, paired: pairing?.paired === true, done, dismissed: gone.has(f.module), ...(restarting_for > 0 ? { restarting: true, restarting_for } : {}) };
