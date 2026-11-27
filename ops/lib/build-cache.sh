@@ -21,3 +21,13 @@ aidenhq_build_cache_ceiling_gb() {
   [ "$gb" -le 60 ] || gb=60
   printf '%s\n' "$gb"
 }
+
+# What the verification judges the cache against, above the prune's own target: `--max-used-space` budgets only unshared
+# records while `docker system df` counts shared ones too (BuildKit skips `Shared` records in its total and returns early
+# when that total is under the budget), so a working prune can leave the cache above its target. A soft target also lands
+# where it rounds, so the verification keeps a fixed 20 GB of headroom: 20 -> 40 GB at the floor (the fleet's ordinary
+# post-prune level peaked at 29.9 GB against a 20 GB target), 60 -> 80 GB at the cap, still under the 104 GB an uncapped
+# store held. Additive, not a multiplier: the overshoot is a rough fixed amount, not a share of the disk.
+aidenhq_build_cache_verify_ceiling_gb() {
+  printf '%s\n' "$(( $(aidenhq_build_cache_ceiling_gb) + 20 ))"
+}

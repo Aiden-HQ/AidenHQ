@@ -38,7 +38,8 @@ ExecStart=-/usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-step.sh images /usr
 # would then read as a clean scan — the record is how the verification still sees this run's scan never completed.
 ExecStart=-/usr/bin/timeout 5m /usr/bin/env bash ${AIDENHQ_DIR}/ops/prune-docker-containers.sh
 # Not prefixed: the one step whose failure must reach systemd. It re-reads the host — daemon answering, build cache under
-# its ceiling (ops/lib/build-cache.sh: 15% of the disk, 20-60 GB; a backstop for a prune that did nothing), no
+# its ceiling (ops/lib/build-cache.sh: the prune's 15% of the disk, 20-60 GB, plus 20 GB of headroom for a soft,
+# unshared-only budget; a backstop for a prune that did nothing), no
 # one-off stopped over a day still there — and reads the image and container steps' recorded status, so a prune that did
 # nothing at all is a failed unit (UnitFailed), not a silent success, while each step above still ran whatever the ones
 # before it did.

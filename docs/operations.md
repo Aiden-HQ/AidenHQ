@@ -178,11 +178,11 @@ runs, its live database is left out and its hourly dumps carry it; for a complet
 first. A Postgres volume in use (the warehouse's `pgdata`) is skipped; its nightly dump volume is copied. The secret
 vault and the notes vault are not included. The backup holds `auth.secret`, so it is mode 0700. It refuses to start
 unless the output filesystem has 1.2 times the sources' size plus 20 GB free (a full root disk crashes Paperclip's
-Postgres). Each successful apply prunes unused images older than 48 hours and caps the build cache at 15% of the Docker disk, clamped to 20-60 GB (`ops/lib/build-cache.sh`, one number shared with the verification below; least recently used
+Postgres). Each successful apply prunes unused images older than 48 hours and caps the build cache at 15% of the Docker disk, clamped to 20-60 GB (`ops/lib/build-cache.sh`; least recently used
 first; both the buildx `--max-used-space` and the classic builder's `--keep-storage` form are tried, since which one the CLI
 knows depends on the buildx plugin). The timer's two builder prunes (`ops/prune-docker-builder.sh`, one per flag form) cap the cache at that same ceiling, so it is no longer emptied every four hours. Each prune is its own `-`-prefixed `ExecStart=`, so every one runs whatever the ones
 before it did; a last, unprefixed step (`ops/prune-docker-verify.sh`) re-reads the host — daemon answering, build cache under
-its ceiling (the same 15%-of-disk number), no one-off left — and fails the unit when a prune did nothing. `prune-docker.timer` runs the unit every four hours
+its ceiling, no one-off left — and fails the unit when a prune did nothing. `prune-docker.timer` runs the unit every four hours
 (not once a night: the peak between prunes is what crossed the alert line), so the space peak between prunes stays under
 the alert line. It also removes one-off containers — a container with no compose service and no `aidenhq.computer` label, the class a
 `docker run` without `--rm` leaves behind (WOR-9559's two syft scans) — once it has been *stopped* for over a day. It is not
@@ -198,7 +198,9 @@ systemd reaching the later steps and the verification; the apply-time steps are 
 only helps once the command exits. The verification judges the cache on a snapshot taken immediately after the two builder
 prunes and before the image and container prunes (its own prefixed step, `prune-docker-step.sh build-cache ... docker
 system df`), so a build that grows the cache while later steps run does not read as a prune that capped nothing. That
-ceiling is the same number the apply-time prune caps at (15% of the disk, 20-60 GB); it still catches a prune that did
+ceiling is 20 GB above the number the prune caps at (`aidenhq_build_cache_verify_ceiling_gb` in `ops/lib/build-cache.sh`):
+`--max-used-space` budgets only unshared records while `docker system df` counts shared ones too, so a working prune can
+land over its own target, and the headroom keeps that from reading as a failed prune. It still catches a prune that did
 nothing (an uncapped store holds 100 GB or more), while disk pressure is left to `DiskSpaceLow`/`DiskNearlyFull`. In that snapshot, over the ceiling with nothing reclaimable is a build holding
 that cache in use (the ceiling holds), while any reclaimable bytes at all mean the prune did nothing. The snapshot, its status and its invocation are one record, so a run
 is only ever judged on its own result, and the ceiling's only tolerance is the precision Docker printed the size with.

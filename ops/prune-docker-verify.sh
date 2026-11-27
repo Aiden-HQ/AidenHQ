@@ -8,13 +8,15 @@
 #
 # It checks these, each one a way the reclaim can silently not happen:
 #   1. the daemon answers (`docker info`);
-#   2. the build cache was under `CACHE_CEILING_GB` right after the builder prunes — the snapshot the `build-cache` step
+#   2. the build cache was under `CACHE_VERIFY_CEILING_GB` right after the builder prunes — the snapshot the `build-cache` step
 #      took then, not a `docker system df` taken here, which a build started since could have grown past it (that growth is
-#      not a failed prune). The ceiling is ops/lib/build-cache.sh's: 15% of the disk Docker uses, 20-60 GB, the same
-#      number the apply-time prune caps at. It is a backstop for a prune that did nothing at all (an uncapped store held
-#      104 GB), not the disk-pressure guard, which is DiskSpaceLow/DiskNearlyFull. A displayed size carries only the precision Docker printed it with, so the size is
-#      allowed to be up to half of its last printed digit over the ceiling and no more: `40.0GB` (one decimal) is under,
-#      `40.1GB` is over;
+#      not a failed prune). The ceiling is ops/lib/build-cache.sh's verification number: the prune's own 15%-of-disk
+#      target (20-60 GB) plus 20 GB of headroom, because `--max-used-space` budgets only unshared records while
+#      `docker system df` counts shared ones too, so a working prune can land above its target. It is a backstop for a
+#      prune that did nothing at all (an uncapped store held 104 GB), not the disk-pressure guard, which is
+#      DiskSpaceLow/DiskNearlyFull. A displayed size carries only the precision Docker printed it with, so the size is
+#      allowed to be up to half of its last printed digit over the ceiling and no more: `60.0GB` (one decimal) is under,
+#      `60.1GB` is over;
 #   3. no labelled one-off container is still there after having been stopped for over a day (ops/prune-docker-containers.sh
 #      should have removed it), and every container it lists can be read (an unreadable one is a cleanup it could not do,
 #      not a clean run);
@@ -28,8 +30,8 @@ set -uo pipefail
 
 DOCKER=${DOCKER:-docker}
 . "${BASH_SOURCE[0]%/*}/lib/build-cache.sh"
-CACHE_CEILING_GB="$(aidenhq_build_cache_ceiling_gb)" # the one ceiling the apply-time prune caps at too (15% of the disk, 20-60 GB)
-CACHE_CEILING_BYTES=$((CACHE_CEILING_GB * 1000 * 1000 * 1000)) # the tolerance is the display precision of the size, below
+CACHE_VERIFY_CEILING_GB="$(aidenhq_build_cache_verify_ceiling_gb)" # the prune's 15%-of-disk target plus 20 GB of headroom
+CACHE_CEILING_BYTES=$((CACHE_VERIFY_CEILING_GB * 1000 * 1000 * 1000)) # the tolerance is the display precision of the size, below
 STOPPED_SECS=86400
 LABEL=aidenhq.oneoff=1
 
@@ -169,7 +171,7 @@ else
   if [ -n "$bytes" ] && [ -n "$slack" ] && [ "$bytes" -gt $((CACHE_CEILING_BYTES + slack)) ]; then
     reclaim_bytes="$(to_bytes "$reclaim")"
     if [ -z "$reclaim_bytes" ]; then
-      bad+=("the build cache is $size, over the $CACHE_CEILING_GB GB ceiling, and its reclaimable size ($reclaim) is unreadable: whether the prune capped anything cannot be confirmed")
+      bad+=("the build cache is $size, over the $CACHE_VERIFY_CEILING_GB GB ceiling, and its reclaimable size ($reclaim) is unreadable: whether the prune capped anything cannot be confirmed")
     elif [ "$reclaim_bytes" -gt 0 ]; then
       # Any reclaimable cache at all is cache a prune could have freed: if one was, the prune did nothing. Only zero (a
       # build holding the whole cache in use) makes an over-ceiling size legitimate, so there is no tolerance on it here.
@@ -218,4 +220,4 @@ if [ "${#bad[@]}" -gt 0 ]; then
   printf 'prune-docker: %s\n' "${bad[@]}" >&2
   exit 1
 fi
-echo "prune-docker: verified: daemon answers, build cache under $CACHE_CEILING_GB GB, no one-off stopped over a day is left"
+echo "prune-docker: verified: daemon answers, build cache under $CACHE_VERIFY_CEILING_GB GB, no one-off stopped over a day is left"
