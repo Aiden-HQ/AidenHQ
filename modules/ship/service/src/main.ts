@@ -13,7 +13,7 @@ import { configTools } from "./config-tool.ts";
 import { contributorPrs, contributorPrWake, prTick } from "./contributor.ts";
 import { shipEffects } from "./effects.ts";
 import { effectRefusal } from "./safe.ts";
-import { followFeed, startLoop } from "./loop.ts";
+import { followFeed, startLoop, watchSet } from "./loop.ts";
 import { createMcp, pageHtml, serveMcp } from "./mcp.ts";
 import { effective, scopeFrom } from "./settings.ts";
 import { openState } from "./state.ts";
@@ -62,28 +62,15 @@ const gh = async (method: string, path: string, body?: unknown, o?: { deadline?:
   return r as { status: number; body: any };
 };
 
-// The repos the loop watches: the product repo, every repo with its own ship entry and every Maintainer repo ship works (all duties,
-// while on), and the Maintainer's other repos with Dependabot on (that duty only: the Maintainer's, run here while its module is on).
-// maintainer_repos never adds a repo to Ship: a repo it names gets the full watch only where Ship already covers it (a fleet repo).
 let unreadable = false;
-const maintainerOn = env.SHIP_MAINTAINER === "1";
 const maintained = (() => { try { return parseRepos(env.SHIP_MAINTAINER_REPOS ?? ""); } catch (e) { unreadable = true; log("maintainer_repos unreadable: no Dependabot task is filed", { err: String((e as Error).message).slice(0, 200) }); return []; } })();
 const dataDir = dirname(stateFile);
-/** Whether the loop still tracks a Dependabot task it filed on this repo (its loop.json). */
-const tracked = (repo: string) => { try { return Object.keys(JSON.parse(readFileSync(join(dataDir, "loop.json"), "utf8"))[repo.toLowerCase()]?.dependabot ?? {}).length > 0; } catch { return false; } };
-const repos = new Map<string, { duties: "all" | "dependabot"; dependabot?: "off" | "failing" | "all" }>();
-const product = (env.SHIP_PRODUCT_REPO ?? "").toLowerCase();
-// Which Dependabot bumps get a task comes from the repo's maintainer_repos entry: the product repo, unlisted, takes every one; any
-// other repo the Maintainer doesn't list (or every one while the maintainer module is off) gets none. A list that can't be read files none: a read failure is never the `all` default.
-const bumps = (repo: string) => unreadable ? "off" as const : (maintainerOn ? maintained.find((m) => m.repo.toLowerCase() === repo.toLowerCase())?.dependabot : undefined) ?? (repo.toLowerCase() === product ? undefined : "off" as const);
-const watch = (repo: string, v: { duties: "all" | "dependabot"; dependabot?: "off" | "failing" | "all" }) => { if (![...repos.keys()].some((r) => r.toLowerCase() === repo.toLowerCase())) repos.set(repo, v); };
-if (env.SHIP_PRODUCT_REPO && settingsOf(env.SHIP_PRODUCT_REPO)) watch(env.SHIP_PRODUCT_REPO, { duties: "all", dependabot: bumps(env.SHIP_PRODUCT_REPO) });
-for (const r of Object.keys((raw().repos as Record<string, unknown>) ?? {})) if (settingsOf(r)) watch(r, { duties: "all", dependabot: bumps(r) });
-for (const m of maintained) {
-  if (settingsOf(m.repo)) watch(m.repo, { duties: "all", dependabot: bumps(m.repo) });
-  // `off` is polled only while tasks it filed are still open: the loop closes them once their PR is gone and files no new ones.
-  else if (maintainerOn && (m.dependabot !== "off" || tracked(m.repo))) watch(m.repo, { duties: "dependabot", dependabot: m.dependabot });
-}
+const repos = watchSet({
+  product: env.SHIP_PRODUCT_REPO, entries: Object.keys((raw().repos as Record<string, unknown>) ?? {}), maintained, maintainerOn: env.SHIP_MAINTAINER === "1", unreadable,
+  works: (repo) => !!settingsOf(repo),
+  // Whether the loop still tracks a Dependabot task it filed on this repo (its loop.json).
+  tracked: (repo) => { try { return Object.keys(JSON.parse(readFileSync(join(dataDir, "loop.json"), "utf8"))[repo.toLowerCase()]?.dependabot ?? {}).length > 0; } catch { return false; } },
+});
 const effects = shipEffects(kernel, { codeReview: "http://code-review:8098", key: token });
 const loop = startLoop({
   repos: [...repos].map(([repo, v]) => ({ repo, ...v })), kernelUrl, get key() { return token(); }, cacheDir: dataDir, gh, log, paused,

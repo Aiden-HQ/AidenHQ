@@ -206,6 +206,29 @@ export function startLoop(o: LoopOptions) {
   return { tick, pass, repos: o.repos.map((r) => r.repo) };
 }
 
+type Duty = { duties: "all" | "dependabot"; dependabot?: "off" | "failing" | "all" };
+/**
+ * The repos the loop watches: the product repo, every repo with its own ship entry and every Maintainer repo ship works (all
+ * duties, while `works`), and the Maintainer's other repos with Dependabot on (that duty only: the Maintainer's, run here while its
+ * module is on). maintainer_repos never adds a repo to Ship: a repo it names gets the full watch only where Ship already covers it.
+ * Which bumps get a task comes from the repo's maintainer_repos entry: the product repo, unlisted, takes every one (`all`); any other
+ * repo the Maintainer doesn't list (or every one while its module is off) gets none. An unreadable list files none.
+ */
+export function watchSet(o: { product?: string; entries: string[]; maintained: { repo: string; dependabot: "off" | "failing" | "all" }[]; maintainerOn: boolean; unreadable: boolean; works: (repo: string) => boolean; tracked: (repo: string) => boolean }): Map<string, Duty> {
+  const product = (o.product ?? "").toLowerCase();
+  const bumps = (repo: string) => o.unreadable ? "off" as const : (o.maintainerOn ? o.maintained.find((m) => m.repo.toLowerCase() === repo.toLowerCase())?.dependabot : undefined) ?? (repo.toLowerCase() === product ? undefined : "off" as const);
+  const repos = new Map<string, Duty>();
+  const watch = (repo: string, v: Duty) => { if (![...repos.keys()].some((r) => r.toLowerCase() === repo.toLowerCase())) repos.set(repo, v); };
+  if (o.product && o.works(o.product)) watch(o.product, { duties: "all", dependabot: bumps(o.product) });
+  for (const r of o.entries) if (o.works(r)) watch(r, { duties: "all", dependabot: bumps(r) });
+  for (const m of o.maintained) {
+    if (o.works(m.repo)) watch(m.repo, { duties: "all", dependabot: bumps(m.repo) });
+    // `off` is polled only while tasks it filed are still open: the loop closes them once their PR is gone and files no new ones.
+    else if (o.maintainerOn && (m.dependabot !== "off" || o.tracked(m.repo))) watch(m.repo, { duties: "dependabot", dependabot: m.dependabot });
+  }
+  return repos;
+}
+
 /** One event of the kernel's log (kernel/src/events.ts LoggedEvent): the repo it names is what ship reads of it. */
 export type FeedPage = { events: { seq: number; resource: string; kind: string }[]; next: number; gap: boolean };
 /** How often the kernel's log is read (a local call, no GitHub cost), and when a repo that couldn't be read is read again. */

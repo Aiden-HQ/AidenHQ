@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { followFeed, RETRY_MS, startLoop } from "../service/src/loop.ts";
+import { followFeed, RETRY_MS, startLoop, watchSet } from "../service/src/loop.ts";
 import { adoptedPass } from "../service/src/adopted.ts";
 import { ciRecover } from "../service/src/ci-recover.ts";
 import { PRESETS } from "../service/src/settings.ts";
@@ -1574,4 +1574,21 @@ test("a list page that times out is retried at half the size, the size is kept, 
   full = true;
   await m.watch.tick();
   assert.equal(JSON.parse(readFileSync(join(m.cacheDir, "loop.json"), "utf8"))["acme/app"].pageSize, 12, "a quick full page doubles it once the cooldown passed");
+});
+
+test("the watch set: Ship's own entries and the product repo get every duty; the Maintainer's list adds only its Dependabot duty, and only while it is on", () => {
+  const works = (r: string) => ["acme/product", "ship/only", "both/repo", "acme-agents/app"].includes(r.toLowerCase());
+  const set = (maintainerOn: boolean) => Object.fromEntries(watchSet({
+    product: "acme/product", entries: ["ship/only", "Both/Repo", "acme-agents/app"], maintainerOn, unreadable: false, works, tracked: () => false,
+    maintained: [{ repo: "both/repo", dependabot: "failing" }, { repo: "maint/only", dependabot: "all" }, { repo: "maint/quiet", dependabot: "off" }],
+  }));
+  assert.deepEqual(set(true), {
+    "acme/product": { duties: "all", dependabot: undefined }, // unlisted product repo: every bump (`all`)
+    "ship/only": { duties: "all", dependabot: "off" }, // a Ship-only repo: no Dependabot duty
+    "Both/Repo": { duties: "all", dependabot: "failing" },
+    "acme-agents/app": { duties: "all", dependabot: "off" }, // a fleet entry is watched too
+    "maint/only": { duties: "dependabot", dependabot: "all" }, // a Maintainer-only repo: that duty only
+  });
+  const off = set(false);
+  assert.deepEqual([off["maint/only"], off["Both/Repo"], off["acme/product"]], [undefined, { duties: "all", dependabot: "off" }, { duties: "all", dependabot: undefined }], "the Maintainer off: its duty stops; Ship's repos stay");
 });
