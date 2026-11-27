@@ -181,7 +181,7 @@ tzdata:
   assert.notEqual(withoutEsm.hash, withEsm.hash, "and the record's hash would not cover it");
 });
 
-// 5. §11.4 — a broken state is not patched over, and the repair is the same approved run.
+// 5. §11.4 — a broken state is not patched over: the run stops and reports, and owns no repair of its own.
 test("§11.4 a broken dpkg state stops the run and names it, and the run never repairs it itself", () => {
   const f = fixture("security");
   const broken = verifyPatch(
