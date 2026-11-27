@@ -76,7 +76,9 @@
     }
     return out;
   }
-  function propose() {
+  // `live` is a control proposing as the owner types: it updates the draft and the proposal without a redraw, so the caret
+  // and a half-typed entry stay put (the kit's chips and text editors pass it on their input handlers).
+  function propose(live) {
     const repos = edits();
     // Always propose, an unchanged draft included, so the board's bar holds exactly what the page shows; a refused draft goes back to the last one proposed.
     const sent = { drafts: structuredClone(drafts), removing }, rev = ++sentRev;
@@ -85,7 +87,7 @@
       catch (e) { if (rev === sentRev) { drafts = structuredClone(lastGood.drafts); removing = lastGood.removing; redraw(); } say(e.message, true); }
     });
   }
-  const change = (repo, patch) => { Object.assign(draft(repo), patch); soon(redraw); propose(); };
+  const change = (repo, patch, live) => { Object.assign(draft(repo), patch); if (!live) soon(redraw); propose(live); };
 
   // A row: name | one-line description (and the day field when it applies) | the control, flush right at one width.
   const srow = (title, desc, ctl, extra) => h("div", { className: "srow" }, h("div", { className: "st", textContent: title }), h("div", { className: "sd" }, h("span", {}, ...desc), extra ?? null), h("div", { className: "ctl" }, ctl));
@@ -103,7 +105,7 @@
     // without leaving the field must be the one saved. An invalid value changes nothing until the field is left.
     let typing;
     // A live edit updates the draft and the proposal without a redraw, so the caret stays where the owner is typing.
-    inp.addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => { const n = Number(inp.value.trim()); if (!Number.isInteger(n) || n < 1) return; Object.assign(draft(repo), { [key]: n }); propose(); }, 200); });
+    inp.addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => { const n = Number(inp.value.trim()); if (Number.isInteger(n) && n >= 1) change(repo, { [key]: n }, true); }, 200); });
     inp.addEventListener("change", () => { clearTimeout(typing); const n = Number(inp.value.trim()); if (Number.isInteger(n) && n >= 1) return change(repo, { [key]: n }); inp.value = String(draft(repo)[key] ?? ""); say("Days are a whole number, 1 or more.", true); });
     return h("label", { className: "days" }, label, inp, "days");
   };
@@ -135,7 +137,7 @@
     fixLabel.dataset.f = `${repo}|fix_label`;
     fixLabel.addEventListener("change", () => change(repo, { fix_label: fixLabel.value.trim() || D.base.fix_label }));
     // One chip per label, so a label whose own name holds a comma (GitHub allows `release, planned`) stays one value.
-    const prot = editor({ kind: "chips", label: `Never close issues labelled (${repo})`, f: `${repo}|protected_labels`, value: d.protected_labels, placeholder: "Add a label, press Enter", set: (v) => change(repo, { protected_labels: v }) });
+    const prot = editor({ kind: "chips", label: `Never close issues labelled (${repo})`, f: `${repo}|protected_labels`, value: d.protected_labels, placeholder: "Add a label, press Enter", set: (v, live) => change(repo, { protected_labels: v }, live) });
     const roles = editor({ kind: "checks", label: `Who may approve (${repo})`, f: `${repo}|trusted`, value: d.trusted, values: D.roles, set: (v) => v.length ? change(repo, { trusted: v }) : say("Keep at least one role.", true) });
     const adv = advOpen.has(repo);
     const advBtn = h("button", { type: "button", className: "adv" }, h("b", { textContent: "Advanced" }), h("span", { textContent: adv ? "Hide" : "Fix label · who may approve · never-close labels" }));
