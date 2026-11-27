@@ -226,12 +226,12 @@ test("restart: a live kernel's reservations are left to it; a dead one's close a
   assert.deepEqual(rows(), { "gw:live": ["reserved", 0.25, 0, 0, 0], "gw:cut": ["unsettled", 0.25, 0, 0, 0], "gw:early": ["unsettled", 0.25, 0, 0, 0] });
   await gw.trueUp();
   assert.equal(rows()["gw:cut"][0], "unsettled");
-  const at = () => gw.db.prepare("SELECT at, changed FROM calls WHERE key = 'gw:cut'").get();
+  const at = () => gw.db.prepare("SELECT at FROM calls WHERE key = 'gw:cut'").get();
   const closedAt = at().at;
   await gw.trueUp();
   assert.deepEqual(looks, ["/generation?id=gen-cut", "/generation?id=gen-cut"]);
-  // The true-up keeps the call's time (its day on the board) and stamps when it changed, which the board's pull reads.
-  assert.deepEqual({ ...at() }, { at: closedAt, changed: "2026-11-16T10:00:00.000Z" });
+  // The true-up keeps the call's time (its bucket in the cost reports).
+  assert.deepEqual({ ...at() }, { at: closedAt });
   assert.deepEqual(rows(), { "gw:live": ["reserved", 0.25, 0, 0, 0], "gw:cut": ["interrupted", 0.0123, 1000, 4000, 300], "gw:early": ["unsettled", 0.25, 0, 0, 0] });
 });
 

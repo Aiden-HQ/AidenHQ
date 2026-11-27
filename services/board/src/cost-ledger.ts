@@ -1,19 +1,55 @@
-// The Costs tab's ledger views: what the model gateway's ledger (pulled into the board's usage table by pullUsage) says was billed,
-// aggregated in SQL so the browser gets groups, never rows.
+// The Costs tab's ledger views: what the model gateway's ledger says was billed, from the kernel's cost reports (its rollup of
+// the ledger per 15-minute bucket, grouped there) so the browser gets groups, never rows. Every range snaps to those buckets.
 //  - summary: the overview (today / 7 / 30 days against the period before, the OpenRouter key's limit, the install's day and
 //    month against its spend limits, from the kernel's spend summary) and,
-//    over the chosen range, spend by model, by kind of call (lane), by agent and over time by model: one grouped pass (ledgerCube).
+//    over the chosen range, spend by model, by kind of call (lane), by agent and over time by model: one report (summary).
 //  - top: one agent's or model's most expensive runs and tasks in the range, for the drill-down.
 import { BadRequest } from "./board.js";
 import { departmentOf } from "./activity.js";
-import type { KeyUsage, SpendSummary } from "./costs.js";
+import type { CostReport, KeyUsage, SpendSummary } from "./costs.js";
 import type { Agent } from "./paperclip.js";
 import type { CatalogModel } from "./model-catalog.js";
-import type { LedgerFilter, LedgerMetrics, Store } from "./store.js";
 
 const DAY = 864e5;
-/** The board keeps 62 days of usage (pullUsage); a range may not reach further back than that. */
+/** The kernel's rollup buckets: every range's start is floored to one, its end ceiled. */
+const STEP = 15 * 60_000;
+const floor = (ms: number) => Math.floor(ms / STEP) * STEP;
+const ceil = (ms: number) => Math.ceil(ms / STEP) * STEP;
+/** The kernel keeps 62 days of the rollup; a range may not reach further back than that. */
 const MAX_SPAN = 62 * DAY;
+
+/** A group's sums as the kernel reports them; msSum and msN cover the ok calls that timed themselves. */
+export interface LedgerMetrics {
+  usd: number;
+  calls: number;
+  input: number;
+  cached: number;
+  output: number;
+  errors: number;
+  interrupted: number;
+  msSum: number;
+  msN: number;
+}
+/** The range's figures for one model, lane and agent (null: a system call). */
+interface LedgerCell extends LedgerMetrics {
+  model: string;
+  lane: string;
+  agentId: string | null;
+}
+/** The kernel's summary report (kernel/src/gateway/costs.ts). */
+interface Summary {
+  earliest: string | null;
+  groups: LedgerCell[];
+  /** Dollars and calls by the viewer's hour or day and model. */
+  series: { t: string; model: string; usd: number; calls: number }[];
+  windows: { usd: number; calls: number }[];
+  modelOrder: string[];
+  tasks: { count: number; usd: number; top: { issueId: string; agentId: string | null; usd: number; calls: number }[] };
+  failed: { agentId: string | null; status: string; calls: number; usd: number }[];
+  loops: { runId: string; agentId: string | null; calls: number; usd: number; first: string; last: string }[];
+}
+type GroupRow = LedgerMetrics & { a: string | null; b: string | null; first: string | null; last: string | null };
+export type LedgerFilter = { agentId?: string; model?: string };
 
 /** A group's figures; ms is the mean latency of its ok calls that timed themselves (null: none did). */
 export interface Metrics {
@@ -46,26 +82,32 @@ export interface LedgerRange {
   offset: number;
 }
 
-/** from/to (ISO instants, to exclusive) and bucket from the query; defaults to the last 7 days by day. Fails loudly on nonsense. */
+/**
+ * from/to (ISO instants, to exclusive; snapped to the 15-minute buckets, from floored and to ceiled) and bucket from the query;
+ * defaults to the last 7 days by day. Fails loudly on nonsense.
+ */
 export function ledgerRange(q: URLSearchParams, now = Date.now()): LedgerRange {
-  const to = q.get("to") ? Date.parse(q.get("to")!) : now;
-  const from = q.get("from") ? Date.parse(q.get("from")!) : to - 7 * DAY;
-  if (!Number.isFinite(from) || !Number.isFinite(to)) throw new BadRequest("from and to are ISO dates");
-  if (to <= from) throw new BadRequest("to must be after from");
-  if (to - from > MAX_SPAN) throw new BadRequest("a range spans at most 62 days (the usage kept)");
-  const bucket = (q.get("bucket") ?? (to - from <= 2 * DAY ? "hour" : "day")) as Bucket;
+  const rawTo = q.get("to") ? Date.parse(q.get("to")!) : now;
+  const rawFrom = q.get("from") ? Date.parse(q.get("from")!) : rawTo - 7 * DAY;
+  if (!Number.isFinite(rawFrom) || !Number.isFinite(rawTo)) throw new BadRequest("from and to are ISO dates");
+  if (rawTo <= rawFrom) throw new BadRequest("to must be after from");
+  // The limits hold for the span asked for; the snapped one may be a quarter hour longer.
+  const span = rawTo - rawFrom;
+  if (span > MAX_SPAN) throw new BadRequest("a range spans at most 62 days (the usage kept)");
+  const bucket = (q.get("bucket") ?? (span <= 2 * DAY ? "hour" : "day")) as Bucket;
   if (bucket !== "hour" && bucket !== "day") throw new BadRequest("bucket is hour or day");
-  if (bucket === "hour" && to - from > 7 * DAY) throw new BadRequest("hourly buckets cover at most 7 days");
+  if (bucket === "hour" && span > 7 * DAY) throw new BadRequest("hourly buckets cover at most 7 days");
   const offset = Number(q.get("offset") ?? 0);
-  if (!Number.isInteger(offset) || Math.abs(offset) > 14 * 60) throw new BadRequest("offset is whole minutes from UTC");
-  return { from: new Date(from).toISOString(), to: new Date(to).toISOString(), bucket, offset };
+  // Every real timezone is a whole quarter hour from UTC, so the viewer's hours and days are whole buckets.
+  if (!Number.isInteger(offset) || offset % 15 || Math.abs(offset) > 14 * 60) throw new BadRequest("offset is a whole number of quarter hours from UTC, in minutes");
+  return { from: new Date(floor(rawFrom)).toISOString(), to: new Date(ceil(rawTo)).toISOString(), bucket, offset };
 }
 
 /** What the ledger shows of a task. */
 export type TaskNames = { identifier: string | null; title: string | null; status: string | null };
 
 export interface LedgerDeps {
-  store: Pick<Store, "ledgerCube" | "ledgerBy" | "usageSpend" | "usageEarliest" | "taskCount" | "failedCalls" | "longRuns">;
+  report: CostReport;
   agents: () => Promise<Agent[]>;
   key: () => Promise<KeyUsage | string>;
   /** The kernel's spend summary (the install's day and month against its limits); without it no limit shows. */
@@ -80,20 +122,30 @@ export interface LedgerDeps {
 }
 
 export async function ledgerSummary(d: LedgerDeps, r: LedgerRange, now = Date.now()) {
-  const { store } = d;
-  const [agents, key, spend] = await Promise.all([d.agents().catch(() => [] as Agent[]), d.key(), d.spend().catch(() => null)]);
+  const iso = (n: number) => new Date(n).toISOString();
+  // The overview's periods and the insights' windows, each snapped: to the bucket after now, from the one before its start.
+  const end = ceil(now);
+  const midnight = Math.floor(now / DAY) * DAY;
+  const week = floor(now - 7 * DAY), month = floor(now - 30 * DAY);
+  const from = Date.parse(r.from), to = Date.parse(r.to);
+  const monthStart = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth(), 1);
+  const monday = midnight - ((new Date(now).getUTCDay() + 6) % 7) * DAY;
+  const W = { today: [midnight, end], yesterday: [midnight - DAY, end - DAY], week: [week, end], prevWeek: [2 * week - end, week], month: [month, end], prevMonth: [2 * month - end, month], prev: [2 * from - to, from], monthStart: [monthStart, end], monday: [monday, end] } satisfies Record<string, [number, number]>;
+  const names = Object.keys(W) as (keyof typeof W)[];
+  const [agents, key, spend, s] = await Promise.all([
+    d.agents().catch(() => [] as Agent[]),
+    d.key(),
+    d.spend().catch(() => null),
+    d.report<Summary>("summary", { from: r.from, to: r.to, bucket: r.bucket, offset: r.offset, windows: names.map((n) => W[n].map(iso)), order: [iso(month), iso(end)], top: d.issues ? TASK_SAMPLE : 0, loop: LOOP_CALLS }),
+  ]);
+  const win = Object.fromEntries(names.map((n, i) => [n, s.windows[i]!])) as Record<keyof typeof W, { usd: number; calls: number }>;
   const nameOf = (id: string) => agents.find((a) => a.id === id)?.name ?? `Agent ${id.slice(0, 8)}`;
   const today = new Map((spend?.agents ?? []).map((a) => [a.agent_id, a]));
-  const iso = (n: number) => new Date(n).toISOString();
-  const earliest = store.usageEarliest();
-  /** Spend in [from, to) and in the same span just before it; prev null when the ledger doesn't reach back that far. */
-  const period = (from: number, to: number) => {
-    const prevFrom = from - (to - from);
-    return { ...store.usageSpend(iso(from), iso(to)), prev: earliest !== null && earliest <= iso(prevFrom) ? store.usageSpend(iso(prevFrom), iso(from)).usd : null };
-  };
-  const midnight = Math.floor(now / DAY) * DAY;
+  const earliest = s.earliest;
+  /** Spend in a window and in the same span just before it; prev null when the ledger doesn't reach back that far. */
+  const period = (cur: keyof typeof W, before: keyof typeof W) => ({ ...win[cur], prev: earliest !== null && earliest <= iso(W[before][0]) ? win[before].usd : null });
 
-  const cube = store.ledgerCube(r.from, r.to, r.bucket, r.offset);
+  const cube = s.groups;
   const all = (c: LedgerMetrics) => c;
   const total = rollup(cube, () => "", all)[0]?.[1];
   const byAgentModel = rollup(cube.filter((c) => c.agentId), (c) => `${c.agentId}\n${c.model}`, all);
@@ -103,7 +155,6 @@ export async function ledgerSummary(d: LedgerDeps, r: LedgerRange, now = Date.no
     const [id, model] = k.split("\n") as [string, string];
     if (!mainModel.has(id)) mainModel.set(id, model);
   }
-  const range = period(Date.parse(r.from), Date.parse(r.to));
 
   return {
     from: r.from,
@@ -112,26 +163,24 @@ export async function ledgerSummary(d: LedgerDeps, r: LedgerRange, now = Date.no
     offset: r.offset,
     earliest,
     overview: {
-      // Today is the UTC day so far (as OpenRouter and the gateway's day limit count), set against yesterday up to the same hour.
-      today: { ...store.usageSpend(iso(midnight), iso(now)), prev: earliest !== null && earliest <= iso(midnight - DAY) ? store.usageSpend(iso(midnight - DAY), iso(now - DAY)).usd : null },
-      week: period(now - 7 * DAY, now),
-      month: period(now - 30 * DAY, now),
+      // Today is the UTC day so far (as OpenRouter and the gateway's day limit count), set against yesterday up to the same quarter hour.
+      today: period("today", "yesterday"),
+      week: period("week", "prevWeek"),
+      month: period("month", "prevMonth"),
       // OpenRouter's own figures for the key (every caller of it), and its limit when one is set.
       key: typeof key === "string" ? { error: key } : { today: key.usage_daily, month: key.usage_monthly, limit: key.limit, remaining: key.limit_remaining, reset: key.limit_reset },
       // The install's day and month against its spend limits (the kernel's sums), and what each agent spent today, most first.
       limits: spend?.install ?? null,
       todayByAgent: (spend?.agents ?? []).filter((a) => a.spent > 0).map((a) => ({ agentId: a.agent_id, name: nameOf(a.agent_id), usd: a.spent })),
     },
-    totals: { ...metrics(total), prevUsd: range.prev },
+    totals: { ...metrics(total), prevUsd: period("prev", "prev").prev },
     // Models by the last 30 days' spend: the chart's colour order, so a model keeps its colour whatever the range.
-    modelOrder: store.ledgerBy("model", iso(now - 30 * DAY), iso(now)).map((x) => x.a!),
+    modelOrder: s.modelOrder,
     models: rollup(cube, (c) => c.model, all).map(([model, m]) => ({ model, ...metrics(m) })),
     lanes: rollup(cube, (c) => c.lane, all).map(([lane, m]) => ({ lane, ...metrics(m) })),
     agents: rollup(cube.filter((c) => c.agentId), (c) => c.agentId!, all).map(([agentId, m]) => ({ agentId, name: nameOf(agentId), model: mainModel.get(agentId) ?? null, ...metrics(m), today: today.get(agentId)?.spent ?? 0 })),
-    insights: await ledgerInsights(d, r, cube, agents, key, earliest, now),
-    series: rollup(cube, (c) => `${c.t}\n${c.model}`, all)
-      .map(([k, m]) => ({ t: k.split("\n")[0]!, model: k.split("\n")[1]!, usd: m.usd, calls: m.calls }))
-      .sort((a, b) => a.t.localeCompare(b.t)),
+    insights: await ledgerInsights(d, s, win, W, agents, key, now),
+    series: s.series.sort((a, b) => a.t.localeCompare(b.t) || b.usd - a.usd || b.calls - a.calls),
   };
 }
 
@@ -190,31 +239,28 @@ export function cacheSavings(models: { model: string; cached: number }[], catalo
 
 const median = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]! : null);
 
-async function ledgerInsights(d: LedgerDeps, r: LedgerRange, cube: ReturnType<Store["ledgerCube"]>, agents: Agent[], key: KeyUsage | string, earliest: string | null, now: number) {
-  const { store } = d;
-  const iso = (n: number) => new Date(n).toISOString();
+async function ledgerInsights(d: LedgerDeps, s: Summary, win: Record<"today" | "week" | "monthStart" | "monday", { usd: number }>, W: Record<"today" | "week" | "monthStart" | "monday", [number, number]>, agents: Agent[], key: KeyUsage | string, now: number) {
+  const { groups: cube, earliest } = s;
   const nameOf = (id: string | null) => (id ? (agents.find((a) => a.id === id)?.name ?? `Agent ${id.slice(0, 8)}`) : "System calls");
   const all = (c: LedgerMetrics) => c;
 
   // Forecast: this month so far (the part the ledger covers) and the recent run-rate.
-  const monthStart = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth(), 1);
-  const since = earliest ? Math.max(monthStart, Date.parse(earliest)) : now;
-  const rateFrom = Math.max(now - 7 * DAY, earliest ? Date.parse(earliest) : now);
-  const monthToDate = store.usageSpend(iso(since), iso(now)).usd;
-  const fc = { ...forecast({ monthToDate, windowUsd: store.usageSpend(iso(rateFrom), iso(now)).usd, windowMs: now - rateFrom, now }), monthToDate, partialMonth: earliest !== null && Date.parse(earliest) > monthStart };
+  const monthStart = W.monthStart[0];
+  const rateFrom = Math.max(W.week[0], earliest ? Date.parse(earliest) : now);
+  const monthToDate = win.monthStart.usd;
+  const fc = { ...forecast({ monthToDate, windowUsd: win.week.usd, windowMs: now - rateFrom, now }), monthToDate, partialMonth: earliest !== null && Date.parse(earliest) > monthStart };
 
   // Coverage: today, this week (since Monday), this month, each against OpenRouter's counter for the key.
-  const day = Math.floor(now / DAY) * DAY;
   const cov =
     typeof key === "string"
       ? { state: "unavailable" as const, error: key, periods: [] }
       : {
           ...coverage(
             [
-              { name: "Today", from: day, real: key.usage_daily },
-              { name: "This week", from: day - ((new Date(now).getUTCDay() + 6) % 7) * DAY, real: key.usage_weekly },
-              { name: "This month", from: monthStart, real: key.usage_monthly },
-            ].map((p) => ({ ...p, ledger: store.usageSpend(iso(p.from), iso(now)).usd })),
+              { name: "Today", from: W.today[0], real: key.usage_daily, ledger: win.today.usd },
+              { name: "This week", from: W.monday[0], real: key.usage_weekly, ledger: win.monday.usd },
+              { name: "This month", from: monthStart, real: key.usage_monthly, ledger: monthToDate },
+            ],
             earliest,
           ),
           error: null,
@@ -242,14 +288,13 @@ async function ledgerInsights(d: LedgerDeps, r: LedgerRange, cube: ReturnType<St
   }
   const departments = [...depts.values()].sort((a, b) => b.m.usd - a.m.usd).map((x) => ({ id: x.id, name: x.name, agents: x.agents.size, ...metrics(x.m) }));
 
-  // Tasks: the costliest ones are looked up in Paperclip for title and status; the totals over all tasks come from SQL.
-  const attributed = store.ledgerBy("hasIssue", r.from, r.to).find((x) => Number(x.a) === 1)?.usd ?? 0;
-  const count = store.taskCount(r.from, r.to);
-  const costly = d.issues ? store.ledgerBy("issue", r.from, r.to, {}, TASK_SAMPLE) : [];
-  const names = d.issues && costly.length ? await d.issues(costly.map((x) => x.a!)).catch(() => new Map<string, TaskNames>()) : new Map<string, TaskNames>();
+  // Tasks: the costliest ones are looked up in Paperclip for title and status; the totals over all tasks come from the kernel.
+  const { count, usd: attributed } = s.tasks;
+  const costly = d.issues ? s.tasks.top : [];
+  const names = d.issues && costly.length ? await d.issues(costly.map((x) => x.issueId)).catch(() => new Map<string, TaskNames>()) : new Map<string, TaskNames>();
   const sample = costly.map((x) => {
-    const issue = names.get(x.a!);
-    return { issueId: x.a!, identifier: issue?.identifier ?? null, title: issue?.title ?? null, status: issue?.status ?? null, agent: nameOf(x.b), usd: x.usd, calls: x.calls };
+    const issue = names.get(x.issueId);
+    return { issueId: x.issueId, identifier: issue?.identifier ?? null, title: issue?.title ?? null, status: issue?.status ?? null, agent: nameOf(x.agentId), usd: x.usd, calls: x.calls };
   });
   const done = sample.filter((t) => t.status === "done");
   const cancelled = sample.filter((t) => t.status === "cancelled");
@@ -264,8 +309,8 @@ async function ledgerInsights(d: LedgerDeps, r: LedgerRange, cube: ReturnType<St
     top: sample.slice(0, 10),
   };
 
-  const failed = store.failedCalls(r.from, r.to);
-  const long = store.longRuns(r.from, r.to, LOOP_CALLS);
+  const failed = s.failed;
+  const long = s.loops;
   const wasted = {
     failed: { usd: sum(failed), calls: failed.reduce((s, f) => s + f.calls, 0), list: failed.slice(0, 8).map((f) => ({ agent: nameOf(f.agentId), status: f.status, calls: f.calls, usd: f.usd })) },
     cancelled: { usd: sum(cancelled), count: cancelled.length, list: cancelled.slice(0, 8) },
@@ -278,29 +323,27 @@ async function ledgerInsights(d: LedgerDeps, r: LedgerRange, cube: ReturnType<St
 const TOP = 15;
 
 /** One agent's or one model's most expensive runs and tasks in the range (titles for the top tasks only). */
-export async function ledgerTop(d: Pick<LedgerDeps, "store" | "agents"> & Required<Pick<LedgerDeps, "issues">>, r: LedgerRange, filter: LedgerFilter) {
+export async function ledgerTop(d: Pick<LedgerDeps, "report" | "agents"> & Required<Pick<LedgerDeps, "issues">>, r: LedgerRange, filter: LedgerFilter) {
   if (!filter.agentId === !filter.model) throw new BadRequest("name one agent or one model");
-  const agents = await d.agents().catch(() => [] as Agent[]);
+  const [agents, top] = await Promise.all([
+    d.agents().catch(() => [] as Agent[]),
+    d.report<{ total: GroupRow | null; split: GroupRow[]; runs: GroupRow[]; tasks: GroupRow[]; noTask: number; noRun: number }>("top", { from: r.from, to: r.to, agent: filter.agentId, model: filter.model, limit: TOP }),
+  ]);
   const who = (id: string | null) => (id ? (agents.find((a) => a.id === id)?.name ?? `Agent ${id.slice(0, 8)}`) : null);
-  const runs = d.store.ledgerBy("run", r.from, r.to, filter, TOP).map((x) => ({
+  const runs = top.runs.map((x) => ({
     runId: x.a!,
     agent: who(x.b),
     first: x.first,
     last: x.last,
     ...metrics(x),
   }));
-  const top = d.store.ledgerBy("issue", r.from, r.to, filter, TOP);
-  const names = top.length ? await d.issues(top.map((x) => x.a!)).catch(() => new Map<string, TaskNames>()) : new Map<string, TaskNames>();
-  const tasks = top.map((x) => {
+  const names = top.tasks.length ? await d.issues(top.tasks.map((x) => x.a!)).catch(() => new Map<string, TaskNames>()) : new Map<string, TaskNames>();
+  const tasks = top.tasks.map((x) => {
     const issue = names.get(x.a!);
     return { issueId: x.a!, identifier: issue?.identifier ?? null, title: issue?.title ?? null, agent: who(x.b), ...metrics(x) };
   });
   // An agent's spend by model, or a model's by agent (system calls under "System").
-  const split = filter.agentId
-    ? d.store.ledgerBy("model", r.from, r.to, filter).map((x) => ({ name: x.a!, ...metrics(x) }))
-    : d.store.ledgerBy("caller", r.from, r.to, filter).map((x) => ({ name: who(x.a) ?? "System calls", ...metrics(x) }));
-  const total = metrics(d.store.ledgerBy("total", r.from, r.to, filter)[0]);
-  // Spend on calls that name no task, or no Paperclip run (system calls, records from before attribution): no list can show it.
-  const unnamed = (by: "hasIssue" | "hasRun") => d.store.ledgerBy(by, r.from, r.to, filter).find((x) => Number(x.a) === 0)?.usd ?? 0;
-  return { filter, total, split, runs, tasks, noTask: unnamed("hasIssue"), noRun: unnamed("hasRun") };
+  const split = top.split.map((x) => ({ name: filter.agentId ? x.a! : (who(x.a) ?? "System calls"), ...metrics(x) }));
+  // Spend on calls that name no task, or no run (system calls, records from before attribution): no list can show it.
+  return { filter, total: metrics(top.total ?? undefined), split, runs, tasks, noTask: top.noTask, noRun: top.noRun };
 }

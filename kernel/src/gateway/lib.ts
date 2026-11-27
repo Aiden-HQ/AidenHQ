@@ -1,5 +1,5 @@
 // The model gateway's logic (main.ts wires it to its listeners): who a call is for, the install's spend limit, the pass-through to
-// OpenRouter with what it billed tapped from the answer, and the ledger (kernel.db's calls) the board pulls.
+// OpenRouter with what it billed tapped from the answer, and the ledger (kernel.db's calls) the cost reports read (costs.ts).
 //
 // Routes (OpenRouter-compatible; the caller's "API key" is its own per-run credential, never the OpenRouter key):
 //   POST /api/v1/responses | /api/v1/chat/completions            kind agent (or the service kind its credential fixes)
@@ -11,7 +11,8 @@
 //   POST /advisor/api/v1/... | /fanout/api/v1/...                kind advisor | fanout, counted against the caller's run
 //   POST /api/v1/embeddings       an embedding call (no output to bound: its input is its price)
 //   POST /api/v1/chat/completions  (Bearer gateway_board_key) kind aside: the board's side chat
-//   POST /usage {since}           (Bearer gateway_board_key) the ledger since then → {records} (the board's Costs tab)
+//   POST /v1/costs/<report>       (Bearer gateway_board_key) a cost report (costs.ts: summary, top, runs, issues, daily, calls)
+//                                 from the ledger's rollup, for the board's Costs tab, fleet costs, task cards and run pages
 //   GET /v1/spend/summary         (Bearer gateway_board_key) the install's spend against its limits, as the gateway counts it:
 //                                 {day, month, install: {day: {spent, cap}, month: {spent, cap}}, agents: [{agent_id, spent}]}:
 //                                 every granted agent and any other that spent today (the board's header and Costs tab)
@@ -56,6 +57,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { CI_KIND, CI_PREFIX, ciBodyProblem, githubKeys, verifyGithubOidc } from "./ci.ts";
+import { CALLS_KEPT_MS, costReports, costRollup, pruneCalls, type CostReport } from "./costs.ts";
 import { createPrices, type Price } from "./prices.ts";
 import { MODEL_BODY_MAX, verifyToken } from "./token.ts";
 
@@ -113,8 +115,6 @@ const SPEND_DEFAULTS = (() => {
 })();
 // The fewest output tokens a call is cut to near a limit (below it a call always goes ahead).
 const MIN_OUTPUT = 1024;
-// The most ledger rows one /usage answer carries; a full one names the next page (`next`).
-const USAGE_PAGE = 20_000;
 // CI: a token lives 2 h (the job's timeout is 90 min); a repo gets at most 200 a day.
 const CI_TTL_MS = 2 * 3600_000;
 const CI_TOKENS_PER_DAY = 200;
@@ -192,18 +192,17 @@ export function openLedger(file: string, legacy?: string): { db: DatabaseSync; m
     -- (ms); \`step\` is the backoff ladder's rung.
     CREATE TABLE IF NOT EXISTS model_cooldown (model TEXT PRIMARY KEY, until INTEGER NOT NULL, step INTEGER NOT NULL);
   `);
-  // A call's kernel process (`<boot id>:<pid>`), OpenRouter's generation id (the true-up's handle on a cut-off call) and when a
-  // true-up changed it (`changed`: the board's pull reads it; `at` stays the call's time).
+  // A call's kernel process (`<boot id>:<pid>`) and OpenRouter's generation id (the true-up's handle on a cut-off call).
   const have = new Set((db.prepare("PRAGMA table_info(calls)").all() as { name: string }[]).map((c) => c.name));
-  for (const c of ["owner", "gen", "changed"]) if (!have.has(c)) db.exec(`ALTER TABLE calls ADD COLUMN ${c} TEXT`);
-  // The indexes a query reads: a run key's calls (spentRun, tokensRun, refusedRun), the prune and work.ts's window (at), the
-  // board's pull, a job's calls (jobs.ts at its end), and the held rows (sweep, inflight, true-ups, holds). Totals come from
-  // spend_day and spend_task below, so no index serves a day or a task.
+  for (const c of ["owner", "gen"]) if (!have.has(c)) db.exec(`ALTER TABLE calls ADD COLUMN ${c} TEXT`);
+  // The indexes a query reads: a run key's calls (spentRun, tokensRun, refusedRun), the prune, work.ts's window and the cost
+  // rollup's rebuilds (at), a job's calls (jobs.ts at its end, the run page), and the held rows (sweep, inflight, true-ups,
+  // holds). Totals come from spend_day and spend_task below, so no index serves a day or a task.
   db.exec(`
     CREATE INDEX IF NOT EXISTS calls_run ON calls (run_key);
     CREATE INDEX IF NOT EXISTS calls_issue ON calls (issue_id) WHERE issue_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS calls_at ON calls (at);
-    DROP INDEX IF EXISTS calls_changed; CREATE INDEX IF NOT EXISTS calls_pull ON calls (COALESCE(changed, at), key);
+    DROP INDEX IF EXISTS calls_changed; DROP INDEX IF EXISTS calls_pull;
     CREATE INDEX IF NOT EXISTS calls_job ON calls (run_id) WHERE run_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS calls_held ON calls (status, task_subject) WHERE ${HELD};
     DROP INDEX IF EXISTS calls_task; DROP INDEX IF EXISTS calls_subject; DROP INDEX IF EXISTS calls_day; DROP INDEX IF EXISTS calls_all_day; DROP INDEX IF EXISTS calls_status;
@@ -211,6 +210,7 @@ export function openLedger(file: string, legacy?: string): { db: DatabaseSync; m
   // calls_final and calls_open belonged to the month counters this replaced: gone once the kernel that read them had drained.
   db.exec(`DROP TRIGGER IF EXISTS calls_final_add; DROP TRIGGER IF EXISTS calls_final_set; DROP INDEX IF EXISTS calls_open; DROP TABLE IF EXISTS calls_final;`);
   spendTotals(db);
+  costRollup(db);
   return { db, moved: moveLedger(db, legacy) };
 }
 
@@ -512,15 +512,13 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     rehold: db.prepare("UPDATE calls SET cost_usd = ? WHERE key = ? AND status = 'reserved'"),
     file: db.prepare("INSERT OR IGNORE INTO filed (scope, agent_id, subject, cap, at) VALUES (?, ?, ?, ?, ?)"),
     unfile: db.prepare("DELETE FROM filed WHERE scope = ? AND agent_id = ? AND subject = ? AND cap = ?"),
-    // A row changes after its call ends only by a true-up (`changed`), which keeps the call's own time (`at`).
-    // In (time, key) order, from after a cursor: a page boundary never splits or repeats rows of one time.
-    since: db.prepare(`SELECT * FROM calls WHERE COALESCE(changed, at) >= ?1 AND (COALESCE(changed, at), key) > (?1, ?2) AND status != 'reserved' ORDER BY COALESCE(changed, at), key LIMIT ${USAGE_PAGE}`),
     // The generation id rides along (a non-streamed answer's, a discarded attempt's): one write per call, not two.
     settle: db.prepare("UPDATE calls SET key = ?, at = ?, model = ?, input = ?, cached = ?, output = ?, cost_usd = ?, ms = ?, status = ?, gen = COALESCE(?, gen) WHERE key = ? AND status = 'reserved'"),
     inflight: db.prepare(`SELECT COUNT(*) AS n FROM calls WHERE ${HELD} AND status = 'reserved'`),
     gen: db.prepare("UPDATE calls SET gen = ? WHERE key = ? AND status = 'reserved'"),
     cutOff: db.prepare(`SELECT key, gen FROM calls WHERE ${HELD} AND status = 'unsettled' AND gen IS NOT NULL AND at >= ? LIMIT 100`),
-    trueUp: db.prepare("UPDATE calls SET status = 'interrupted', changed = ?, model = ?, input = ?, cached = ?, output = ?, cost_usd = ? WHERE key = ? AND status = 'unsettled'"),
+    // A true-up keeps the call's own time (`at`).
+    trueUp: db.prepare("UPDATE calls SET status = 'interrupted', model = ?, input = ?, cached = ?, output = ?, cost_usd = ? WHERE key = ? AND status = 'unsettled'"),
     ciToken: db.prepare("SELECT * FROM ci_tokens WHERE hash = ?"),
     addCiToken: db.prepare("INSERT OR IGNORE INTO ci_tokens (hash, repo, pr, head, gh_run, attempt, exp, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
     ciIssued: db.prepare("SELECT COUNT(*) AS n FROM ci_tokens WHERE repo = ? AND substr(at, 1, 10) = ?"),
@@ -533,10 +531,10 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
     refusedRun: db.prepare("SELECT key, rowid AS n FROM calls WHERE run_key = ? AND status = 'cap_reached' ORDER BY rowid"),
   };
   const spend = spendOf(db);
+  const reports = costReports(db, snapshot);
   const prune = () => {
-    const cut = new Date(now() - 40 * DAY_MS).toISOString();
-    db.prepare("DELETE FROM calls WHERE at < ?").run(cut);
-    db.prepare("DELETE FROM filed WHERE at < ?").run(cut);
+    pruneCalls(db, now());
+    db.prepare("DELETE FROM filed WHERE at < ?").run(new Date(now() - CALLS_KEPT_MS).toISOString());
     db.prepare("DELETE FROM runs WHERE at < ?").run(new Date(now() - 7 * DAY_MS).toISOString());
     db.prepare("DELETE FROM ci_tokens WHERE exp < ?").run(new Date(now() - 2 * DAY_MS).toISOString());
   };
@@ -564,7 +562,7 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
         if (typeof g.total_cost !== "number") continue;
         const n = (k: string) => (Number.isFinite(Number(g[k])) ? Number(g[k]) : 0);
         const cached = n("native_tokens_cached");
-        q.trueUp.run(new Date(now()).toISOString(), String(g.model ?? "").slice(0, 120) || "unknown", Math.max(0, n("native_tokens_prompt") - cached), cached, n("native_tokens_completion"), g.total_cost, row.key);
+        q.trueUp.run(String(g.model ?? "").slice(0, 120) || "unknown", Math.max(0, n("native_tokens_prompt") - cached), cached, n("native_tokens_completion"), g.total_cost, row.key);
         log("cut-off call settled from OpenRouter", { gen: row.gen, usd: g.total_cost });
       } catch (e) {
         log("true-up failed", { gen: row.gen, err: String((e as Error).message).slice(0, 200) });
@@ -1162,14 +1160,16 @@ export function createGateway({ dbFile, legacyDbFile, grantsFile, settingsFile, 
       }
       const m = ROUTE.exec(path);
       if (req.method === "POST" && m) return await model(req, res, m[1] ?? "agent", m[2]!);
-      if (req.method === "POST" && path === "/usage") {
+      const report = /^\/v1\/costs\/(summary|top|runs|issues|daily|calls)$/.exec(path);
+      if (req.method === "POST" && report) {
         boardKeyed(req);
-        const { since, after } = JSON.parse((await readBody(req)) || "{}") as { since?: unknown; after?: unknown };
-        const rows = q.since.all(String(since ?? ""), String(after ?? "")) as (CallRow & { changed: string | null })[];
-        // A full page names where the next one starts: after its last row's time and key.
-        const last = rows.length === USAGE_PAGE ? rows.at(-1)! : undefined;
-        const records = rows.map((r) => ({ key: r.key, at: r.at, agentId: r.agent_id, component: r.component, model: r.model, input: r.input, cached: r.cached, output: r.output, costUsd: r.cost_usd, runKey: r.run_key, runId: r.run_id, issueId: r.issue_id, rev: r.rev, kind: r.kind, ms: r.ms, status: r.status, ...(r.kind === CI_KIND ? { subject: r.task_subject } : {}) }));
-        return send(res, 200, { records, ...(last ? { next: { since: last.changed ?? last.at, after: last.key } } : {}) });
+        const body = JSON.parse((await readBody(req)) || "{}") as Record<string, unknown>;
+        try {
+          return send(res, 200, reports[report[1] as CostReport](body));
+        } catch (e) {
+          if (e instanceof RangeError) throw fail(400, "bad_request", e.message);
+          throw e;
+        }
       }
       if (req.method === "GET" && path === "/v1/spend/summary") {
         // The install's spend (settled and in flight) against its limits, and each agent's today (every granted agent, and any

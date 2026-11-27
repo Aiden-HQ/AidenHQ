@@ -8,6 +8,7 @@ import { grantsTable, type Grant } from "./grants.js";
 import { OPEN, type Agent, type Issue, type Paperclip, type Routine } from "./paperclip.js";
 import { isLive, type Records } from "./records.js";
 import { lastRunsOf, liveRunsOf, type KernelActivity } from "./runs.js";
+import type { CostReport } from "./costs.js";
 import type { Store } from "./store.js";
 
 export class Refused extends Error {}
@@ -218,37 +219,27 @@ export function boundedFleetStatus<T extends Record<string, unknown>>(reply: T, 
 }
 
 /** What a fleet_costs row counts, said in the reply: `runs` is the model gateway's calls, and costCents only what OpenRouter priced. */
-export const NOTE = "Usage from the board's ledger (the model gateway's calls, pulled every minute). runs counts the gateway's model calls, not agent jobs: one job can make several. costCents sums the calls OpenRouter priced, rounded to the cent; calls it gave no cost add nothing, and 0 does not mean free (a few priced cents round there too): use tokens and runs for volume.";
+export const NOTE = "Usage from the model gateway's ledger (every model call, as the kernel's cost reports sum it). runs counts the gateway's model calls, not agent jobs: one job can make several. costCents sums the calls OpenRouter priced, rounded to the cent; calls it gave no cost add nothing, and 0 does not mean free (a few priced cents round there too): use tokens and runs for volume.";
 
 /**
- * Token usage per agent per UTC day over the last `days` days (today included), from the board's usage ledger: the model
- * gateway's calls (costs.ts pullUsage), which is where every agent run spends. Paperclip records no agent spend of its own.
+ * Token usage per agent per UTC day over the last `days` days (today included), from the kernel's daily cost report on the model
+ * gateway's ledger, which is where every agent run spends. Paperclip records no agent spend of its own.
  * One row per agent and day, summed across models and lanes. `runs` is the ledger's call count (a model call, not an agent
  * job) and `costCents` only the calls OpenRouter priced, so the tokens and runs are the reliable figures.
  */
-export async function fleetCosts(pc: Paperclip, store: Store, days?: number) {
+export async function fleetCosts(pc: Paperclip, costs: CostReport, days?: number) {
   const n = Math.min(Math.max(Math.floor(days ?? 7) || 7, 1), 31);
   const today = Date.parse(new Date().toISOString().slice(0, 10));
   const from = new Date(today - (n - 1) * DAY).toISOString();
   const to = new Date(today + DAY).toISOString();
-  const agents = await pc.request<Agent[]>("GET", `/api/companies/${pc.companyId}/agents`);
-  const cells = store.ledgerCube(from, to, "day");
+  const [agents, cells] = await Promise.all([
+    pc.request<Agent[]>("GET", `/api/companies/${pc.companyId}/agents`),
+    costs<{ agentId: string | null; day: string; usd: number; calls: number; input: number; cached: number; output: number }[]>("daily", { from, to }),
+  ]);
   const nameOf = (id: string | null) => (id ? (agents.find((a) => a.id === id)?.name ?? `Agent ${id.slice(0, 8)}`) : "System calls");
-  const rows = new Map<string, { agent: string; day: string; runs: number; inputTokens: number; cachedInputTokens: number; outputTokens: number; costUsd: number }>();
-  for (const c of cells) {
-    const agent = nameOf(c.agentId);
-    const key = `${c.t}\0${c.agentId ?? ""}`;
-    const r = rows.get(key) ?? { agent, day: c.t, runs: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costUsd: 0 };
-    r.runs += c.calls;
-    r.inputTokens += c.input;
-    r.cachedInputTokens += c.cached;
-    r.outputTokens += c.output;
-    r.costUsd += c.usd;
-    rows.set(key, r);
-  }
-  const usage = [...rows.values()]
-    .sort((a, b) => (a.day === b.day ? a.agent.localeCompare(b.agent) : a.day.localeCompare(b.day)))
-    .map((r) => ({ agent: r.agent, day: r.day, runs: r.runs, inputTokens: r.inputTokens, cachedInputTokens: r.cachedInputTokens, outputTokens: r.outputTokens, costCents: Math.round(r.costUsd * 100) }));
+  const usage = cells
+    .map((c) => ({ agent: nameOf(c.agentId), day: c.day, runs: c.calls, inputTokens: c.input, cachedInputTokens: c.cached, outputTokens: c.output, costCents: Math.round(c.usd * 100) }))
+    .sort((a, b) => (a.day === b.day ? a.agent.localeCompare(b.agent) : a.day.localeCompare(b.day)));
   return { days: n, note: NOTE, usage };
 }
 

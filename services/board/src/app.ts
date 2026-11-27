@@ -35,9 +35,9 @@ import { CommitUnreadable, agentGrants, browseModules, createResolver, marketpla
 import { connectionsView, readSources, readUpdates, settingsView, type Probe, type Wakes } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, SharePreviewSchema, changesOf, checkChange, settingsByModule, stageOf, taskFor, type Change } from "./settings-change.js";
 import { createGrading, gradePassed, type Grading } from "./grading.js";
-import { UsageSchema, keyUsage, modelCatalog, modelCatalogCached, spendSummary } from "./costs.js";
+import { costReport, keyUsage, modelCatalog, modelCatalogCached, spendSummary } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
-import { descendants, featureCost, recentFeatures } from "./feature-cost.js";
+import { descendants, featureCost, recentFeatures, runsOf } from "./feature-cost.js";
 import { MergeSchema, mergedDescription } from "./merge.js";
 import { deviceRoutes } from "./device-signin.js";
 import { McpAuthFailed, SIGNIN_LOOPBACK, asksValues, pastedCallback, vendorWords, type McpAuth, type McpAuthStatus } from "./mcpauth.js";
@@ -127,7 +127,7 @@ export interface AppOptions {
    * gateway reads its settings, and channels reach the owner's cards, decisions and notices only through the kernel (lean-core 2f).
    */
   gatewayKey?: string;
-  /** The model gateway: its spend summary and usage ledger (costs.ts). */
+  /** The model gateway: its spend summary and cost reports (costs.ts). */
   gateway?: { url: string; token: string };
   /** The kernel's records, read-only (records.ts): the cards every view shows. Without it, there are none. */
   records?: Records;
@@ -363,7 +363,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const read = await statesOf(taskStates, ids);
     return new Map((await shownRows([...read.values()])).map((r) => [r.task, r]));
   }
-  const runOf = makeRuns({ work, store, grantsFile: process.env.AIDENHQ_GRANTS_FILE });
+  /** The kernel's cost reports (its rollup of the model gateway's ledger). */
+  const report = costReport(opts.gateway);
+  const runOf = makeRuns({ work, report, grantsFile: process.env.AIDENHQ_GRANTS_FILE });
   /** The newest runs (kernel jobs) on a task, for the links to their run pages. */
   const runLinks = async (issueId: string, agents: Agent[]) =>
     (await work.task(issueId).catch(() => [])).slice(0, 6).map((j) => ({ id: j.id, agent: agents.find((a) => a.id === j.agent)?.name ?? "Agent", status: j.state, at: j.started_at }));
@@ -1022,7 +1024,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
 
   /**
    * The lineage strip: a chat's or task's delegated tasks and theirs, each with its state, model, latest word, tokens and
-   * cost (the usage ledger, by task), and the pending approvals on any of them (decided through the Approvals routes).
+   * cost (the kernel's cost reports, by task), and the pending approvals on any of them (decided through the Approvals routes).
    */
   async function lineage(ref: string) {
     const { ctx, issue } = await ownIssue(ref);
@@ -1031,8 +1033,14 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     const grand: Issue[][] = [];
     for (let i = 0; i < kids.length; i += 4) grand.push(...(await Promise.all(kids.slice(i, i + 4).map((k) => pc.children(k.id).then((l) => l.filter((g) => g.status !== "cancelled")).catch(() => [] as Issue[])))));
     const all = [...kids, ...grand.flat()];
-    const [states, busy, names] = await Promise.all([stateRows(all.map((i) => i.id)), working(ctx), bylines()]);
-    const usage = store.usageByIssue(all.flatMap((i) => [i.id, i.identifier]));
+    const [states, busy, names, spent] = await Promise.all([
+      stateRows(all.map((i) => i.id)),
+      working(ctx),
+      bylines(),
+      // The cards' tokens and dollars; without the kernel's answer they show none.
+      report<{ issueId: string; tokens: number; usd: number | null }[]>("issues", { ids: all.flatMap((i) => [i.id, i.identifier]) }).catch((err) => (log.warn({ err: String(err) }, "task usage unavailable"), [])),
+    ]);
+    const usage = new Map(spent.map((r) => [r.issueId, r]));
     const pending = await cardsOf("pending");
     const agentOf = (id: string | null | undefined) => ctx.agents.find((a) => a.id === id);
     const row = async (k: Issue, children: LineageRow[]): Promise<LineageRow & { approvals: ReturnType<typeof shownApproval>[] }> => {
@@ -1215,11 +1223,11 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       // them (Paperclip limits concurrent list requests per client).
       const window = (body as { window?: string } | null)?.window === "7d" ? "7d" : "24h";
       const status = await fleetStatus(pc, records, kernelActivity);
-      const summary = await statusSummary(pc, recentRuns, store, records, grading, window).catch((err) => (log.warn({ err: String(err) }, "fleet summary failed"), null));
+      const summary = await statusSummary(pc, recentRuns, report, records, grading, window).catch((err) => (log.warn({ err: String(err) }, "fleet summary failed"), null));
       // A bounded reply: the lists are what get long, and a cut-off payload is unreadable.
       return boundedFleetStatus({ ...status, summary });
     }, ["fleet-admin", "fleet-read"]) },
-    { method: "POST", path: /^\/internal\/fleet\/costs$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc) => fleetCosts(pc, store, parse(CostsSchema, body ?? {}).days)) },
+    { method: "POST", path: /^\/internal\/fleet\/costs$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc) => fleetCosts(pc, report, parse(CostsSchema, body ?? {}).days)) },
     { method: "POST", path: /^\/internal\/fleet\/control$/, handle: async (_m, body, _u, req) => fleetCall(req, async (pc, cos) => fleetControl(pc, cos, parse(ControlSchema, body), store)) },
     {
       // The Chief of Staff relays the owner's own chat message, word for word, to an engineer's or the Researcher's task. The agent picks the
@@ -1880,7 +1888,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       path: /^\/api\/approvals\/(k-[0-9a-f]{16})\/explain$/,
       handle: async (m) => records.explain(m[1]!).then((explanation) => ({ explanation }), (e: Error & { status?: number }) => { throw new HttpError(e.status === 404 ? 404 : 502, e.message); }),
     },
-    { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, recentRuns, store, records, grading), m[1]!) },
+    { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, recentRuns, report, records, grading), m[1]!) },
     {
       // Chats: open ones first, then the 20 newest finished ones; each with its agent and state. With `agent` (a key), that
       // agent's chats only (by the chat's own agent, handed-back ones included), no fleet-wide cap: `state=active` its open,
@@ -2202,13 +2210,13 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     {
       method: "GET",
       path: /^\/api\/costs\/ledger$/,
-      handle: async (_m, _b, url) => ledgerSummary({ store, agents: () => pc.agents(), key: keyUsage, spend: () => spendSummary(opts.gateway), issues: (ids) => issuesOf(taskStates, ids), catalog: () => modelCatalogCached(opts.gateway) }, ledgerRange(url.searchParams)),
+      handle: async (_m, _b, url) => ledgerSummary({ report, agents: () => pc.agents(), key: keyUsage, spend: () => spendSummary(opts.gateway), issues: (ids) => issuesOf(taskStates, ids), catalog: () => modelCatalogCached(opts.gateway) }, ledgerRange(url.searchParams)),
     },
     {
       method: "GET",
       path: /^\/api\/costs\/top$/,
       handle: async (_m, _b, url) =>
-        ledgerTop({ store, agents: () => pc.agents(), issues: (ids) => issuesOf(taskStates, ids) }, ledgerRange(url.searchParams), { agentId: url.searchParams.get("agent") ?? undefined, model: url.searchParams.get("model") ?? undefined }),
+        ledgerTop({ report, agents: () => pc.agents(), issues: (ids) => issuesOf(taskStates, ids) }, ledgerRange(url.searchParams), { agentId: url.searchParams.get("agent") ?? undefined, model: url.searchParams.get("model") ?? undefined }),
     },
     // What each feature (a top-level task and its delegated tree) cost and how long it took (feature-cost.ts): the last 14 days...
     {
@@ -2218,7 +2226,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const now = Date.now();
         const from = new Date(now - 14 * 864e5).toISOString();
         const [open, closed, approvals] = await Promise.all([pc.openIssues(), pc.closedSince(from, "500"), records.list("recent", { limit: 1000 })]);
-        return recentFeatures([...open, ...closed], store.usageByRun(from), approvals, now);
+        return recentFeatures([...open, ...closed], report, approvals, now);
       },
     },
     // ...and one task's own tree, for its page: null when nothing is delegated under it.
@@ -2230,7 +2238,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const { tasks, truncated } = await descendants(issue, (id) => pc.children(id));
         if (!tasks.length) return { cost: null };
         const ids = [issue, ...tasks].flatMap((i) => [i.id, i.identifier]);
-        return { cost: featureCost(issue, tasks, store.usageByRun("", ids), await records.list("recent", { limit: 1000 }), Date.now(), truncated) };
+        const [usage, approvals] = await Promise.all([runsOf(report, ids), records.list("recent", { limit: 1000 })]);
+        return { cost: featureCost(issue, tasks, usage.tasks, approvals, Date.now(), truncated) };
       },
     },
     // Read-only module catalog (compiled config/modules.json), for Settings > Modules.

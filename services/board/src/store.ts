@@ -13,38 +13,6 @@ export const isBucket = (b: unknown): b is Bucket => typeof b === "string" && (B
 /** The local calendar date (YYYY-MM-DD) in the user's timezone. */
 export const localDate = (tz: string, at = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(at);
 
-export interface UsageRecord {
-  key: string;
-  at: string;
-  component: string;
-  model: string;
-  /** Uncached input tokens. */
-  input: number;
-  cached: number;
-  /** Output tokens, reasoning included. */
-  output: number;
-  /** What the source itself reported it cost (opencode, OpenRouter's answer), when it did. */
-  costUsd?: number | null;
-  /** The Paperclip agent that made the call (any agent's call through the model gateway); none for system components. */
-  agentId?: string | null;
-  /** The run's key (runKey in kernel/src/gateway/lib.ts: the credential's sha256; a computer's box session) and the run page. */
-  runKey?: string | null;
-  /** The run: a kernel job's id, or Paperclip's run id when the credential named one (a run JWT, before the switch). */
-  runId?: string | null;
-  /** The Paperclip task the run works on. */
-  issueId?: string | null;
-  /** The agent's config revision at the run's first call. */
-  rev?: string | null;
-  /** The gateway's call kind (agent, advisor, grader, reviewer, check, ci-code-review, ...): from the gateway route or service key, never the caller. */
-  kind?: string | null;
-  /** How long the call took. */
-  ms?: number | null;
-  /** How it ended: "ok", or a code such as "cap_reached", "model_not_granted", "upstream_502". */
-  status?: string | null;
-  /** What a call outside Paperclip was for: an app CI code review's `<owner>/<repo>#<pr>` (kind ci-code-review). */
-  subject?: string | null;
-}
-
 export interface Settled {
   issueId: string;
   identifier: string;
@@ -52,66 +20,6 @@ export interface Settled {
   agent: string;
   kind: "chat" | "task";
   at: string;
-}
-
-/** What a call was for: its kind (the gateway's) or, for records from before kinds, its component. Engineer jobs are their own lane. */
-const LANE = `CASE WHEN component = 'Engineer jobs' THEN 'engineer' WHEN kind IS NOT NULL THEN kind WHEN component = 'AI reviewer' THEN 'reviewer'
-  WHEN component = 'Grader' THEN 'grader' WHEN component IN ('Source writers', 'Runner intake') THEN 'source' ELSE 'agent' END`;
-/** The drill-down's fixed groupings (never caller text in SQL); a and b are the group's key columns (b may be an aggregate). */
-export const LEDGER_GROUPS = {
-  total: { a: "NULL" },
-  model: { a: "model" },
-  agent: { a: "agent_id", notNull: true },
-  // Per agent, with system calls (no agent) as one group of their own.
-  caller: { a: "agent_id" },
-  // Paperclip's run id (the run page), when the credential named it.
-  run: { a: "run_id", b: "MAX(agent_id)", notNull: true, bAgg: true },
-  issue: { a: "issue_id", b: "MAX(agent_id)", notNull: true, bAgg: true },
-  // Whether calls name their task / their Paperclip run (1) or not (0): what the drill-down's lists can't account for.
-  hasIssue: { a: "issue_id IS NOT NULL" },
-  hasRun: { a: "run_id IS NOT NULL" },
-} as const satisfies Record<string, { a: string; b?: string; notNull?: boolean; bAgg?: boolean }>;
-export type LedgerGroup = keyof typeof LEDGER_GROUPS;
-export type LedgerFilter = { agentId?: string; model?: string };
-/** Per group: spend, calls, tokens, failed calls, and latency summed over the ok calls that timed themselves (msN of them). */
-const METRICS = `COALESCE(SUM(cost_usd), 0) AS usd, COUNT(*) AS calls, COALESCE(SUM(input), 0) AS input, COALESCE(SUM(cached), 0) AS cached,
-  COALESCE(SUM(output), 0) AS output, COALESCE(SUM(status IS NOT NULL AND status NOT IN ('ok', 'unsettled', 'interrupted')), 0) AS errors,
-  COALESCE(SUM(status IN ('unsettled', 'interrupted')), 0) AS interrupted,
-  COALESCE(SUM(CASE WHEN COALESCE(status, 'ok') = 'ok' THEN ms END), 0) AS msSum, COUNT(CASE WHEN COALESCE(status, 'ok') = 'ok' THEN ms END) AS msN`;
-/** One run's calls on one task (store.usageByRun); job is 1 for a kernel job (every agent run is one). */
-export interface RunUsage {
-  issueId: string | null;
-  run: string;
-  job: number;
-  calls: number;
-  usd: number;
-  first: string;
-  last: string;
-}
-
-export interface LedgerMetrics {
-  usd: number;
-  calls: number;
-  input: number;
-  cached: number;
-  output: number;
-  errors: number;
-  interrupted: number;
-  msSum: number;
-  msN: number;
-}
-export interface LedgerGroupRow extends LedgerMetrics {
-  a: string | null;
-  b: string | null;
-  first: string | null;
-  last: string | null;
-}
-/** One cell of the range's cube: a time bucket (UTC day or hour prefix of `at`), model, lane and agent (null: a system call). */
-export interface LedgerCell extends LedgerMetrics {
-  t: string;
-  model: string;
-  lane: string;
-  agentId: string | null;
 }
 
 export interface Placement {
@@ -170,9 +78,9 @@ export class Store {
       DROP TABLE IF EXISTS pairing_nonces;
       CREATE TABLE IF NOT EXISTS scheduled_moves (issue_id TEXT PRIMARY KEY, date TEXT NOT NULL, bucket TEXT NOT NULL, position TEXT NOT NULL, created_at TEXT NOT NULL, parked INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS repeats (issue_id TEXT PRIMARY KEY, routine_id TEXT NOT NULL, cadence TEXT NOT NULL, time TEXT NOT NULL, anchor INTEGER NOT NULL, repos TEXT NOT NULL);
-      -- Model usage with what OpenRouter billed (or the runner's Engineer jobs and AI reviewer, which Paperclip doesn't record):
-      -- one row per job or call, by key; agent_id for an agent's calls through the model gateway.
-      CREATE TABLE IF NOT EXISTS usage (key TEXT PRIMARY KEY, at TEXT NOT NULL, component TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL, cached INTEGER NOT NULL, output INTEGER NOT NULL, cost_usd REAL);
+      -- The model gateway's usage mirror, gone with it (the kernel serves the cost reports from its ledger).
+      DROP TABLE IF EXISTS usage;
+      DELETE FROM meta WHERE key IN ('gateway_usage_pulled_at', 'gateway_usage_pulled_at_backfilled');
       -- Which account wrote a task or comment on the board: for the "by <name>" label, never in the text.
       CREATE TABLE IF NOT EXISTS authored (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, at TEXT NOT NULL);
       -- Finished chats and tasks the owner settled out of the active lists (when each was settled; an agent's Settled filter reads it).
@@ -185,18 +93,11 @@ export class Store {
     `);
     const columns = (this.db.prepare("PRAGMA table_info(placements)").all() as { name: string }[]).map((c) => c.name);
     if (!columns.includes("carried")) this.db.exec("ALTER TABLE placements ADD COLUMN carried INTEGER NOT NULL DEFAULT 0");
-    const usageColumns = (this.db.prepare("PRAGMA table_info(usage)").all() as { name: string }[]).map((c) => c.name);
     // A move that parks the card where it waits until its date (a snooze): the rollover leaves it to applySchedules(). A database
     // from before this column recorded nothing, and the rollover then held every pending move out of its way; so rows that
     // predate the column are marked parked, which keeps that behaviour until they are replaced or run. New rows say it themselves.
     const moveColumns = (this.db.prepare("PRAGMA table_info(scheduled_moves)").all() as { name: string }[]).map((c) => c.name);
     if (!moveColumns.includes("parked")) this.db.exec("ALTER TABLE scheduled_moves ADD COLUMN parked INTEGER NOT NULL DEFAULT 1");
-    if (!usageColumns.includes("agent_id")) this.db.exec("ALTER TABLE usage ADD COLUMN agent_id TEXT");
-    // Run attribution (wave 1): which run, task, config revision and caller kind each call was for, and how it went.
-    for (const [c, type] of [["run_key", "TEXT"], ["run_id", "TEXT"], ["issue_id", "TEXT"], ["rev", "TEXT"], ["kind", "TEXT"], ["ms", "INTEGER"], ["status", "TEXT"], ["subject", "TEXT"]]) if (!usageColumns.includes(c!)) this.db.exec(`ALTER TABLE usage ADD COLUMN ${c} ${type}`);
-    // An unsettled call's amount is the gateway's fail-closed hold, not spend (addUsage).
-    this.db.exec("UPDATE usage SET cost_usd = NULL WHERE status = 'unsettled' AND cost_usd IS NOT NULL");
-    this.db.exec("CREATE INDEX IF NOT EXISTS usage_run ON usage (run_key); CREATE INDEX IF NOT EXISTS usage_run_id ON usage (run_id); CREATE INDEX IF NOT EXISTS usage_issue ON usage (issue_id); CREATE INDEX IF NOT EXISTS usage_at_cost ON usage (at, cost_usd)");
     if (!this.meta("installed_at")) this.setMeta("installed_at", new Date().toISOString());
   }
 
@@ -219,109 +120,6 @@ export class Store {
 
   delMeta(key: string): void {
     this.db.prepare("DELETE FROM meta WHERE key = ?").run(key);
-  }
-
-  /**
-   * One usage record; the same key again (a retried report) is ignored, except over an `unsettled` call (the gateway's
-   * reservation for a call cut off before its final usage), which its trued-up `interrupted` record replaces, keeping the
-   * call's own time (the true-up's is later, maybe another day). An unsettled call's
-   * reserved amount is the gateway's fail-closed hold, not spend: it counts as unpriced here.
-   */
-  addUsage(u: UsageRecord): void {
-    this.addUsages([u]);
-  }
-
-  private usageStmt: ReturnType<DatabaseSync["prepare"]> | undefined;
-
-  /** A page of usage records (see addUsage) in one transaction, through one prepared statement. */
-  addUsages(rows: UsageRecord[]): void {
-    if (!rows.length) return;
-    this.usageStmt ??= this.db.prepare(`INSERT INTO usage (key, at, component, model, input, cached, output, cost_usd, agent_id, run_key, run_id, issue_id, rev, kind, ms, status, subject) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (key) DO UPDATE SET model = excluded.model, input = excluded.input, cached = excluded.cached, output = excluded.output, cost_usd = excluded.cost_usd, ms = excluded.ms, status = excluded.status WHERE usage.status = 'unsettled'`);
-    this.db.exec("BEGIN");
-    try {
-      for (const u of rows) this.usageStmt.run(u.key, u.at, u.component, u.model, u.input, u.cached, u.output, u.status === "unsettled" ? null : (u.costUsd ?? null), u.agentId ?? null, u.runKey ?? null, u.runId ?? null, u.issueId ?? null, u.rev ?? null, u.kind ?? null, u.ms ?? null, u.status ?? null, u.subject ?? null);
-      this.db.exec("COMMIT");
-    } catch (err) {
-      this.db.exec("ROLLBACK");
-      throw err;
-    }
-  }
-
-  /** Usage records older than `before` go (the Costs tab compares 30 days with the 30 before). */
-  pruneUsage(before: string): void {
-    this.db.prepare("DELETE FROM usage WHERE at < ?").run(before);
-  }
-
-  /** Billed dollars per agent and UTC day in [from, to) (scorecards, the morning fleet section): rows, and how many carried a cost. */
-  usageDaily(from: string, to: string): { agentId: string | null; day: string; costUsd: number; rows: number; priced: number }[] {
-    return this.db
-      .prepare("SELECT agent_id AS agentId, substr(at, 1, 10) AS day, COALESCE(SUM(cost_usd), 0) AS costUsd, COUNT(*) AS rows, COUNT(cost_usd) AS priced FROM usage WHERE at >= ? AND at < ? GROUP BY agent_id, day")
-      .all(from, to) as unknown as { agentId: string | null; day: string; costUsd: number; rows: number; priced: number }[];
-  }
-
-  /** The ledger rows of one run (a kernel job's calls carry its id), oldest first: the run page's join. */
-  usageOfRun(runId: string): UsageRecord[] {
-    return this.db
-      .prepare("SELECT key, at, component, model, input, cached, output, cost_usd AS costUsd, agent_id AS agentId, run_key AS runKey, run_id AS runId, issue_id AS issueId, rev, kind, ms, status FROM usage WHERE run_id = ? ORDER BY at")
-      .all(runId) as unknown as UsageRecord[];
-  }
-
-  /**
-   * The Costs tab's range in one pass over [from, to): spend and the rest per time bucket, model, lane and agent. The tab rolls it up
-   * (by model, lane, agent, over time); a 30-day range is a few thousand cells, never raw rows.
-   */
-  ledgerCube(from: string, to: string, bucket: "day" | "hour", offset = 0): LedgerCell[] {
-    // offset: minutes east of UTC; buckets are then wall-clock hours or days at that offset (t reads as local time).
-    const t = offset ? `strftime('${bucket === "hour" ? "%Y-%m-%dT%H" : "%Y-%m-%d"}', at, '${Math.trunc(offset)} minutes')` : `substr(at, 1, ${bucket === "hour" ? 13 : 10})`;
-    return this.db
-      .prepare(`SELECT ${t} AS t, model, ${LANE} AS lane, agent_id AS agentId, ${METRICS} FROM usage WHERE at >= ? AND at < ? GROUP BY 1, 2, 3, 4`)
-      .all(from, to) as unknown as LedgerCell[];
-  }
-
-  /** The drill-down's aggregates over [from, to), grouped by `by` (LEDGER_GROUPS) for one agent or model; most spend first. */
-  ledgerBy(by: LedgerGroup, from: string, to: string, filter: LedgerFilter = {}, limit = 5000): LedgerGroupRow[] {
-    const g: { a: string; b?: string; notNull?: boolean; bAgg?: boolean } = LEDGER_GROUPS[by];
-    const where = ["at >= ?", "at < ?"];
-    const args: string[] = [from, to];
-    if (filter.agentId) (where.push("agent_id = ?"), args.push(filter.agentId));
-    if (filter.model) (where.push("model = ?"), args.push(filter.model));
-    if (g.notNull) where.push(`(${g.a}) IS NOT NULL`);
-    return this.db
-      .prepare(
-        `SELECT ${g.a} AS a, ${g.b ?? "NULL"} AS b, ${METRICS}, MIN(at) AS first, MAX(at) AS last
-         FROM usage WHERE ${where.join(" AND ")} GROUP BY ${g.b && !g.bAgg ? "1, 2" : "1"} ORDER BY usd DESC LIMIT ${Math.max(1, Math.floor(limit))}`,
-      )
-      .all(...args) as unknown as LedgerGroupRow[];
-  }
-
-  /** Tasks that spent anything in [from, to): how many, for the cost-per-task figures. */
-  taskCount(from: string, to: string): number {
-    return (this.db.prepare("SELECT COUNT(DISTINCT issue_id) AS n FROM usage WHERE at >= ? AND at < ? AND issue_id IS NOT NULL").get(from, to) as { n: number }).n;
-  }
-
-  /** Failed calls (a status other than ok) in [from, to) by agent and status: what they billed and how many. Most spend, then most calls, first. */
-  failedCalls(from: string, to: string): { agentId: string | null; status: string; calls: number; usd: number }[] {
-    return this.db
-      .prepare("SELECT agent_id AS agentId, status, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS usd FROM usage WHERE at >= ? AND at < ? AND status IS NOT NULL AND status NOT IN ('ok', 'unsettled', 'interrupted') GROUP BY 1, 2 ORDER BY usd DESC, calls DESC")
-      .all(from, to) as unknown as { agentId: string | null; status: string; calls: number; usd: number }[];
-  }
-
-  /** Runs with at least `minCalls` calls in [from, to) (looping), most spend first. */
-  longRuns(from: string, to: string, minCalls: number): { runId: string; agentId: string | null; calls: number; usd: number; first: string; last: string }[] {
-    return this.db
-      .prepare("SELECT run_id AS runId, MAX(agent_id) AS agentId, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS usd, MIN(at) AS first, MAX(at) AS last FROM usage WHERE at >= ? AND at < ? AND run_id IS NOT NULL GROUP BY run_id HAVING COUNT(*) >= ? ORDER BY usd DESC LIMIT 200")
-      .all(from, to, minCalls) as unknown as { runId: string; agentId: string | null; calls: number; usd: number; first: string; last: string }[];
-  }
-
-  /** Spend and calls in [from, to), read off the (at, cost_usd) index alone: the overview's periods. */
-  usageSpend(from: string, to: string): { usd: number; calls: number } {
-    return this.db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS usd, COUNT(*) AS calls FROM usage WHERE at >= ? AND at < ?").get(from, to) as { usd: number; calls: number };
-  }
-
-  /** The oldest usage record kept: a previous period that starts before it has nothing to compare with. */
-  usageEarliest(): string | null {
-    return (this.db.prepare("SELECT MIN(at) AS at FROM usage").get() as { at: string | null }).at;
   }
 
   /** Gateway refusals and upstream failures since `from`: the run each belonged to (when known) and when. Not the agent's fault. */
@@ -548,30 +346,6 @@ export class Store {
   /** When each settled item was settled, by task id. */
   settledAt(): Map<string, string> {
     return new Map((this.db.prepare("SELECT issue_id, at FROM settled").all() as { issue_id: string; at: string }[]).map((r) => [r.issue_id, r.at]));
-  }
-
-  /** Tokens (input, cached and output) and billed cost per task, over every model call the ledger keeps for these ids. */
-  usageByIssue(ids: string[]): Map<string, { tokens: number; usd: number | null }> {
-    if (!ids.length) return new Map();
-    const rows = this.db
-      .prepare(`SELECT issue_id, SUM(input + cached + output) AS tokens, SUM(cost_usd) AS usd FROM usage WHERE issue_id IN (${ids.map(() => "?").join(",")}) GROUP BY issue_id`)
-      .all(...ids) as { issue_id: string; tokens: number; usd: number | null }[];
-    return new Map(rows.map((r) => [r.issue_id, { tokens: r.tokens, usd: r.usd }]));
-  }
-
-  /**
-   * Model calls since `from`, one row per run (an Engineer job's runner-reported record counts as its own run) and task, for the
-   * feature roll-up (feature-cost.ts). `ids` narrows to those tasks (ids or identifiers); calls without a task have a null issueId.
-   */
-  usageByRun(from: string, ids?: string[]): RunUsage[] {
-    const where = ["at >= ?"];
-    if (ids) where.push(`issue_id IN (${ids.map(() => "?").join(",") || "NULL"})`);
-    return this.db
-      .prepare(
-        `SELECT issue_id AS issueId, COALESCE(run_id, run_key, key) AS run, run_id LIKE 'j-%' AS job, COUNT(*) AS calls, COALESCE(SUM(cost_usd), 0) AS usd, MIN(at) AS first, MAX(at) AS last
-         FROM usage WHERE ${where.join(" AND ")} GROUP BY 1, 2, 3`,
-      )
-      .all(from, ...(ids ?? [])) as unknown as RunUsage[];
   }
 
   seenAt(issueId: string): string {

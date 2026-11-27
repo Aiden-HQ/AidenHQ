@@ -1,11 +1,11 @@
-// Fleet reporting from facts the system already holds: tasks done (Paperclip), approvals (the kernel's records), billed cost (the usage ledger
-// the gateway fills), grades (graded done). Diagnostics, not rankings: agents with different jobs are not compared on one number.
+// Fleet reporting from facts the system already holds: tasks done (Paperclip), approvals (the kernel's records), billed cost (the kernel's
+// cost reports on the gateway's ledger), grades (graded done). Diagnostics, not rankings: agents with different jobs are not compared on one number.
 // scorecard: one agent, 7 days against the 7 before (the Agents page); fleetSummary: the whole fleet (fleet_status, the morning brief).
 import type { Approval, Records } from "./records.js";
 import type { Grade, Grading } from "./grading.js";
 import type { Issue, Paperclip } from "./paperclip.js";
 import type { PastRun } from "./runs.js";
-import type { Store } from "./store.js";
+import type { CostReport } from "./costs.js";
 import { oneLine, report, type Row } from "./aidenhq-sdk/quality.js";
 
 const DAY = 864e5;
@@ -17,7 +17,7 @@ export interface Facts {
   /** Approval records over the last 14 days, any state. */
   approvals: Approval[];
   grades: (issueId: string) => Grade | undefined;
-  /** store.usageDaily over the last 14 days. */
+  /** The kernel's daily cost report over the last 14 days: per agent and UTC day, dollars, calls (rows) and how many were priced. */
   cost: { agentId: string | null; day: string; costUsd: number; rows: number; priced: number }[];
   /** Agent runs, newest first (the kernel lists the newest 200). */
   runs: PastRun[];
@@ -123,15 +123,15 @@ export function fleetSummary(f: Facts, o: { window: "24h" | "7d"; blocked: Issue
 }
 
 /** Gathers the 14 days of facts (done tasks, cards, billed cost, runs); `grades` come from the grading module (none when it is unreachable). */
-export async function gatherFacts(pc: Paperclip, recentRuns: () => Promise<PastRun[]>, store: Pick<Store, "usageDaily">, records: Pick<Records, "list">, grading: Pick<Grading, "grades">, now = Date.now()): Promise<Facts> {
+export async function gatherFacts(pc: Paperclip, recentRuns: () => Promise<PastRun[]>, costs: CostReport, records: Pick<Records, "list">, grading: Pick<Grading, "grades">, now = Date.now()): Promise<Facts> {
   const [from, to] = [new Date(Date.parse(day(now)) - 13 * DAY).toISOString(), new Date(now + 1000).toISOString()];
-  const [closed, runs, cards] = await Promise.all([pc.closedSince(from, "500"), recentRuns(), records.list("recent", { limit: 1000 })]);
+  const [closed, runs, cards, daily] = await Promise.all([pc.closedSince(from, "500"), recentRuns(), records.list("recent", { limit: 1000 }), costs<{ agentId: string | null; day: string; usd: number; calls: number; priced: number }[]>("daily", { from, to })]);
   const grades = await grading.grades(closed.filter((i) => i.status === "done").map((i) => i.id)).then((v) => v.grades, () => ({}) as Record<string, Grade | null>);
-  return { closed, runs, approvals: cards.filter((a) => a.createdAt > from || (a.decidedAt ?? "") > from), grades: (id) => grades[id] ?? undefined, cost: store.usageDaily(from, to) };
+  return { closed, runs, approvals: cards.filter((a) => a.createdAt > from || (a.decidedAt ?? "") > from), grades: (id) => grades[id] ?? undefined, cost: daily.map((c) => ({ agentId: c.agentId, day: c.day, costUsd: c.usd, rows: c.calls, priced: c.priced })) };
 }
 
 /** fleet_status's `summary`: the fleet in a few lists over the window (24h or 7d). */
-export async function statusSummary(pc: Paperclip, recentRuns: () => Promise<PastRun[]>, store: Pick<Store, "usageDaily">, records: Pick<Records, "list">, grading: Pick<Grading, "grades">, window: "24h" | "7d"): Promise<FleetSummary> {
-  const [facts, open, agents] = await Promise.all([gatherFacts(pc, recentRuns, store, records, grading), pc.openIssues(), pc.agents()]);
+export async function statusSummary(pc: Paperclip, recentRuns: () => Promise<PastRun[]>, costs: CostReport, records: Pick<Records, "list">, grading: Pick<Grading, "grades">, window: "24h" | "7d"): Promise<FleetSummary> {
+  const [facts, open, agents] = await Promise.all([gatherFacts(pc, recentRuns, costs, records, grading), pc.openIssues(), pc.agents()]);
   return fleetSummary(facts, { window, blocked: open.filter((i) => i.status === "blocked"), names: new Map(agents.map((a) => [a.id, a.name])) });
 }

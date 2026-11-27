@@ -37,7 +37,7 @@ describe("fleet summary: shipped tasks come from the card data, not the closing 
 describe("fleet summary: spend is the ledger's own week", () => {
   const DAY = 864e5;
   const dayOf = (t: number) => new Date(t).toISOString().slice(0, 10);
-  // A ledger cell as store.usageDaily returns it: one agent (or none: a check job) on one UTC day.
+  // A ledger cell as gatherFacts makes it from the kernel's daily report: one agent (or none: a check job) on one UTC day.
   const cell = (agentId: string | null, day: string, costUsd: number) => ({ agentId, day, costUsd, rows: 1, priced: 1 });
   const week = Array.from({ length: 7 }, (_, k) => dayOf(Date.parse(dayOf(now)) - (k + 1) * DAY));
 
