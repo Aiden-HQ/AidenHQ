@@ -1,17 +1,19 @@
 // The design service: the UI Reviewer's runs and evidence store (store.ts) behind the `design` connection (tools.ts, served at
 // /mcp with the service key; every call carries the kernel's signed caller assertion), the apps it tests and their passes
-// (passes.ts: settings.ui_testing, tasks filed with this module's kernel token) and the job tools the kernel forwards to a pass
+// (passes.ts: settings.ui_testing, tasks filed with this module's kernel token; schedule.ts: when they start) and the job tools the kernel forwards to a pass
 // (jobtools.ts, POST /jobtools with the service key). Evidence older than 30 days is swept daily.
 import { readFileSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
-import { createMcp, serveMcp } from "./mcp.ts";
+import { createMcp, pageHtml, serveMcp } from "./mcp.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { designTools } from "./tools.ts";
 import { DAY, openStore } from "./store.ts";
 import { createPasses, readApps, readLogins, validate } from "./passes.ts";
 import { createJobTools } from "./jobtools.ts";
+import { createScheduler } from "./schedule.ts";
+import { overviewTools } from "./overview.ts";
 
 const env = process.env;
 const file = (p: string | undefined) => { try { return p ? readFileSync(p, "utf8").trim() : ""; } catch { return ""; } };
@@ -24,16 +26,45 @@ for (const e of errors) log("WARNING: settings.ui_testing", { error: e });
 // Read on each call, so a login pasted on the board works without a restart. Never logged.
 const logins = () => readLogins(file(env.DESIGN_UI_LOGINS_FILE));
 const kernel = () => kernelClient(kernelUrl, file(env.DESIGN_TOKEN_FILE));
+/** Closes a pass's task, cancelled: the dispatcher stops its job (a Stop, a pass past its time). */
+const closeTask = async (task: string, body: string) => void await kernel().call("POST", `/v1/tasks/${encodeURIComponent(task)}/close`, { status: "cancelled", body });
 const passes = createPasses({
   store, apps: () => apps, logins,
-  fileTask: async (t) => { const r = await kernel().call("POST", "/v1/tasks", t); return { id: String(r.id), agent: String(r.agent) }; },
+  kernel: {
+    fileTask: async (t) => { const r = await kernel().call("POST", "/v1/tasks", t); return { id: String(r.id), agent: String(r.agent) }; },
+    closeTask,
+    spend: async (prefix, day) => (await kernel().call("GET", `/v1/work?spend_tasks=${encodeURIComponent(prefix)}&day=${day}`)).by_task,
+  },
 });
+// The scheduler (schedule.ts): deploys, 24/7 apps and the running passes' reconcile, one tick a minute, one at a time.
+const scheduler = createScheduler({
+  store, passes, apps: () => apps, log,
+  kernel: {
+    openTasks: async (prefix) => (await kernel().call("GET", `/v1/tasks?source=${encodeURIComponent(prefix)}`)).tasks,
+    taskWork: async (task) => {
+      const w = await kernel().call("GET", `/v1/work?task=${encodeURIComponent(task)}`);
+      return { status: w.status ?? null, live: (w.jobs as { state: string }[]).some((j) => ["admitted", "running"].includes(j.state)) };
+    },
+    closeTask,
+  },
+  feed: (connection, after) => kernel().call("GET", `/v1/events/log?connection=${connection}&limit=200${after === undefined ? "" : `&after=${after}`}`),
+});
+let ticking = false;
+const tick = async () => {
+  if (ticking) return;
+  ticking = true;
+  try { await scheduler.tick(); } finally { ticking = false; }
+};
+setInterval(tick, 60_000);
+void tick();
 // An AidenHQ app's test-user session: this module's token and the job tool call's own assertion, which the kernel re-checks.
 const mintSession = (assertion: string, app: string) => kernel().raw("POST", "/v1/test-session", { app, minutes: 60 }, { "x-aidenhq-caller": assertion });
 const jobtools = createJobTools({ passes, logins, mintSession });
 const serviceKey = () => file(env.DESIGN_SERVICE_KEY_FILE);
 
-const mcp = serveMcp(createMcp("design", designTools(store, { passes, apps: () => apps, logins })), serviceKey, async (req) => ({ ...(await verifyCaller(req, jwks, "design")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }),
+const tools = [...designTools(store, { passes, apps: () => apps, logins }), ...overviewTools({ store, apps: () => apps, logins, spentToday: passes.spentToday })];
+// The UI testing Fleet page (module.yaml contributes.board.pages): a module view on this connection, calling the tools above as the owner.
+const mcp = serveMcp(createMcp("design", tools, [{ uri: "ui://design/page", html: pageHtml(new URL("./", import.meta.url)) }]), serviceKey, async (req) => ({ ...(await verifyCaller(req, jwks, "design")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }),
   // design_evidence_put takes 8 MB decoded per call: about 10.7 MB as base64 (the kernel's proxy takes 14 MB).
   12 * 1024 * 1024);
 const sweep = () => { try { const n = store.sweep(); if (n) log("swept old runs", { n }); } catch (e) { log("WARNING: sweep failed", { err: String((e as Error).message).slice(0, 300) }); } };

@@ -84,3 +84,12 @@
 .mv-said { margin: 0; color: var(--muted); font-size: var(--text-sm); }
 .mv-broken { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; padding: var(--sp-4); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
 .mv-broken p { margin: 0; flex: 1 1 240px; color: var(--muted); }
+
+/* A page's Sign-ins panel (SecretMaps.tsx): one row per key, its entry form opening under it. */
+.mv-signins { overflow: visible; }
+.mv-signin + .mv-signin { border-top: 1px solid var(--border); }
+.mv-signin-row { display: flex; align-items: center; gap: var(--sp-3); min-height: 42px; padding: 8px 14px; font-size: var(--text-md); }
+.mv-signin-key { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.mv-signin-actions { display: inline-flex; gap: 6px; }
+.mv-signin-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--sp-3); padding: 4px 14px 14px; align-items: start; }
+.mv-signin-buttons { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }

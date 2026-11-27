@@ -1,5 +1,5 @@
 import type { AuthorKind, FlowSummary, IdleItem, JourneyInfo, JourneyList, JourneySort, Waterfall } from "../../src/flow";
-import type { AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, AsideMessage, Lineage, Home, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, PageRow, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, SharePreview, FiledChange, SettingsData, Update, SessionRow } from "./types";
+import type { SecretMapView, AgentProfile, TaskRow, FeatureCost, Features, Advisory, Agents, AsideMessage, Lineage, Home, AppRow, Approval, Board, Bucket, Cadence, ChatAgent, ChatDetail, LaneAgent, LaneMessage, ChatRow, CostLedger, CostTop, IssueView, Models, ModuleDetail, ModuleRow, NeedsYou, PageRow, RecurringView, RosterAgent, RunTrace, Scorecard, SettingChange, SharePreview, FiledChange, SettingsData, Update, SessionRow } from "./types";
 import type { ConnectionsData } from "./connections";
 import type { TimelineEntry } from "../../src/timeline";
 import type { Explanation } from "../../src/explain";
@@ -346,6 +346,9 @@ export const api = {
   viewCall: (page: string, name: string, args: unknown) => call<{ result?: unknown; error?: { code?: number; message?: string } }>("POST", `/api/pages/${page}/call`, { name, arguments: args ?? {} }),
   /** The owner's Save of the settings a module view proposed. */
   viewSave: (page: string, changes: unknown[]) => call<{ identifier: string; state?: string }>("POST", `/api/pages/${page}/save`, { changes }),
+  /** A page's Sign-ins panel: which keys are set (never a value), then the owner's Set / Replace (`values`) or Clear (null) of one key. */
+  pageSecrets: (page: string) => call<{ maps: SecretMapView[] }>("GET", `/api/pages/${page}/secrets`),
+  pageSecretSet: (page: string, secret: string, key: string, values: Record<string, string> | null) => call<{ ok: boolean }>("POST", `/api/pages/${page}/secrets/${secret}/${key}`, { values }),
   module: (name: string) => call<ModuleDetail>("GET", `/api/modules/${encodeURIComponent(name)}`),
   /** Installed modules whose setup flow isn't done (docs/design/guided-setup.md); a 404 means no flows. */
   settings: () => call<SettingsData>("GET", "/api/settings"),

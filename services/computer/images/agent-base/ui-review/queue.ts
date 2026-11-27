@@ -26,6 +26,8 @@ export function openQueue(file: string, pages: Page[], o: { widths: number[]; th
   let items: QueueItem[];
   if (o.resume && existsSync(file)) {
     items = JSON.parse(readFileSync(file, "utf8")) as QueueItem[];
+    // A queue restored from an earlier pass (its captures stay on that pass's run): this folder's captures start empty.
+    if (!existsSync(capsFile)) writeFileSync(capsFile, "");
     if (!items.some((i) => i.status === "todo")) {
       const take = new Set([...new Set(items.filter((i) => i.status === "deferred").map((i) => i.page))].slice(0, o.max));
       for (const i of items) if (i.status === "deferred" && take.has(i.page)) i.status = "todo";

@@ -13,7 +13,10 @@ const COMMANDS: Record<string, string> = {
   repro: "repro <clicks.json> --out <dir> [--url u] [--session state.json] [--mode read|test-write|any] [--model id] [--max-usd n]",
   "fix-check": "fix-check <before.png> <after.png> --width <w> [--model id] [--taste file]",
   login: "login supplied --app <app> --out state.json | form --url <u> --user <u> --password-file <f> [--totp-file <f>] --out state.json | signup --url <u> --out state.json | aidenhq --app <app> --out state.json",
-  browser: "browser start [--url u] [--mode read|test-write|any] [--session state.json] [--out dir]   (the signed-in, guarded Chrome the clicking pass attaches to: prints the CDP port; runs until SIGTERM)",
+  browser: "browser start [--url u] [--mode read|test-write|any] [--session state.json] [--out dir] [--record dir]   (the signed-in, guarded Chrome the clicking pass attaches to: prints the CDP port; runs until SIGTERM; --record: a webm per flow) | browser flow [--out dir] \"<title>\"   (the next flow starts: a recording cuts its clip)",
+  "issue-body": "issue-body <dir> --app <app> --run <id> [--run-url <url>]   (the design issue and one per verified bug, as JSON: marker, title, body)",
+  put: "put --run <id> <file>[=<name>]...   (files onto a design run: design_evidence_put, 8 MB per call, a recording alone)",
+  get: "get --run <id> --out <dir> <name>...   (a design run's files: design_image)",
 };
 
 // Each subcommand is its module's `<name>Command(args)`, returning the exit code (loaded only when run).
@@ -29,6 +32,9 @@ const BUILT: Record<string, () => Promise<(args: string[]) => Promise<number>>> 
   "fix-check": async () => (await import("./pairwise.ts")).fixCheckCommand,
   login: async () => (await import("./login.ts")).loginCommand,
   browser: async () => (await import("./browser.ts")).browserCommand,
+  "issue-body": async () => (await import("./issue.ts")).issueBodyCommand,
+  put: async () => (await import("./evidence.ts")).putCommand,
+  get: async () => (await import("./evidence.ts")).getCommand,
 };
 
 function help(): string {

@@ -5,6 +5,7 @@ use its controls, and notice what a person would notice. This is not free roamin
 the app under review.
 
 For each flow:
+0. Mark its start: `ui-review browser flow --out browser "<the flow's heading>"` (a recording cuts the flow's clip there).
 1. Do its steps in the browser (`agent-browser --cdp <port> ...`), reading the page after each one.
 2. Check what should happen. A control that does nothing, a state that is lost (on reload, on going back), an empty or wrong
    view, an error where a result belongs, a keyboard blocker on the main flow, a dead end: write it down.

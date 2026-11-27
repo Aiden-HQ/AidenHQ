@@ -4,7 +4,8 @@ roles:
   # kernel.work-read: GET /v1/objects, the PRs the fleet opened in any repo (apps-mcp /internal/open-prs).
   # kernel.owner-notice: apps-mcp tells the owner the apps node needs its one-time Tailscale sign-in (platform.ts edgeLogin).
   # kernel.test-session: app_page_canary mints, checks and revokes the test user's session (kernel/src/test-session.ts).
-  requests: [ kernel.work-read, kernel.owner-notice, kernel.test-session ]
+  # kernel.events: apps-mcp sends `app.deployed` on the apps connection after each healthy deploy (deploy.ts, platform.ts).
+  requests: [ kernel.work-read, kernel.owner-notice, kernel.test-session, kernel.events ]
   declares:
     - { id: app-incidents, description: "Change any app with an open incident." }
     - { id: app-requests, description: "In-app requests and people roles of every shared app (apps-mcp app_requests, app_role_set)." }
@@ -24,6 +25,13 @@ connections:
       write: [ app_deploy, app_restart, app_rollback, app_create, app_run_request, app_api, source_ack, person_identity_decide, finding_verdict, app_request_reply, app_role_set ]
       # Granted only by name (the `write` shorthand never includes it): it stops an app and drops its registry entry.
       destructive: [ app_remove ]
+    # One event per healthy deploy (a deploy row; never a preview or a rollback), resource the app's name, data { sha }: the
+    # design module's after-deploy UI review reads it through `subscribes:`.
+    events:
+      resource: "app name"
+      kinds: [ app.deployed ]
+      filter: [ kind ]
+      reads: [ app_status ]
 # The kernel calls these kinds' plan, execute and status on apps-mcp, with the connection's key (executor@1).
 providers:
   executor:

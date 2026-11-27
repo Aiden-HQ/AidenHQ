@@ -52,6 +52,12 @@ test("board.pages: a module's Fleet page compiles onto its own connection, and a
   const page = { id: "notes", module: "pageok", connection: "pageok-mcp", view: "ui://pageok/page", tools: ["pageok_notes"], settings: ["mine", "other"] };
   assert.throws(() => modulePages([page], conns(), {}, (_m, k) => k === "mine"), /setting other isn't declared by pageok or a module it requires/);
   assert.doesNotThrow(() => modulePages([{ ...page, view: "ui://pageok/page2" }], conns(), {}, () => true));
+  // secret_maps: the module's own `setup:` secret, keys from one of its own settings.
+  const mapped = (m: object) => [{ ...page, settings: [], secret_maps: [{ secret: "pageok_logins", keys_from: "targets.apps[].name", fields: [{ name: "user", label: "User", kind: "text" }], ...m }] }];
+  const own = { setting: (_m: string, k: string) => k === "targets", secret: (_m: string, n: string) => n === "pageok_logins" };
+  assert.doesNotThrow(() => modulePages(mapped({}), conns(), {}, () => true, own));
+  assert.throws(() => modulePages(mapped({ secret: "other_secret" }), conns(), {}, () => true, own), /secret_maps other_secret isn't a `setup:` secret of pageok/);
+  assert.throws(() => modulePages(mapped({ keys_from: "elsewhere.apps[].name" }), conns(), {}, () => true, own), /keys_from elsewhere.apps\[\].name isn't a setting of pageok/);
   assert.throws(() => modulePages([{ id: "notes", module: "pageok", connection: "pageok-mcp", view: "ui://pageok/page", tools: ["pageok_wipe"] }], conns()), /pageok_wipe isn't a read or write tool/);
   assert.throws(() => modulePages([{ id: "notes", module: "pageok", connection: "pageok-mcp", view: "ui://pageok/page", tools: ["pageok_configure"] }], { "pageok-mcp": { module: "pageok", tools: { read: [], write: ["pageok_configure"], destructive: [] } } }, { "pageok.set": { tools: ["pageok-mcp.pageok_configure"] } }), /is write kind pageok.set's/);
 });

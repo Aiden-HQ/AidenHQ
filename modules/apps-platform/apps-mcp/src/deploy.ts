@@ -31,6 +31,11 @@ export interface Deps {
   tailnetNode: () => boolean;
   /** Exposes the deployed app on the apps' tailnet node (platform.ts syncEdge). */
   expose?: (app: App) => Promise<void>;
+  /**
+   * After a deploy recorded healthy (never a preview, a rollback or an auto-rollback): the kernel's `app.deployed` event on the
+   * apps connection (platform.ts), keyed by the deploy's row id. Its failure is logged by the caller, never the deploy's.
+   */
+  deployed?: (app: App, e: { id: number; sha: string }) => Promise<void>;
   /** database: warehouse — the app's login and its DATABASE_URL secret (database.ts). */
   provisionDb?: (app: App) => Promise<void>;
   now?: () => number;
@@ -212,14 +217,15 @@ export function createEngine(d: Deps) {
   }
 
   const up = (app: App) => compose(app, ["up", "-d", "--build", "--remove-orphans"]);
-  const record = async (app: App, r: Result, by: string, detail = ""): Promise<void> => {
+  const record = async (app: App, r: Result, by: string, detail = ""): Promise<number> => {
     // The no-HTTP verdict belongs to the sha this deploy's own identity probe looked at: only a healthy record whose check
     // proved it carries it. A deploy that never ran the probe (an older row, a build that never came up) leaves it absent.
     const proven = r.status === "healthy" && r.checks?.some((c) => c.probe === "identity" && c.noHttpProven === true);
-    d.store.addDeploy({ app: app.name, sha: r.sha, images_json: JSON.stringify(r.images), by, at: now(), status: r.status, detail, ...(proven ? { no_http_proven: 1 } : {}) });
+    const id = d.store.addDeploy({ app: app.name, sha: r.sha, images_json: JSON.stringify(r.images), by, at: now(), status: r.status, detail, ...(proven ? { no_http_proven: 1 } : {}) });
     // A healthy record is the proof that what is up is the commit that was checked: serve it again, and re-read the edge
     // now, so a rollback that lifts an earlier teardown hold reports a URL that works rather than one that waits a tick.
     if (r.status === "healthy" && d.store.unwithhold(app.name)) await d.expose?.(app).catch(() => {});
+    return id;
   };
 
   /**
@@ -249,7 +255,8 @@ export function createEngine(d: Deps) {
       if (next.ok && checks && failed(checks).length) Object.assign(next, { ok: false, err: summary(checks) });
       if (next.ok) {
         const r: Result = { sha: next.sha, status: "healthy", images: next.images, checks };
-        await record(app, r, o.by, summary(checks!));
+        const id = await record(app, r, o.by, summary(checks!));
+        await d.deployed?.(app, { id, sha: r.sha }).catch(() => {});
         // Redeploying the commit a failed deploy rolled back to is not the fix: that incident waits for another commit.
         if (!(next.sha === prev?.sha && d.store.openIncident(app.name)?.kind === "deploy_failed")) d.store.closeIncident(app.name);
         await d.expose?.(app);

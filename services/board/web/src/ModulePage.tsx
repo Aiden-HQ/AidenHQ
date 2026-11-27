@@ -401,7 +401,7 @@ function ModuleSettings({ m, onSignIn }: { m: ModuleRow; onSignIn: () => void })
   const [rows, setRows] = useState<SettingRow[] | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
-    api.settings().then((r) => setRows(r.settings.filter((s) => s.module === m.name && Object.entries(s.when ?? {}).every(([k, v]) => String(r.settings.find((x) => x.key === k)?.value ?? r.settings.find((x) => x.key === k)?.default) === String(v)))), (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)));
+    api.settings().then((r) => setRows(r.settings.filter((s) => s.module === m.name && !s.page && Object.entries(s.when ?? {}).every(([k, v]) => String(r.settings.find((x) => x.key === k)?.value ?? r.settings.find((x) => x.key === k)?.default) === String(v)))), (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)));
   }, [m.name, onSignIn]);
   if (error) return <EmptyState><strong>Couldn't load the settings.</strong> {error}</EmptyState>;
   if (!rows) return <SkeletonLines lines={3} />;

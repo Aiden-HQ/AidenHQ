@@ -46,7 +46,7 @@
 //   POST /v1/board-tasks       (the board's key) {title, description, role | agent, source}: the same, as module "board" (app incidents for the chief of staff)
 //   POST /v1/tasks             (a module with role kernel.tasks) {title, description, role | agent, source, parent?, quiet?}: a task of the module's
 //                              fixed text for the agent holding `role` (or `agent`, by id), once per source (modtasks.ts); GET /v1/tasks?source=
-//                              the open tasks of the module's own `release:instance:` family (the release train's sweep); POST /v1/tasks/:task/close
+//                              the open tasks of a source family of the module's own (`<module>:…`, or the code host's `release:instance:`); POST /v1/tasks/:task/close
 //                              {status: done|cancelled, body}: one it filed. `quiet: true` files it in the backlog, a holder for
 //                              records whose assignment wakes nobody.
 //   POST /v1/reviews           (the runner's reviewer key) a check before filing: one review by the bound reviewer module → its verdict
@@ -61,7 +61,8 @@
 //   GET  /v1/objects?ref=<ref> | ?type=pr&since=<iso>  (role kernel.work-read) whether a GitHub object is ours (objects.ts)
 //   GET  /v1/work[?task=|?job=|?record=|?agent=|?since=], GET /v1/work/metrics  (a module with role kernel.work-read) the jobs and records
 //                              of the kernel's work: a task's, one job, an agent's, the records and billed cost since a time, or what
-//                              runs and ended lately; Prometheus text (work.ts)
+//                              runs and ended lately; Prometheus text (work.ts). ?spend_tasks=<source prefix>&day=<UTC date>: the confirmed
+//                              ledger charges in that UTC day on the tasks the module itself filed under that source prefix -> {day, by_task}
 //   GET  /v1/work[?task=|?job=|?record=|?agent=|?since=|?sessions=1|?session=<task>]  (the board) the same reads (the sessions' task, state, lease, times, last words and spend: work.ts sessions()); never the metrics or a token
 //   GET  /v1/flow?task=|?item=|?journeys=1|?journey=|?since=[&to=&by=&scope=]  (the board, or a module with role
 //                              kernel.flow-read) Flow's views over the fact log (flow.ts): a task's or item's waterfall, the declared journeys, a journey's items (journeys.ts), the summary with its insights
@@ -1154,7 +1155,14 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           return send(res, 200, { token: graderToken(b.task.slice(0, 100), issue.json.assigneeAgentId) });
         }
         if (hit.path === "/v1/work/metrics") return void res.writeHead(200, { "content-type": "text/plain; version=0.0.4" }).end(work.metrics());
-        return send(res, 200, await workRead(work, new URLSearchParams(q ?? "")));
+        const p = new URLSearchParams(q ?? "");
+        // A day's billed cost on the module's own tasks of a source family (the design module's per-app cap): never another module's.
+        if (p.has("spend_tasks")) {
+          const prefix = String(p.get("spend_tasks")), day = String(p.get("day") ?? new Date().toISOString().slice(0, 10));
+          if (!/^[\w.:/@#-]{1,200}$/.test(prefix) || !/^\d{4}-\d{2}-\d{2}$/.test(day) || Number.isNaN(Date.parse(`${day}T00:00:00Z`))) throw fail(400, "bad_request", "send ?spend_tasks=<source prefix>&day=<YYYY-MM-DD>");
+          return send(res, 200, work.spendTasks(w.module!, prefix, day));
+        }
+        return send(res, 200, await workRead(work, p));
       }
       if (hit?.path === "/v1/objects") {
         const w = await moduleOf(req);

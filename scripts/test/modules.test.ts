@@ -553,3 +553,11 @@ test("subscribes: compiled from settings into the kernel's module table, kinds c
   assert.equal(kernelModuleTable(opt, {}, new Set(["optional"])).optional?.subscribes, undefined);
   assert.deepEqual(kernelModuleTable({ github: gh, ...opt }, {}, new Set(["optional"])).optional.subscribes, { github: { kinds: ["push"], resources: "*" } });
 });
+
+test("the design module's subscriptions: an app's deploys by name, and its repo's pushes only with GitHub in", () => {
+  const def = (m: string) => YAML.parse(readFileSync(join(here, `../../modules/${m}/module.yaml`), "utf8"));
+  const [design, apps, github] = ["design", "apps-platform", "github"].map(def);
+  const settings = { ui_testing: { apps: [{ name: "acme", url: "https://acme.example.com", repo: "Acme/App" }, { name: "beta", url: "https://beta.example.com" }] } };
+  assert.deepEqual(kernelModuleTable({ "apps-platform": apps, design }, settings).design.subscribes, { apps: { kinds: ["app.deployed"], resources: ["acme", "beta"] } });
+  assert.deepEqual(kernelModuleTable({ "apps-platform": apps, design, github }, settings).design.subscribes.github, { kinds: ["push"], resources: ["acme/app"] });
+});

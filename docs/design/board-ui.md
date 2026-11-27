@@ -193,8 +193,18 @@ contributes:
       connection: ship              # one of this module's own connections
       view: ui://ship/page          # served by it (resources/read, text/html;profile=mcp-app)
       tools: [ship_config, ship_configure]   # what the view calls: read or write tools of that connection, named <module>_…
-      settings: [ship, code_review]          # optional: setting keys the page may propose beyond its module's own
+      settings: [ship, code_review]          # optional: setting keys the page may propose beyond its module's own; one of its own listed here is edited on the page alone (the generic settings screens leave it off)
+      secret_maps:                           # optional, at most 2: the board's own "Sign-ins" panel under the frame
+        - secret: ui_logins                  # one of this module's `setup:` secrets, a JSON map key -> { field: text }
+          keys_from: ui_testing.apps[].name  # the keys: one of its own settings (applied value), e.g. each app's name
+          fields: [{ name: username, label: Username, kind: text }, { name: password, label: Password, kind: password }]   # kind: text | password | totp
 ```
+
+- **Secret maps.** Per key the board shows Set / Replace / Clear and which keys hold a value, never the value: the owner types it
+  into the board's own form (outside the frame, so the module's HTML never sees it), the board sends it to the kernel's
+  `save_secret` with `key`, which merges that one key into the JSON map and writes the vault file in place (nothing restarts: the module
+  reads the map on each use; the module's `validate` hook sees that entry alone). A stored value comes back to no browser, tool or log; a
+  key the setting no longer names can only be cleared. Only a ready admin's session saves, and the kernel lets only the owner write.
 
 - **Compile** checks it (the connection is the module's, the view is `ui://<module>/…`, no destructive tool and none a write kind routes, tool names
   `<module>_…`) and puts each view with its tools on its connection in the kernel's `connections.json` (`views`).
