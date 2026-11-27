@@ -196,6 +196,17 @@ describe("app_status previews", () => {
     ]);
     expect(previews[1]).not.toHaveProperty("reason");
   });
+
+  it("the cached row /internal/status serves carries no preview reason", async () => {
+    const p = make();
+    p.store.putPreview({ name: "notes-pr-4", app: "notes", pr: 4, port: 39100, sha: "a".repeat(40), status: "failed", at: 1, comment_id: 104, reason: "its build failed: exit 1" });
+    await p.refresh(p.find("notes"));
+    const cached = p.cached(p.find("notes")) as { previews: Record<string, unknown>[] };
+    expect(cached.previews).toEqual([{ pr: 4, sha: "a".repeat(40), state: "failed", url: undefined }]);
+    expect(cached.previews[0]).not.toHaveProperty("reason");
+    // The authorized app_status call still carries it.
+    expect((await callStatus(p)).previews[0]).toMatchObject({ reason: "its build failed: exit 1" });
+  });
 });
 
 describe("app_page_canary registration", () => {

@@ -177,6 +177,42 @@ describe("gmail_inbox_new: the inbox since the cursor, automated mail set aside"
     expect(second.accounts[0]).toMatchObject({ more: false });
   });
 
+  it("counts mail at or before the window start, so a cursor past the mail explains itself", async () => {
+    // `after:` is whole seconds: a window starting mid-second still lists mail at the start of that second.
+    const early: Msg[] = [
+      { id: "w1", threadId: "tw1", at: T0 + 200, headers: person("Dana <dana@acme.com>") },
+      { id: "w2", threadId: "tw2", at: T0 + 400, headers: person("Kim <kim@acme.com>") },
+      { id: "w3", threadId: "tw3", at: T0 + 1_200, headers: person("Sam <sam@acme.com>") },
+    ];
+    const r = await new MultiWorkspace(creds(), "primary", google(early).impl).gmailInbox({ "me@work.com": T0 + 500 }, 20);
+    expect(r.threads.map((t) => t.thread_id)).toEqual(["tw3"]);
+    expect(r.accounts[0]).toMatchObject({ threads: 1, dropped: { "before-window": 2 }, more: false });
+    expect(r.cursor).toEqual({ "me@work.com": T0 + 1_200 });
+
+    // A cursor past the mail the listing still holds: nothing served, and the drops say why rather than looking empty.
+    const none = await new MultiWorkspace(creds(), "primary", google(early.slice(0, 2)).impl).gmailInbox({ "me@work.com": T0 + 500 }, 20);
+    expect(none.threads).toEqual([]);
+    expect(none.accounts[0]).toMatchObject({ threads: 0, dropped: { "before-window": 2 } });
+
+    // The message exactly at the cursor is the one the previous call decided: the listing still returns it (approach: whole
+    // seconds), and it must be skipped without a count, or every call would add a phantom before-window drop.
+    const atCursor: Msg[] = [
+      { id: "x1", threadId: "tx1", at: T0 + 1_000, headers: person("Dana <dana@acme.com>") },
+      { id: "x2", threadId: "tx2", at: T0 + 2_000, headers: person("Kim <kim@acme.com>") },
+    ];
+    const again = await new MultiWorkspace(creds(), "primary", google(atCursor).impl).gmailInbox({ "me@work.com": T0 + 1_000 }, 20);
+    expect(again.threads.map((t) => t.thread_id)).toEqual(["tx2"]);
+    expect(again.accounts[0]).toMatchObject({ threads: 1, more: false });
+    expect((again.accounts[0] as { dropped: Record<string, number> }).dropped).toEqual({});
+
+    // And a call that ends at x2 leaves a cursor the next call must not re-count either.
+    const first = await new MultiWorkspace(creds(), "primary", google(atCursor).impl).gmailInbox({ "me@work.com": T0 }, 20);
+    expect(first.cursor).toEqual({ "me@work.com": T0 + 2_000 });
+    const next = await new MultiWorkspace(creds(), "primary", google(atCursor).impl).gmailInbox(first.cursor, 20);
+    expect(next.threads).toEqual([]);
+    expect((next.accounts[0] as { dropped: Record<string, number> }).dropped).toEqual({});
+  });
+
   it("never splits a millisecond at the budget, so a stopped call loses no message", async () => {
     // Three messages at one millisecond, then one later. With the budget already spent the walk still decides the whole first
     // group and stops before the later message: the cursor it returns (that millisecond) is one the next call skips, so a
@@ -225,6 +261,31 @@ describe("gmail_inbox_new: the inbox since the cursor, automated mail set aside"
       const second = await ws.gmailInbox("me@work.com", first.cursor, 20);
       expect(second.threads.map((t) => t.thread_id)).toEqual(["tw8", "tw9", "tw10", "tw11"]);
       expect(second).toMatchObject({ cursor: T0 + 12_000, more: false });
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("never splits a millisecond when enrichment is cut short, so no thread is lost", async () => {
+    // 12 kept threads share one millisecond, plus one later thread. The budget is spent after the first batch of 8, which must
+    // not lose the four tied with the last served row: the cursor cannot split that timestamp, so all 12 are served and the
+    // later thread goes to the next call.
+    const tied: Msg[] = [
+      ...Array.from({ length: 12 }, (_, i) => ({ id: `s${i}`, threadId: `ts${i}`, at: T0 + 1_000, headers: person(`P${i} <p${i}@acme.com>`) })),
+      { id: "last", threadId: "tlast", at: T0 + 2_000, headers: person("Kim <kim@acme.com>") },
+    ];
+    let clock = Date.now();
+    const slow = google(tied, () => { clock += 20_000; });
+    const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
+    try {
+      const ws = new Workspace(new GoogleClient({ client_id: "cid", refresh_token: "r1" }, slow.impl), "primary");
+      const first = await ws.gmailInbox("me@work.com", T0, 20);
+      expect(first.threads).toHaveLength(12);
+      expect(first).toMatchObject({ cursor: T0 + 1_000, more: true });
+
+      const second = await ws.gmailInbox("me@work.com", first.cursor, 20);
+      expect(second.threads.map((t) => t.thread_id)).toEqual(["tlast"]);
+      expect(second).toMatchObject({ cursor: T0 + 2_000, more: false });
     } finally {
       now.mockRestore();
     }

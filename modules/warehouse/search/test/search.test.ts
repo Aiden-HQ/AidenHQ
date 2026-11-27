@@ -123,6 +123,21 @@ test("tasks closed before the window page out newest first by a cursor", async (
   assert.deepEqual({ done: rest.done.map((h) => h.id), next: rest.next }, { done: ["t-13"], next: null });
 });
 
+test("each side brings its best PER_SIDE, so a word every task shares doesn't return them all", async () => {
+  const issues = new Map(Array.from({ length: PER_SIDE + 5 }, (_, i) => { const id = `t-${String(100 + i)}`; return [id, issue(id, `Review lens ${i}`, { identifier: `WOR-${100 + i}` })] as const; }));
+  const { search, drain } = await setup({ issues });
+  for (const id of issues.keys()) search.mark(id);
+  await drain();
+  assert.equal((await search.search("lens")).hits.length, PER_SIDE, "keyword side");
+  assert.equal((await search.search("critique")).hits.length, PER_SIDE, "meaning side");
+  // Older closes that outrank them take none of the hits' room: each gets its own best PER_SIDE.
+  for (const id of [...issues.keys()].slice(0, PER_SIDE)) issues.set(id, { ...issues.get(id)!, title: "Review lens lens lens", status: "done", completedAt: "2026-09-01T00:00:00Z" });
+  for (const id of issues.keys()) search.mark(id);
+  await drain();
+  const r = await search.search("lens", { closedBefore: "2026-11-21T00:00:00Z", limit: 100 });
+  assert.deepEqual({ hits: r.hits.length, done: r.done.length }, { hits: 5, done: PER_SIDE });
+});
+
 test("a task whose identifier is the query ranks first and meaning brings nothing; a term's words match as a phrase", async () => {
   const issues = new Map([
     ["t-20", issue("t-20", "Kernel scheduler", { identifier: "REVIEW-1" })],
@@ -164,6 +179,20 @@ test("live changes go before the backfill, and a fresh edit pulls a backed-off r
   await search.tick();
   await search.tick();
   assert.equal(await title("t-60"), "Renamed task");
+});
+
+test("an older closed hit carries its crew: the agents on its subtasks", async () => {
+  const at = "2026-09-01T00:00:00Z";
+  const issues = new Map([
+    ["t-70", issue("t-70", "Lens rollout", { status: "done", completedAt: at, updatedAt: at, assigneeAgentId: "a-1" })],
+    ["t-71", issue("t-71", "Part one", { parentId: "t-70", assigneeAgentId: "a-2" })],
+    ["t-72", issue("t-72", "Part two", { parentId: "t-70", assigneeAgentId: "a-1" })],
+  ]);
+  const { search, drain } = await setup({ issues });
+  for (const id of issues.keys()) search.mark(id);
+  await drain();
+  const r = await search.search("lens", { closedBefore: "2026-11-21T00:00:00Z" });
+  assert.deepEqual(r.done.map((h) => [h.id, h.crew]), [["t-70", ["a-2"]]]);
 });
 
 test("an edit that makes no fact is found among the recently updated tasks and rebuilt", async () => {

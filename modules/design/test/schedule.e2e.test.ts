@@ -181,3 +181,16 @@ test("Stop holds the app until the job has ended; a Run now meanwhile is refused
   assert.ok("run" in (await passes.startPass("acme", "request")), "Run now still works");
   assert.equal(store.active("acme")!.trigger, "request");
 });
+
+test("a Stop asked after midnight rests a 24/7 app for that day, though its pass started the day before", async () => {
+  const { passes, tick, k, settings, runOf, clock } = setup();
+  settings({ apps: [{ name: "acme", url: U, schedule: "always" }] });
+  await tick(); // 23:00
+  const first = k.filed[0]!;
+  clock.t += 2 * 3_600_000; // 01:00 the next owner day
+  await passes.stopPass("acme");
+  k.jobLive(first.id, false);
+  await tick();
+  assert.equal(runOf(first).status, "stopped");
+  assert.equal(k.filed.length, 1);
+});
