@@ -59,7 +59,7 @@ function Field({ title, value, def, filed, children }: { title: string; value: R
 }
 
 /** A text or select input with Review change: files `item(value)` when it differs from `current`. */
-function Edit({ label, current, item, input, options, models }: { label: string; current: string; item: (v: string) => SettingChange; input?: "text"; options?: { value: string; label: string }[]; models?: string[] }) {
+function Edit({ label, current, item, options, models }: { label: string; current: string; item: (v: string) => SettingChange; input?: "text"; options?: { value: string; label: string }[]; models?: string[] }) {
   const [v, setV] = useState(current);
   const [review, setReview] = useState(false);
   const [catalog, refreshCatalog] = useModelCatalog();

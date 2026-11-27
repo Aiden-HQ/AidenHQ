@@ -50,7 +50,7 @@ export interface ShipSettings {
 }
 
 // Protected paths bind the model's fixes only: the deterministic repair may regenerate lockfiles.
-const PROTECTED = ["**/package-lock.json", "**/pnpm-lock.yaml", "**/yarn.lock", ".github/**", "**/.eslintrc*", "**/eslint.config.*", "**/vitest.config.*", "**/jest.config.*", "**/tsconfig*.json", "**/CODEOWNERS"];
+const PROTECTED = ["**/package-lock.json", "**/pnpm-lock.yaml", "**/yarn.lock", ".github/**", "**/.eslintrc*", "**/eslint.config.*", "**/.oxlintrc*", "**/oxlint-plugin.*", "**/vitest.config.*", "**/jest.config.*", "**/tsconfig*.json", "**/CODEOWNERS"];
 
 const CAUTIOUS: ShipSettings = {
   enabled: true, handoff: "label", rebase: "conflict", generated: null, fix: ["conflicts", "ci", "review"], protected: PROTECTED,

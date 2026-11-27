@@ -31,7 +31,7 @@ export function lineDiff(a: string, b: string): { t: " " | "+" | "-"; s: string 
   const x = a ? a.split("\n") : [];
   const y = b ? b.split("\n") : [];
   const n = x.length, m = y.length;
-  const L = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  const L = Array.from({ length: n + 1 }, () => Array.from({ length: m + 1 }, () => 0));
   for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i]![j] = x[i] === y[j] ? L[i + 1]![j + 1]! + 1 : Math.max(L[i + 1]![j]!, L[i]![j + 1]!);
   const out: { t: " " | "+" | "-"; s: string }[] = [];
   let i = 0, j = 0;
@@ -239,7 +239,7 @@ function Memory({ agentKey, onSignIn }: { agentKey: string; onSignIn: () => void
       {m.facts.map((f, i) => (
         <div key={i} className="hb-row">
           <span>{f.fact}</span>
-          <span className="muted">{f.date} · {/^https:\/\//.test(f.src) ? <a href={f.src} target="_blank" rel="noreferrer noopener">{f.src}</a> : f.src}</span>
+          <span className="muted">{f.date} · {f.src.startsWith("https://") ? <a href={f.src} target="_blank" rel="noreferrer noopener">{f.src}</a> : f.src}</span>
         </div>
       ))}
     </div>

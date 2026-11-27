@@ -7,7 +7,6 @@ import { deciderOf, headOf, foldsInChat, outcomeOf } from "./conversation";
 import { Explain } from "./Explain";
 import type { Approval } from "./types";
 import { Button, Input } from "./ui";
-import { ago } from "./util";
 
 const OUTCOME: Record<Approval["state"], string> = {
   pending: "",

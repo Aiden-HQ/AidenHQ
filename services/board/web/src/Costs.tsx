@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { SignInRequired, api } from "./api";
 import { duration } from "./FeatureCost";
 import type { FeatureCost, CostLedger, CostTop, LedgerMetrics, LedgerPeriod } from "./types";
-import { Tag } from "./ui";
 import { clockOpts } from "./util";
 
 // The Costs tab: billed spend from the model gateway's ledger (src/cost-ledger.ts), aggregated on the board.

@@ -152,7 +152,7 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
 
   useEffect(() => {
     for (const c of changes) if (IN_FLIGHT.includes(c.stage) && c.items.some((i) => "key" in i && keys.has(i.key))) watched.current.add(c.identifier);
-    for (const id of [...watched.current]) {
+    for (const id of watched.current) {
       const f = changes.find((c) => c.identifier === id);
       if (!f || IN_FLIGHT.includes(f.stage)) continue;
       watched.current.delete(id);

@@ -10,7 +10,7 @@ import { clockOpts } from "./util";
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { ...clockOpts() });
 
-export function LaneChat({ agent, mobile, faces, go }: { agent: LaneAgent; mobile: boolean; faces: Assignee[]; go: (h: string) => void }) {
+export function LaneChat({ agent, mobile, faces }: { agent: LaneAgent; mobile: boolean; faces: Assignee[]; go: (h: string) => void }) {
   const [messages, setMessages] = useState<LaneMessage[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");

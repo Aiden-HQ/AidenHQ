@@ -128,7 +128,7 @@ inputs are 16px (no zoom).
 
 ## Rules the lint enforces
 
-`npm run lint` in `services/board` (ESLint and stylelint, config only; CI runs it): no raw colours or px font sizes
+`npm run lint` in `services/board` (Oxlint with the board's JS plugin `oxlint-plugin.mjs`, and stylelint; CI runs it): no raw colours or px font sizes
 outside `tokens.css`, and no class the kit replaced (`web/legacy-classes.json`, each with what to use instead).
 
 ## Home
