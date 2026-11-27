@@ -338,5 +338,32 @@ describe("app_page_canary", () => {
       expect(backs).toEqual([history]);
       expect(field).toMatchObject({ name: "What should change?", ref: "e10" });
     });
+
+    it("takes a feedback send, not a share or settings control that merely mentions feedback", () => {
+      const { canarySubmit } = api();
+      // Both labels mention feedback; only "Send feedback" submits the filled field. A lone share/settings control is refused
+      // rather than clicked.
+      expect(canarySubmit([
+        { tag: "BUTTON", type: "button", text: "Share feedback link" },
+        { tag: "BUTTON", type: "button", text: "Send feedback" },
+      ], false)).toMatchObject({ word: "Send feedback" });
+      expect(canarySubmit([{ tag: "BUTTON", type: "button", text: "Share feedback link" }], false)).toBeNull();
+      expect(canarySubmit([{ tag: "BUTTON", type: "button", text: "Feedback settings" }], false)).toBeNull();
+      // An icon-only button's accessible name is what it is marked by, so the listing and the marking see the same word.
+      expect(canarySubmit([{ tag: "BUTTON", type: "button", text: "Submit your feedback" }], false)).toMatchObject({ word: "Submit your feedback" });
+    });
+
+    it("never submits a control from a dialog nested inside the field's dialog", () => {
+      const { canarySubmit } = api();
+      // The field's dialog has a "Send feedback"; a nested confirmation dialog has one too. Only the outer one sends it.
+      expect(canarySubmit([
+        { tag: "BUTTON", type: "button", text: "Cancel", nested: false },
+        { tag: "BUTTON", type: "button", text: "Send feedback", nested: true },
+      ], false)).toBeNull();
+      expect(canarySubmit([
+        { tag: "BUTTON", type: "button", text: "Send feedback", nested: true },
+        { tag: "BUTTON", type: "button", text: "Send feedback", nested: false },
+      ], false)).toMatchObject({ word: "Send feedback" });
+    });
   });
 });

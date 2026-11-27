@@ -245,6 +245,27 @@ test("task_list says it is incomplete when the list shifts further than the over
   assert.match(String(out.out?.incomplete ?? ""), /shifted further/);
 });
 
+test("task_list stops when the issues endpoint ignores offset and repeats a page", async () => {
+  const rows = Array.from({ length: 200 }, (_, n) => row(`open-${n}`, "todo"));
+  let reads = 0;
+  const board = issueBoard({ rows });
+  // A pager that ignores offset and repeats its one page.
+  const ignores = async (req, res) => {
+    if ((req.url ?? "").includes("/issues?")) {
+      reads++;
+      if (reads > 6) throw new Error("kept paging a repeated page");
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(rows));
+      return;
+    }
+    return board(req, res);
+  };
+  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention("working")]));
+  const { call } = bridge({ handler: ignores, states });
+  const out = parse(await call("task_list", { state: "waiting", limit: 5 }));
+  assert.deepEqual(out.out.tasks, []);
+  assert.match(out.out.incomplete, /stopped advancing/, "a scan that could not page past its first page says so");
+});
+
 test("task_search's state filter is applied over pages of ranked hits, not just the first", async () => {
   // 200 higher-ranked hits that do not match state, then the waiting one.
   const hits = [...Array.from({ length: 200 }, (_, n) => ({ ...row(`hit-${n}`, "todo"), description: "invoice open" })), { ...row("hit-waiting", "todo"), description: "invoice open" }];
@@ -263,6 +284,20 @@ test("task_list(mine) reads past pages whose candidates all fail the filter", as
   const out = parse(await call("task_list", { mine: true, state: "waiting", limit: 5 }));
   assert.deepEqual(out.out?.tasks.map((t) => t.id), ["waits-1"], JSON.stringify(out));
   assert.equal(out.out?.incomplete, undefined);
+});
+
+test("task_list(mine) fills limit with distinct tasks even when a chat is in both sources", async () => {
+  // chat-1 is handed back to the agent between the scans, so both sources hold it; the limit counts distinct tasks.
+  const chat = { ...row("chat-1", "todo"), assigneeUserId: "owner", createdAt: "2026-05-01T00:00:00Z", description: `hi\n\n<!-- aidenhq-chat-agent:me -->` };
+  const dup = { ...chat, assigneeUserId: null, assigneeAgentId: "me" };
+  const older = { ...row("assigned-2", "todo"), assigneeAgentId: "me", createdAt: "2026-01-01T00:00:00Z" };
+  const states = { "chat-1": noAttention("waiting"), "assigned-2": noAttention("working") };
+  // The fake board serves whichever assignee filter the query asks for.
+  const board = issueBoard({ rows: [chat, dup, older] });
+  const handler = (req, res) => board(req, res);
+  const { call } = bridge({ handler, states });
+  const out = parse(await call("task_list", { mine: true, limit: 2 }));
+  assert.deepEqual(out.out.tasks.map((t) => t.id), ["chat-1", "assigned-2"], "two distinct tasks, nothing listed twice");
 });
 
 test("task_list(mine) returns the newest match without reading the rest of the history", async () => {

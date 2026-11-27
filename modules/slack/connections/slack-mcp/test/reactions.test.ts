@@ -9,7 +9,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import pino from "pino";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { servedTool } from "../src/admission.js";
-import { interceptReactionSearch, planReactionSearch, scanMyReactions } from "../src/reactions.js";
+import { interceptReactionSearch, planReactionSearch, readUserId, scanMyReactions } from "../src/reactions.js";
 import { upstreamArgs } from "../src/slack.js";
 import { servedSignedIn } from "../src/vendor/needs.js";
 import { createVendorProxy, type VendorProxy } from "../src/vendor/proxy.js";
@@ -75,6 +75,13 @@ describe("planReactionSearch", () => {
     ] as const) {
       expect(planReactionSearch(name, args as Record<string, unknown>)).toEqual({ kind: "pass" });
     }
+  });
+
+  it("recognizes the same search when the caller puts the modifier in query, as the intake scan has", () => {
+    expect(planReactionSearch("slack_search_public_and_private", { query: "hasmy::pushpin:" })).toMatchObject({ kind: "mine", emoji: "pushpin" });
+    // A query with any real term in it is the search tool's, not this path's.
+    expect(planReactionSearch("slack_search_public", { query: "deploy hasmy::pushpin:" })).toEqual({ kind: "pass" });
+    expect(planReactionSearch("slack_search_public", { query: "in:<#C1> hasmy::pushpin:" })).toMatchObject({ kind: "unsupported" });
   });
 
   it("names the unsupported filter for has::, an extra modifier, or more than one reaction filter", () => {
@@ -356,6 +363,13 @@ describe("scanMyReactions", () => {
     expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl: refused })).toMatchObject({ ok: false, error: "missing_scope", needed: "reactions:read" });
   });
 
+  it("a permission error after pages were read stays a failure naming the cause, with the matches riding along", async () => {
+    for (const error of ["missing_scope", "not_allowed_token_type"]) {
+      const { fetchImpl } = fakeSlack([page([item("C1", "1.1")], "next"), { ok: false, error, needed: "reactions:read" }]);
+      expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: false, error, messages: [{ channel: "C1", ts: "1.1" }] });
+    }
+  });
+
   it("a non-permission failure after pages were read still hands back a continuation", async () => {
     const { fetchImpl } = fakeSlack([page([item("C1", "1.1")], "next"), { ok: false, error: "internal_error" }]);
     expect(await scanMyReactions(plan, { authorization: "Bearer x", userId: ME }, { fetchImpl })).toMatchObject({ ok: true, messages: [{ channel: "C1" }] });
@@ -376,6 +390,16 @@ describe("servedTool", () => {
   it("serves a read that both the live catalog and the read rule admit", async () => {
     const probe = ask({ "/mcp/read": live(["slack_search_public"]), "/mcp": live(["slack_search_public"]) });
     expect(await servedTool(true, "slack_search_public", probe, () => "k")).toEqual({ served: true, confirmed: true });
+  });
+});
+
+describe("readUserId", () => {
+  it("reads the user id, and is undefined when it is missing", () => {
+    expect(readUserId(join(stateDir(), "token.json"))).toBe(ME);
+    const bare = mkdtempSync(join(tmpdir(), "slack-reactions-"));
+    writeFileSync(join(bare, "token.json"), JSON.stringify({ access_token: "xoxp-user" }));
+    expect(readUserId(join(bare, "token.json"))).toBeUndefined();
+    expect(readUserId(join(bare, "missing.json"))).toBeUndefined();
   });
 });
 
@@ -505,6 +529,30 @@ describe("interception through the proxy", () => {
     expect(refused.body.result).toMatchObject({ isError: true });
     expect(payload(refused.body)).toMatchObject({ error: "refused", set: "unknown" });
     expect(seen).toEqual([]);
+  });
+
+  it("refuses on /mcp/read where the proxy would not serve the tool", async () => {
+    const strict = createVendorProxy({
+      name: "Slack",
+      upstream: new URL(`${upstream}/mcp`),
+      auth: { headers: async () => ({ authorization: "Bearer x" }), refresh: async () => {}, status: () => ({ state: "ok", since: "" }), mark: () => {}, signedIn: () => true },
+      log,
+      readKey: "rd",
+      reads: ["slack_search_public", "slack_search_public_and_private"],
+      caller: async () => ({}),
+      instructions: "test",
+      stateDir: dir,
+      routes: (req, res) => interceptReactionSearch(req, res, { tokenFile: join(dir, "token.json"), headers: async () => ({ authorization: "Bearer xoxp-user" }), authState: () => "ok", served: async () => ({ served: false, confirmed: true }), readKey: "rd", caller: async () => ({}) }),
+    });
+    const strictBase = await listen(strict);
+    const res = await fetch(`${strictBase}/mcp/read`, { method: "POST", headers: { authorization: "Bearer rd", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "slack_search_public", arguments: { filters: "hasmy::pushpin:" } } }) });
+    const body = (await res.json()) as any;
+    expect(body.result).toMatchObject({ isError: true });
+    expect(payload(body)).toMatchObject({ error: "refused" });
+    // A tools/list on the read endpoint is not a tool call: it reaches the proxy and lists the reads it serves.
+    const list = await fetch(`${strictBase}/mcp/read`, { method: "POST", headers: { authorization: "Bearer rd", "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
+    expect(((await list.json()) as any).result.tools.map((t: any) => t.name)).toEqual(["slack_search_public", "slack_search_public_and_private"]);
+    strict.close();
   });
 
   it("refuses on /mcp where the proxy would not serve the tool, never answering from the Web API alone", async () => {

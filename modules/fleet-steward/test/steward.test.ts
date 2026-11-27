@@ -447,6 +447,12 @@ test("a failing slack row 61 minutes after its last good pass raises one source 
   assert.match(f.reason, /src_slack: last good pass 61 min ago; its latest pass failed/);
 });
 
+test("a failing non-slack source with a 16-minute-old good pass still raises an incident", () => {
+  const [f, ...rest] = staleSources([{ source: "hubspot", last_ok: minAgo(16), failing: true }], NOW);
+  assert.equal(rest.length, 0);
+  assert.equal(f.key, "hubspot");
+});
+
 test("spend: today above twice the prior days' average names its top components and subjects; quiet without a baseline or under the floor", () => {
   const t = Date.parse("2026-11-23T12:00:00Z");
   const day = (d, usd, priced = 1) => ({ day: d, cost_usd: usd, priced });

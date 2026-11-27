@@ -220,6 +220,28 @@ it("a short page below HubSpot's total keeps the contacts cursor at the pass sta
   expect(scopes.get("contacts")).toEqual({ baselined: false, cursor: new Date(NOW - 30 * 86_400_000).toISOString() });
 });
 
+it("a resumed bulk-edit read that ends short keeps its own id checkpoint and reports that page's shortfall", async () => {
+  const TIE = "2026-09-01T04:00:00.000Z";
+  const contact = (id: number, time: string) => ({ id, properties: { email: `c${id}@example.com`, lastmodifieddate: time } });
+  const { store, scopes } = fakeStore();
+  scopes.set("contacts", { baselined: true, cursor: `${TIE}#100` });
+  const boundaries: string[] = [];
+  let calls = 0;
+  const shortTie = async (_: string, args: Record<string, any>) => {
+    calls++;
+    const [mod, idf] = args.filterGroups[0].filters;
+    expect(mod).toMatchObject({ propertyName: "lastmodifieddate", operator: "EQ", value: String(Date.parse(TIE)) });
+    boundaries.push(idf.value); // every attempt starts at the same boundary
+    return answer([contact(101, TIE)], 1, 2); // 2 matches reported, only id 101 served
+  };
+  const pass = {} as any;
+  await withRetries(() => syncObject(store, shortTie, "contacts", opts({ pass })));
+  expect(calls).toBe(3);
+  expect(boundaries).toEqual(["100", "100", "100"]);
+  expect(scopes.get("contacts")).toEqual({ baselined: true, cursor: `${TIE}#100` }); // not past the unread time
+  expect(pass.complete).toEqual({ total: 2, fetched: 1 }); // the shortfall is visible on a resumed pass too
+});
+
 it("a short page that fills out on retry is read whole in the same pass", async () => {
   const T = new Date(NOW - 60_000).toISOString();
   const contact = (id: number, time: string) => ({ id, properties: { email: `c${id}@example.com`, lastmodifieddate: time } });
