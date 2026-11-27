@@ -113,8 +113,8 @@ services:
       links: [ sources, board ]
       data: ["telegram-live:/data"]
       env:
-        TELEGRAM_LIVE_DB: /data/telegram-live.sqlite
-        TDLIB_DIR: /data/tdlib
+        # Its database (telegram-live.sqlite) and TDLib's files (tdlib/) live under this dir, the data volume.
+        TELEGRAM_DATA_DIR: /data
         TELEGRAM_MUTED: "${settings.telegram_muted}"
         TELEGRAM_EXCLUDE_CHATS: "${settings.telegram_exclude_chats}"
         TELEGRAM_BACKFILL_DAYS: "${settings.telegram_backfill_days}"
