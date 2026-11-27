@@ -13,7 +13,8 @@
 //   comment anywhere) and `listed` (a task the grants table names for the agent: its memory inbox, review log or chat) are
 //   the kernel's word alone: a comment, nothing else. `settle` (a fleet settler, role fleet-settle, on a task an agent made) is
 //   the kernel's word too: a comment, a status or a patch on that task (handing it to the one agent in `delegateTo`), never a
-//   new task.
+//   new task. `evidence` (the kernel's evidence close) closes a task an agent made that the owner holds: a comment, a done or
+//   cancelled status and at most its labels.
 // - Writes (a project as its id: the kernel resolved the agent's name, kernel/src/projects.ts): a comment; a status from STATUSES (`blocked` names its blockers, as the REST route requires; `done` only with
 //   `gated`, the kernel's word that its finish gate passed); a `patch` of PATCH_KEYS; a new task (`child`: under `issueId`,
 //   or top-level without one) assigned to the caller, to an agent in `delegateTo`, or to a user.
@@ -27,7 +28,7 @@ import { HOST_PARAMS, SKEW_MS, verify } from "./sign.js";
 
 export const STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const PARAMS = ["sig", "ts", "tag", "again", "scope", "issueId", "body", "status", "blockedBy", "gated", "patch", "child", "delegateTo"];
-const SCOPES = ["own", "child", "created", "part", "admin", "listed", "settle"];
+const SCOPES = ["own", "child", "created", "part", "admin", "listed", "settle", "evidence"];
 const PATCH_KEYS = ["title", "description", "priority", "assigneeAgentId", "assigneeUserId", "blockedByIssueIds", "labelIds", "projectId"];
 const CHILD_KEYS = ["title", "description", "priority", "status", "assigneeAgentId", "assigneeUserId", "labelIds", "projectId"];
 /** The origin kind of every task this action makes (Paperclip allows a plugin only its own, `plugin:<id>`): a retry finds its task by it. */
@@ -90,6 +91,7 @@ function invalid(p) {
   if (p.body === undefined && p.status === undefined && p.child === undefined && p.patch === undefined) return "send a body, a status, a patch or a child";
   if ((scope === "admin" || scope === "listed") && (p.status !== undefined || p.patch !== undefined || p.child !== undefined)) return `scope ${scope} writes a comment only`;
   if (scope === "settle" && p.child !== undefined) return "scope settle changes a task; it makes none";
+  if (scope === "evidence" && (p.child !== undefined || p.body === undefined || !["done", "cancelled"].includes(p.status) || Object.keys(p.patch ?? {}).some((k) => k !== "labelIds"))) return "scope evidence closes a task with a comment, and at most a label";
   if (scope === "part" && (p.body !== undefined || p.status !== undefined || p.patch !== undefined)) return "scope part makes a task (child) only";
   if (scope === "part" && p.child?.assigneeAgentId === undefined) return "scope part makes a task assigned to the caller";
   if (p.body !== undefined && (typeof p.body !== "string" || !p.body.trim())) return "body must be text";
@@ -135,6 +137,7 @@ export async function post(ctx, params, context, postKey, now = Date.now()) {
   if (issue && scope === "own" && issue.assigneeAgentId !== agent) return { refused: "the task isn't assigned to this agent" };
   if (issue && scope === "created" && issue.createdByAgentId !== agent) return { refused: "this agent didn't create the task" };
   if (issue && scope === "child" && (!issue.parentId || (await ctx.issues.get(issue.parentId, companyId))?.assigneeAgentId !== agent)) return { refused: "the task's parent isn't assigned to this agent" };
+  if (issue && scope === "evidence" && (!issue.assigneeUserId || issue.assigneeAgentId || !issue.createdByAgentId || issue.createdByUserId)) return { refused: "scope evidence closes only a task an agent made that the owner holds" };
   if (scope === "part" && p.child.assigneeAgentId !== agent) return { refused: "a part is assigned to the agent itself" };
   const may = (to) => !to || to === agent || (p.delegateTo ?? []).includes(to);
   if (!may(p.child?.assigneeAgentId) || !may(p.patch?.assigneeAgentId)) return { refused: "a task goes to the agent itself or one it delegates to" };
