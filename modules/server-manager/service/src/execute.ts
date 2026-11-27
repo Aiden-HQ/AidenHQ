@@ -119,10 +119,10 @@ export const hashOf = (list: Planned[]) => listHash(list.map(word));
 
 /**
  * §11.4: a broken dpkg state is not patched over. `dpkg --audit` names packages left half-configured; an empty answer is a clean
- * state. The run repairs the state inside itself (`dpkg --configure -a`, itself this approved write) or stops and reports.
+ * state. A non-empty one stops the run and reports it for the owner to decide: this run never repairs the state on its own, and
+ * builds no argument list that would.
  */
 export const DPKG_AUDIT = ["dpkg", "--audit"];
-export const DPKG_CONFIGURE = ["sudo", "-n", "dpkg", "--configure", "-a"];
 
 /** The policy table's installed versions, for §11.6's release guard. */
 export function installedFrom(policy: Map<string, { installed?: string; candidate?: string; suites: string[] }>): Map<string, string | undefined> {
@@ -172,7 +172,7 @@ export function verifyPatch(rec: PatchArgs, fresh: { list: Planned[]; hash: stri
   const disk = diskVerdict(fresh.disk, fresh.downloaded_bytes);
   if (!disk.ok) return { ok: false, code: "low_disk", reason: disk.reason };
   // §11.4: a broken state is not patched over. `dpkg --audit` prints nothing on a clean host.
-  if (fresh.audit.trim()) return { ok: false, code: "dpkg_broken", reason: `dpkg reports an interrupted run (${fresh.audit.trim().split("\n").slice(0, 8).join("; ")}), which this run would patch over. Nothing was installed.` };
+  if (fresh.audit.trim()) return { ok: false, code: "dpkg_broken", reason: `dpkg reports an interrupted run (${fresh.audit.trim().split("\n").slice(0, 8).join("; ")}), which this run would patch over. Nothing was installed, and the run does not repair it: finish or roll back that state on the host, then run again.` };
   // §11.6: never a release upgrade.
   const jump = releaseJumps(fresh.list, fresh.installed);
   if (jump.length) return { ok: false, code: "release_jump", reason: `this would move the release, not patch it: ${jump.join(", ")}. Nothing was installed; a release upgrade is not this module's to do.` };

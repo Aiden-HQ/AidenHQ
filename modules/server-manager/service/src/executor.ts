@@ -87,9 +87,10 @@ async function planPatch(d: ExecutorDeps, m: Machine, mode: "security" | "full",
 export function createExecutor(d: ExecutorDeps): Executor {
   const consent = new ConsentStore(d.stateDir);
   // When a run's `apt-get update` moves the set, the replacement record is filed by this side (§11.1): the kernel's re-plan ran
-  // before the refresh and cannot see it. One refile per machine and mode per few minutes, so an index that keeps moving cannot
-  // turn into a chain of records.
-  const refiled = new Map<string, number>();
+  // before the refresh and cannot see it. The filing is held here until it answers, so the outcome can name the record it filed —
+  // one per machine and mode at a time, so an index that keeps moving cannot turn into a chain. It is never *awaited* from the run:
+  // the replacement's execute queues on this machine's guard behind the run that filed it, so waiting here would deadlock the queue.
+  const filing = new Map<string, Promise<{ ok: true; id: string } | { ok: false; why: string }>>();
   // One write per machine at a time, in this process: a patch and a reboot for the same host must never run at once (both would
   // take the dpkg lock or race the boot ID). A second write waits for the first, then re-derives everything it needs.
   const queues = new Map<string, Promise<unknown>>();
@@ -184,23 +185,41 @@ export function createExecutor(d: ExecutorDeps): Executor {
         } catch (e) {
           if (e instanceof StalePatch) {
             // §11.1: stop, and file a new record for what the last read showed. The kernel re-plans before a run, but that re-plan
-            // reads the index as it was; only this run's own `apt-get update` sees the newly published version, so the replacement
-            // is filed from here. It is filed detached: its execute queues behind this one on the machine's guard, and awaiting it
-            // inside this run would hold the guard against itself.
+            // reads the index as it was; only this run's own `apt-get update` sees the newly published version, so the replacement is
+            // filed from here, on the machine's holder task, and its id goes into this outcome the way the kernel words its own refile.
             const key = `${m.name}:${args.mode}`;
-            const last = refiled.get(key) ?? 0;
-            let note: string;
-            if (Date.now() - last < 5 * 60_000) {
-              note = "a replacement record was filed for it a moment ago, so none was filed again: the next scheduled run follows the set";
-            } else {
-              refiled.set(key, Date.now());
-              const task = await d.taskFor(m.name).catch(() => "");
-              void d.file("server-manager.patch", { machine: m.name, mode: args.mode }, task || undefined)
-                .then((r) => log("a stale patch was refiled", { machine: m.name, mode: args.mode, id: r.id, tier: r.tier }))
-                .catch((err: Error) => log("a stale patch could not be refiled", { machine: m.name, mode: args.mode, err: err.message.slice(0, 200) }));
-              note = "a new record is filed for the set this last read showed";
+            let filed = filing.get(key);
+            if (!filed) {
+              // The filing runs off this run's guard (it is a kernel round trip, not a host command): started here, awaited below
+              // with a bound, so the outcome names the record when the kernel answers quickly and still finishes if it does not.
+              filed = (async () => {
+                try {
+                  const task = await d.taskFor(m.name).catch(() => "");
+                  const r = await d.file("server-manager.patch", { machine: m.name, mode: args.mode }, task || undefined);
+                  log("a stale patch was refiled", { machine: m.name, mode: args.mode, id: r.id, tier: r.tier });
+                  return { ok: true as const, id: r.id };
+                } catch (err) {
+                  const why = String((err as Error).message ?? err).slice(0, 200);
+                  log("a stale patch could not be refiled", { machine: m.name, mode: args.mode, err: why });
+                  return { ok: false as const, why };
+                }
+              })();
+              filing.set(key, filed);
+              // A filed one is remembered five minutes, so an index that keeps moving cannot turn into a chain of records; a failed
+              // one is dropped at once, so the next stale run retries rather than being told a replacement was filed when none was.
+              void filed.then((r) => {
+                if (!r.ok) { if (filing.get(key) === filed) filing.delete(key); return; }
+                setTimeout(() => { if (filing.get(key) === filed) filing.delete(key); }, 5 * 60_000).unref?.();
+              });
             }
-            return { ok: false, text: `${e.message} (hash ${e.actual.slice(0, 12)}…): ${note}.` };
+            const done = await Promise.race([filed, new Promise<undefined>((ok) => setTimeout(() => ok(undefined), 5_000))]);
+            if (done && done.ok) return { ok: false, text: `${e.message} (hash ${e.actual.slice(0, 12)}…). Filed again as ${done.id} for the set this read showed.` };
+            if (done && !done.ok) {
+              await d.wake({ machine: m.name, title: `Server Manager: a stale patch could not be refiled on ${m.name}`, body: `${m.name}: the ${args.mode} patch found the set had moved and stopped before installing; its replacement record could not be filed (${done.why}). The next scheduled run follows the set.`, source: `server-manager:refile-failed:${m.name}:${args.mode}:${e.actual.slice(0, 12)}` }).catch(() => undefined);
+              return { ok: false, text: `${e.message} (hash ${e.actual.slice(0, 12)}…): nothing was installed, and the replacement record could not be filed, so the agent was woken to file it.` };
+            }
+            // The kernel has not answered yet: the record is on its way, and the outcome says so rather than claiming an id it has not.
+            return { ok: false, text: `${e.message} (hash ${e.actual.slice(0, 12)}…): nothing was installed, and a replacement record is being filed for the set this read showed.` };
           }
           throw e;
         }

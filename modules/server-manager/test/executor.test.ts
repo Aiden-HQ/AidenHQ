@@ -377,7 +377,35 @@ test("§11.1 a stale patch is refiled by the executor for the set the refresh sh
   // The refile is fired detached; give its promise a turn to settle.
   await new Promise((ok) => setTimeout(ok, 50));
   assert.ok(filed.some((f) => f.kind === "server-manager.patch"), "a replacement patch record is filed from the executor");
-  assert.match(r.text, /new record is filed|replacement record/);
+  assert.match(r.text, /Filed again as k-0123456789abcdef/, "the outcome names the record it filed, the way the kernel words its own refile");
+});
+
+// §11.1, §13 — when the replacement cannot be filed, that is the thing the agent must be woken for: a scheduled run that goes stale
+// and files nothing installs nothing and tells nobody otherwise.
+test("§11.1 a stale patch whose refile fails wakes the agent instead of failing silently", async () => {
+  const h = fakeHost();
+  const base = deps(h);
+  const d: ExecutorDeps = { ...base.d, file: async () => { throw new Error("kernel unavailable"); } };
+  const ex = createExecutor(d);
+  const plan = await ex.plan({ kind: "server-manager.patch", args: { machine: "vm-one", mode: "security" }, requester: module(), task: "" } as never);
+  const stale = { ...(plan.args as Record<string, unknown>), packages: ["libc6=2.39-0ubuntu8.5"], hash: listHash(["libc6=2.39-0ubuntu8.5"]) };
+  const r = await ex.execute({ id: "k-0123456789abcdef", kind: "server-manager.patch", args: stale, digest: "d", idempotency_key: "i", tier: 0 } as never);
+  assert.equal(r.ok, false);
+  assert.match(r.text, /could not be filed/);
+  assert.equal(base.wakes.length, 1);
+  assert.match(base.wakes[0]!.title, /could not be refiled/);
+});
+
+// §11.1 — a second stale run inside the window reuses the replacement already filed, rather than filing a chain of records.
+test("§11.1 a second stale run the same window does not file another replacement", async () => {
+  const h = fakeHost();
+  const { d, filed } = deps(h);
+  const ex = createExecutor(d);
+  const plan = await ex.plan({ kind: "server-manager.patch", args: { machine: "vm-one", mode: "security" }, requester: module(), task: "" } as never);
+  const stale = { ...(plan.args as Record<string, unknown>), packages: ["libc6=2.39-0ubuntu8.5"], hash: listHash(["libc6=2.39-0ubuntu8.5"]) };
+  await ex.execute({ id: "k-0000000000000001", kind: "server-manager.patch", args: stale, digest: "d", idempotency_key: "a", tier: 0 } as never);
+  await ex.execute({ id: "k-0000000000000002", kind: "server-manager.patch", args: stale, digest: "d", idempotency_key: "b", tier: 0 } as never);
+  assert.equal(filed.filter((f) => f.kind === "server-manager.patch").length, 1, "one replacement for one moving index");
 });
 
 test("§10 the re-pin writes the pin only when the host presents the fingerprint the owner was shown", async () => {

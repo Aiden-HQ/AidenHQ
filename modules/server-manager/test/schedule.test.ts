@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dueFor, localParts, realInstantFor, SlotStore } from "../service/src/schedule.ts";
+import { dueFor, localParts, SlotStore } from "../service/src/schedule.ts";
 import type { Machine } from "../service/src/config.ts";
 
 const dir = () => mkdtempSync(join(tmpdir(), "sm-slot-"));
@@ -84,19 +84,26 @@ test("a full pass is not due again the same week, and a check at that hour next 
   assert.deepEqual(store.unfinished().map((r) => `${r.kind}:${r.slot}`), ["full:2026-12-07@03:00"]);
 });
 
-test("DST skip: a run whose wall time is skipped runs at the first real time after it", () => {
-  // America/New_York springs forward at 02:00 on 2026-03-08: 02:30 never happens. The first real instant after it is 03:00 EDT.
-  const t = realInstantFor("2026-03-08", "02:30", "America/New_York", new Date("2026-03-08T00:00:00Z"));
-  const p = localParts(t, "America/New_York");
-  assert.equal(`${String(Math.floor(p.minutes / 60)).padStart(2, "0")}:${String(p.minutes % 60).padStart(2, "0")}`, "03:00", "the skipped minute is jumped over");
-  assert.equal(p.date, "2026-03-08");
+test("DST skip: a due time in a skipped hour is not due until the clock reads past it", () => {
+  // America/New_York springs forward at 02:00 on 2026-03-08: 02:30 never happens, so a weekly pass set for 02:30 is not due at
+  // 01:59 EST — the local clock simply never reads 02:30 that day — and is due the first time it reads past it, 03:00 EDT (07:00Z).
+  const store = new SlotStore(dir());
+  store.markSeen("vm-one", new Date("2026-02-20T00:00:00Z"));
+  const week = m({ weekly_day: "sun", weekly_time: "02:30", security_minutes: 60 });
+  // The previous Sunday's pass ran, so what this test measures is this week's slot, not an unfiled one from 03-01.
+  const prior = dueFor(week, new Date("2026-03-01T08:00:00Z"), "America/New_York", store)!;
+  assert.deepEqual(prior, { machine: "vm-one", kind: "full", slot: "2026-03-01@02:30" });
+  store.start(prior, new Date("2026-03-01T08:00:00Z"));
+  store.finish(prior, true, "done");
+  assert.equal(dueFor(week, new Date("2026-03-08T06:59:00Z"), "America/New_York", store)?.kind, "security", "01:59 EST is before the skipped minute: only the hourly check is due");
+  // 07:00Z is the first real instant whose clock reads past 02:30 (03:00 EDT): the weekly pass is due there, once, under its own key.
+  const due = dueFor(week, new Date("2026-03-08T07:00:00Z"), "America/New_York", store);
+  assert.deepEqual(due, { machine: "vm-one", kind: "full", slot: "2026-03-08@02:30" }, "the first real clock past the skipped time runs the pass once");
 });
 
 test("DST repeat: a run whose wall time happens twice runs once, on the first occurrence", () => {
-  // America/New_York falls back at 02:00 on 2026-11-01: 01:30 happens twice. The first occurrence is EDT (UTC-4), 05:30Z.
-  const t = realInstantFor("2026-11-01", "01:30", "America/New_York", new Date("2026-11-01T00:00:00Z"));
-  assert.equal(t.toISOString(), "2026-11-01T05:30:00.000Z", "the first pass, not the second (06:30Z)");
-  // The slot's key is its wall-clock spelling, so both passes are one key: a slot inside the repeated hour cannot run twice.
+  // America/New_York falls back at 02:00 on 2026-11-01: 01:00 happens twice (05:00Z EDT and 06:00Z EST). The slot's key is its
+  // wall-clock spelling, so both passes are one key: a slot inside the repeated hour can run only once.
   const store = new SlotStore(dir());
   store.markSeen("vm-one", new Date("2026-10-20T00:00:00Z"));
   const first = dueFor(m({ weekly_day: "sun", weekly_time: "01:00" }), new Date("2026-11-01T05:30:00Z"), "America/New_York", store)!;

@@ -84,6 +84,7 @@ export function dueFor(m: Machine, at: Date, timeZone: string, store: SlotStore)
   return undefined;
 }
 
+
 /**
  * The durable slot records (§12): `<machine>:<kind>:<slot>`, written before the run starts and marked done after. A restart reads
  * the file and neither repeats a done slot nor forgets a started one (which is resolved from the host's own state before a retry:
@@ -171,22 +172,3 @@ export class SlotStore {
   }
 }
 
-/**
- * The first real instant whose local clock reads at or after `hhmm` on `date` in `zone` — which is the DST rules stated as one
- * answer: a due time in a skipped hour has no instant, so the clock's next real minute is this one; a due time in a repeated hour has
- * two, and the first (earlier UTC) is taken, so the run happens once, on the first occurrence (§12).
- */
-export function realInstantFor(date: string, hhmmText: string, timeZone: string, around: Date): Date {
-  const targetMinutes = hhmm(hhmmText);
-  // A day is at most 26 hours long across a DST change: scan from a day before the date's UTC midnight, minute by minute, and take
-  // the first instant on that date whose clock is at or past the target. Bounded, and exact whatever the zone's offset.
-  const start = Date.parse(`${date}T00:00:00Z`) - 14 * 3600_000;
-  const from = Number.isFinite(start) ? start : around.getTime();
-  for (let i = 0; i <= 26 * 60; i += 1) {
-    const t = from + i * 60_000;
-    const lp = localParts(new Date(t), timeZone);
-    if (lp.date !== date) continue;
-    if (lp.minutes >= targetMinutes) return new Date(t);
-  }
-  return new Date(from);
-}

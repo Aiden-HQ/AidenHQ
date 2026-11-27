@@ -12,7 +12,7 @@ import {
   classify, diskVerdict, downloadEstimate, exactList, installArgv, installCommand, listHash, LOCKED, neededGb, parseAptConfig, parseDownloadBytes, parseHolds,
   parseOsRelease, parsePolicy, parseSimulatedUpgrade, parseSimulation, releaseJumps, simulationProblems, unattendedUpgradesOn, word, UPDATE_ARGV,
 } from "../service/src/apt.ts";
-import { hashOf, planFrom, revalidate, serviceChange, startSeconds, verifyPatch, installedFrom, DPKG_AUDIT, DPKG_CONFIGURE } from "../service/src/execute.ts";
+import { hashOf, planFrom, revalidate, serviceChange, startSeconds, verifyPatch, installedFrom, DPKG_AUDIT } from "../service/src/execute.ts";
 import { inWindow, pendingId, ConsentStore, CONSENT_MS, rebootDue, rebootAndProve } from "../service/src/reboot.ts";
 import { TIMEOUTS } from "../service/src/ssh.ts";
 import { parseDf, READ } from "../service/src/status.ts";
@@ -182,7 +182,7 @@ tzdata:
 });
 
 // 5. §11.4 — a broken state is not patched over, and the repair is the same approved run.
-test("§11.4 a broken dpkg state stops the run and names it, and dpkg --configure -a is the run's own repair", () => {
+test("§11.4 a broken dpkg state stops the run and names it, and the run never repairs it itself", () => {
   const f = fixture("security");
   const broken = verifyPatch(
     { machine: "vm-one", mode: "security", reboot_policy: "auto", fingerprint: "SHA256:" + "A".repeat(43), packages: f.words, hash: f.hash },
@@ -192,7 +192,12 @@ test("§11.4 a broken dpkg state stops the run and names it, and dpkg --configur
   assert.equal(broken.ok === false ? broken.code : "", "dpkg_broken");
   assert.match(broken.ok === false ? broken.reason : "", /libc6/);
   assert.deepEqual(DPKG_AUDIT, ["dpkg", "--audit"]);
-  assert.deepEqual(DPKG_CONFIGURE, ["sudo", "-n", "dpkg", "--configure", "-a"], "the repair is a fixed argv inside this approved run");
+  // §11.4's second arm: the run stops and reports, and owns no repair of its own.
+  assert.match(broken.ok === false ? broken.reason : "", /does not repair it/);
+  assert.ok(!UPDATE_ARGV.join(" ").includes("--configure"), "no argument list the run builds is a dpkg repair");
+  for (const argv of [installCommand(["libc6=x"]), installCommand(["libc6=x"], true)]) assert.ok(!argv.join(" ").includes("--configure"));
+  const executeSrc = readFileSync(new URL("../service/src/execute.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(executeSrc, /dpkg[^\n]*--configure/, "no argument list in execute.ts repairs dpkg state");
 });
 
 // 6. §11.9 — wait for the lock.
