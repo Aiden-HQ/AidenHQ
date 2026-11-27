@@ -3,7 +3,7 @@
 // brief that mentioned it is out.
 import { describe, expect, it } from "vitest";
 import { assignees, buildBoard } from "../src/board.js";
-import { foldedChildren } from "../src/crew.js";
+import { crewOf, foldedChildren } from "../src/crew.js";
 import type { Agent, Issue } from "../src/paperclip.js";
 import { scheduleMove } from "../src/scheduled-moves.js";
 import { moveStale, staleTasks } from "../src/stale.js";
@@ -33,6 +33,8 @@ describe("first-pass triage", () => {
     const agentOwn = issue({ id: "a", identifier: "WOR-4", assigneeUserId: null, assigneeAgentId: TESS, createdByAgentId: TESS });
     const report = issue({ id: "r", identifier: "WOR-5", labels: [{ id: "l", name: "report", color: "#000" }] });
     expect(foldedChildren([parent, part], list).get("c")).toBe("p");
+    // Still shown under the chaser on the parent's card.
+    expect(crewOf(parent, [part], { assignees: list, working: new Map() }).map((m) => [m.agent, m.issues.map((x) => x.identifier)])).toEqual([[TESS, ["WOR-3"]]]);
     const board = buildBoard({ open: [parent, part, agentOwn, report], closed: [], placements: new Map(), seen: new Map(), installedAt: parent.createdAt, assignees: list });
     expect(Object.values(board.buckets).flat().map((x) => x.identifier)).toEqual(["WOR-2"]);
   });
@@ -44,7 +46,7 @@ describe("first-pass triage", () => {
     const fresh = issue({ id: "i2", identifier: "WOR-2", lastActivityAt: "2026-11-25T08:00:00.000Z" });
     expect(staleTasks([old, fresh], store, "me", now).map((x) => x.issue.id)).toEqual(["i1"]);
     // Not mentioned yet: nothing moves, whatever briefs exist.
-    const brief = (at: string) => issue({ id: `b${at}`, createdAt: at, labels: [{ id: "l", name: "daily-brief", color: "#000" }] });
+    const brief = (at: string) => issue({ id: `b${at}`, createdAt: at, updatedAt: at, labels: [{ id: "l", name: "daily-brief", color: "#000" }] });
     expect(moveStale([old], [brief("2026-11-27T09:00:00.000Z")], store, "me", now)).toEqual([]);
     store.mentionStale(["i1"], "2026-11-27T04:00:00.000Z");
     expect(moveStale([old], [brief("2026-11-26T04:00:00.000Z")], store, "me", now)).toEqual([]);

@@ -101,7 +101,8 @@ export const closedIssue = (i: Pick<Issue, "status">) => i.status === "done" || 
 export function crewOf(card: Issue, children: Issue[], input: CrewInput): CrewMember[] {
   const groups = new Map<string, { agent: Assignee; issues: Issue[] }>();
   for (const i of [card, ...[...children].sort((a, b) => a.createdAt.localeCompare(b.createdAt))]) {
-    const agent = crewAgent(i, input.assignees);
+    // A part handed back to the owner (a chase draft waiting on their send) still shows under the agent that made it.
+    const agent = crewAgent(i, input.assignees) ?? (i !== card && !i.assigneeAgentId ? input.assignees.find((a) => a.kind !== "me" && a.key === i.createdByAgentId) : undefined);
     if (!agent) continue;
     const g = groups.get(agent.key) ?? { agent, issues: [] };
     g.issues.push(i);

@@ -294,7 +294,7 @@ export function createCp({ whoami, asserter, plugin, once, sawn = () => 0, agent
       const r = await read(`/api/companies/${encodeURIComponent(co)}/issues?${new URLSearchParams({ parentId: t.id, status: "backlog,todo,in_progress,in_review,blocked,done,cancelled", limit: "100" })}`);
       if (r.status !== 200) return false;
       const kids = JSON.parse(r.out.toString("utf8")) as Issue[];
-      return Array.isArray(kids) && kids.some((k) => k.parentId === t.id && k.createdByAgentId === agent);
+      return Array.isArray(kids) && kids.some((k) => k.parentId === t.id && k.createdByAgentId === agent && k.status !== "cancelled");
     }
 
     // A comment, or a PATCH: on a task the job may write on.

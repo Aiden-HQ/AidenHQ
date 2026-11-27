@@ -42,7 +42,7 @@ export function scheduleMove(store: Store, issue: Issue, input: z.infer<typeof S
   const today = localDate(tz);
   const date = input.date ?? today;
   /** A move now: an agent's placement keeps its reason; anyone else's is a move by hand. */
-  const moveNow = (bucket: (typeof BUCKETS)[number], position: "top" | "bottom" = "top") => (input.reason && by ? store.place(issue.id, bucket, input.reason, by) : store.move(issue.id, bucket, position));
+  const moveNow = (bucket: (typeof BUCKETS)[number], position: "top" | "bottom" = "top") => (input.reason && by ? store.place(issue.id, bucket, input.reason, by, position) : store.move(issue.id, bucket, position));
   if (date < today) throw new BadRequest(`${date} is in the past (today is ${today})`);
   if (date > addDays(today, MAX_AHEAD_DAYS)) throw new BadRequest("at most a year ahead");
   if (date === today) {

@@ -21,5 +21,5 @@ Tools are `knowledge-daily`'s; without the notes tools skip step 1.
 6. **Report:** one `task_create` (marker `librarian-report:<ISO week>`, labels `librarian-report` and `report` (skill `owner-triage`, Reports), title "Librarian weekly
    report: <date>"), non-empty sections **Done**, **Needs the owner**, **Confirmed**, **Proposed rule and profile fixes**
    (each also sent to the chief of staff with `task_create` `assignee: chief-of-staff`, marker `rule:<agent>:<slug>`, who hands it to
-   that agent; list the ids), **Needs a tool**. No owner message.
+   that agent; list the ids), **Needs a tool**. If it is new, one `notify` (`kind: digest`): a one-line headline and its identifier.
 7. `task_finish` with counts.

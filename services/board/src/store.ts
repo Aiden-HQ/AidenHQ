@@ -146,9 +146,9 @@ export class Store {
   }
 
   /** An agent's placement (first-pass triage): the top of `bucket`, with the reason the task shows and who placed it. */
-  place(issueId: string, bucket: Bucket, reason: string, by: string): void {
+  place(issueId: string, bucket: Bucket, reason: string, by: string, position: "top" | "bottom" = "top"): void {
     this.tx(() => {
-      this.put(issueId, bucket, "top");
+      this.put(issueId, bucket, position);
       this.db.prepare("UPDATE placements SET reason = ?, placed_by = ? WHERE issue_id = ?").run(reason, by, issueId);
       this.unschedule(issueId);
     });
@@ -290,7 +290,7 @@ export class Store {
         // applySchedules() has nothing left to move. Only a parked card is skipped: a move filed from where the card already
         // sits leaves it to the normal rollover until its date.
         const rows = this.db.prepare("SELECT p.issue_id FROM placements p WHERE p.bucket = 'tomorrow' AND NOT EXISTS (SELECT 1 FROM scheduled_moves m WHERE m.issue_id = p.issue_id AND m.parked = 1) ORDER BY p.rank").all() as { issue_id: string }[];
-        const stmt = this.db.prepare("UPDATE placements SET bucket = 'today', rank = ?, carried = 0, reason = NULL, placed_by = NULL, updated_at = ? WHERE issue_id = ?");
+        const stmt = this.db.prepare("UPDATE placements SET bucket = 'today', rank = ?, carried = 0, updated_at = ? WHERE issue_id = ?");
         const now = new Date().toISOString();
         rows.forEach((r, i) => stmt.run(max + 1 + i, now, r.issue_id));
         moved = rows.length;

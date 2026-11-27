@@ -15,15 +15,16 @@ const idleDays = (i: Issue, now: number) => Math.floor((now - Date.parse(i.lastA
 /** The owner's open tasks still in New and idle for STALE_DAYS or more, oldest activity first. */
 export function staleTasks(open: Issue[], store: Store, me: string, now = Date.now()): { issue: Issue; idle_days: number }[] {
   const placed = store.placements();
+  const scheduled = store.schedules();
   return open
-    .filter((i) => i.assigneeUserId === me && !i.assigneeAgentId && !["done", "cancelled"].includes(i.status) && (placed.get(i.id)?.bucket ?? "triage") === "triage")
+    .filter((i) => !scheduled.has(i.id) && i.assigneeUserId === me && !i.assigneeAgentId && !["done", "cancelled"].includes(i.status) && (placed.get(i.id)?.bucket ?? "triage") === "triage")
     .filter((i) => !(i.labels ?? []).some((l) => l.name === BRIEF_LABEL || l.name === REPORT_LABEL))
     .map((issue) => ({ issue, idle_days: idleDays(issue, now) }))
     .filter((x) => x.idle_days >= STALE_DAYS)
     .sort((a, b) => b.idle_days - a.idle_days);
 }
 
-/** Moves the mentioned stale tasks once a brief created after their mention exists; drops mentions that no longer apply. */
+/** Moves the mentioned stale tasks once a brief written after their mention exists; drops mentions that no longer apply. */
 export function moveStale(open: Issue[], briefs: Issue[], store: Store, me: string, now = Date.now()): string[] {
   const mentions = store.staleMentions();
   if (!mentions.size) return [];
@@ -34,7 +35,8 @@ export function moveStale(open: Issue[], briefs: Issue[], store: Store, me: stri
       store.clearStale(id);
       continue;
     }
-    if (!briefs.some((b) => b.createdAt > at)) continue;
+    // A brief published (or republished: the chief of staff updates the day's brief) after the mention.
+    if (!briefs.some((b) => (b.updatedAt ?? b.createdAt) > at)) continue;
     store.place(id, "backlog", STALE_REASON, "Board");
     store.clearStale(id);
     moved.push(id);

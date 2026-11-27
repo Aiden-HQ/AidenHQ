@@ -1229,8 +1229,11 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     if (!filed || !(issue.createdByAgentId === agent.id || (grant.roles ?? []).includes("fleet-settle"))) throw new HttpError(403, "first-pass triage places only an owner task you filed (a fleet settler: any an agent filed)");
     const input = parse(ScheduleSchema, body);
     if ("clear" in input || !input.reason) throw new HttpError(400, "placing an owner task takes a one-line reason");
+    // The check and the write together, after every read: an owner's move made meanwhile stands.
     if ((store.placements().get(issue.id)?.bucket ?? "triage") !== "triage" || store.schedules().has(issue.id)) throw new HttpError(409, `${issue.identifier} is already placed: the owner's move stands`);
-    return schedule(ref, body, agent.name || "an agent");
+    const result = scheduleMove(store, issue, input, opts.timezone, agent.name || "an agent");
+    log.info({ issue: issue.identifier, placed: input.reason }, "task placed");
+    return { identifier: issue.identifier, ...result };
   }
 
   /** task_stale (the daily brief): the owner's New tasks idle 14 days, recorded as mentioned (stale.ts moves them later). */
