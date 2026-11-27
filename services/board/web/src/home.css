@@ -5,12 +5,16 @@
 .home-head h1 { margin: 0; font-size: var(--text-3xl); font-weight: 700; letter-spacing: -0.025em; line-height: 1.2; text-wrap: balance; }
 .home-banner-actions { display: flex; gap: 6px; }
 
-/* Needs you beside Since and the idea; one column under 1100px. */
+/* Needs you beside the detail pane or Next up; one column under 1100px. */
 .home-top { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--stack); align-items: start; }
 @media (min-width: 1100px) { .home-top:not(.home-top-solo) { grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); } }
 .home-side { display: grid; gap: var(--stack); align-content: start; min-width: 0; }
 .home-side > .ui-detail { width: auto; }
-.home-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr)); gap: var(--stack); align-items: start; }
+/* Since and the idea, half width each; a lone one takes the row; stacked on a phone. */
+.home-pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--stack); align-items: start; }
+@media (min-width: 900px) { .home-pair { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.home-pair-cell:only-child { grid-column: 1 / -1; }
+.home-pair-cell { min-width: 0; }
 .home-bone { display: block; width: 100%; border-radius: var(--radius); }
 
 .home-keys { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
@@ -35,7 +39,7 @@
 .home-detail .qform { margin: 0; max-width: none; }
 .home-done { margin: 0; font-weight: 600; color: var(--ok-text); }
 .home-detail-actions { display: flex; gap: 8px; }
-.home-since-all { display: grid; gap: 14px; }
+.home-since-all { display: grid; gap: 14px; padding: 12px 16px; }
 .home-since-all section { display: grid; gap: 4px; }
 .home-since-all .ui-digest-row { padding-inline: 0; }
 

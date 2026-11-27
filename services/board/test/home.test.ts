@@ -31,6 +31,8 @@ const issue = (n: number, o: Partial<Issue>): Issue => ({ ...base, id: `00000000
 const carded = issue(1, { title: "Deploy the app" });
 const asking = issue(2, { title: "Chase Sam" });
 const idea = issue(3, { title: "Try a weekly digest", assigneeAgentId: "cos", labels: [label("idea")] });
+// Intake's person waiting on a reply: older than every ask, yet listed after them.
+const reply = issue(6, { title: "Reply to Priya Nair: can you sign off the hiring plan?", assigneeAgentId: "intake", createdAt: ago(80 * H), description: "source:slack:C1/1700.1", labels: [label("needs-response")] });
 const done = issue(5, { title: "Chase the vendor", status: "done", completedAt: ago(H / 2) });
 const agents = [
   { id: "cos", name: "Aiden", status: "idle", metadata: { setupKey: "aidenhq:chief-of-staff", teammate: tm("Chief of staff", ["inbox-agent"]) } },
@@ -43,7 +45,7 @@ const pc = {
   routines: async () => [],
   labels: async () => [label("idea")],
   company: async () => ({ issuePrefix: "WOR" }),
-  openIssues: async () => [carded, asking, idea],
+  openIssues: async () => [carded, asking, idea, reply],
   closedSince: async () => [done],
   comments: async () => [],
 } as unknown as Paperclip;
@@ -90,11 +92,12 @@ describe("home", () => {
 
   it("needs: a card on a task is that task's one approval row, a card on no task its own; an idea waits apart", async () => {
     first = await call("GET", "/api/home");
-    expect(first.needs.map((n: { id: string; kind: string }) => [n.id, n.kind])).toEqual([["k-b2", "approval"], ["k-a1", "approval"], [asking.id, "answer"]]);
+    expect(first.needs.map((n: { id: string; kind: string }) => [n.id, n.kind])).toEqual([["k-b2", "approval"], ["k-a1", "approval"], [asking.id, "answer"], [reply.id, "open"]]);
     expect(first.needs[1]).toMatchObject({ task: { identifier: "WOR-1" }, teammate: { key: "open-loops", name: "Tess", state: "needs" }, card: { id: "k-a1" } });
     expect(first.needs[0]).toMatchObject({ task: null, teammate: { key: "chief-of-staff" } }); // Intake's card is Aiden's
     expect(first.needs[2]).toMatchObject({ question: "Chase Sam again tomorrow?", detail: "Draft: Hi Sam…", waitSince: ago(3 * H) });
-    expect(first.greeting).toEqual({ needs: 3 });
+    expect(first.needs[3]).toMatchObject({ question: "can you sign off the hiring plan?", since: reply.createdAt, task: { identifier: "WOR-6" }, reply: { person: "Priya Nair", source: "slack" } });
+    expect(first.greeting).toEqual({ needs: 4 });
     expect(first.idea).toMatchObject({ identifier: "WOR-3", question: "Try a weekly digest?", teammate: { key: "chief-of-staff" } });
   });
 
@@ -121,8 +124,8 @@ describe("home", () => {
     // An answer row is snoozed by its task and wait (a new question on the task is a new row).
     const { until } = await call("POST", "/api/home/snooze", { id: `${asking.id}:${first.needs[2].waitSince}`, on: true });
     expect(new Date(until).getUTCHours()).toBe(8);
-    expect((await call("GET", "/api/home")).needs.map((n: { id: string }) => n.id)).toEqual(["k-b2", "k-a1"]);
+    expect((await call("GET", "/api/home")).needs.map((n: { id: string }) => n.id)).toEqual(["k-b2", "k-a1", reply.id]);
     await call("POST", "/api/home/snooze", { id: `${asking.id}:${first.needs[2].waitSince}`, on: false });
-    expect((await call("GET", "/api/home")).needs.map((n: { id: string }) => n.id)).toEqual(["k-b2", "k-a1", asking.id]);
+    expect((await call("GET", "/api/home")).needs.map((n: { id: string }) => n.id)).toEqual(["k-b2", "k-a1", asking.id, reply.id]);
   });
 });

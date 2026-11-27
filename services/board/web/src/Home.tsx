@@ -23,8 +23,8 @@ type Toast = (text: string, action?: { label: string; run: () => void }) => void
 type Receipt = { text: string; onUndo?: () => void; row: NeedRow };
 /** A receipt's key and a row's snooze key (home.ts): an answer row's task and wait (a follow-up question on the same task is a new row), else the row's id. */
 const rkey = (r: NeedRow) => (r.kind === "answer" ? `${r.id}:${r.waitSince}` : r.id);
-/** What the detail pane shows: a Needs row, every Since item, or a card that isn't in Needs (#/approvals/<id>). */
-type Pane = { kind: "row"; id: string } | { kind: "since" } | { kind: "card"; id: string } | null;
+/** What the detail pane shows: a Needs row, or a card that isn't in Needs (#/approvals/<id>). */
+type Pane = { kind: "row"; id: string } | { kind: "card"; id: string } | null;
 
 const WORDS = ["Nothing", "One thing", "Two things", "Three things", "Four things", "Five things", "Six things", "Seven things", "Eight things", "Nine things", "Ten things"];
 /** "Three things need you; the rest is handled." Empty when nothing does: Needs you only counts what teammates ask, so "nothing" would overclaim. */
@@ -38,6 +38,8 @@ const dayIn = (tz: string, d: Date) => new Intl.DateTimeFormat("en-CA", { timeZo
 const timeIn = (tz: string, d: Date) => new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: tz }).format(d);
 const face = (t: FaceRef, size: number, state = t.state) => <Face seed={t.key} {...faceProps(t.face)} state={state} size={size} label={t.name} />;
 const chip = (t: FaceRef, size = 24, href?: string) => <TeammateChip agent={{ key: t.key, name: t.name, teammate: { job: t.job, face: t.face } }} state={t.state} size={size} href={href} />;
+/** Where a person who waits on the owner wrote: "Slack", "Gmail", or just that they wait. */
+const replyRole = (r: NonNullable<Extract<NeedRow, { kind: "open" }>["reply"]>) => (r.source === "slack" ? "Slack" : r.source === "gmail" ? "Gmail" : "Waiting for your reply");
 const linkOf = (task: string | null) => (task ? { label: "Open", href: `#/t/${task}` } : undefined);
 
 /** "Overnight" when the window began before 06:00 today, "Since Tue" when before today, else "Since 14:20". */
@@ -68,9 +70,20 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   // only one that shows something newer than the last mark. (A mark emits `home`, which refetches: marking every snapshot
   // would loop.)
   const seen = useRef<string | null>(null);
+  // Since is the digest the cursor stands for: with one on the page, the mark waits until it has been in the viewport.
+  const [sinceEl, setSinceEl] = useState<HTMLElement | null>(null);
+  const [sinceInView, setSinceInView] = useState(false);
+  useEffect(() => {
+    setSinceInView(false);
+    if (!sinceEl) return;
+    const io = new IntersectionObserver((es) => setSinceInView(es.some((e) => e.isIntersecting)), { threshold: 0.25 });
+    io.observe(sinceEl);
+    return () => io.disconnect();
+  }, [sinceEl]);
+  const sinceReady = !data?.since || sinceInView;
   // Only while Home is in front: a task or run drawer over it (full screen on a phone) hides the snapshot.
   useLayoutEffect(() => {
-    if (!front || !data || seen.current === data.as_of || !data.since_complete || !fresh) return;
+    if (!front || !data || seen.current === data.as_of || !data.since_complete || !fresh || !sinceReady) return;
     const last = seen.current;
     if (last && !data.since?.items.some((i) => i.at > last)) return;
     const asOf = data.as_of;
@@ -80,7 +93,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
       void api.homeSeen(asOf).catch(() => {});
     });
     return () => cancelAnimationFrame(f);
-  }, [data?.as_of, fresh, front]);
+  }, [data?.as_of, fresh, front, sinceReady]);
 
   // Answered and decided rows keep their receipt for this visit, even when a refetch still lists them.
   const [receipts, setReceipts] = useState<Map<string, Receipt>>(() => new Map());
@@ -177,10 +190,10 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   const chosen = approvals.filter((r) => picked.includes(r.id)).map((r) => r.card);
   const paneRow = pane?.kind === "row" ? rows.find((r) => r.id === pane.id) : undefined;
   const paneOpen = !!pane && (pane.kind !== "row" || !!paneRow);
-  const since = data.since && <SinceCard since={data.since} timezone={timezone} from={data.since_from} all={() => setPane({ kind: "since" })} />;
+  const since = data.since && <SinceCard since={data.since} timezone={timezone} from={data.since_from} />;
   const idea = data.idea && <IdeaCard idea={data.idea} fail={fail} reload={reload} />;
-  // Needs takes the full width when nothing sits beside it, so its edges line up with the sections below.
-  const sideEmpty = !(paneOpen && !mobile) && !data.start?.nextUp && !idea;
+  // Needs takes the full width when nothing sits beside it (the pane, Next up), so its edges line up with the sections below.
+  const sideEmpty = !(paneOpen && !mobile) && !data.start?.nextUp;
   // Needs you shows only while something is in it (or a receipt from this visit); empty, the box is left out.
   const needsShown = rows.length > 0;
   // The rows still open here: an answered row leaves the count at once, before the kernel catches up.
@@ -189,7 +202,6 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   const detail = paneOpen && (
     <DetailPane open title="Details" onClose={closePane}>
       {pane?.kind === "row" && paneRow && <RowDetail row={paneRow} answer={answer} done={done} receipt={receipts.get(rkey(paneRow))} />}
-      {pane?.kind === "since" && data.since && <SinceAll items={data.since.items} total={data.since.total} />}
       {pane?.kind === "card" && <CardAlone key={pane.id} id={pane.id} />}
     </DetailPane>
   );
@@ -236,12 +248,12 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
               {rows.map((r, i) => (
                 <div key={rkey(r)} id={`need-${r.id}`} role="option" aria-selected={keys.at === r.id} onClick={() => keys.setAt(r.id)}>
                   <DecisionRow
-                    face={face(r.teammate, 40, "needs")}
-                    who={r.teammate.name}
-                    role={r.teammate.job}
+                    face={r.reply?.person ? <Monogram name={r.reply.person} size={40} /> : face(r.teammate, 40, "needs")}
+                    who={r.reply?.person ?? r.teammate.name}
+                    role={r.reply ? replyRole(r.reply) : r.teammate.job}
                     question={r.question}
                     detail={r.kind === "answer" ? r.detail : undefined}
-                    meta={ago(r.since)}
+                    meta={r.reply ? `Waiting ${ago(r.since)}` : ago(r.since)}
                     active={keys.at === r.id || (pane?.kind === "row" && pane.id === r.id)}
                     onOpen={() => (keys.setAt(r.id), setPane({ kind: "row", id: r.id }))}
                     i={i}
@@ -257,23 +269,20 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
           </SectionCard>
         </div>}
         {!sideEmpty && <div className="home-side enter" style={{ "--i": 2 } as CSSProperties}>
-          {paneOpen && !mobile ? (
-            detail
-          ) : (
-            <>
-              {data.start?.nextUp && <NextUp next={data.start.nextUp} reload={reload} />}
-              {idea}
-            </>
-          )}
+          {paneOpen && !mobile ? detail : data.start?.nextUp && <NextUp next={data.start.nextUp} reload={reload} />}
         </div>}
       </div>}
       {mobile && detail}
-      {paneOpen && !mobile && idea && <div className="home-pair">{idea}</div>}
       {data.start && <MoreTeam more={data.start.more} />}
       {day && onDone && <YourDay day={day} onDone={onDone} />}
       <World world={data.world} reload={reload} />
-      {/* What changed is a glance, not a call to act: below the work, just above the team. */}
-      {since && <div className="home-since enter" style={{ "--i": 4 } as CSSProperties}>{since}</div>}
+      {/* What changed is a glance, not a call to act: below the work, with the idea beside it, just above the team. */}
+      {(since || idea) && (
+        <div className="home-pair enter" style={{ "--i": 4 } as CSSProperties}>
+          {since && <div ref={setSinceEl} className="home-pair-cell">{since}</div>}
+          {idea && <div className="home-pair-cell">{idea}</div>}
+        </div>
+      )}
       <TeamRow team={data.team} />
     </Page>
   );
@@ -349,8 +358,9 @@ function RowActions({ row, answer, decided, snooze, done, open, pick }: { row: N
   if (row.kind === "open")
     return (
       <>
-        <Button variant="primary" className="press" onClick={open}>Open</Button>
+        {row.reply ? <Button variant="primary" className="press" onClick={() => (location.hash = `#/t/${row.task.identifier}`)}>Open</Button> : <Button variant="primary" className="press" onClick={open}>Open</Button>}
         <Button className="press" disabled={busy} onClick={run(() => done(row))}>Mark done</Button>
+        {row.reply && <Button variant="quiet" className="press" disabled={busy} onClick={run(() => snooze(row))}>Not now</Button>}
       </>
     );
   const notNow = row.options.find((o) => /^not now$/i.test(o));
@@ -418,15 +428,17 @@ function CardAlone({ id }: { id: string }) {
   );
 }
 
-function SinceCard({ since, timezone, from, all }: { since: NonNullable<Home["since"]>; timezone: string; from: string; all: () => void }) {
+/** The top of what changed, grouped by teammate; "All N" opens every item in place, under the card. */
+function SinceCard({ since, timezone, from }: { since: NonNullable<Home["since"]>; timezone: string; from: string }) {
+  const [all, setAll] = useState(false);
   return (
     <SectionCard
       title="Since you last looked"
       meta={sinceMeta(from, timezone)}
       flush
-      action={since.total > Math.min(3, since.groups.length) ? <button type="button" className="link-btn home-all" onClick={all}>All {since.total} →</button> : undefined}
+      action={since.total > Math.min(3, since.groups.length) ? <button type="button" className="link-btn home-all" aria-expanded={all} onClick={() => setAll(!all)}>{all ? "Fewer" : `All ${since.total} →`}</button> : undefined}
     >
-      <DigestList items={since.groups.map((g) => ({ id: g.teammate.key, face: face(g.teammate, 24, "idle"), text: g.count > 1 ? <>{g.latest.text} <span className="home-more">+{g.count - 1} more</span></> : g.latest.text, link: linkOf(g.latest.task) }))} limit={3} />
+      {all ? <SinceAll items={since.items} total={since.total} /> : <DigestList items={since.groups.map((g) => ({ id: g.teammate.key, face: face(g.teammate, 24, "idle"), text: g.count > 1 ? <>{g.latest.text} <span className="home-more">+{g.count - 1} more</span></> : g.latest.text, link: linkOf(g.latest.task) }))} limit={3} />}
     </SectionCard>
   );
 }
@@ -440,7 +452,6 @@ function SinceAll({ items, total }: { items: SinceItem[]; total: number }) {
   }, [items]);
   return (
     <div className="home-since-all">
-      <h3>Since you last looked</h3>
       {items.length < total && <p className="home-sub">Showing the newest {items.length} of {total}</p>}
       {groups.map((g) => (
         <section key={g[0]!.teammate.key}>
