@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { syncBoards, syncHistory, syncJira } from "../src/sources.js";
 import type { SourceStore } from "../src/source-store.js";
 

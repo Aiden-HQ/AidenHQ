@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { fenceDigest } from "../src/digest.js";
 
 describe("primer_get_digest", () => {

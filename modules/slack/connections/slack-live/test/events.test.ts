@@ -1,6 +1,6 @@
 // Routines' events: a kept Slack event goes to the kernel's event router once, after the pairing, owner-chat and bound-mention
 // routing, with its bot flag; a kernel that didn't take it leaves the envelope unacked (Slack redelivers).
-import { expect, it, vi } from "vitest";
+import { expect, it, vi } from "bun:test";
 
 const handlers: ((msg: unknown) => Promise<void>)[] = [];
 vi.mock("@slack/socket-mode", () => ({ default: { SocketModeClient: class { on(ev: string, fn: (msg: unknown) => Promise<void>) { if (ev === "slack_event") handlers.push(fn); } async start() {} } } }));

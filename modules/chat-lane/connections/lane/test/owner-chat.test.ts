@@ -1,7 +1,7 @@
 // The lane's bots answer only the chat channel-telegram paired: asked from its /owner-chat, the last answer kept.
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { followOwnerChat } from "../src/lane/serve.js";
 
 describe("owner chat", () => {

@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { newRowsSql, sourceAck, sourceNew, warehouseQuery, type WarehouseDeps } from "../src/sources.js";
 
 // The cursor belongs to the calling agent (its Paperclip id) and the read's filter, starts a day back, and moves only by
@@ -25,7 +25,8 @@ it("source_new / source_ack: per-agent, per-filter cursor, filters as parameters
   expect(sent[2]!.text).toContain("ingested_at > now() - interval '1 day'");
   expect(sent[2]!.text).toContain("NOT baseline");
   expect(sent[2]!.values).toEqual(["ship", 2]);
-  expect(first).toMatchObject({ cursor: expect.stringMatching(/^42\.[0-9a-f]{16}$/), more: true, rows: [{ seq: 41 }, { seq: 42 }] });
+  expect(first.cursor).toMatch(/^42\.[0-9a-f]{16}$/); // matched apart: Bun's toMatchObject overwrites a property matched with expect.*
+  expect(first).toMatchObject({ more: true, rows: [{ seq: 41 }, { seq: 42 }] });
 
   await sourceAck(d, "agent-a", "src_slack.messages", first.cursor!);
   sent.length = 0;

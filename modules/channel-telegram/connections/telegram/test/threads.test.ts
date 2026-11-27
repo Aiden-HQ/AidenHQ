@@ -1,9 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { makeChat } from "../src/chat.js";
 import { openStore } from "../src/store.js";
 import { chatAgentMarker } from "../src/threads.js";
 
-afterEach(() => vi.unstubAllGlobals());
 const ag = (id: string, name: string, key: string, status = "idle", lifecycleHolds: string[] = []) => ({ id, name, status, lifecycleHolds, metadata: { setupKey: `aidenhq:${key}` } });
 const agents = [ag("c", "Aiden", "chief-of-staff"), ag("s", "Researcher", "assistant"), ag("p", "Slack Scout", "slack-scout", "idle", ["manual"]), ag("d", "Devops", "devops", "paused")];
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { GitHub, GitHubRefused, GRAPHQL, guard } from "../src/github.js";
 import { accessFor } from "./fake-access.js";
 

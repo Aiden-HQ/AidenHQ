@@ -3,16 +3,26 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { appendLine, lines, readFrom } from "./engine-io.ts";
 import type { EngineEvent, JobSpec } from "./types.ts";
 
 export interface EngineDecl { kind: string; bin: string; live_input?: boolean }
 
+/** `yaml` from the module's own dependencies, else from each NODE_PATH entry (named here: not every runtime reads NODE_PATH itself). */
+function requireYaml(moduleDir: string) {
+  try { return createRequire(join(moduleDir, "module.yaml"))("yaml"); } catch (e) {
+    for (const dir of (process.env.NODE_PATH ?? "").split(":").filter(Boolean)) {
+      try { return createRequire(join(resolve(dir), "x.js"))("yaml"); } catch {}
+    }
+    throw e;
+  }
+}
+
 /** The engines a module declares. module.yaml is read with the `yaml` package, from the module's own dependencies or NODE_PATH. */
 export function engineDecls(moduleDir: string): EngineDecl[] {
-  const YAML = createRequire(join(moduleDir, "module.yaml"))("yaml");
+  const YAML = requireYaml(moduleDir);
   const def = YAML.parse(readFileSync(join(moduleDir, "module.yaml"), "utf8")) ?? {};
   const list = [def.providers?.engine ?? []].flat();
   if (!list.length) throw new Error(`${moduleDir}: module.yaml declares no providers.engine`);

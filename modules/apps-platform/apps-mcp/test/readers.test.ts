@@ -1,6 +1,6 @@
 // The Fleet Steward's reads: a module token the kernel says holds apps.read reads; any other caller, the internal token included, is refused.
 import type { IncomingMessage } from "node:http";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { appsReader, appsReaderIdentity } from "../src/readers.js";
 
 const who: Record<string, object> = { "steward-token": { kind: "module", module: "fleet-steward", roles: ["kernel.cp-read", "apps.read"] }, "tasks-token": { kind: "module", module: "tasks", roles: ["kernel.tasks"] }, "job-token": { kind: "job", roles: ["apps.read"] } };

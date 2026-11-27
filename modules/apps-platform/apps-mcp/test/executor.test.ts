@@ -1,6 +1,6 @@
 // The apps platform's write kinds (executor.ts): plan checks the caller and pins what runs, raising a stateful deploy to the
 // reviewer (a migration labelled as one); execute runs the record's args through the engine.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { appsExecutor, touchesMigrations } from "../src/executor.js";
 import { parseApp, type App } from "../src/registry.js";
 import type { Platform } from "../src/platform.js";

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { TRUST_ROLES } from "../src/aidenhq-sdk/maintained-repos.js";
 
 const manifest = readFileSync(join(import.meta.dirname, "..", "..", "..", "module.yaml"), "utf8");

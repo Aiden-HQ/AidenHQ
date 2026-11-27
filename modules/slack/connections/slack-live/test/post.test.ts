@@ -1,6 +1,6 @@
 // slack.post: an agent's post is a kernel record; outside the allowed channels it is the owner's; it goes out as the
 // labelled AI bot (never as the owner).
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "bun:test";
 import { openStore } from "../src/store.js";
 import { poster, slackPost } from "../src/post.js";
 

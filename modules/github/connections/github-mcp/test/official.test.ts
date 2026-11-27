@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { createAccess } from "../src/client.js";
 import { denyExcept, officialProxy, signIn } from "../src/official.js";
 

@@ -1,8 +1,8 @@
 // The real renderers (view and the post-deploy check) in the real browser image, against a fixture app in its own container,
 // through renderArgs exactly as apps-mcp runs them. Needs Docker and the built browser image, so it runs only when asked:
-//   AIDENHQ_BROWSER_E2E=1 [AIDENHQ_BROWSER_IMAGE=<tag>] bunx vitest run test/render.e2e.test.ts
+//   AIDENHQ_BROWSER_E2E=1 [AIDENHQ_BROWSER_IMAGE=<tag>] bun test --timeout=30000 test/render.e2e.test.ts
 import { execFileSync } from "node:child_process";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { CHECK_SCRIPT, judgePage, type PageFacts } from "../src/checks.js";
 import { BROWSER_IMAGE, CANARY_NETWORK, renderArgs, VIEW_SCRIPT, WEB_NETWORK, type ViewResult } from "../src/view.js";
 import { CANARY_SCRIPT } from "../src/canary.js";
@@ -29,7 +29,7 @@ http.createServer((req, res) => {
 }).listen(8080);
 `;
 
-describe.runIf(process.env.AIDENHQ_BROWSER_E2E)("the browser image renders (end to end)", () => {
+describe.if(!!process.env.AIDENHQ_BROWSER_E2E)("the browser image renders (end to end)", () => {
   let app = "";
   const net = () => `container:${app}`;
   const requests = () => JSON.parse(docker(["exec", app, "node", "-e", "fetch('http://127.0.0.1:8080/__log').then((r) => r.text()).then((t) => process.stdout.write(t))"])) as { method: string; host: string; path: string; signed: boolean }[];

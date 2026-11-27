@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "bun:test";
 import { MultiWorkspace, toolFailure } from "../src/accounts.js";
 import { GoogleClient } from "../src/google.js";
 import { Workspace } from "../src/workspace.js";

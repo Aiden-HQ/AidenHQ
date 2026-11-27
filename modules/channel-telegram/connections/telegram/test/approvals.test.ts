@@ -1,6 +1,6 @@
 // Cards decided with the kernel's single-use tokens: kept here, never in Telegram; a button maps to its card, a typed reply to
 // the one card held for its task, Approve all to one decision per card; the decide setting keeps some cards for the board.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { approvalPress, decideByReply, decideCard, parseReply, syncCards } from "../src/approvals.js";
 import type { Card } from "../src/kernel.js";
 import { openStore } from "../src/store.js";

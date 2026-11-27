@@ -2,7 +2,7 @@
 // The browser and kernel are fakes here, so the whole contract runs in CI; the real Chrome, the real test listener and a real
 // page run in render.e2e.test.ts (AIDENHQ_BROWSER_E2E=1).
 import assert from "node:assert/strict";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { CANARY_NETWORK, WEB_NETWORK, renderArgs } from "../src/view.js";
 import { CANARY_BASE, CANARY_DISCOVERY, CANARY_LISTENER_ADDRESS, CANARY_PORT, CANARY_SCRIPT, canaryContent, canaryOrigin, pageCanary, type CanaryDeps } from "../src/canary.js";
 import { parseApp } from "../src/registry.js";

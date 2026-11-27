@@ -1,6 +1,6 @@
 import { readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { PathRejectedError } from "../src/util/errors.js";
 import { resolveAbsoluteWithin, resolveVaultPath } from "../src/util/paths.js";
 import { Vault } from "../src/vault/vault.js";

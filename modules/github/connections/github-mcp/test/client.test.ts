@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { createAccess, GitHubNeed, MUTATIONS, needResult, withOwnerTrace, withWriteBudget, type Actor, type AppSource, type GitHubAccess } from "../src/client.js";
 import { AppError } from "../src/github-app.js";
 import { readNeed } from "../src/vendor/needs.js";

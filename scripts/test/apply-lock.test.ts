@@ -9,6 +9,7 @@ import { execFile } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { NODE_DIR } from "./node-dir.ts";
 import { fileURLToPath } from "node:url";
 
 const NOT_LINUX = process.platform !== "linux" && "needs flock(1), absent on macOS";
@@ -121,7 +122,7 @@ test("an apply in a test checkout never touches the host's generations, even whi
   delete process.env.AIDENHQ_STATE_DIR;
   try {
     // node on PATH, as on a host: the generations are read with it.
-    const r = await run(dir, `bash ops/apply-config.sh`, { env: { PATH: `${join(dir, "bin")}:${dirname(process.execPath)}:/usr/bin:/bin` } });
+    const r = await run(dir, `bash ops/apply-config.sh`, { env: { PATH: `${join(dir, "bin")}:${NODE_DIR}:/usr/bin:/bin` } });
     assert.doesNotMatch(r.out, /no apply is finishing it/, r.out);
   } finally {
     for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;

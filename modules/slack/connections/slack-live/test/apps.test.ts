@@ -1,4 +1,4 @@
-import { expect, it, vi } from "vitest";
+import { expect, it } from "bun:test";
 import { apps, botName, MANIFESTS, named, slugOf } from "../src/apps.js";
 import { openStore } from "../src/store.js";
 
@@ -8,8 +8,8 @@ const OWNERS = { display_information: { name: "My Slack helper" }, oauth_config:
 const TOKEN = ["xoxe", `xoxp-test-${"a".repeat(24)}`].join(".");
 
 it("makes the app from a pasted config token, named after the instance, then updates it to the bot manifest; the token is never kept", async () => {
-  vi.stubEnv("INSTANCE_NAME", "");
-  vi.stubEnv("OWNER_NAME", "Sam");
+  process.env.INSTANCE_NAME = "";
+  process.env.OWNER_NAME = "Sam";
   const calls: { method: string; auth: string; body: Record<string, string> }[] = [];
   const slack = (async (url: string, init: RequestInit) => {
     const method = url.split("/api/")[1]!;
@@ -110,7 +110,7 @@ it("keeps bot names distinct when two instance names share a long head (a plain 
 });
 
 it("names the bot when an app first gains one, and never renames a bot the app already has", async () => {
-  vi.stubEnv("INSTANCE_NAME", "acme");
+  process.env.INSTANCE_NAME = "acme";
   // The app as Slack has it after its bot's first install: its own name, and a bot user (its @handle is already fixed).
   const installed = { ...OWNERS, features: { bot_user: { display_name: "aidenhq-other", always_online: false } } };
   const calls: { method: string; body: Record<string, string> }[] = [];

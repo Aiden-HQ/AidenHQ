@@ -9,7 +9,7 @@ const READS = 20;
 const COMMAND = /^(?:Running|Bash|bash|shell)\b/;
 const EDIT = /^(?:Editing|Edit|Write|MultiEdit|NotebookEdit|edit|write|multiedit|patch|apply_patch)\b|\bapply_patch\b|\bsed\s+-i|\bgit\s+apply\b|\bperl\s+-pi|\btee\b|<<-?\s*['"]?\w+|(?<![\d&<>=-])>{1,2}\s*(?!&|\/dev\/null)[\w./~-]+/;
 const COMMIT = /\bgit\s+(?:-C\s+\S+\s+)?(?:commit|push)\b/;
-const TEST = /\b(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test|build|typecheck|lint)\b|\btsc\b|\bvitest\b|\bjest\b|\bnode\s+(?:--\S+\s+)*--test\b|\bpytest\b|\bgo\s+(?:test|build|vet)\b|\bcargo\s+(?:test|build|check)\b|\bmake\s+(?:test|build|check)\b/;
+const TEST = /\b(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test|build|typecheck|lint)\b|\btsc\b|\bvitest\b|\bjest\b|\bbun\s+(?:run\s+)?(?:test|build|typecheck|lint)\b|\bnode\s+(?:--\S+\s+)*--test\b|\bpytest\b|\bgo\s+(?:test|build|vet)\b|\bcargo\s+(?:test|build|check)\b|\bmake\s+(?:test|build|check)\b/;
 const WAIT = /\bsleep\s+\d|--watch\b|\baidenhq[- ]wait\b/;
 const FILE = /[\w@./-]+\.(?:tsx?|mjs|cjs|jsx?|json|md|ya?ml|py|go|rs|sh|css|html)\b/g;
 

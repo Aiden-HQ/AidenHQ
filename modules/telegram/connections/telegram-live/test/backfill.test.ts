@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { startBackfill } from "../src/backfill.js";
 import { READ_STATE_METHODS, TdError } from "../src/td.js";
 import type * as Td from "../src/tdlib-types.js";

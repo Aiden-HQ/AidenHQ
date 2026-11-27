@@ -1,6 +1,6 @@
 // Exactly once across crashes: every kept message reaches the warehouse and fires its event once, whether the process dies
 // between commit and drain, before an update commits (at an update or at an invoke), or with live messages racing reconcile.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { writeRow, messageRow } from "../src/sources.js";
 import { READ_STATE_METHODS } from "../src/td.js";
 import type * as Td from "../src/tdlib-types.js";

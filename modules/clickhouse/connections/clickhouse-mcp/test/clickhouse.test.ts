@@ -7,7 +7,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import pino from "pino";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { hooks } from "../src/hooks.js";
 import { checkCall, checkQuery, isRead, MAX_TIMEOUT_SECONDS, NEVER, normalize, QueryRefused, SCOPES, truncateResult } from "../src/policy.js";
 import { oauth, staticAuth } from "../src/vendor/oauth.js";

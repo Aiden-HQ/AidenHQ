@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { classify, effectiveMute, type ChatKind, type FilterCtx } from "../src/filter.js";
 import type * as Td from "../src/tdlib-types.js";
 
@@ -40,7 +40,7 @@ describe("filter", () => {
     ["history row", msg({}), ctx("dm", false, { history: true }), true, false, ["dm"]],
   ] as const)("%s", (_name, m, c, store, event, labels) => {
     const v = classify(m, c);
-    expect({ store: v.store, event: v.event, labels: v.labels }).toEqual({ store, event, labels });
+    expect({ store: v.store, event: v.event, labels: v.labels }).toEqual({ store, event, labels: [...labels] });
   });
 
   it("effective mute: own setting, else the scope's default; archive is not mute", () => {

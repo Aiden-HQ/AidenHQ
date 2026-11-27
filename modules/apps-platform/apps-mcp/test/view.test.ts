@@ -1,6 +1,6 @@
 
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import type { Resolve } from "../src/api.js";
 import type { Scope, Sign } from "../src/identity.js";
 import { parseApp } from "../src/registry.js";
@@ -99,7 +99,7 @@ describe("renderer", () => {
     const text = (c.content[0] as { text: string }).text;
     expect(text).toContain(`<untrusted_page_accessibility_snapshot>\n${PAGE.snapshot}\n</untrusted_page_accessibility_snapshot>`);
     expect(JSON.parse(text.split("\n")[0]!)).toEqual({ status: 200, url: PAGE.url, title: "Roadmap", timed_out: false, truncated: false });
-    expect(c.content[1]).toEqual({ type: "image", data: PAGE.png, mimeType: "image/png" });
+    expect(c.content[1]).toEqual({ type: "image", data: PAGE.png, mimeType: "image/png" } as never);
     expect(viewContent({ ...PAGE, png: undefined }).content).toHaveLength(1);
   });
 });

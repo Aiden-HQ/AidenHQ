@@ -2,7 +2,7 @@
 // a new one, and a wake that comes due on a done or cancelled task is dropped instead of posted back onto it.
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "bun:test";
 import type { LaneAgent } from "../src/lane/config.js";
 import type { Lane } from "../src/lane/lane.js";
 import { openLaneStore } from "../src/lane/store.js";

@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { Projects, productTarget, upstreamReport } from "../src/projects.js";
 import { originIds, ownerTerms } from "../src/scrub.js";
 import { accessFor } from "./fake-access.js";

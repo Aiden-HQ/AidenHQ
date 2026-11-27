@@ -8,6 +8,6 @@
   },
   "description": "Server Manager: the SSH-patching service (settings read path, the validate hook, the Servers page).",
   "scripts": {
-    "test": "NODE_PATH=../../scripts/node_modules node --disable-warning=ExperimentalWarning --test test/*.test.ts"
+    "test": "NODE_PATH=../../scripts/node_modules bun test --parallel --timeout=60000 ./test/"
   }
 }

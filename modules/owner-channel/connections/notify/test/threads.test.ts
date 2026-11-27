@@ -1,5 +1,5 @@
 // Which chat a message belongs to, and where the owner last wrote in it.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { taskForNotify } from "../src/threads.js";
 
 

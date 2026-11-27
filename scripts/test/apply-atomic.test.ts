@@ -7,13 +7,14 @@
 // generations' state dir are temporary, so nothing here reaches a real host. Linux only, like the apply lock it runs under
 // (/proc, flock, stat -c): CI's runners.
 import assert from "node:assert/strict";
-import { describe, it as test } from "node:test";
+import { describe, it as test } from "bun:test";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { NODE_DIR } from "./node-dir.ts";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 
@@ -266,7 +267,7 @@ function world() {
   const i1 = commitInstance(p1);
   git(root, "clone", "-q", d("i.git"), "inst");
   const env = () => ({
-    PATH: `${d("bin")}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: d("home"), AIDENHQ_STATE_DIR: d("state"), AIDENHQ_INSTANCE_DIR: d("inst"),
+    PATH: `${d("bin")}:${NODE_DIR}:/usr/bin:/bin`, HOME: d("home"), AIDENHQ_STATE_DIR: d("state"), AIDENHQ_INSTANCE_DIR: d("inst"),
     CTRL: d("ctrl"), CALLS: d("calls"), AIDENHQ_HEALTH_DEADLINE_S: "2", AIDENHQ_KERNEL_DEADLINE_S: "2", AIDENHQ_HEALTH_INTERVAL_S: "1", AIDENHQ_KERNEL_READ_S: "1",
     GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com",
   });
@@ -297,7 +298,8 @@ function world() {
 }
 
 // Each test builds its own world (temp repos, HOME, state dir, apply lock and env), so they run side by side.
-describe("the apply as one generation", { concurrency: true, skip: NOT_LINUX }, () => {
+// The tests share nothing (each builds its own world), so they run side by side, as `node:test`'s `concurrency: true` did.
+(NOT_LINUX ? describe.skip : describe.concurrent)("the apply as one generation", () => {
 test("a first apply seeds the running pair as the last known good, validates, switches and marks itself good", async () => {
   const w = world();
   const r = await w.run();

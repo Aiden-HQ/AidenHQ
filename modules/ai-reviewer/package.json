@@ -9,7 +9,7 @@
   },
   "description": "The AI reviewer module: the reviewer@1 service, its policy, its planted cases and its paid eval.",
   "scripts": {
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts",
+    "test": "bun test --parallel --timeout=60000 ./test/",
     "eval": "node --disable-warning=ExperimentalWarning scripts/reviewer-eval.ts"
   }
 }

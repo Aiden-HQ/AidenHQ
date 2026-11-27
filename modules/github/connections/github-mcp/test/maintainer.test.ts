@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "bun:test";
 import { Maintainer } from "../src/maintainer.js";
 import { GitHubRefused } from "../src/github.js";
 import { GitHubNeed, withWriteBudget } from "../src/client.js";
