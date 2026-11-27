@@ -83,8 +83,9 @@ export function fleetSummary(f: Facts, o: { window: "24h" | "7d"; blocked: Issue
   const yesterday = day(today - DAY);
   const total = (keep: (d: string) => boolean) => f.cost.filter((c) => keep(c.day)).reduce((n, c) => n + c.costUsd, 0);
   const week = Array.from({ length: 7 }, (_, k) => day(today - (k + 1) * DAY));
+  // The same trailing week as avg7dUsd, per agent: the split of the figure the summary shows, not a different day's.
   const perAgent = new Map<string, number>();
-  for (const c of f.cost) if (c.day === yesterday && c.agentId) perAgent.set(c.agentId, (perAgent.get(c.agentId) ?? 0) + c.costUsd);
+  for (const c of f.cost) if (week.includes(c.day) && c.agentId) perAgent.set(c.agentId, (perAgent.get(c.agentId) ?? 0) + c.costUsd);
   const rows: Row[] = f.approvals.map((a) => ({ id: a.id, kind: a.action, args: a.args, tier: a.tier, panel: a.panel, by: a.decidedBy, state: a.outcome === "applied" ? "done" : a.outcome === "failed" ? "failed" : a.state, at: a.usedAt ?? a.createdAt, outcome: a.outcomeText, identifier: a.identifier }));
   const quality = report(rows, {}, now, [o.window === "24h" ? 1 : 7]);
   // A release apply that did not install closes its task cancelled, but a done task with apply cards and none of them

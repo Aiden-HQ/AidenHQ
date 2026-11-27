@@ -1219,7 +1219,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       // A bounded reply: the lists are what get long, and a cut-off payload is unreadable.
       return boundedFleetStatus({ ...status, summary });
     }, ["fleet-admin", "fleet-read"]) },
-    { method: "POST", path: /^\/internal\/fleet\/costs$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc) => fleetCosts(pc, parse(CostsSchema, body ?? {}).days)) },
+    { method: "POST", path: /^\/internal\/fleet\/costs$/, handle: async (_m, body, _u, req) => fleetCall(req, (pc) => fleetCosts(pc, store, parse(CostsSchema, body ?? {}).days)) },
     { method: "POST", path: /^\/internal\/fleet\/control$/, handle: async (_m, body, _u, req) => fleetCall(req, async (pc, cos) => fleetControl(pc, cos, parse(ControlSchema, body), store)) },
     {
       // The Chief of Staff relays the owner's own chat message, word for word, to an engineer's or the Researcher's task. The agent picks the

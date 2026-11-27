@@ -136,8 +136,9 @@ outside `tokens.css`, and no class the kit replaced (`web/legacy-classes.json`, 
 `Home.tsx`, one read (`GET /api/home`): Needs you (answers, approval cards and handed-back tasks, oldest first, answered in
 place as `DecisionRow`s), Since you last looked (what the team told the owner and what closed, grouped by teammate, top
 three and "All N"), Your world (who the owner waits on; today's calendar), Your team (teammates with news, and Hire a
-teammate) and one Idea. **A block with no source or no data is left out**, never shown empty; a fresh install sees
-"Nothing needs you." and the team row.
+teammate) and one Idea. **A block with no source or no data is left out**, never shown empty: Needs you too, and the
+greeting then says only "Good morning, <name>." (Needs you counts only what teammates ask, so it never claims "nothing").
+A fresh install sees the greeting, Next up and the team row.
 
 - **Keyboard** (`needs.ts`): J/K move through Needs you, Enter opens the detail pane, E does the row's main action (approve,
   the recommended option, mark done), S snoozes it. Enter, E and S wait until a row is picked; every key is off while
@@ -215,7 +216,7 @@ contributes:
   `styles.variables`: the MCP Apps standard names the board has tokens for (`--color-background-*`, `--color-text-*`,
   `--color-border-primary|secondary`, `--color-ring-primary`, `--font-sans`, `--font-text-xs|sm|md-size`,
   `--border-radius-xs|sm|md|lg`, `--shadow-sm|md|lg`; the one table is `TOKENS` in `ModuleView.tsx`), as the board's tokens
-  write them, so the view sets `color-scheme` to `theme`; `teammates` maps each teammate's key to its current name), `ui/notifications/initialized`, `tools/call`, `ui/message` (opens Ask Aiden with the text ready) and `ui/notifications/size-changed`
+  write them, so the view sets `color-scheme` to `theme`; `teammates` maps each teammate's key to its current name), `ui/notifications/initialized`, `ui/notifications/host-context-changed` (the board sends the host context again when the system theme flips; the frame inherits the board's color-scheme, so the two must match or the browser paints an opaque backdrop), `tools/call`, `ui/message` (opens Ask Aiden with the text ready) and `ui/notifications/size-changed`
   (the frame's height). Nothing else is answered. A web host should use a sandbox proxy on a second origin; the board has one
   origin in every exposure mode, so the single sandboxed frame stands in for it.
 - **The page kit** (`services/shared/page-kit.css|js`, copied into each module that serves a page by

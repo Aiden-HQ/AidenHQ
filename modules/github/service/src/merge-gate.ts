@@ -9,11 +9,11 @@
 // for a new merge at its new head. Missing evidence (no checks, a truncated page of checks, the base's aggregate gate
 // check not yet on the head) never counts as passing.
 
-import { CODE_REVIEW_STATUS, GATE_CHECK, contextStatus, latestChecks, namedChecks, skippedImageScan } from "./aidenhq-sdk/checks.ts";
+import { CODE_REVIEW_STATUS, GATE_CHECK, POLICY_CHECK, contextStatus, gateJudgedNothing, judgedOnHead, judgedSomething, latestChecks, namedChecks, newestGateSkipped, skippedImageScan } from "./aidenhq-sdk/checks.ts";
 import type { ReviewGate } from "./review-gate.ts";
 
 /** A check on a head, by name (service.ts checksAt, checks.ts namedChecks): `kind` and `rank` are what pick the newest of a name. */
-export type NamedCheck = { name?: string; kind?: "run" | "status"; rank?: number; ok?: boolean; success?: boolean; pending?: boolean; skipped?: boolean };
+export type NamedCheck = { name?: string; kind?: "run" | "status"; rank?: number; ok?: boolean; success?: boolean; pending?: boolean; skipped?: boolean; status?: string | null };
 /** Code review's answer for a head (review-gate.ts). */
 export type Verdict = Awaited<ReturnType<ReviewGate>>;
 
@@ -24,11 +24,15 @@ export type Verdict = Awaited<ReturnType<ReviewGate>>;
  */
 export function productMergeEligible(p: { repo: string; head: string; checks: NamedCheck[]; verdict: Verdict | undefined; productRepo: string }): boolean {
   const same = String(p.repo).toLowerCase() === String(p.productRepo ?? "").toLowerCase() && Boolean(p.productRepo);
-  // Success itself: a neutral or skipped gate is no pass for a merge that skips the reviewer. The gate's newest run on the head
-  // decides: a superseded cancelled run (an edit re-ran CI) never blocks a head whose latest `ci-required` passed, and an older
-  // pass never hides a later red one. A check run and a status sharing the gate's name are two judgements; the worst counts.
+  // Success itself: a neutral or skipped gate is no pass for a merge that skips the reviewer. The gate's newest run that judged
+  // the head decides (judgedCheck): a superseded cancelled run (an edit re-ran CI) never blocks a head whose latest real
+  // `ci-required` passed, and an older pass never hides a later red one. An edit's skip is no verdict either. A check run and a
+  // status sharing the gate's name are two judgements; the worst counts. The `policy` run that edit made is part of the head's
+  // verdict too, so a bad title it found fails here as well.
   const gate = headChecks(p.checks.filter((c) => c.name === GATE_CHECK));
-  const ci = gate.length > 0 && gate.every((c) => c.success === true && !c.pending);
+  const judged = judgedCheck(p.checks, GATE_CHECK);
+  const title = editedTitleCheck(p.checks);
+  const ci = gate.length > 0 && judged?.success === true && !judged.pending && (!title || (title.success === true && !title.pending));
   // A pass with no mandatory review behind it (a tier that needs none) is no pass for a merge that skips the AI reviewer.
   return same && Boolean(p.head) && ci && Boolean(p.verdict && "pass" in p.verdict && p.verdict.pass === true && !p.verdict.unreviewed);
 }
@@ -124,6 +128,33 @@ export type Action = "wait" | "repair" | "fix_ci" | "fix_review" | "approve" | "
 export type ShipContext = { queue: boolean; approve: boolean; verdict?: Verdict; /** The reviewer App's login on this repo (GraphQL's Bot login, no `[bot]`), where it is installed: its approval counts. */ app?: string; required: string[]; checks: NamedCheck[]; /** The open PR whose head branch this PR's base is (a stack): it waits on that PR. */ stackedOn?: number; /** Members' review comments nobody has answered (member-comments.ts): open like findings. */ comments?: boolean };
 
 /**
+ * The title the head's newest `policy` run judged, always: the title is not part of the commit, so the aggregate's verdict on
+ * it goes stale the moment the title changes. An edit that runs only `policy` posts the newest title check, and it must hold
+ * even when the full run posts a newer `ci-required` afterwards (that aggregate judged the title it read before the edit). A
+ * `policy` that skipped or was cancelled judged nothing and is no title verdict (undefined).
+ */
+export function editedTitleCheck(checks: NamedCheck[]): NamedCheck | undefined {
+  const titles = headChecks(checks.filter((c) => c.name === POLICY_CHECK && judgedSomething(c)));
+  return titles.find((c) => !(c.ok ?? c.success) && !c.pending) ?? titles.find((c) => c.pending) ?? titles[0];
+}
+
+/**
+ * A required name's judgement on the head: its newest run that actually judged it, never a gate that skipped or was cancelled
+ * (gateJudgedNothing). A name whose every run is like that has no judgement: undefined, which the caller waits on rather than
+ * reading a superseded run's pass or a cancellation's red as this head's result.
+ */
+export function judgedCheck<T extends NamedCheck>(checks: T[], name: string): T | undefined {
+  const same = checks.filter((c) => c.name === name);
+  // The newest run of each kind that actually judged the head: a gate that skipped or was cancelled on it is dropped before the
+  // newest is taken, so the next-newest real run of its kind stands in. A check run and a status sharing a name stay separate
+  // judgements (headChecks), and the worst of them still counts.
+  const judged = headChecks(same.filter((c) => !gateJudgedNothing(c)));
+  if (judged.length) return judged.find((c) => !(c.ok ?? c.success) && !c.pending) ?? judged.find((c) => c.pending) ?? judged[0];
+  // Nothing judged it but the gate: still running when any run of the name is pending, else the replacement run has to come.
+  return headChecks(same).find((c) => c.pending);
+}
+
+/**
  * The one readiness rule: what to do with one PR from `data` (PR_QUERY's answer, withGate applied) and its bound `head`.
  * Without `ship` it is the merge queue's for an approved record: { do: "merge" | "done" | "wait" | "fail", why }, and before a
  * "merge" merges.ts still asks code review's gate; only our own repos (agents org, product) and maintained ones reach it, so
@@ -149,32 +180,46 @@ export function decide(data: Json, head: string, ship?: ShipContext, noChecksOk 
   if (ship && (pr.mergeStateStatus === "DIRTY" || pr.mergeStateStatus === "BEHIND")) return { do: "repair", why: pr.mergeStateStatus === "DIRTY" ? `it conflicts with \`${def}\`` : `it is behind \`${def}\`` };
   if (ship) {
     // Only the checks the rules require: an optional red check doesn't hold the PR, and a required one not reported yet is running.
-    // Each name is judged by its newest run on the head (headChecks): an edit's re-run supersedes the cancelled run before it, and
-    // a name whose only runs were cancelled stays red rather than looking like it is still running. A check run and a status that
-    // share a name are separate judgements, so the worst of them counts.
-    const judged = ship.required.map((name) => {
-      const all = headChecks(ship.checks.filter((c) => c.name === name));
-      return all.find((c) => !(c.ok ?? c.success) && !c.pending) ?? all.find((c) => c.pending) ?? all[0] ?? { name, pending: true };
-    });
-    const red = judged.filter((c) => !(c.ok ?? c.success) && !c.pending);
+    // Each name is judged by its newest run on the head (headChecks): a name whose only runs were cancelled stays red rather than
+    // looking like it is still running. A check run and a status that share a name are separate judgements, so the worst counts.
+    // An edit's run plans no suite: its `ci-required` and every job's check are skips newer than the run that tested the head.
+    // judgedOnHead drops those and keeps the reports that judged the head, the `policy` run the edit did make among them, so an
+    // invalid title edited after a green head is still a required red (policy) here, and a real failure still fails.
+    const onHead = judgedOnHead(ship.checks);
+    const judged = ship.required.map((name) => ({ name, check: judgedCheck(onHead, name) }));
+    const title = editedTitleCheck(ship.checks);
+    if (title && !(title.ok ?? title.success) && !title.pending) return { do: "fix_ci", why: "the title edited after the head's last CI run does not pass the Conventional Commit check" };
+    const red = judged.filter(({ check: c }) => c && !(c.ok ?? c.success) && !c.pending);
     if (red.length) return { do: "fix_ci", why: `${red.length} required check(s) failed on its head` };
+    // A required gate whose only report on this head was skipped or cancelled judged nothing (judgedCheck's undefined): the
+    // run that replaces it decides, never this head's earlier result and never a cancellation.
+    const superseded = judged.filter((c) => !c.check);
+    if (superseded.length) return { do: "wait", why: `the aggregate that judged its head was superseded; waiting for the run that replaces it (${superseded.map((c) => `\`${String(c.name).replace(/`/g, "")}\``).join(", ")})` };
+    // An edit's `policy` run is the newest title check: still running is a wait, as any required check in flight is.
+    if (title?.pending) return { do: "wait", why: "the title check the edit re-ran is still running" };
     // A required name nothing reported on this head (renamed, path-filtered) is named: GitHub won't merge until it reports.
     const missing = ship.required.filter((name) => !ship.checks.some((c) => c.name === name));
     if (missing.length && !ship.checks.some((c) => c.pending)) return { do: "wait", why: `required check(s) never reported on its head: ${missing.map((m) => `\`${m.replace(/`/g, "")}\``).join(", ")} (a person reruns or fixes the workflow)` };
-    if (judged.some((c) => c.pending)) return { do: "wait", why: "required checks are still running on its head" };
+    if (judged.some((c) => c.check?.pending)) return { do: "wait", why: "required checks are still running on its head" };
   } else {
     const rollup = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup;
     if (rollup?.contexts?.pageInfo?.hasNextPage) return { do: "fail", why: "more than 100 checks on its head, so not all of them can be read" };
-    // Each name is judged by its newest run at the head (headChecks), as GitHub's branch protection does: an edit starts a re-run
-    // that cancels the one before it, and the cancelled run's check stays on the head, so counting every context would hold the
-    // PR forever. A name whose only runs were cancelled passes nothing and does not wait either: it is red.
-    const named = headChecks(namedChecks(rollup));
+    // Each name is judged by its newest run at the head (headChecks), as GitHub's branch protection does: a superseded run's check
+    // stays on the head forever, so counting every context would hold the PR. A name whose only runs were cancelled passes nothing
+    // and does not wait either: it is red.
+    const all = namedChecks(rollup);
+    // An edit's run planned no suite, so its aggregate is a skip and so is every job's check beside it. judgedOnHead drops those
+    // and keeps the reports that judged the head (the `policy` run the edit made included) before the newest is taken, so a skip
+    // never reads as a pass and a real failure an edit superseded never reads as green.
+    const named = headChecks(judgedOnHead(all));
     // A repo with no checks never reports one: the caller says nothing is coming (noChecksOk), and the rest of the gate still runs.
     if (!named.length && !noChecksOk) return { do: "wait", why: "no checks on its head yet" };
     // Check names are set by whoever can push to the repo: counted, never quoted.
     const red = named.filter((c) => !c.ok && !c.pending);
     if (red.length) return { do: "fail", why: `${red.length} check(s) failed on its head (\`gh pr checks ${pr.number}\` names them)` };
     if (named.some((c) => c.pending)) return { do: "wait", why: "checks are still running on its head" };
+    // The newest aggregate judged nothing and no run replaced it: nothing here is a pass.
+    if (newestGateSkipped(all) && !judgedCheck(all, GATE_CHECK)) return { do: "wait", why: "the aggregate that judged its head was superseded; waiting for the run that replaces it (`ci-required`)" };
   }
   if (skippedImageScan(pr)) return { do: ship ? "fix_ci" : "fail", why: "it changes an image but its image-scan check was skipped" };
   // Code review gates the repo: its pass is the review (code review unreachable is a wait); open important findings are the PR's to fix.

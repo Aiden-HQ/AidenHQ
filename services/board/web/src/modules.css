@@ -73,8 +73,10 @@
 .mod-share-actions { display: flex; gap: 8px; }
 
 /* A module's Fleet page (ModuleView.tsx): the module's own view in a frame that fills the page's width; its height follows the
-   view's size-changed. The bar above it is the board's, never the view's: the owner's Save of a change the view proposed. */
-.mv-frame { display: block; width: 100%; min-height: 160px; border: 0; background: transparent; } /* color-scheme inherits the board's theme, the one the view sets: a mismatch would paint the frame opaque */
+   view's size-changed. The bar above it is the board's, never the view's: the owner's Save of a change the view proposed.
+   The frame keeps the board's color-scheme (inherited): when it differs from the one the view sets, the browser paints an
+   opaque backdrop behind the view, a grey box whose edges the view's content then touches. */
+.mv-frame { display: block; width: 100%; min-height: 160px; border: 0; background: transparent; }
 .mv-proposal { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; padding: var(--sp-3) var(--sp-4); border: 1px solid var(--accent); border-radius: var(--radius); background: var(--accent-soft); }
 .mv-proposal-text { display: grid; gap: var(--sp-1); flex: 1 1 320px; min-width: 0; font-size: var(--text-body); }
 .mv-proposal-text pre { margin: 0; max-height: 40vh; overflow: auto; font-family: var(--mono); font-size: var(--text-xs); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -12,7 +12,7 @@
 // exception is an image target absent from a batch that listed every configured image as well as every running one (the
 // writer's images.complete marker): it is recorded as retired (src_meta.ingest_run.status) and its findings are settled,
 // against the single same-repository target scanned cleanly this pass or against the replacement RETIRED_TARGETS names,
-// or (a configured computer image nothing runs or names) claiming no replacement. A stale batch, or one without the
+// or (nothing runs it and no configured image names it) claiming no replacement. A stale batch, or one without the
 // marker, resolves nothing.
 import { createHash } from "node:crypto";
 import { closeSync, fstatSync, openSync, readFileSync } from "node:fs";
@@ -58,7 +58,7 @@ CREATE OR REPLACE VIEW src_security.findings AS
     AND d.at_severity IS NOT DISTINCT FROM f.severity AND d.at_fixed_version IS NOT DISTINCT FROM f.fixed_version
     AND d.at_fix_state IS NOT DISTINCT FROM f.fix_state AND d.at_present IS NOT DISTINCT FROM f.present
     AND (d.verdict <> 'not-affected' OR d.decided_at > now() - interval '30 days');
-COMMENT ON VIEW src_security.findings IS 'Vulnerabilities in what we run, one row per (target, package, version, vuln_id). target: host (the VM''s OS packages, kernel, Docker, Node), image:<ref> (a running container image), repo:product, repo:instance, app:<name> (an app''s deployed source). tool grype = a known CVE/GHSA matched against the inventory (severity critical|high|medium|low|negligible|unknown; fixed_version and fix_state fixed|not-fixed|wont-fix|unknown); tool app-auditor = AppSec''s App Auditor vibe audit of an app repo (no fixed_version). finding_id = stable short id (use it in task markers). present false = no longer found by a scan of that same target or settled when the target was retired (resolved_at; resolved_reason names the target''s replacement when retired); a target absent from a pass keeps present = true with an ingest_run row saying its findings are unverified, unless it is a retired image target in a batch that listed every running and configured image (then its ingest_run row says retired: settled against the replacement scanned this pass, or, for a fleet computer image no container runs and no configured image names, with no replacement). first_seen / last_seen = when our scans first and last saw it. verdict (confirmed|not-affected, with verdict_reason, verdict_by, verdict_at) = Security Watch''s review of this finding as it stands now; null = not reviewed, or the finding changed since, or a not-affected verdict is over 30 days old. kev = CISA lists it as exploited in the wild (true, else null; kev_added = the date CISA added it); epss = FIRST''s probability (0 to 1) it is exploited in the next 30 days and epss_percentile its rank among all CVEs (both refresh daily; an epss of 0.1 or more is high). Both come from grype''s database; null on app-auditor rows. Changes (severity, fix, present, kev): src_security.changes.';
+COMMENT ON VIEW src_security.findings IS 'Vulnerabilities in what we run, one row per (target, package, version, vuln_id). target: host (the VM''s OS packages, kernel, Docker, Node), image:<ref> (a running container image), repo:product, repo:instance, app:<name> (an app''s deployed source). tool grype = a known CVE/GHSA matched against the inventory (severity critical|high|medium|low|negligible|unknown; fixed_version and fix_state fixed|not-fixed|wont-fix|unknown); tool app-auditor = AppSec''s App Auditor vibe audit of an app repo (no fixed_version). finding_id = stable short id (use it in task markers). present false = no longer found by a scan of that same target or settled when the target was retired (resolved_at; resolved_reason names the target''s replacement when retired); a target absent from a pass keeps present = true with an ingest_run row saying its findings are unverified, unless it is a retired image target in a batch that listed every running and configured image (then its ingest_run row says retired: settled against the replacement scanned this pass, or, when nothing runs it and no configured image names it, with no replacement). first_seen / last_seen = when our scans first and last saw it. verdict (confirmed|not-affected, with verdict_reason, verdict_by, verdict_at) = Security Watch''s review of this finding as it stands now; null = not reviewed, or the finding changed since, or a not-affected verdict is over 30 days old. kev = CISA lists it as exploited in the wild (true, else null; kev_added = the date CISA added it); epss = FIRST''s probability (0 to 1) it is exploited in the next 30 days and epss_percentile its rank among all CVEs (both refresh daily; an epss of 0.1 or more is high). Both come from grype''s database; null on app-auditor rows. Changes (severity, fix, present, kev): src_security.changes.';
 CREATE OR REPLACE VIEW src_security.changes AS
   SELECT seq, entity, entity_id, scope, field, old_value, new_value, url, observed_at, false AS baseline FROM src_security.change;
 COMMENT ON VIEW src_security.changes IS 'Finding changes after first sight: field severity, fixed_version, fix_state, kev or present (false = resolved, true = back). scope = the target; entity_id = target/package/version/vuln_id.';
@@ -306,27 +306,29 @@ export function imageRepository(target: string): string | null {
 }
 
 /**
- * Whether an `image:` target is one of the fleet's computer images (`aidenhq/computer-browser`, `-agent-base`,
- * `-engineer`, `-session`). Only these may retire with no replacement: the writer enumerates them from
- * config/computers.json every pass, so absence says the build is no longer current. Any other image target's absence is
- * not proof it is out of scope, because the writer lists only what runs and what is configured.
+ * Whether the batch tried and failed to inventory an image that could be the absent target under another name. The writer
+ * chooses a container's key from the names its image carries (a configured tag wins over the container's own tag), so a
+ * failed row in any repository may be this image listed under the name the writer chose: absence is proof only when every
+ * image row in the complete batch scanned cleanly. A failure leaves the absent image unverifiable, since its live build's
+ * state is unknown.
  */
-export function isComputerImage(target: string): boolean {
-  return imageRepository(target)?.startsWith("aidenhq/computer-") === true;
+function failedAt(batch: Batch, clean: Map<string, Row[]>): boolean {
+  return batch.targets.some((t) => t.target.startsWith("image:") && !clean.has(t.target));
 }
 
+/** The locations either of two SBOMs of one target reported for the same finding, deduped and capped like one scan's. */
+const rowLocations = (r: Row): string[] => (Array.isArray(r.locations) ? (r.locations as string[]) : []);
+
 /**
- * Whether the batch tried and failed to scan something that could be an absent image under another name: another target
- * of its repository, or a bare `image:sha256:…` row (a container keyed by its image id names no repository, so its
- * failure is the only thing that can say the repository's old tag may be running under it). Such a failure leaves the
- * absent image unverifiable: its live build's state is unknown.
+ * One finding seen by two SBOMs of the same target (two planned units that share a key): the union of their locations and
+ * the highest exploitation data, so neither scan's evidence is dropped when they are reconciled as one inventory.
  */
-function failedAt(batch: Batch, clean: Map<string, Row[]>, repo: string | null): boolean {
-  return batch.targets.some((t) => {
-    if (clean.has(t.target)) return false;
-    const other = imageRepository(t.target);
-    return other == null ? /^image:sha256:/.test(t.target) : other === repo;
-  });
+function mergeRow(a: Row, b: Row): Row {
+  return {
+    ...a,
+    locations: [...new Set([...rowLocations(a), ...rowLocations(b)])].sort().slice(0, 20),
+    ...mergeExploitation(a as unknown as Exploitation, b as unknown as Exploitation),
+  };
 }
 
 /**
@@ -399,23 +401,38 @@ async function scanBatch(store: SourceStore, d: PassDeps, batch: Batch, now: () 
   const clean = new Map<string, Row[]>(); // targets scanned cleanly this pass, with the rows that scan wrote
   const synced = await store.scopesByPrefix("");
   const order = [...batch.targets].sort((a, b) => (synced.get(a.target)?.syncedAt ?? 0) - (synced.get(b.target)?.syncedAt ?? 0));
+  // The batch can list more than one SBOM for one target: two planned units share a key when two containers run one image
+  // index on one platform (different manifests, one key) or a configured tag names what a container runs. Those SBOMs are
+  // one inventory, so they are reconciled together; syncing each as a full scan would resolve the other's findings as
+  // gone, and a member that failed leaves the target unverified rather than reconciled from a partial inventory.
+  const groups = new Map<string, Batch["targets"]>();
+  for (const t of order) groups.set(t.target, [...(groups.get(t.target) ?? []), t]);
   let written = 0;
-  for (const t of order) {
+  for (const [target, members] of groups) {
     if (now() - start > (d.deadlineMs ?? 50 * 60_000)) break;
     try {
-      written += await store.run("security", t.target, async () => {
-        if (t.error || !t.file) throw new Skip(`host could not inventory ${t.target}: ${t.error ?? "no SBOM"}`);
-        let rows: Row[];
-        try {
-          rows = parseGrype(t.target, await d.grype(t.file));
-        } catch (err) {
-          throw new Skip(`grype on ${t.target}: ${String((err as Error).message ?? err).slice(0, 300)}`);
+      written += await store.run("security", target, async () => {
+        const byKey = new Map<string, Row>();
+        for (const t of members) {
+          if (t.error || !t.file) throw new Skip(`host could not inventory ${target}: ${t.error ?? "no SBOM"}`);
+          let rows: Row[];
+          try {
+            rows = parseGrype(target, await d.grype(t.file));
+          } catch (err) {
+            throw new Skip(`grype on ${target}: ${String((err as Error).message ?? err).slice(0, 300)}`);
+          }
+          for (const r of rows) {
+            const k = `${r.package}|${r.version}|${r.vuln_id}`;
+            const prev = byKey.get(k);
+            byKey.set(k, prev ? mergeRow(prev, r) : r);
+          }
         }
-        const n = await syncTarget(store, t.target, "grype", rows, new Date(now()));
-        clean.set(t.target, rows);
+        const rows = [...byKey.values()];
+        const n = await syncTarget(store, target, "grype", rows, new Date(now()));
+        clean.set(target, rows);
         return n;
-      }, { commit: t.commit });
-      await store.saveScope(t.target, new Date(now()).toISOString(), true);
+      }, { commit: members.find((t) => t.commit)?.commit });
+      await store.saveScope(target, new Date(now()).toISOString(), true);
     } catch (err) {
       if (!(err instanceof Skip)) throw err;
     }
@@ -428,13 +445,15 @@ async function scanBatch(store: SourceStore, d: PassDeps, batch: Batch, now: () 
   //           one. In any other batch it keeps the absent/unverified row: an image it might have listed must not settle. It retires against the one `image:` target of its own repository that was scanned
   //           cleanly in this pass (a tag renamed in place); with none, or with more than one to choose from, it claims no
   //           replacement. Either way status is "retired", error is null, and its findings settle present = false.
-  //           One exception: when its repository is in the batch but nothing of it scanned cleanly, or a bare
-  //           `image:sha256:…` row failed, the image may be running under another name whose scan failed (an alias, or
-  //           the container's own id), so absence is not proof it is gone: the target keeps the absent/unverified row
-  //           until a pass scans its whole repository cleanly.
-  //           Retiring with no replacement at all is only for a configured computer image (`image:aidenhq/computer-*`),
-  //           which the writer enumerates every pass; any other image keeps the absent error when no same-repository
-  //           target was scanned, and a bare `image:sha256:…` id never matches a repository at all.
+  //           One exception: when any `image:` row the batch listed did not scan cleanly, the image may be running under
+  //           another name whose scan failed (the writer chooses a container's key from a configured tag or its own tag,
+  //           and a bare `image:sha256:…` row names no repository), so absence is not proof it is gone: the target keeps
+  //           the absent/unverified row until a pass inventories every image it listed.
+  //           With no clean same-repository target and no such failure, the target retires claiming no replacement: the
+  //           writer keys every running container on the image it runs and every configured image on its tag, so a
+  //           complete batch that omits the reference proves nothing runs it and no configured image names it. That
+  //           covers a fleet computer image, a bare `image:sha256:…` id (which names no repository at all), and a tag
+  //           whose repository had no clean scan this pass (a stopped service, a replaced database digest).
   //   other:  the batch does not enumerate these completely, so absence is not proof of retirement: the findings stay
   //           present and unverified, and the absence is an ingest_run error row so readers can see it.
   // A replacement from the shipped map (a cross-repository rename) is used when it was scanned cleanly in this pass;
@@ -465,22 +484,21 @@ async function scanBatch(store: SourceStore, d: PassDeps, batch: Batch, now: () 
       if (!replacement && target.startsWith("image:")) {
         const repo = imageRepository(target);
         const same = repo ? [...clean.keys()].filter((t) => t.startsWith("image:") && imageRepository(t) === repo) : [];
-        // A same-repository target the batch attempted but did not scan clean: this image may be the one that ran under
-        // that name (an alias, say), so its absence this pass does not prove it retired, and a clean sibling does not
-        // prove it either. Keep the absent row until a pass scans the whole repository cleanly.
-        // So does a bare `image:sha256:…` row the batch attempted and could not scan: it names no repository, so only
-        // its failure says something about this image, and it may be exactly this image under the id its container runs.
-        if (failedAt(batch, clean, repo)) {
+        // An image row the batch attempted but did not scan clean may be this image under the name the writer chose for it
+        // (a configured tag wins over the container's own tag, and a bare `image:sha256:…` row names no repository at
+        // all), so its absence this pass does not prove it retired and a clean sibling of another name does not prove it
+        // either. Keep the absent row until a pass inventories every image it listed.
+        if (failedAt(batch, clean)) {
           await store.run("security", target, async () => { throw new Skip("absent from this pass's SBOM inventory: findings unverified"); }).catch(() => undefined);
           continue;
         }
         // One cleanly-scanned target of the repository is the replacement. With none (or several, so none can be named),
-        // only a configured computer image may retire claiming no replacement; anything else keeps the absent error.
+        // the target retires claiming no replacement. That is proof only because this is reached only for a batch that
+        // listed every planned image unit (the marker above) and in which no row that could be this image failed (the
+        // `failedAt` guard): nothing runs this reference and no configured image names it, whether it is one of the
+        // fleet's computer images, a bare image id, or a tag whose repository has no clean scan this pass (a stopped
+        // service's old tag, a replaced database digest).
         if (same.length === 1) replacement = same[0]!;
-        else if (!isComputerImage(target)) {
-          await store.run("security", target, async () => { throw new Skip("absent from this pass's SBOM inventory: findings unverified"); }).catch(() => undefined);
-          continue;
-        }
       }
       // A failed retirement rolls back as a whole and is recorded as absent, so it stays visible and the next pass retries.
       const retired = target.startsWith("image:") || replacement

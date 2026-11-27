@@ -18,12 +18,21 @@ description: "Works the day's deep-look log lines, gives every owner interruptio
    repair at the agent that produced it (the rule fix, or a product bug for code that sends it): why didn't an agent settle it,
    and why didn't the agent that owns the problem fix it itself. A wait on a third party the owner was reminded of becomes a
    chaser task for the responsible agent.
-4. One `notify` (`kind: digest`): what tripped and was done, open items, rules filed, open product-bug issues, fixes waiting on a
-   pin bump, anything waiting on the owner but a card, and the day's interruptions (counted, needless ones with their repair).
+4. **Spend, from the gateway's counters** (never `fleet_status.summary.spend` or `fleet_costs`: both read the board's usage
+   rollup, which understates by about a quarter). On the `prometheus` datasource run `query_prometheus`,
+   `queryType: range`, `stepSeconds: 86400`, from `<today−6>T00:00:00Z` to `<today>T00:00:00Z`, for
+   `sum by (kind) (aidenhq_gateway_spend_usd_today)`; each point is the previous UTC day's final value. Per day, `check`
+   plus `ci-code-review` is CI/check spend, `agent` is agent work, the rest is fleet overhead. Cross-check yesterday with
+   `aidenhq_gateway_install_spend_usd{period="day"}` at the same boundary (the counter the caps enforce; where it is higher,
+   the excess is in-flight reservations, not billed spend). One line: "Spend: $X yesterday (check $A / agent $B / other
+   $C), $Y/day over 7 days." Without a `prometheus` grant (no grafana or monitoring module) say spend is unavailable and
+   why, never zero and never the rollup.
+5. One `notify` (`kind: digest`): what tripped and was done, open items, rules filed, open product-bug issues, fixes waiting on a
+   pin bump, anything waiting on the owner but a card, the spend line, and the day's interruptions (counted, needless ones with their repair).
    Quiet: "Fleet quiet: nothing tripped".
    Each item listed as waiting on the owner is checked first: its task or detector key against live state (a generation, an
    ingest run, the host) and against "Owner decisions". One that is already done or that a decision settles is left out and
    settled the way `fleet-check` settles verified work: the evidence goes on its task (finished where you may close it), an
    agent waiting on the owner for that answer is left untouched and handed to the chief of staff (the evidence and its task
    id in the handoff) to answer from the decision or the live evidence, and a skipped source's open key goes through `fleet-check`'s source triage.
-5. Log `digest sent`; `task_finish`.
+6. Log `digest sent`; `task_finish`.

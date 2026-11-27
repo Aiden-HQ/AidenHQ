@@ -15,7 +15,10 @@ name: ci
 
 on:
   pull_request:
-    # edited: a fixed title re-runs the `policy` job's title check (no push needed).
+    # edited: a title or body edit changes no code, so it re-runs only the `policy` job's title check (no push needed). Every
+    # other job is guarded off it below, and `ci-required` restates the head's real verdict rather than a skip: the run that
+    # tested the head is left alone, and its result still decides. A retarget is also an `edited` event but changes what CI
+    # must test (`github.event.changes.base`), so it runs in full.
     types: [opened, synchronize, reopened, edited]
   push:
     # merge-train/<n>: the merge queue's trains (modules/github merge-gate.ts), main plus the PRs it tests together,
@@ -27,10 +30,13 @@ permissions:
 
 # A newer push to a PR cancels its older run. Every push to main and every merge train runs to the end (its own group:
 # GitHub drops a pending run when a newer one joins the group): the merge queue reads main's result, and a cancelled run
-# says nothing about it.
+# says nothing about it (nor does `ci-required` below, which posts no check for a cancelled run). An edit that changes only the
+# title or body (no new commit, no retarget) has a group of its own and cancels nothing: it exists only for `policy`'s title
+# check, so it never touches the run that is testing the code. A retarget runs in the PR's own group like a push: it changes the
+# base the tests run against, so its run must replace the stale one.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}${{ github.event.action == 'edited' && github.event.changes.base == null && '-edited' || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !(github.event.action == 'edited' && github.event.changes.base == null) }}
 
 jobs:
   # The suites this change needs tested that have no job of their own (checks' `tests` step; all of them on a push
@@ -325,6 +331,10 @@ jobs:
   # dependency manifest or lockfile. Every one is listed, whatever its FROM: a FROM that can't be resolved fails the
   # scan, never skips it.
   checks:
+    # An edit that changes only the title or body changes no code: the run plans nothing, so every job that needs this plan skips
+    # with it (a job `if` skips still posts a `skipped` check, which is why the gate judges the head's newest real run —
+    # merge-gate.ts judgedOnHead). A retarget changes `github.event.changes.base` and plans in full: it tests a new base.
+    if: ${{ github.event.action != 'edited' || github.event.changes.base != null }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -729,12 +739,119 @@ jobs:
   # need another appear only once it finishes, so without this a PR can look all green for a moment before its tests
   # exist; the code host treats this check as required once the base branch has it (modules/github/service/src/merge-gate.ts withGate).
   ci-required:
-    if: always()
+    # No check from a run that judged nothing: a cancelled run's jobs are `cancelled`, not failed, and its aggregate would turn
+    # that into a red check on the head. A run with a failed job is not cancelled and still posts `failure`; a retarget runs in
+    # full and posts its verdict too. A title/body edit plans no suite, so its own `needs` cannot be the verdict — and a
+    # `skipped` aggregate is a pass to GitHub. It posts the head's newest real results instead (below), which clears a
+    # title-only red once the title is fixed and keeps a real failure red (merge-gate.ts judgedOnHead, editedTitleCheck).
+    if: ${{ !cancelled() }}
     needs: [checks, policy, packages, modules, board, reviewer-eval]
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    # The edit step waits for the head's in-flight checks (up to 9 minutes); a shorter timeout would kill it and post a red
+    # that no suite caused.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      checks: read
     steps:
-      - env:
+      # A title/body edit: every job but `policy` skipped with it, so the head's verdict is what its newest real check runs say.
+      # The run that tested the code is still on the head and its red is not the edit's to clear; `policy` is the edit's own, so
+      # a fixed title turns this green. The aggregate itself is what this job posts, so it is not read back.
+      - if: ${{ github.event.action == 'edited' && github.event.changes.base == null }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          # This run's own title verdict: definitive, where a read of the check runs could race the API's write.
+          TITLE: ${{ needs.policy.result }}
+          # A fork PR's aggregate can fail on its own reviewer-eval guard, which no component check shows (ci-required below):
+          # there a prior aggregate red is never excused by a green title, only a full run clears it.
+          FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          node --input-type=module -e '
+            const { REPO, SHA, GITHUB_TOKEN } = process.env;
+            const runs = [];
+            for (let page = 1; ; page++) {
+              const res = await fetch(`https://api.github.com/repos/${REPO}/commits/${SHA}/check-runs?filter=all&per_page=100&page=${page}`, { headers: { authorization: `Bearer ${GITHUB_TOKEN}`, accept: "application/vnd.github+json" } });
+              if (!res.ok) throw new Error(`reading the head checks failed: ${res.status}`);
+              const body = await res.json();
+              runs.push(...body.check_runs);
+              if (body.check_runs.length === 0 || runs.length >= body.total_count) break;
+            }
+            // The run that actually judged the head is the newest `ci-required` that is not a skip; every skip newer than it
+            // belongs to the edit (a job `if` skipped still posts a check, and GitHub counts it as a pass) and judges nothing.
+            const gateRuns = runs.filter((r) => r.name === "ci-required");
+            // Only a completed run judged the head: this step runs inside the edit own `ci-required`, which is already visible
+            // here as `in_progress` and must not become the cutoff (that would keep the edit skips and hide a real failure).
+            const judgedGate = gateRuns.filter((r) => r.status === "completed" && !["skipped", "cancelled"].includes(String(r.conclusion ?? "").toLowerCase()));
+            const cut = judgedGate.reduce((a, r) => Math.max(a, r.id), 0);
+            const newest = new Map();
+            for (const r of runs) {
+              if (r.name === "ci-required") continue;
+              // Only a skip newer than the run that judged the head belongs to the edit: with no such run (a head whose only
+              // gate is this edit) nothing is dropped, so a first run own skips still count as the pass they are.
+              const skip = cut > 0 && ["skipped", "cancelled"].includes(String(r.conclusion ?? "").toLowerCase()) && r.id > cut;
+              if (skip) continue;
+              if (!newest.has(r.name) || r.id > newest.get(r.name).id) newest.set(r.name, r);
+            }
+            const judged = [...newest.values()];
+            for (const r of judged) console.log(`${r.name}: ${r.conclusion ?? r.status}`);
+            if (process.env.TITLE !== "success") {
+              console.log("::error::the edited title does not pass the Conventional Commit check");
+              process.exit(1);
+            }
+            // A check still queued or running is no verdict: wait for it (the head own run is finishing anyway) rather than
+            // passing the edit early or posting a red that the run it is waiting for would have to supersede.
+            const read = async () => {
+              const out = [];
+              for (let page = 1; ; page++) {
+                const res = await fetch(`https://api.github.com/repos/${REPO}/commits/${SHA}/check-runs?filter=all&per_page=100&page=${page}`, { headers: { authorization: `Bearer ${GITHUB_TOKEN}`, accept: "application/vnd.github+json" } });
+                if (!res.ok) throw new Error(`reading the head checks failed: ${res.status}`);
+                const body = await res.json();
+                out.push(...body.check_runs);
+                if (body.check_runs.length === 0 || out.length >= body.total_count) break;
+              }
+              return out;
+            };
+            for (let waited = 0; ; waited += 10000) {
+              const pending = judged.filter((r) => r.status !== "completed");
+              if (!pending.length) break;
+              if (waited >= 540000) {
+                console.log(`::error::${pending.map((r) => r.name).join(", ")} is still running on this head; the edit cannot pass it`);
+                process.exit(1);
+              }
+              console.log(`waiting for ${pending.map((r) => r.name).join(", ")}`);
+              await new Promise((r) => setTimeout(r, 10000));
+              const again = new Map();
+              for (const r of await read()) {
+                if (r.name === "ci-required") continue;
+                const skip = cut > 0 && ["skipped", "cancelled"].includes(String(r.conclusion ?? "").toLowerCase()) && r.id > cut;
+                if (skip) continue;
+                if (!again.has(r.name) || r.id > again.get(r.name).id) again.set(r.name, r);
+              }
+              judged.splice(0, judged.length, ...again.values());
+            }
+            const red = judged.filter((r) => ["failure", "timed_out", "action_required"].includes(String(r.conclusion ?? "").toLowerCase()));
+            // A failure the components do not show is still the head own: the newest real aggregate can fail for a reason of its
+            // own (the reviewer-eval guard on a fork PR), and the edit did not re-run the jobs that would show it. The one
+            // exception is `policy` on a same-repo PR: the edit runs the whole job on the same head (title and supply-chain
+            // vets), so its green clears an aggregate that failed because `policy` was red, and a supply-chain red is not
+            // excused by a green title. A fork PR keeps its red: its aggregate can fail for the reviewer-eval guard alone.
+            const failing = (r) => ["failure", "timed_out", "action_required"].includes(String(r.conclusion ?? "").toLowerCase());
+            const priorGate = gateRuns.filter((r) => r.id <= cut).sort((a, b) => b.id - a.id)[0];
+            const priorPolicy = runs.filter((r) => r.name === "policy" && r.id <= cut).sort((a, b) => b.id - a.id)[0];
+            const policyOnly = Boolean(priorPolicy && failing(priorPolicy) && process.env.TITLE === "success" && process.env.FORK !== "true");
+            if (priorGate && failing(priorGate) && !policyOnly && !red.length) {
+              console.log(`::error::ci-required failed on this head for a reason no component check shows; the edit did not re-run it`);
+              process.exit(1);
+            }
+            if (red.length) {
+              console.log(`::error::${red.map((r) => r.name).join(", ")} failed on this head; the edit did not re-run them`);
+              process.exit(1);
+            }
+          '
+      - if: ${{ !(github.event.action == 'edited' && github.event.changes.base == null) }}
+        env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'

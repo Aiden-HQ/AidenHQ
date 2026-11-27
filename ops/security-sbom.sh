@@ -174,12 +174,17 @@ fail() { # <target> <error>: a target that never reached syft is a line with its
   n=$((n + 1))
   printf '%s\t-\t%s\t\n' "$1" "$(printf '%s' "$2" | tr '\t\n' '  ' | tail -c 300)" >> "$next/targets.tsv"
 }
-# Whether a failed `docker image inspect` says the image record is gone, rather than that the daemon could not answer.
-# Only a positive "no such image/object" is proof: a deadline (124) or a transport error is a retryable read, and a
-# container export under that image's target would inventory something other than the target it names.
+# Whether a failed `docker image inspect` says the daemon has no image record for the reference, rather than that it could
+# not answer. Two positive answers say that: "No such image/object", and "invalid reference format", which is how the daemon
+# refuses a reference it cannot parse at all — a bare container id, or an id whose `sha256:` prefix was stripped. A running
+# container's `.Image` is an id, and once the image is untagged and collected nothing local names it, so the reference the
+# pass holds can be one the daemon rejects before it even looks it up; the container is then the only copy of that
+# filesystem. A deadline (124) or a transport error is a retryable read and is not proof of anything: a container export
+# under that image's target would inventory something other than the target it names.
 image_absent() { # <inspect output>
   case "$1" in
     *"No such image"*|*"No such object"*|*"no such image"*) return 0 ;;
+    *"invalid reference format"*) return 0 ;;
   esac
   return 1
 }
@@ -889,8 +894,12 @@ snapshot() {
   # unit, and container units come first, so a configured tag naming an image a container runs is planned once (the key
   # itself is decided below).
   local -A unit_pin=() unit_done=()
-  # Units that get a row this pass: every one admitted to the plan, whether it scans or records its own error line.
+  # Units that get a row this pass: every one admitted to the plan, whether it scans or records its own error line. Each
+  # unit's target key is kept too, so the completeness marker below can ask that every one of them is covered: two units
+  # can share one key (two containers on one image index, or a configured tag and the container running it), and then they
+  # are one row, which a count of rows would read as a missing unit.
   images_planned=0
+  planned_keys=()
   # The configured tag that names each image on each platform: the key a container running that image takes, and the key
   # the configured unit itself takes. Configuring is what makes a name stable, so a configured tag is read first and wins
   # over a container's own alias, and a container's tag names the images no configured tag names. A configured tag lands
@@ -940,6 +949,7 @@ snapshot() {
     elif [ -n "${u_alias["$plat|${unit_pin[$unit]}"]:-}" ]; then key="${u_alias["$plat|${unit_pin[$unit]}"]}@${plat}"
     elif [ -n "${u_tag[$unit]:-}" ]; then key="${u_tag[$unit]}@${plat}"
     else key="${man:-$image}@${plat}"; fi
+    planned_keys+=("image:$key")
     want="${u_tag[$unit]:-${u_label[$unit]:-$image}}"
     # The platform manifest this target stands for: the container's own descriptor, the identity the tag check proved,
     # else what compose recorded, else `pin_of` resolving the container's index on the container's own platform. Never a
@@ -1450,11 +1460,21 @@ rm -rf "$out/prev"
 # unit (running or configured) has a row, so nothing was silently dropped. A unit the inventory could not size or export
 # still has its own error line. Written into the batch before it is swapped in, so the marker and the targets it describes
 # land together; without it the scanner treats the batch as incomplete and keeps absent targets unverified.
-# One row per planned unit, so a count is the check: two units that happened to share a key (two containers on one image
-# index) leave it short, and the batch then simply claims no completeness rather than the wrong one.
-if [ "${images_planned:-0}" -gt 0 ] && [ "$(grep -c $'^image:[^\t]*\t' "$next/targets.tsv" || true)" -eq "$images_planned" ]; then
-  : > "$next/images.complete"
+# Coverage is asked per planned key, not by counting rows: two units can share one key (two containers on one image index,
+# or a configured tag and the container running it) and are then inventoried once, under that one row. Counting rows would
+# read the shared unit as missing and never write the marker; asking that each planned key has a row is the same proof
+# without that false shortfall, and a unit with no row of its own still withholds the marker.
+declare -A batch_keys=()
+while IFS=$'\t' read -r key _; do [ -n "$key" ] && batch_keys["$key"]=1; done < "$next/targets.tsv"
+images_complete=1
+if [ "${images_planned:-0}" -gt 0 ]; then
+  for key in "${planned_keys[@]}"; do
+    [ -n "${batch_keys["$key"]:-}" ] || { images_complete=0; break; }
+  done
+else
+  images_complete=0
 fi
+[ "$images_complete" = 1 ] && : > "$next/images.complete"
 mv "$next" "$out/current"
 discard_tree "$out/prev"; discard_tree "$work" "$exportdir"
 echo "security-sbom: $(wc -l < "$out/current/targets.tsv") targets, $(grep -c $'\t-\t' "$out/current/targets.tsv" || true) failed"
