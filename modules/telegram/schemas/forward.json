@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "action",
+    "chat_id",
+    "from_chat_id",
+    "message_id",
+    "agent"
+  ],
+  "properties": {
+    "action": {
+      "enum": [
+        "forward"
+      ]
+    },
+    "chat_id": {
+      "type": "string",
+      "pattern": "^-?[0-9]{1,20}$"
+    },
+    "from_chat_id": {
+      "type": "string",
+      "pattern": "^-?[0-9]{1,20}$"
+    },
+    "message_id": {
+      "type": "string",
+      "pattern": "^[0-9]{1,20}$"
+    },
+    "chat_title": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "agent": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    }
+  }
+}

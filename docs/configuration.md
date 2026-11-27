@@ -42,6 +42,20 @@ that takes https redirects alone). A fixed or discoverable value is a module def
 field on that Connect (the sign-in's `secrets`, each a provided secret with `setup:`). `board.setup_flows` is only for what
 the owner must make elsewhere first (an OAuth client, an app, a token, a bot) or a channel to pair.
 
+`mode: device` and `mode: qr` sign-ins have no redirect: Connect opens a dialog and the service waits for the token itself.
+`device` shows a code to type on the vendor's page (GitHub's model); `qr` shows a link as a QR code to scan in the vendor's
+app (it refreshes while pending) and may stop on one transient secret step (a password). `disconnect: true` adds a Disconnect
+action on the connection's dialog that revokes the sign-in at the vendor. The board holds only the service's
+`<id>_auth_token` and never stores or logs the secret. A service serves, behind that bearer:
+
+| Route | Request | Response |
+|---|---|---|
+| `POST /auth/device` (qr) | `{}` | `{ qr: string (up to 1024 chars), expires_in: number, interval: number }` (device: `user_code`, `verification_uri`, `expires_in`, `interval`) |
+| `GET /auth/device` | | `{ state: "idle"\|"pending"\|"secret"\|"ok"\|"expired"\|"denied"\|"cancelled"\|"failed", detail?, qr? (the current link while pending), secret?: { label, hint? } (while secret) }` |
+| `POST /auth/device/secret` | `{ value: string (1 to 256) }` | `{ ok: true }`; a wrong value is 400 `{ error }` and the state stays `secret` |
+| `POST /auth/device/cancel` | `{}` | `{ ok: true }` |
+| `POST /auth/disconnect` (`disconnect: true`) | `{}` | `{ ok: true }` once the vendor session is revoked |
+
 Any string may use `${settings.<name>}`, replaced with the instance's value (or the default).
 
 An agent's `connections` map names a connection and a grant: `read`, `write` (read plus write tools, never `destructive` ones) or an explicit

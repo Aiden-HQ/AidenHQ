@@ -1,0 +1,191 @@
+name: telegram
+description: "Your own Telegram account: every chat in the warehouse (src_telegram), Intake triage of what you owe or are asked, and agents that read, draft and (reviewed) send as you."
+requires:
+  - warehouse # src_telegram lives in the shared warehouse
+  - board # its sign-in and setup flow
+# Its sign-in on the board (the board's point, modules/board/schemas/signins.json): a QR code to scan in Telegram, then a
+# 2FA password if the account has one, and a Disconnect. `secrets`: Connect asks for the app's api_id and api_hash inline, so
+# a fresh install (no api_id yet) still offers Connect instead of a dead "not set up". Its setup flow below says the same in steps.
+contributes:
+  board.signins:
+    - { id: telegram, label: Telegram, mode: qr, disconnect: true, status_url: "http://telegram-live:8090/auth/status", connect_url: /telegram/connect, callback: /telegram/callback,
+        missing: "Agents can't read your Telegram until it is.", stopped: "Telegram signed AidenHQ out: agents can't read or send.",
+        secrets: [ telegram_api_id, telegram_api_hash ] }
+  board.setup_flows:
+    - order: 32
+      title: Telegram
+      why: Agents read your chats on your server and turn what you owe into tasks; nothing is used for training.
+      effort: about 3 minutes, needs the Telegram app
+      secrets: [ telegram_api_id, telegram_api_hash ]
+      signin: telegram
+      console_url: https://my.telegram.org/apps
+      steps: |
+        1. [Open my.telegram.org/apps](https://my.telegram.org/apps), sign in with your phone number and create an app (any name; Telegram gives every app its own id). Copy its **api_id** and **api_hash** and paste them here.
+        2. Press **Connect**. In Telegram open **Settings, Devices, Link Desktop Device** and scan the QR code.
+        3. If your account has a two-step password, enter it when asked.
+        4. AidenHQ now shows in Telegram's Devices list, where you can end it any time. **Disconnect** here signs it out too.
+  # Its schema and the views agents read with source_new (the warehouse's point, modules/warehouse/schemas/sources.json).
+  warehouse.sources:
+    - schema: src_telegram
+      about: "src_telegram.messages / chats / changes / users"
+      identity: users
+      views:
+        - { name: messages, time: ingested_at, channel: chat_id, tsv: true }
+        - { name: chats, time: ingested_at, channel: chat_id }
+        - { name: changes, time: observed_at, channel: chat_id }
+# kernel.events: telegram-live sends each kept message to the kernel's event router (POST /v1/events) with this module's own
+# token. kernel.owner-notice: it tells the owner when Telegram signs the account out (POST /v1/connections/need).
+roles:
+  requests: [ kernel.events, kernel.owner-notice ]
+# The kernel calls the telegram write kinds' plan, execute and status here, with the connection's key (executor@1).
+providers:
+  executor:
+    url: http://telegram-live:8090/aidenhq/v1/executor
+    auth: telegram_live_service_key
+connections:
+  telegram_account:
+    setup: "Set it up on the board (#/setup/telegram): paste your app's api_id and api_hash, then scan the QR code in Telegram."
+    guide: "Your Telegram as you: chats, history, search, a message with its reply context; drafts; reviewed sends. Search src_telegram in the warehouse for older or cross-chat questions."
+    url: http://telegram-live:8090/mcp
+    auth: telegram_live_service_key
+    # Reads touch no read state (nothing is marked read). telegram_save_draft is the one plain write. Every send, reply, reaction,
+    # forward, edit and delete acts as the owner: `destructive`, so only a grant naming one reaches it and each is a record the
+    # AI reviewer decides first (the writes below, one kind per action).
+    tools:
+      read: [ telegram_list_chats, telegram_read_chat, telegram_search, telegram_get_message, telegram_chat_info, telegram_owner ]
+      write: [ telegram_save_draft ]
+      destructive: [ telegram_send, telegram_reply, telegram_react, telegram_forward, telegram_edit_own, telegram_delete_own ]
+    # Routines' events (kernel events.ts): a routine subscribes to a chat its agent's telegram_read_chat reaches.
+    events: { resource: "chat id", kinds: [ message ], filter: [ kind, author, label, bot ], reads: [ telegram_read_chat ] }
+# Every agent send is a kernel record the AI reviewer reads first (floor 1). One kind per Telegram action, each routing exactly
+# one tool: the kernel authorises a kind by the tools a caller holds, so a send grant can never file a delete, and the executor's
+# plan refuses a record whose args are another action's.
+writes:
+  send:
+    args: schemas/send.json
+    floor: 1
+    tools: [ telegram_send ]
+    card:
+      sentence: "Telegram, as you: {{what}} in {{chat}}."
+      changes: "{{changes}}"
+      reads: "Nothing new: the text below."
+      cost: "No model cost."
+      details: "{{details}}" # the planner fills it: the text, or the message a forward, edit or delete acts on
+  reply:
+    args: schemas/reply.json
+    floor: 1
+    tools: [ telegram_reply ]
+    card:
+      sentence: "Telegram, as you: {{what}} in {{chat}}."
+      changes: "{{changes}}"
+      reads: "Nothing new: the text below."
+      cost: "No model cost."
+      details: "{{details}}" # the planner fills it: the text, or the message a forward, edit or delete acts on
+  react:
+    args: schemas/react.json
+    floor: 1
+    tools: [ telegram_react ]
+    card:
+      sentence: "Telegram, as you: {{what}} in {{chat}}."
+      changes: "{{changes}}"
+      reads: "Nothing new: the text below."
+      cost: "No model cost."
+      details: "{{details}}" # the planner fills it: the text, or the message a forward, edit or delete acts on
+  forward:
+    args: schemas/forward.json
+    floor: 1
+    tools: [ telegram_forward ]
+    card:
+      sentence: "Telegram, as you: {{what}} in {{chat}}."
+      changes: "{{changes}}"
+      reads: "Nothing new: the text below."
+      cost: "No model cost."
+      details: "{{details}}" # the planner fills it: the text, or the message a forward, edit or delete acts on
+  edit:
+    args: schemas/edit.json
+    floor: 1
+    tools: [ telegram_edit_own ]
+    card:
+      sentence: "Telegram, as you: {{what}} in {{chat}}."
+      changes: "{{changes}}"
+      reads: "Nothing new: the text below."
+      cost: "No model cost."
+      details: "{{details}}" # the planner fills it: the text, or the message a forward, edit or delete acts on
+  delete:
+    args: schemas/delete.json
+    floor: 1
+    tools: [ telegram_delete_own ]
+    card:
+      sentence: "Telegram, as you: {{what}} in {{chat}}."
+      changes: "{{changes}}"
+      reads: "Nothing new: the text below."
+      cost: "No model cost."
+      details: "{{details}}" # the planner fills it: the text, or the message a forward, edit or delete acts on
+settings:
+  # Muted groups and channels: `tagged` stores muted groups but triages only messages that tag or reply to you, and skips
+  # muted channels; `all` treats muted like unmuted.
+  telegram_muted:
+    default: tagged
+    values: [ tagged, all ]
+  # Chat ids never stored or triaged.
+  telegram_exclude_chats:
+    default: []
+    pattern: '^-?[0-9]{1,20}$'
+  # How far back the first sync goes.
+  telegram_backfill_days:
+    default: 30
+    pattern: '^[1-9][0-9]{0,3}$'
+secrets:
+  provided:
+    # The Telegram app's id and hash from my.telegram.org, saved by the setup flow (or Connect); empty: Telegram is idle.
+    - name: telegram_api_id
+      setup:
+        label: Telegram api_id
+        pattern: '^[0-9]{3,12}$'
+        help: "my.telegram.org, API development tools: the app's api_id (a number)."
+    - name: telegram_api_hash
+      setup:
+        label: Telegram api_hash
+        pattern: '^[0-9a-f]{32}$'
+        help: "my.telegram.org, API development tools: the app's api_hash (32 letters and digits)."
+optional_secrets:
+  - telegram_api_id
+  - telegram_api_hash
+services:
+  data: true
+  run:
+    # The one TDLib client of the account: sign-in, live ingest, the warehouse writer, the tools and the send executor.
+    # It idles until an api_id is saved and the QR is scanned.
+    telegram-live:
+      build: ./connections/telegram-live
+      tmp: 16m
+      port: 8090
+      egress: true
+      # src_telegram: the warehouse (the shared-sources network); the board's sign-in health check.
+      links: [ sources, board ]
+      data: ["telegram-live:/data"]
+      env:
+        # Its database (telegram-live.sqlite) and TDLib's files (tdlib/) live under this dir, the data volume.
+        TELEGRAM_DATA_DIR: /data
+        TELEGRAM_MUTED: "${settings.telegram_muted}"
+        TELEGRAM_EXCLUDE_CHATS: "${settings.telegram_exclude_chats}"
+        TELEGRAM_BACKFILL_DAYS: "${settings.telegram_backfill_days}"
+        MCP_BEARER_TOKEN_FILE: ${secrets.telegram_live_service_key}
+        # The board's bearer on /auth/*, and this module's own token at the kernel (events, notices).
+        AUTH_TOKEN_FILE: ${secrets.telegram_auth_token}
+        MODULE_TOKEN_FILE: ${secrets.telegram_token}
+        TDLIB_KEY_FILE: ${secrets.telegram_tdlib_key}
+        API_ID_FILE: ${secrets.telegram_api_id}
+        API_HASH_FILE: ${secrets.telegram_api_hash}
+        WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_telegram_password}
+# The board's Connect/Disconnect for Telegram: its sign-in token, only while this module is on.
+board_env:
+  TELEGRAM_AUTH_TOKEN_FILE: ${secrets.telegram_auth_token}
+generated_secrets:
+  - telegram_live_service_key
+  - telegram_auth_token
+  - telegram_token
+  - telegram_tdlib_key
+  # src_telegram's warehouse login (ops/warehouse-sources.sh gives the role this password).
+  - warehouse_src_telegram_password
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

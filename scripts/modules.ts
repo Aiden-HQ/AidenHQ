@@ -136,6 +136,8 @@ export const LEGACY_LINKS: Record<string, { until: string; to: string[] }> = {
   primer: { until: "3g", to: ["board"] },
   // Slack's advanced part (what channel-slack was): the src_slack writer's warehouse network, beside the sign-in's board link.
   slack: { until: "3g", to: ["board", "sources"] },
+  // Telegram's one service is the sign-in (board link) and the src_telegram writer (warehouse network), like slack and hubspot.
+  telegram: { until: "3g", to: ["board", "sources"] },
   security: { until: "4c", to: ["paperclip", "sources"] },
   // The server-manager service writes src_servers (one sanitized status row per machine) as a source writer, until 3g.
   "server-manager": { until: "3g", to: ["sources"] },

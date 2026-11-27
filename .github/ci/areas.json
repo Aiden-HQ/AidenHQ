@@ -27,6 +27,7 @@
     {"name": "modules/jira/connections/jira-mcp", "secs": 3, "job": "modules", "run": "npm ci && npm test && npm run typecheck", "paths": ["modules/jira/connections/jira-mcp"]},
     {"name": "modules/meetings/connections/ops-mcp", "secs": 3, "job": "modules", "run": "npm ci && npm test && npm run typecheck", "paths": ["modules/meetings/connections/ops-mcp"]},
     {"name": "modules/slack/connections/slack-live", "secs": 3, "job": "modules", "run": "npm ci --ignore-scripts && npm test && npm run typecheck", "paths": ["modules/slack/connections/slack-live"]},
+    {"name": "modules/telegram/connections/telegram-live", "secs": 15, "job": "modules", "run": "npm ci --ignore-scripts && npm test && npm run typecheck", "paths": ["modules/telegram"]},
     {"name": "modules/channel-telegram/connections/telegram", "secs": 2, "job": "modules", "run": "npm ci --ignore-scripts && npm test && npm run typecheck", "paths": ["modules/channel-telegram/connections/telegram"]},
     {"name": "modules/owner-channel/connections/notify", "secs": 3, "job": "modules", "run": "npm ci --ignore-scripts && npm test && npm run typecheck", "paths": ["modules/owner-channel/connections/notify"]},
     {"name": "modules/chat-lane/connections/lane", "secs": 3, "job": "modules", "run": "npm ci --ignore-scripts && npm test && npm run typecheck", "paths": ["modules/chat-lane/connections/lane"]},

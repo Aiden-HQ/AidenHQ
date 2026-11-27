@@ -28,6 +28,8 @@ export interface SignInLine {
   action?: { label: string; href?: string; admin?: string; reconnect?: true };
 }
 export interface SignIn {
+  /** The board.signins id (the module's name): the paths /<id>/connect and the sign-in routes. */
+  id?: string;
   state: string;
   /** The signed-in account, when the sign-in knows it. */
   login?: string;
@@ -38,7 +40,9 @@ export interface SignIn {
   /** Connect offers a choice of scopes: the picker comes first, and a Reconnect reads "Change access". */
   offer?: boolean;
   /** A device sign-in (a code typed on the vendor's page): Connect opens its dialog, never a tab. */
-  mode?: "device";
+  mode?: "device" | "qr";
+  /** Its service can revoke the sign-in at the vendor: the connection's dialog offers Disconnect. */
+  disconnect?: true;
   /** Not set up yet: the per-install values Connect asks for first. */
   fields?: { secret: string; label: string; pattern: string; help?: string }[];
 }
@@ -126,9 +130,9 @@ export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boole
   // `fields`); one without fields that isn't set up has a setup flow to make its client first. State "none": this connection
   // signs in to nothing (Grafana with grafana_source: local), so only its health counts.
   const s = row.signIn;
-  if (s && !s.configured) return s.fields?.length ? { status: "not_connected", reason: notConnectedReason(row.name, "Not connected yet."), ...connect("Connect", `/${row.name}/connect`, canConnect.signIn) } : { status: "not_configured", reason: notConnectedReason(row.name, s.detail ?? "Not set up yet.") };
-  if (s?.state === "missing") return { status: "not_connected", reason: notConnectedReason(row.name, "Not connected yet."), ...connect("Connect", `/${row.name}/connect`, canConnect.signIn) };
-  if (s?.state === "expired") return { status: "signed_out", reason: `Sign-in stopped working (since ${day(s.since)})${s.detail ? `: ${s.detail}` : "."}`, ...connect("Reconnect", `/${row.name}/connect`, canConnect.signIn) };
+  if (s && !s.configured) return s.fields?.length ? { status: "not_connected", reason: notConnectedReason(row.name, "Not connected yet."), ...connect("Connect", `/${s.id ?? row.name}/connect`, canConnect.signIn) } : { status: "not_configured", reason: notConnectedReason(row.name, s.detail ?? "Not set up yet.") };
+  if (s?.state === "missing") return { status: "not_connected", reason: notConnectedReason(row.name, "Not connected yet."), ...connect("Connect", `/${s.id ?? row.name}/connect`, canConnect.signIn) };
+  if (s?.state === "expired") return { status: "signed_out", reason: `Sign-in stopped working (since ${day(s.since)})${s.detail ? `: ${s.detail}` : "."}`, ...connect("Reconnect", `/${s.id ?? row.name}/connect`, canConnect.signIn) };
 
   const p = row.probe;
   if (!p) {

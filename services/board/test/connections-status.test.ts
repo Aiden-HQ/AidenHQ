@@ -1,6 +1,7 @@
 // Settings > Connections: a `slack` tile is the owner's own Slack sign-in, never Slack as a whole. A working bot channel
 // (`slack_live`) must not read as broken because this separate sign-in is absent, so its name and reason say both.
 import { describe, expect, it } from "vitest";
+import { connectionsView } from "../src/settings.js";
 import { connectionStatus, displayName, type ConnectionRow, type SignIn } from "../web/src/connections.js";
 
 const row = (name: string, signIn: SignIn | null): ConnectionRow => ({
@@ -42,5 +43,25 @@ describe("the Slack sign-in tile", () => {
 
   it("leaves another connection's not-connected reason as it was", () => {
     expect(connectionStatus(row("glean", { state: "missing", configured: true, since }), can).reason).toBe("Not connected yet.");
+  });
+});
+
+describe("connectionsView: which connection a sign-in belongs to", () => {
+  const mcp = { url: "http://x:1/mcp", tools: { read: ["a"] } };
+  const catalog = [
+    { name: "telegram", enabled: true, connections: ["telegram_account"] },
+    { name: "channel-telegram", enabled: true, connections: ["telegram"] },
+    { name: "slack", enabled: true, connections: ["slack", "slack_live"] },
+  ] as never;
+  const ok = (id: string) => ({ id, state: "ok", configured: true, since });
+  const view = connectionsView({ compiled: { mcp_servers: { telegram_account: mcp, telegram: mcp, slack: mcp, slack_live: mcp } } as never, catalog, probes: {}, signIns: { telegram: ok("telegram"), slack: ok("slack") }, google: null, sources: [] });
+  const of = (n: string) => view.connections.find((r) => r.name === n)!.signIn?.id ?? null;
+  it("goes to the module's connection by the module's name, not to another module's connection of that name", () => {
+    expect(of("telegram_account")).toBe("telegram");
+    expect(of("telegram")).toBeNull();
+  });
+  it("stays on the connection named like its module", () => {
+    expect(of("slack")).toBe("slack");
+    expect(of("slack_live")).toBeNull();
   });
 });
