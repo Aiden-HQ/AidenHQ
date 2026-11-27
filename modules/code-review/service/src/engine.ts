@@ -314,17 +314,18 @@ export function createEngine(d: EngineDeps) {
     handled: string | null };
   const prRow = (repo: string, n: number) => one<PrRow>("SELECT * FROM prs WHERE repo = ? AND number = ?", repo, n);
   /** What a head's classification was computed from: a stored one whose inputs differ from these is stale (pending). */
-  type Inputs = { head: string; base: string; ref: string; author: string; association: string; config: string };
-  const inputsOf = (p: PullRequest, cfg: Entry): Inputs => ({ head: p.head, base: p.base, ref: p.base_ref, author: authorKind(p.author, p.association, p.own, p.fork), association: String(p.association ?? ""), config: cfg.hash });
+  type Inputs = { head: string; base: string; ref: string; author: string; association: string; config: string; elevated?: true };
+  const inputsOf = (p: PullRequest, cfg: Entry): Inputs => ({ head: p.head, base: p.base, ref: p.base_ref, author: authorKind(p.author, p.association, p.own, p.fork), association: String(p.association ?? ""), config: cfg.hash, ...(p.elevated ? { elevated: true as const } : {}) });
   /** The associations `authorKind` counts as a member: the stored inputs keep the raw association, never the `own` flag. */
   const MEMBER_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR"];
   /** Whether a head classified with member access was asked about under an outsider: the author lost collaborator access, so the
    * tier rules keyed on `author` must run again. The caller's side is judged by `authorKind`, the one definition of member; the stored
    * side needs its association too, because a classification stored as `member` from `own` (the instance's own App opened the PR, its
    * association NONE) says nothing about a caller's read, and comparing it would stall such a head again (#1845). A caller that
-   * supplies no association says nothing either. */
+   * supplies no association says nothing either. An `elevated` classification (a private org member counted a member from write access)
+   * can't be contradicted by a caller's raw association, which reads CONTRIBUTOR for such an author: it never trips. */
   const lostAccess = (i: Inputs, p: PullRequest, live: string | undefined) =>
-    live !== undefined && i.author === "member" && MEMBER_ASSOCIATIONS.includes(i.association.toUpperCase()) && authorKind(p.author, live, p.own, p.fork) === "outsider";
+    live !== undefined && !i.elevated && i.author === "member" && MEMBER_ASSOCIATIONS.includes(i.association.toUpperCase()) && authorKind(p.author, live, p.own, p.fork) === "outsider";
   /** A PR head's tier as code review serves it: classified (current inputs), pending (none yet, or stale), or unwatched. `live` is a
    * caller's own read of the PR, and two things make the head pending: a base branch that differs from what the tier came from, and a
    * genuine loss of access (see lostAccess) — the stored classification was made with member access and the caller's live read now
