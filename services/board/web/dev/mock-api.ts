@@ -90,7 +90,7 @@ const roster = [
 ];
 
 const CARD_STATES: Record<number, ReturnType<typeof st>> = { 812: STATES.orphaned, 815: ASK, 790: WORKING_CARD, 801: STATES.queued, 802: FAILED, 770: STATES.scheduled, 700: STATES.agentWait, 705: UNKNOWN, 600: STATES.backlog };
-// Agent work (the mockup's sample, docs/design/agent-work-board.html): every issue its own card in its kernel lane.
+// Delegated (Tasks › Delegated): every issue its own card in its kernel lane.
 const PROJECTS = [{ id: "p-aidenhq", name: "AidenHQ" }, { id: "p-launch", name: "Launch" }, { id: "p-infra", name: "Infra" }, { id: "p-hiring", name: "Hiring" }];
 const LABELS = [{ id: "l-code", name: "engineer", color: "#3b82f6" }, { id: "l-review", name: "needs-review", color: "#f59e0b" }];
 const w = (n: number, title: string, who: string | null, state: Record<string, unknown> | null, o: Record<string, unknown> = {}) => ({
@@ -176,8 +176,8 @@ function viewRoute(method: string, url: URL, body: any): [number, unknown] | und
   Object.assign(v, body.name ? { name: body.name } : {}, body.spec ? { spec: body.spec } : {}, { rev: v.rev + 1 });
   return [200, v];
 }
-const card = (n: number, title: string, extra: Record<string, unknown> = {}) => ({ id: `id-${n}`, identifier: `WOR-${n}`, title, status: "todo", priority: "medium", labels: [], labelIds: [] as string[], projectId: null as string | null, assignee: null, unread: false, createdAt: ago(n % 300), activityAt: ago(n % 90), state: CARD_STATES[n] ? named(`WOR-${n}`, CARD_STATES[n]) : null, ...extra });
-// The owner's own tasks (assignee "me") fill My tasks; the agent-assigned ones are Delegated and never listed there.
+const card = (n: number, title: string, extra: Record<string, unknown> = {}) => ({ id: `id-${n}`, identifier: `WOR-${n}`, title, status: "todo", priority: "medium", labels: [], labelIds: [] as string[], projectId: null as string | null, assignee: null, filedBy: n % 4 === 0 ? null : (["inbox-agent", "chief-of-staff", "engineer"] as const)[n % 3], unread: false, createdAt: ago(n % 300), activityAt: ago(n % 90), state: CARD_STATES[n] ? named(`WOR-${n}`, CARD_STATES[n]) : null, ...extra });
+// The owner's own tasks (assignee "me") fill Mine; the agent-assigned ones are Delegated and never listed there.
 const mine = (n: number, title: string, extra: Record<string, unknown> = {}) => card(n, title, { assignee: "me", ...extra });
 const src = (name: string, color: string) => ({ labels: [{ name, color }] });
 const board = () => ({
@@ -208,7 +208,7 @@ const board = () => ({
   brief: null, done: [], recurring: [],
   work: mock.empty ? [] : WORK(), asOf: new Date().toISOString(), incomplete: false, projects: mock.empty ? [] : PROJECTS,
   assignees: [{ key: "me", kind: "me", name: "Me", seed: "me" }, ...roster.map((a) => ({ key: a.key, kind: a.key === "engineer" ? "engineer" : a.key === "researcher" ? "assistant" : "agent", name: a.name, seed: a.key, ...(a.teammate ? { face: a.teammate.face } : {}), ...(a.key === "engineer" ? { defaultModel: "openrouter/~deepseek/deepseek-flash-latest", efforts: ["low", "medium", "high"] } : {}) }))],
-  labels: mock.empty ? [] : LABELS, prefix: "WOR", timezone: "Asia/Dubai", slackTeams: {}, rollsOn: "Monday", rollsTomorrow: true, agentsActive: 4,
+  labels: mock.empty ? [] : LABELS, prefix: "WOR", timezone: "Asia/Dubai", slackTeams: {}, rollsOn: TOMORROW_8.slice(0, 10), rollsTomorrow: true, agentsActive: 4,
   spend: { day: { spent: 3.42, cap: 50 }, month: { spent: 61.2, cap: 1000 } }, google: null, signIns: [],
 });
 
@@ -804,7 +804,7 @@ function route(method: string, url: URL): [number, unknown] {
     const crew = (c as { crew?: { agent: string }[] }).crew ?? [];
     const onTask = board().assignees.find((a) => a.key === crew[0]?.agent);
     const replyTarget = onTask ? (onTask.kind === "engineer" ? "The Engineer reads replies here and continues the coding job." : `${onTask.name} reads replies here.`) : "No agent is assigned; this message stays on the task. @name brings an agent in.";
-    return [200, { ...c, working: (c as { working?: unknown }).working ?? null, description: "Add a **CSV export** to the invoices app and a monthly total row.\n\n- Export respects the current filter\n- Totals in the account currency", bucket: "today", editable: true, labelIds: [], replyTarget, scheduled: null, recurring: null, comments: [{ id: "k1", body: "Started on the export; tests next.", author: { kind: "agent", name: "Engineer" }, createdAt: ago(20) }], files: [], parent: null, crew, grade: gradeFor(ref), milestones: milestones() }];
+    return [200, { ...c, working: (c as { working?: unknown }).working ?? null, description: "Add a **CSV export** to the invoices app and a monthly total row.\n\n- Export respects the current filter\n- Totals in the account currency", bucket: "today", editable: true, labelIds: [], replyTarget, scheduled: null, recurring: null, comments: [{ id: "k1", body: "Started on the export; tests next.", author: { kind: "agent", name: "Engineer" }, createdAt: ago(20) }], files: [], parent: null, crew, grade: gradeFor(ref), milestones: milestones(), about: about(200, { labels: [], holder: null, source: slackSrc("#leadership", "Priya Nair", 200, "1732601234000100"), reason: "Priya asks which week the digest should compare against." }) }];
   }
   if ((x = m(/^\/api\/models\/([^/]+)$/))) return [200, { default: "deepseek-flash", models: ["deepseek-flash", "gpt-luna"], efforts: ["medium", "high"] }];
   if ((x = m(/^\/api\/agents\/by-key\/([^/]+)\/timeline$/))) return [200, { entries: timeline() }];

@@ -116,3 +116,9 @@
 .home-stat-k i { width: 8px; height: 8px; border-radius: 50%; background: var(--v); }
 .home-stat b { font-size: calc(var(--text-3xl) * 1.4); line-height: 1; font-weight: 700; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
 .home-stat-go { margin-top: 4px; font-size: var(--text-sm); font-weight: 600; color: var(--accent); }
+
+.home-chk { appearance: none; flex: none; width: 18px; height: 18px; margin: 0; padding: 0; display: inline-grid; place-items: center; border: 1.5px solid var(--border-strong); border-radius: 50%; background: transparent; cursor: pointer; transition: background-color var(--fast) var(--ease), border-color var(--fast) var(--ease), transform var(--fast) var(--ease-spring); }
+.home-chk:hover { border-color: var(--accent); }
+.home-chk:focus-visible { outline: none; box-shadow: var(--ring); }
+.home-chk[aria-checked="true"] { background: var(--accent); border-color: var(--accent); transform: scale(1.08); }
+.home-chk[aria-checked="true"]::after { content: ""; width: 8px; height: 4px; border-left: 2px solid var(--accent-text); border-bottom: 2px solid var(--accent-text); transform: rotate(-45deg) translate(1px, -1px); }

@@ -229,7 +229,7 @@ export function SortableCard(props: CardProps & { disabled?: boolean }) {
  * column's scroll box used to cut it off. Clicks inside still reach the button's own handlers (a portal
  * keeps React's event tree), so a card doesn't open when you pick something.
  */
-function Popover({ anchor, onClose, className, children }: { anchor: HTMLElement | null; onClose: () => void; className?: string; children: ReactNode }) {
+export function Popover({ anchor, onClose, className, children }: { anchor: HTMLElement | null; onClose: () => void; className?: string; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   const close = useRef(onClose);

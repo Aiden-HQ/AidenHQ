@@ -27,6 +27,11 @@ const paths = {
   refresh: "M13 8a5 5 0 1 1-1.6-3.7M13 2.8v2.6h-2.6",
   shield: "M8 1.8 13 4v3.6c0 3-2.1 5.3-5 6.6-2.9-1.3-5-3.6-5-6.6V4z",
   palette: "M8 14.2A6.2 6.2 0 1 1 14.2 8c0 1.6-1.3 2.2-2.6 2.2H10c-.8 0-1.3.7-1 1.4.4 1-.2 2.6-1 2.6zM5 7.8h.01M7 5h.01M10.2 5.4h.01M11.6 8h.01",
+  mail: "M2.5 4h11v8h-11zM2.8 4.6 8 9l5.2-4.4",
+  calendar: "M3 3.5h10v9.5H3zM3 6.5h10M5.5 2v3M10.5 2v3",
+  send: "M14 2 7 9M14 2l-4.5 12L7 9 2 6.5z",
+  check: "m3.5 8.5 3 3 6-7",
+  chevron: "m4 6 4 4 4-4",
 } as const;
 
 export type IconName = keyof typeof paths;

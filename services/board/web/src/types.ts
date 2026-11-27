@@ -4,7 +4,7 @@ import type { FaceKit } from "../../src/face-kit";
 import type { IconName } from "./ui/icons";
 export type Bucket = "triage" | "today" | "tomorrow" | "later" | "backlog";
 export const BUCKETS: Bucket[] = ["triage", "today", "tomorrow", "later", "backlog"];
-export const BUCKET_NAMES: Record<Bucket, string> = { triage: "Triage", today: "Today", tomorrow: "Tomorrow", later: "This week", backlog: "Backlog" };
+export const BUCKET_NAMES: Record<Bucket, string> = { triage: "New", today: "Today", tomorrow: "Tomorrow", later: "Upcoming", backlog: "Later" };
 
 export interface Label {
   id: string;
@@ -35,6 +35,8 @@ export interface Card {
   priority: string;
   labels: { name: string; color: string }[];
   assignee: string | null;
+  /** The agent that filed it, when an agent did. */
+  filedBy: string | null;
   executor?: { model?: string; effort?: string };
   unread: boolean;
   createdAt: string;
@@ -349,6 +351,8 @@ export interface IssueView extends Omit<Card, "scheduled" | "recurring" | "worki
   grade: GradeShown;
   /** The task's own recorded milestones, oldest first. */
   milestones: Milestone[];
+  /** What the task's description says about its source, reason and suggested action (home.ts aboutTask). */
+  about: About;
   /** After a reply: the agent's part a message that @-mentioned them went to, instead of this chat. */
   movedTo?: string;
 }

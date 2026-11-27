@@ -12,12 +12,11 @@ import { doneAction, formOnly, useNeedsKeys } from "./needs";
 import { QUERIES, homeFrom, useQuery } from "./queries";
 import { MoreTeam, NextUp, WelcomeStepper } from "./GettingStarted";
 import { Bone } from "./Skeleton";
-import { TaskCheck, useCheckOff } from "./MyTasks";
 import { chipOf } from "./own-tasks";
 import type { About, Approval, Board, Card, FaceRef, Home, NeedRow, SinceItem, Waiting } from "./types";
 import { Markdown } from "./markdown";
-import { Banner, Button, DigestList, DigestRow, Face, Facts, Kbd, Monogram, Page, SectionCard, Tag, Tags, TeammateChip, Tile, faceProps, safeHref } from "./ui";
-import { ago, clockOpts, clockText, when } from "./util";
+import { Banner, Button, DigestList, DigestRow, Face, Facts, Kbd, Monogram, Page, RowDrawer, SectionCard, Tag, Tags, TeammateChip, Tile, faceProps, safeHref } from "./ui";
+import { ago, clockOpts, clockText, sourceDate, when } from "./util";
 import "./home.css";
 
 type Toast = (text: string, action?: { label: string; run: () => void }) => void;
@@ -54,7 +53,7 @@ function sinceMeta(from: string, tz: string): string {
 }
 
 /** The owner's own tasks as Tasks counts them (mytasks.ts): today's, and the sizes of the Inbox and of This week. */
-export type Day = { today: Card[]; triage: number; week: number; projects: Board["projects"]; /** Opens Tasks on My tasks (the list these counts come from). */ open: () => void };
+export type Day = { today: Card[]; triage: number; week: number; projects: Board["projects"]; /** Opens Tasks on Mine (the list these counts come from). */ open: () => void };
 
 /** `front`: Home is the page in front, no overlay (a task, a run) over it: only then do its keys work. `day`: the owner's tasks
  * (Your day); `onDone` checks one off, as Tasks does. */
@@ -236,9 +235,9 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
     ) : pane.kind === "waiting" && paneWaiting ? (
       <WaitingDetail key={`waiting:${pane.id}`} w={paneWaiting} projects={projects} onClose={closePane} close={waitingOn.close} later={waitingOn.later} />
     ) : pane.kind === "card" ? (
-      <HomeDrawer key={`card:${pane.id}`} rowId={pane.id} onClose={closePane} head={<span className="home-drawer-who"><b>Card {pane.id}</b></span>}>
+      <RowDrawer key={`card:${pane.id}`} rowId={pane.id} onClose={closePane} head={<span className="home-drawer-who"><b>Card {pane.id}</b></span>}>
         <CardAlone id={pane.id} />
-      </HomeDrawer>
+      </RowDrawer>
     ) : null
   );
 
@@ -340,7 +339,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   );
 }
 
-/** Today's tasks, checked off in place, beside what waits in the Inbox and this week; both tiles open Tasks. Left out when there is nothing. */
+/** Today's tasks, checked off in place, beside what is new and what is upcoming; both tiles open Tasks. Left out when there is nothing. */
 const DAY_ROWS = 6;
 function YourDay({ day, onDone }: { day: Day; onDone: (c: Card) => void }) {
   if (!day.today.length && !day.triage && !day.week) return null;
@@ -360,19 +359,34 @@ function YourDay({ day, onDone }: { day: Day; onDone: (c: Card) => void }) {
       </div>
       <div className="home-day-stats">
         <a className="home-stat" href="#/tasks" onClick={day.open} style={{ "--v": "var(--warn)" } as CSSProperties}>
-          <span className="home-stat-k"><i />To triage</span>
+          <span className="home-stat-k"><i />New</span>
           <b>{day.triage}</b>
-          <span className="home-stat-go">Triage →</span>
+          <span className="home-stat-go">Review →</span>
         </a>
         <a className="home-stat" href="#/tasks" onClick={day.open} style={{ "--v": "var(--later)" } as CSSProperties}>
-          <span className="home-stat-k"><i />This week</span>
+          <span className="home-stat-k"><i />Upcoming</span>
           <b>{day.week}</b>
-          <span className="home-stat-go">Plan the week →</span>
+          <span className="home-stat-go">Plan ahead →</span>
         </a>
       </div>
     </section>
   );
 }
+
+/** Checking a task off in place: the row strikes through for a beat, then `onDone` runs (and the row leaves). */
+function useCheckOff(card: Card, onDone: (c: Card) => void) {
+  const [done, setDone] = useState(false);
+  // The update runs even if the row has unmounted by then (a tab switch): only the strike-through is the row's.
+  const check = () => {
+    setDone(true);
+    setTimeout(() => onDone(card), 320);
+  };
+  return { done, check };
+}
+
+const TaskCheck = ({ card, done, onCheck }: { card: Card; done: boolean; onCheck: () => void }) => (
+  <button type="button" role="checkbox" aria-checked={done} aria-label={`Mark ${card.identifier} done`} className="home-chk" onClick={onCheck} />
+);
 
 function DayRow({ card, chip, onDone }: { card: Card; chip?: string; onDone: (c: Card) => void }) {
   const { done, check } = useCheckOff(card, onDone);
@@ -423,57 +437,6 @@ function RowActions({ row, answer, decided, snooze, done, dismiss }: { row: Need
   );
 }
 
-/** The right drawer a Home row opens (the board's drawer look: a scrim over the page, click outside or Esc closes). Focus moves
- * in and returns to the row. `head`: who it is from and how long it has waited; `foot`: the link to the whole task. */
-function HomeDrawer({ rowId, onClose, head, foot, children }: { rowId: string; onClose: () => void; head: React.ReactNode; foot?: React.ReactNode; children: React.ReactNode }) {
-  const ref = useRef<HTMLElement>(null);
-  const close = useRef(onClose);
-  close.current = onClose;
-  useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
-    ref.current?.focus({ preventScroll: true });
-    const onKey = (e: KeyboardEvent) => {
-      const mine = ref.current;
-      if (!mine || e.defaultPrevented) return;
-      // Only the topmost layer takes the keyboard: a task drawer opened from this one covers it and owns Tab and Escape.
-      const layers = document.querySelectorAll(".drawer-backdrop, dialog[open], .palette-backdrop");
-      if (layers[layers.length - 1] !== mine.parentElement) return;
-      if (e.key === "Tab") {
-        // Focus stays in this drawer while it is the topmost one.
-        const f = [...mine.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])")];
-        const first = f[0], last = f[f.length - 1];
-        if (!first || !last) return e.preventDefault();
-        const at = document.activeElement;
-        if (e.shiftKey && (at === first || at === mine)) (e.preventDefault(), last.focus());
-        else if (!e.shiftKey && at === last) (e.preventDefault(), first.focus());
-        else if (!mine.contains(at)) (e.preventDefault(), first.focus());
-        return;
-      }
-      // Escape closes the topmost layer only: a task drawer opened from here is closed first.
-      if (e.key === "Escape") (e.preventDefault(), close.current());
-    };
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      const row = document.querySelector<HTMLElement>(`[data-row="${CSS.escape(rowId)}"] .ui-digest-open`);
-      (row ?? (opener?.isConnected ? opener : null))?.focus({ preventScroll: true });
-    };
-  }, [rowId]);
-  return (
-    <div className="drawer-backdrop" onPointerDown={(e) => e.target === e.currentTarget && close.current()}>
-      <aside ref={ref} tabIndex={-1} className="drawer home-drawer" role="dialog" aria-modal="true" aria-label="Details">
-        <header className="drawer-head home-drawer-head">
-          {head}
-          <span className="spacer" />
-          <button type="button" className="btn quiet sm" onClick={onClose} aria-label="Close details">Close <Kbd>Esc</Kbd></button>
-        </header>
-        <div className="drawer-scroll">{children}</div>
-        {foot && <footer className="home-drawer-foot">{foot}</footer>}
-      </aside>
-    </div>
-  );
-}
-
 type Fact = readonly [string, React.ReactNode] | false | null | undefined;
 
 /** How long something has waited: "40m", "5h", "9d" (never a date, as `ago` gives past a week). */
@@ -481,18 +444,6 @@ const waited = (iso: string) => {
   const m = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 60_000));
   return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`;
 };
-/** A Source line's date ("2026-10-09") or zoned date and time ("2026-11-25T15:13Z", "…+04:00") as the drawer writes dates
- * (`when`, the time_format setting); null otherwise. A time with no zone has no defined clock, so it is shown as written. */
-export function sourceDate(v: string): string | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(Z|[+-]\d{2}:?\d{2}))?$/.exec(v.trim());
-  if (!m) return null;
-  if (!m[4]) {
-    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-    return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(d.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}) });
-  }
-  const d = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}${m[5]!.length === 5 ? `${m[5]!.slice(0, 3)}:${m[5]!.slice(3)}` : m[5]}`);
-  return Number.isNaN(d.getTime()) ? null : when(d.toISOString());
-}
 /** An http(s) address as a link that opens in a new tab, a date as a date; any other value as text. */
 const value = (v: string) => (/^https?:\/\/\S+$/i.test(v) ? <a href={safeHref(v)} target="_blank" rel="noopener noreferrer">{v}</a> : (sourceDate(v) ?? v));
 /** A task's board prefix ("WOR" of "WOR-841"): Markdown links that board's references. */
@@ -604,7 +555,7 @@ function RowDetail({ row, projects, onClose, receipt, ...acts }: { row: NeedRow;
     );
   }
   return (
-    <HomeDrawer rowId={row.id} onClose={onClose} head={head} foot={row.task && <a className="home-drawer-open" href={`#/t/${row.task.identifier}`}>Open task <span aria-hidden>→</span></a>}>
+    <RowDrawer rowId={row.id} onClose={onClose} head={head} foot={row.task && <a className="home-drawer-open" href={`#/t/${row.task.identifier}`}>Open task <span aria-hidden>→</span></a>}>
       <DetailBody title={row.kind === "open" && reply ? (row.task.title || row.question) : row.question} actions={actions} facts={facts}>
         {row.kind === "answer" && row.detail && (
           <div className="home-detail-part">
@@ -623,7 +574,7 @@ function RowDetail({ row, projects, onClose, receipt, ...acts }: { row: NeedRow;
         )}
         {row.kind !== "approval" && <AboutText a={row.about} prefix={boardOf(row.task.identifier)} />}
       </DetailBody>
-    </HomeDrawer>
+    </RowDrawer>
   );
 }
 
@@ -649,7 +600,7 @@ function WaitingDetail({ w, projects, onClose, close, later }: { w: Waiting; pro
   // Each action closes the drawer: the row leaves the card at once (and comes back with an error if refused).
   const act = (f: () => void) => () => (f(), onClose());
   return (
-    <HomeDrawer rowId={w.identifier} onClose={onClose} head={head} foot={<a className="home-drawer-open" href={`#/t/${w.identifier}`}>Open task <span aria-hidden>→</span></a>}>
+    <RowDrawer rowId={w.identifier} onClose={onClose} head={head} foot={<a className="home-drawer-open" href={`#/t/${w.identifier}`}>Open task <span aria-hidden>→</span></a>}>
       <DetailBody
         title={w.title}
         actions={
@@ -663,7 +614,7 @@ function WaitingDetail({ w, projects, onClose, close, later }: { w: Waiting; pro
       >
         <AboutText a={w.about} prefix={boardOf(w.identifier)} />
       </DetailBody>
-    </HomeDrawer>
+    </RowDrawer>
   );
 }
 

@@ -28,6 +28,7 @@ export { TeammateChip, faceStateOf } from "./TeammateChip";
 export { DecisionRow } from "./DecisionRow";
 export { DetailPane } from "./DetailPane";
 export { DigestList, DigestRow } from "./DigestList";
+export { RowDrawer } from "./RowDrawer";
 export { SidePanel } from "./SidePanel";
 export { Stepper } from "./Stepper";
 export { OptionCard } from "./OptionCard";

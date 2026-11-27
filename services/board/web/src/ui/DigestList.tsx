@@ -3,11 +3,16 @@
 // row's right end, the text fading out under them (no layout shift). A touch screen has no hover: its rows show no buttons
 // and a tap opens the row, where every action is. The whole row is the click target (`onOpen`, or `open`: an address to go to); `active` marks the row
 // the keyboard is on; `receipt` replaces the text once the row is answered. Shows the first `limit` (3); `more` links to all.
+// Tasks' rows are the same row in columns (`cols`): `lead` (the id) and `face` (glyphs) before the text, `meta` (several cells) after it.
 import type { CSSProperties } from "react";
 import { Button, safeHref } from "./Button";
 
 export type DigestItem = {
   id: string;
+  /** Before the face (a task's id). */
+  lead?: React.ReactNode;
+  /** A row of columns, not one line: the layout is the caller's grid (`--cols`). */
+  cols?: boolean;
   face?: React.ReactNode;
   text: React.ReactNode;
   /** Plain text of the row, the tooltip of a cut line. */
@@ -32,11 +37,12 @@ export function DigestRow({ d }: { d: DigestItem }) {
   const open = d.onOpen ?? (d.open ? () => void (location.hash = safeHref(d.open!)) : out ? () => void window.open(out, "_blank", "noopener,noreferrer") : undefined);
   return (
     <div
-      className={`ui-digest-row${open ? " openable" : ""}${d.active ? " on" : ""}`}
+      className={`ui-digest-row${d.cols ? " cols" : ""}${open ? " openable" : ""}${d.active ? " on" : ""}`}
       data-row={d.id}
       style={d.i === undefined ? undefined : ({ "--i": d.i } as CSSProperties)}
       onClick={open && !d.receipt ? (e) => !(e.target as Element).closest(skip) && open() : undefined}
     >
+      {d.lead}
       {d.face}
       {d.receipt ? (
         <span className="ui-digest-text ui-digest-receipt" role="status">
