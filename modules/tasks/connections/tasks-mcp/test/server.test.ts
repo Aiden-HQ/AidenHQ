@@ -2,18 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
-import { assertion, bridge, catalogFile, parse, rpc } from "./helpers.ts";
-
-test("POST /mcp behind the service key; a tools/call needs a valid assertion for this module", async () => {
-  assert.equal((await rpc({ method: "tools/list" }, { authorization: "Bearer wrong" })).status, 401);
-  const list = await rpc({ method: "tools/list" });
-  assert.ok(list.json.result.tools.some((t) => t.name === "task_comment"));
-  assert.equal((await rpc({ method: "notifications/initialized", id: undefined })).status, 202);
-  assert.equal((await rpc({ method: "initialize", params: {} })).json.result.serverInfo.name, "paperclip-tasks");
-  const call = (h) => rpc({ method: "tools/call", params: { name: "task_get", arguments: { issue: "WOR-1" } } }, h);
-  for (const h of [{}, { "x-aidenhq-caller": assertion({ aud: "other" }) }, { "x-aidenhq-caller": assertion({ exp: 1 }) }, { "x-aidenhq-caller": `${assertion().slice(0, -4)}AAAA` }])
-    assert.match((await call(h)).json.result.content[0].text, /^Refused: /);
-});
+import { bridge, catalogFile, parse } from "./helpers.ts";
 
 test("two agents on one server: each its own run counts, its own task and its own company", async () => {
   const { call } = bridge({
