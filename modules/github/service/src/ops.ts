@@ -52,7 +52,7 @@ const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
     isFork isArchived
     pullRequest(number: $number) {
       number title body url state isDraft createdAt headRefOid headRefName baseRefName baseRefOid mergedAt mergeCommit { oid }
-      files(first: 100) { pageInfo { hasNextPage endCursor } nodes { path } }
+      files(first: 100) { pageInfo { hasNextPage endCursor } nodes { path changeType } }
       history: commits(last: 30) { nodes { commit { oid tree { oid } parents(first: 1) { totalCount } } } }
       commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename ... on CheckRun { databaseId name status conclusion startedAt completedAt externalId checkSuite { app { slug } } } ... on StatusContext { context state createdAt } } } } } } }
       baseRef { target { oid ... on Commit { statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { databaseId name status conclusion startedAt completedAt } ... on StatusContext { context state createdAt } } } } } } }

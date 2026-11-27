@@ -137,6 +137,9 @@ const IMAGE_FILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
  * The scan's newest report that judged the head is the judgement (judgedOnHead): a run that scanned the head after an edit
  * superseded a skip cleared the question, so the obsolete skip is not one, and a skip that is the newest judgement is.
  * The file list answers on its own: a truncated list is answered on the pages that were read; paging happens at the caller.
+ * Deleting an image definition is not one: the workflow selects Dockerfiles from the head's tree, so a PR that only removes
+ * a service's Dockerfile skips the scan for a real reason, and no commit could unskip it. A file whose `changeType` is
+ * missing counts as a change (fail closed).
  */
 export function skippedImageScan(pr: Json): boolean {
   const nodes = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
@@ -144,5 +147,5 @@ export function skippedImageScan(pr: Json): boolean {
   if (!scans.some((c) => c.status === "SKIPPED")) return false;
   // No file list at all (ship's list read carries none) is no evidence: the full PR read answers instead.
   if (!Array.isArray(pr.files?.nodes)) return true;
-  return pr.files.nodes.some((f: Json) => IMAGE_FILE.test(f.path ?? ""));
+  return pr.files.nodes.some((f: Json) => IMAGE_FILE.test(f.path ?? "") && f.changeType !== "DELETED");
 }

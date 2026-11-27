@@ -814,6 +814,8 @@ rplan="modules/github/service/src/plan.ts"; rcheck="modules/platform/src/check.t
   && grep -qF 'const p = await d.gh("POST", "/graphql", { query: PR_FILES_QUERY, variables: { owner, repo: name, number, after } });' "$rq" \
   && grep -qF 'if ((at.head && node?.headRefOid !== at.head) || (at.base && node?.baseRefOid !== at.base)) throw new Error("GitHub GraphQL: the pull request moved while its files were read");' "$rq" \
   && grep -qF 'export async function allPrFiles' "$rm_" \
+  && grep -qF 'nodes { path changeType }' "$rm_" \
+  && grep -qF 'f.changeType !== "DELETED"' modules/github/service/src/aidenhq-sdk/checks.ts \
   && grep -qF 'const r = await d.gh("GET", `/repos/${repo}/actions/runs?event=merge_group&per_page=50`);' "$rq" \
   && grep -qF 'const r = await d.gh("GET", `/repos/${repo}/commits/${sha}/${path}?per_page=100&page=${page}`);' "$rq" \
   && grep -qF 'const rules = await d.gh("GET", `/repos/${repo}/rules/branches/${encodeURIComponent(branch)}`);' "$rq" \

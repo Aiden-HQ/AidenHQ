@@ -21,6 +21,14 @@ test("checks are read as named results; code review is advisory; an image scan s
   const truncated = (paths) => ({ files: { pageInfo: { hasNextPage: true }, nodes: paths.map((path) => ({ path })) } });
   assert.equal(skippedImageScan(pr("src/a.ts", truncated(["src/a.ts", "src/b.ts"]))), false, "a truncated list of non-image files is no image change");
   assert.equal(skippedImageScan(pr("src/a.ts", truncated(["src/a.ts", "services/x/Dockerfile"]))), true, "an image definition on the first page of a truncated list still counts");
+  // A deleted image definition is not an image change: the workflow selects Dockerfiles from the head's tree, so a PR that
+  // only retires a service's Dockerfile skips the scan for a real reason. A file with no changeType still counts (fail closed).
+  const changed = (path, changeType) => ({ files: { pageInfo: { hasNextPage: false }, nodes: [{ path, ...(changeType ? { changeType } : {}) }] } });
+  assert.equal(skippedImageScan(pr("src/a.ts", changed("services/x/Dockerfile", "DELETED"))), false, "a deleted Dockerfile alone is no image change");
+  assert.equal(skippedImageScan(pr("src/a.ts", changed("services/x/Dockerfile", "MODIFIED"))), true);
+  assert.equal(skippedImageScan(pr("src/a.ts", changed("services/x/Dockerfile", "ADDED"))), true);
+  assert.equal(skippedImageScan(pr("src/a.ts", changed("services/x/Dockerfile", "RENAMED"))), true, "a renamed image definition is still one");
+  assert.equal(skippedImageScan(pr("src/a.ts", changed("services/x/Dockerfile"))), true, "no changeType is no evidence it was deleted");
   // Paging happens at the caller: it hands over every page read, and an image definition on a page after the first counts.
   const paged = (pages) => ({ files: { pageInfo: { hasNextPage: false }, nodes: pages.flat().map((path) => ({ path })) } });
   assert.equal(skippedImageScan(pr("src/a.ts", paged([["src/a.ts", "src/b.ts"], ["deploy/Dockerfile"]]))), true, "an image definition on a page after the first is an image change");

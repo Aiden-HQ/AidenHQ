@@ -30,11 +30,13 @@ function fakeGitHub(prs) {
       const repo = `${v.owner}/${v.repo}`;
       const p = prs[`${repo}#${v.number}`] ?? prs[repo];
       if (!p) return { status: 400, body: { errors: [{ message: `fake GitHub: no PR ${repo}#${v.number}` }] } };
+      // A changed file as GitHub lists it: `p.changeTypes` names the paths whose changeType is not MODIFIED.
+      const file = (path) => ({ path, changeType: p.changeTypes?.[path] ?? "MODIFIED" });
       // `filePages`: a PR whose file list GitHub cut at 100, answered one page at a time by the cursor ("f1" is page 2).
       if (body.query.includes("after: $after")) {
         const page = p?.filePages?.[Number(String(v.after).replace(/^f/, ""))];
         // The head and base the page was read at: the reader refuses a page from another head than the PR read's.
-        return page ? { status: 200, body: { data: { repository: { pullRequest: { headRefOid: p.headAt ?? p.head, baseRefOid: p.baseAt ?? "b".repeat(40), files: { pageInfo: { hasNextPage: page.length >= 100, endCursor: `f${Number(String(v.after).replace(/^f/, "")) + 1}` }, nodes: page.map((path) => ({ path })) } } } } } } : { status: 500, body: { errors: [{ message: "fake GitHub: no such file page" }] } };
+        return page ? { status: 200, body: { data: { repository: { pullRequest: { headRefOid: p.headAt ?? p.head, baseRefOid: p.baseAt ?? "b".repeat(40), files: { pageInfo: { hasNextPage: page.length >= 100, endCursor: `f${Number(String(v.after).replace(/^f/, "")) + 1}` }, nodes: page.map((path) => file(path)) } } } } } } : { status: 500, body: { errors: [{ message: "fake GitHub: no such file page" }] } };
       }
       if (body.query.includes("pullRequest(number")) {
         // `lag`: GitHub's read still shows the PR open for that many polls (its merge not yet reflected); a repo's allowed
@@ -46,8 +48,8 @@ function fakeGitHub(prs) {
           mergedAt: stale ? null : p.mergedAt ?? null, mergeCommit: !stale && p.merged ? { oid: p.merged, message: String(p.message ?? "") } : null,
           mergeStateStatus: p.checks === "SUCCESS" ? "CLEAN" : "BLOCKED", headRefOid: p.head, baseRefOid: "b".repeat(40), headRefName: "feature", isCrossRepository: false, baseRefName: p.base ?? "main",
           files: p.filePages
-            ? { pageInfo: { hasNextPage: true, endCursor: "f1" }, nodes: p.filePages[0].map((path) => ({ path })) }
-            : { pageInfo: { hasNextPage: false }, nodes: (p.files ?? ["lib/x.mjs"]).map((path) => ({ path })) }, latestOpinionatedReviews: { nodes: [] },
+            ? { pageInfo: { hasNextPage: true, endCursor: "f1" }, nodes: p.filePages[0].map((path) => file(path)) }
+            : { pageInfo: { hasNextPage: false }, nodes: (p.files ?? ["lib/x.mjs"]).map((path) => file(path)) }, latestOpinionatedReviews: { nodes: [] },
           commits: { nodes: [{ commit: { statusCheckRollup: p.rollup ?? rollup(p.checks, p) } }] },
           baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40), statusCheckRollup: rollup(p.baseState ?? "SUCCESS", { names: p.baseNames }) } },
         } } } } };
@@ -1947,6 +1949,25 @@ test("a PR cut at 100 files is read page by page: non-image files with a skipped
   await other.settle();
   assert.equal(other.outcomes[0]?.ok, false);
   assert.match(String(other.outcomes[0]?.text), /changes an image but its image-scan check was skipped/);
+});
+
+test("a PR that only retires a service's Dockerfile merges on a skipped image scan; changing one still blocks", async (t) => {
+  // The workflow selects Dockerfiles from the head's tree, so deleting the last one skips the scan for a real reason and no
+  // commit could unskip it. Adding or editing one is what the skip cannot cover.
+  const skipped = { state: "SUCCESS", contexts: { pageInfo: { hasNextPage: false }, nodes: [check("image-scan", "SKIPPED"), check("build", "SUCCESS")] } };
+  const runs = [{ name: "image-scan", status: "completed", conclusion: "skipped" }, { name: "build", status: "completed", conclusion: "success" }];
+  const pr = (changeTypes) => ({ head: HEAD, checks: "SUCCESS", files: ["services/x/Dockerfile"], changeTypes, rollup: skipped, runs });
+  const gone = await setup(t, { prs: { "acme-agents/widget": pr({ "services/x/Dockerfile": "DELETED" }) } });
+  await gone.merge("k-00000000000000fe", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await gone.handle.stepMerges();
+  await gone.settle();
+  assert.equal(gone.outcomes[0]?.ok, true, JSON.stringify(gone.outcomes));
+  const edited = await setup(t, { prs: { "acme-agents/widget": pr({ "services/x/Dockerfile": "MODIFIED" }) } });
+  await edited.merge("k-00000000000000ff", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await edited.handle.stepMerges();
+  await edited.settle();
+  assert.equal(edited.outcomes[0]?.ok, false);
+  assert.match(String(edited.outcomes[0]?.text), /changes an image but its image-scan check was skipped/);
 });
 
 test("a file page from a head other than the first read's is no answer: two heads' files are never one list", async (t) => {

@@ -60,7 +60,7 @@ export const PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $
     pullRequest(number: $number) {
       id number title body url state isDraft labels(first: 30) { nodes { name } } reviewDecision mergeStateStatus headRefOid headRefName baseRefOid isCrossRepository baseRefName authorAssociation
       mergedAt mergedBy { login } mergeCommit { oid message }
-      files(first: 100) { pageInfo { hasNextPage endCursor } nodes { path } }
+      files(first: 100) { pageInfo { hasNextPage endCursor } nodes { path changeType } }
       latestOpinionatedReviews(first: 30) { nodes { state authorCanPushToRepository author { __typename login } commit { oid } } }
       reviewRequests(first: 30) { nodes { asCodeOwner requestedReviewer { __typename ... on Team { combinedSlug } ... on User { login } } } }
       isInMergeQueue mergeQueueEntry { headCommit { oid } }
@@ -78,7 +78,7 @@ export const PR_FILES_QUERY = `query($owner: String!, $repo: String!, $number: I
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       headRefOid baseRefOid
-      files(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { path } }
+      files(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { path changeType } }
     }
   }
 }`;
