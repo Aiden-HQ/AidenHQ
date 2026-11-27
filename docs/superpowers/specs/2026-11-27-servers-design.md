@@ -382,12 +382,15 @@ plain-language summaries, Advanced collapsed.
   servers_machines:
     default: []
     entry: name
+    pattern: '^[a-z0-9][a-z0-9-]{0,31}$'
     writers: [ owner ]        # the page's Save is the owner's; no agent holds a write to it
   ```
 
-  Each entry is one object. Compile checks only the field `entry: name` names, against `name`'s `pattern`; the module's
-  `validate:` hook checks a whole entry against this schema, on the page's Save and on an agent's settings change, and its
-  refusal is shown under the field:
+  Each entry is one object. Compile checks the field `entry: name` names against this setting's `pattern`, so a machine
+  name that is not lowercase letters, digits and `-` is caught at compile wherever the entry was written — the page, an
+  agent's settings change, or the instance file by hand: the compile warns and the setting falls back to its empty default,
+  so a bad name never reaches a service. The module's `validate:` hook checks a whole entry against the schema below, on
+  the page's Save and on an agent's settings change, and its refusal is shown under the field:
 
   ```jsonc
   {
@@ -615,6 +618,8 @@ status writer's `warehouse_src_servers_password` login are platform touches — 
 files — rather than something a module can declare alone (§3); each `warehouse.sources` entry needs `time` on every view,
 so the old example would not have validated (§8); and the agent's grants must carry the five tools a heartbeat requires
 (`task_list`, `task_comments`, `task_approvals`, `task_comment`, `task_finish`), or compile refuses the heartbeat (§3).
+`servers_machines` now declares its own `pattern`, so compile checks a machine name on every path, a hand edit of the
+instance file included, which the `validate:` hook alone could not.
 
 ## 17. What is still open
 
