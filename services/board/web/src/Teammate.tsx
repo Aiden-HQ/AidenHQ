@@ -12,7 +12,7 @@ import { RenameButton, statusLine } from "./Team";
 import { SkeletonLines } from "./Skeleton";
 import type { Assignee, ChatRow, RosterAgent, SettingRow } from "./types";
 import { Banner, Button, Card, Disclosure, EmptyState, Face, Facts, LinkButton, Menu, Page, SectionCard, Segmented, StatusDot, Tag, faceProps, faceStateOf, type TagTone } from "./ui";
-import { yamlValue } from "./settings-format";
+import { settingSummary, settingTitle } from "./settings-format";
 import { ago } from "./util";
 import "./team.css";
 
@@ -20,10 +20,6 @@ type Toast = (text: string, action?: { label: string; run: () => void }) => void
 const OUTCOME: Record<string, [string, TagTone]> = { running: ["Running", "accent"], done: ["Done", "ok"], failed: ["Failed", "failed"], stopped: ["Stopped", "neutral"] };
 const settingsQuery = { key: "settings", fetch: api.settings, persist: false as const };
 
-/** A setting's value in a line: a list joined, on/off, else its YAML. */
-const valueText = (v: unknown) => (Array.isArray(v) ? v.map((x) => (typeof x === "string" ? x : yamlValue(x))).join(", ") || "none" : typeof v === "boolean" ? (v ? "On" : "Off") : v === null || v === undefined || v === "" ? "not set" : typeof v === "string" ? v : yamlValue(v));
-/** A setting's label: the first sentence of its doc, else its key in words. */
-const labelOf = (s: SettingRow) => (s.doc ? s.doc.split(/(?<=\.)\s/)[0]!.replace(/\.$/, "") : s.key.replace(/_/g, " "));
 
 export function TeammateView({ agentKey, chat, text, crew, faces, prefix, go, onSignIn, toast, mobile }: { agentKey: string; chat?: string; text?: string; crew: Assignee[]; faces: Assignee[]; prefix: string; go: (h: string) => void; onSignIn: () => void; toast: Toast; mobile: boolean }) {
   const rosterQ = useQuery(QUERIES.roster, onSignIn);
@@ -222,7 +218,7 @@ function SetUp({ a, onSignIn }: { a: RosterAgent; onSignIn: () => void }) {
   if (!controls.length || (q.data && !rows.length)) return null;
   return (
     <SectionCard title={`How ${a.name} is set up`}>
-      {q.data ? <Facts items={rows.map((s) => [labelOf(s), valueText(s.value)] as const)} /> : <SkeletonLines lines={3} />}
+      {q.data ? <Facts items={rows.map((s) => [settingTitle(s), <span key={s.key} className="mate-val" title={settingSummary(s.value)}>{settingSummary(s.value)}</span>, s.doc] as const)} /> : <SkeletonLines lines={3} />}
       <p className="mate-foot">Change any of this by asking {a.name}.</p>
     </SectionCard>
   );

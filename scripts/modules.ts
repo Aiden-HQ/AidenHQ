@@ -307,6 +307,7 @@ function settingRules(name: string, def: Obj) {
       if (typeof d.when !== "object" || Array.isArray(d.when) || !Object.keys(d.when).length) fail(`${where}: when is { <setting>: <value> }`);
       for (const k of Object.keys(d.when)) if (!(k in def.settings)) fail(`${where}: when names ${k}, which is not one of the module's settings`);
     }
+    if (d?.title != null && (typeof d.title !== "string" || !d.title.trim() || d.title.length > 40)) fail(`${where}: title is a short name for the board (1-40 characters)`);
     if (d?.entry != null && !/^[a-z][a-z0-9_]{0,40}$/.test(String(d.entry))) fail(`${where}: entry is the map field its list entries are checked by (a-z, 0-9, _)`);
   }
 }
@@ -317,7 +318,7 @@ export const defaultComputersMax = (totalBytes = totalmem()) => Math.min(64, Mat
 /** A module's settings for the board: default, allowed values, required, pattern, when, and the comment above each key as its `doc`. */
 function settingDefs(file: string, def: Obj) {
   const docs = settingDocs(file);
-  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]: [string, any]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(d?.pattern ? { pattern: d.pattern } : {}), ...(d?.entry ? { entry: String(d.entry) } : {}), ...(d?.when ? { when: d.when } : {}), ...(d?.writers ? { writers: [d.writers].flat().map(String) } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
+  return Object.fromEntries(Object.entries(def.settings ?? {}).filter(([k]) => !/token|secret|password/i.test(k)).map(([k, d]: [string, any]) => [k, { ...(d && "default" in d ? { default: d.default } : {}), ...(d?.values ? { values: d.values } : {}), ...(d?.required ? { required: true } : {}), ...(d?.type ? { type: d.type } : {}), ...(d?.host ? { host: d.host } : {}), ...(d?.pattern ? { pattern: d.pattern } : {}), ...(d?.entry ? { entry: String(d.entry) } : {}), ...(d?.when ? { when: d.when } : {}), ...(d?.writers ? { writers: [d.writers].flat().map(String) } : {}), ...(d?.title ? { title: String(d.title) } : {}), ...(docs[k] ? { doc: docs[k] } : {}) }]));
 }
 
 /**

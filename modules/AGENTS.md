@@ -55,6 +55,7 @@ The Maintainer page (`modules/maintainer/service/src/page.html`) is the referenc
 - A field that applies to one option alone (a number of days for Close) appears under that row's description, only while
   the option is picked. No column is reserved for it.
 - Give each item (a repo, an app) a plain-language summary line built from its settings, and show collapsed items with Edit.
+- Give every setting a `title:` in module.yaml (a few words, the label teammates' cards show; the comment above it is the hover help).
 - Choose good defaults instead of offering presets. Fold near-duplicate settings into one, and make rarely-changed numbers product
   constants.
 - Advanced holds at most a few settings and starts collapsed.

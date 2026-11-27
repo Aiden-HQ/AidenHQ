@@ -33,3 +33,4 @@
 .mate-work time { flex: none; font-size: var(--text-sm); color: var(--faint); }
 .mate-foot { margin: 0; font-size: var(--text-sm); color: var(--faint); }
 .mate-staff { display: grid; gap: 6px; }
+.mate-val { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }

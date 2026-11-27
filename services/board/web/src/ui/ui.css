@@ -44,8 +44,9 @@
 /* A plain surface (Card.tsx), and label/value facts inside one. */
 .ui-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px 16px; display: grid; gap: 10px; font-size: var(--text-base); min-width: 0; }
 .ui-card > p { margin: 0; line-height: 1.5; }
-.ui-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 7px 16px; margin: 0; font-size: var(--text-base); }
-.ui-facts dt { color: var(--muted); }
+.ui-facts { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 7px 16px; margin: 0; font-size: var(--text-base); }
+.ui-facts dt { color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.ui-facts dt[title] { cursor: help; }
 .ui-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .ui-none { color: var(--faint); }
 .ui-mono-text { font-family: var(--mono); font-size: var(--text-sm); }

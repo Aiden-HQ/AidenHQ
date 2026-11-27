@@ -133,6 +133,7 @@ settings:
   # data (deletes and paths like delete, pay, send, invite or publish are still blocked, a best-effort extra): choose it only for
   # an app whose test account holds test data alone; any allows everything. A pass may only narrow it. Logins: the secret ui_logins.
   ui_testing:
+    title: Apps the UI Reviewer tests
     type: object
     default:
       apps: []
