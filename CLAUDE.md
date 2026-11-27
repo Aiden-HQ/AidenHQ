@@ -82,7 +82,8 @@ the CI template's supply-chain scripts), run `node scripts/sync-shared.ts` (a te
 `modules/` included). The official modules are this repo's `modules/` (MIT by folder:
 `modules/LICENSE`, `NOTICE`, `LICENSES/`), so a change across the kernel and a module is one PR. CI (`.github/workflows/ci.yml`)
 runs the suites a PR touches (map: `.github/ci/areas.json`, read from the base: each module package is a suite of its own
-whose paths list what it imports; a path under no suite runs everything) and all of them on main.
+whose paths list what it imports; a path under no suite runs everything) and all of them on main. The `scripts/test` files are grouped
+into `scripts/*` suites; a new test file goes in exactly one suite's `run` (`scripts/test/ci-suites.test.ts` fails otherwise).
 
 The app starter (`modules/apps-platform/starter/`) is Vite + shadcn: `npm ci && npm run build` before serving it (apps-mcp's
 render test skips without `dist/`). Copying files from macOS with `tar`, set `COPYFILE_DISABLE=1` (else `._*` files break

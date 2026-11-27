@@ -2,8 +2,8 @@
 // No dependencies: it runs before anything is installed.
 //
 // A file counts unless it is under docs/ or is Markdown outside the map's `markdown` list (Markdown the tests read). A
-// counted file under `everything` (CI's own definition, shared code) or under no suite's paths selects every suite. A
-// suite whose paths are "*" runs for any counted file.
+// counted file under `everything` (CI's own definition, shared code) or under no suite's paths selects every suite. A suite's
+// `ignore` lists files and folders under its paths that it does not need (another suite's tests, say).
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
@@ -20,11 +20,11 @@ export function suitesFor(map: AreaMap, files: string[]): Selection {
   const code = files.filter((f) => counted(map, f));
   const ci = code.find((f) => map.everything.some((p) => under(f, p)));
   if (ci) return every(`${ci} changes CI or shared code`);
-  const known = map.suites.flatMap((s) => s.paths).filter((p) => p !== "*").concat(map.markdown);
+  const known = map.suites.flatMap((s) => s.paths).concat(map.markdown);
   const stray = code.find((f) => !known.some((p) => under(f, p)));
   if (stray) return every(`${stray} is under no suite`);
   const names = map.suites
-    .filter((s) => code.some((f) => !(s.ignore ?? []).includes(f) && s.paths.some((p) => p === "*" || under(f, p))))
+    .filter((s) => code.some((f) => !(s.ignore ?? []).some((p) => under(f, p)) && s.paths.some((p) => under(f, p))))
     .map((s) => s.name);
   return { all: false, names };
 }

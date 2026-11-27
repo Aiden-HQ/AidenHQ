@@ -6,7 +6,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import pino from "pino";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
-import { checkCall, isRead, NEVER, QueryRefused, SCOPES, truncateResult } from "./policy.js";
+import { hooks } from "./hooks.js";
+import { SCOPES } from "./policy.js";
 import { oauth } from "./vendor/oauth.js";
 import { createVendorProxy } from "./vendor/proxy.js";
 
@@ -31,19 +32,7 @@ const http = createVendorProxy({
   stateDir,
   // Queries run up to two minutes (policy.ts MAX_TIMEOUT_SECONDS).
   callTimeoutMs: 180_000,
-  hooks: {
-    deny: NEVER,
-    isRead,
-    args(name, args) {
-      try {
-        return checkCall(name, args);
-      } catch (err) {
-        if (err instanceof QueryRefused) throw new Error(`Query refused by AidenHQ: ${err.message}. Queries are read-only and stay inside the database.`);
-        throw err;
-      }
-    },
-    result: (r) => truncateResult(r),
-  },
+  hooks,
 });
 
 http.listen(Number(process.env.PORT ?? 8088), "0.0.0.0", () => log.info({ board_sign_in: Boolean(process.env.CLICKHOUSE_AUTH_TOKEN_FILE) }, "clickhouse-mcp listening"));
