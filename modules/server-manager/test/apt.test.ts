@@ -61,7 +61,7 @@ test("Debian stable: the same suite test, a normal-archive candidate is not secu
   assert.ok(!("unsupported" in r));
   if ("unsupported" in r) return;
   assert.equal(r.family, "debian-stable");
-  assert.equal(r.distro, "Debian GNU/Linux");
+  assert.equal(r.distro, "Debian 12 (bookworm)");
   assert.deepEqual(r.upgradable.map((p) => `${p.name}=${p.version}`), ["ca-certificates=20230311+deb12u2", "libc6=2.36-9+deb12u8"]);
   assert.deepEqual(r.security, ["ca-certificates", "libc6"]);
   assert.equal(r.reboot_needed, false);
@@ -92,6 +92,8 @@ test("anything else is unsupported, with the reason, and nothing is read", () =>
 test("an Ubuntu interim release and a Debian testing host are refused, not guessed at", () => {
   assert.ok("unsupported" in detect({ ID: "ubuntu", VERSION_ID: "24.10", VERSION_CODENAME: "oracular" }));
   assert.ok("unsupported" in detect({ ID: "debian", VERSION_ID: "13", VERSION_CODENAME: "testing" }));
+  // forky is testing today, not a released stable: reading it as stable would run apt on a host §5 does not support.
+  assert.ok("unsupported" in detect({ ID: "debian", VERSION_ID: "14", VERSION_CODENAME: "forky" }));
   assert.ok("unsupported" in detect({ ID: "alpine" }));
   assert.deepEqual(detect({ ID: "ubuntu", VERSION_ID: "22.04", VERSION_CODENAME: "jammy" }), { family: "ubuntu-lts" });
   assert.deepEqual(detect({ ID: "debian", VERSION_ID: "12", VERSION_CODENAME: "bookworm" }), { family: "debian-stable" });

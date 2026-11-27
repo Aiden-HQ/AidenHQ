@@ -19,7 +19,10 @@ export const READ = {
   simulatedUpgrade: ["apt-get", "-s", "upgrade"],
   holds: ["apt-mark", "showhold"],
   units: ["systemctl", "list-units", "--type=service", "--state=running", "--no-legend", "--plain"],
-  disk: ["df", "-Pk", "/", "/boot"],
+  // `/` and `/boot` are separate probes: a host without its own `/boot` still answers for `/`, and `df`'s non-zero exit for the
+  // missing path is an answer, not a failed check.
+  diskRoot: ["df", "-Pk", "/"],
+  diskBoot: ["df", "-Pk", "/boot"],
   bootId: ["cat", "/proc/sys/kernel/random/boot_id"],
   aptConfig: ["apt-config", "dump"],
 } as const;
@@ -74,7 +77,10 @@ export async function readHost(c: Connection, pin?: { fingerprint: string; first
     const policy = names.length ? await c.exec(["apt-cache", "policy", ...names], TIMEOUTS.read) : { code: 0, stdout: "", stderr: "" };
     const holds = await c.probe([...READ.holds]);
     const units = await c.exec([...READ.units], TIMEOUTS.read);
-    const df = await c.exec([...READ.disk], TIMEOUTS.read);
+    // Free space is a nice-to-have, not a reason to fail a machine: most cloud images have no separate `/boot`, and `df` exits
+    // non-zero for a path that does not exist. Each mount is probed on its own, and a mount the host did not answer stays null.
+    const dfRoot = await c.probe([...READ.diskRoot]);
+    const dfBoot = await c.probe([...READ.diskBoot]);
     const bootId = (await c.exec([...READ.bootId], TIMEOUTS.read)).stdout.trim();
     const reboot = await c.probe(["test", "-f", "/var/run/reboot-required"]);
     const rebootPkgs = await c.probe(["cat", "/var/run/reboot-required.pkgs"]);
@@ -85,7 +91,7 @@ export async function readHost(c: Connection, pin?: { fingerprint: string; first
     const ua = await c.probe(["systemctl", "is-enabled", "unattended-upgrades"]);
     const uaOn = unattendedUpgradesOn(parseAptConfig(aptConfig.stdout), ua.stdout);
     const securityStatus = await c.probe(["ubuntu-security-status", "--format", "json"]);
-    const disk = parseDf(df.stdout);
+    const disk = { root_free_gb: parseDf(dfRoot.stdout).root_free_gb, boot_free_gb: parseDf(dfBoot.stdout).boot_free_gb };
     const r = readoutFromChecked({
       os: os.stdout,
       policy: policy.stdout,

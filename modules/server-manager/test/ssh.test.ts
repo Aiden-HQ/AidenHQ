@@ -14,6 +14,7 @@ const PEM_HEAD = ["-----BEGIN", "OPENSSH", "PRIVATE KEY-----"].join(" ");
 const PEM_END = ["-----END", "OPENSSH", "PRIVATE KEY-----"].join(" ");
 const KEY = `${PEM_HEAD}\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAAB\n${PEM_END}\n`;
 const PIN = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const OLD_PIN = `SHA256:${"B".repeat(43)}`;
 
 /** A stand-in ssh: records each call's argv, then behaves as `mode` says. */
 function fakeSsh(dir: string, mode: "ok" | "changed" | "denied" | "timeout" = "ok") {
@@ -46,8 +47,10 @@ else {
 const fs = require("node:fs");
 const args = process.argv.slice(2);
 const f = args[args.length - 1];
-try { const t = fs.readFileSync(f, "utf8"); if (!t.trim()) process.exit(1); } catch { process.exit(1); }
-process.stdout.write("256 ${PIN} host (ED25519)\\n");
+let t = "";
+try { t = fs.readFileSync(f, "utf8"); if (!t.trim()) process.exit(1); } catch { process.exit(1); }
+// A pin file holding OLDKEY stands for a key pinned on an earlier day: its fingerprint differs from what the host presents now.
+process.stdout.write(t.includes("OLDKEY") ? "256 ${OLD_PIN} host (ED25519)\\n" : "256 ${PIN} host (ED25519)\\n");
 `);
   chmodSync(keygen, 0o755);
   return { bin, keygen, log, calls: () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l).args as string[]) : []) };
@@ -112,10 +115,14 @@ test("a changed host key refuses the run and names both fingerprints", async () 
   const { transport: t } = transport(dir, "changed");
   // Pin it first so the run is not the first connection.
   mkdirSync(join(dir, "state", "known_hosts"), { recursive: true });
-  writeFileSync(join(dir, "state", "known_hosts", "vm-one"), "host ssh-ed25519 AAAA\n");
+  writeFileSync(join(dir, "state", "known_hosts", "vm-one"), "host ssh-ed25519 OLDKEY\n");
   await assert.rejects(() => withConnection(t, machine, keys(), async () => "ran"), (e: Error) => {
     assert.ok(e instanceof HostKeyChanged);
     assert.match(e.message, /changed since it was pinned/);
+    // §10: the refusal names the key the host presents now, which is not the stored one.
+    assert.ok(e.message.includes(OLD_PIN), "the pinned fingerprint is named");
+    assert.ok(e.message.includes(PIN), "the presented fingerprint is named");
+    assert.equal((e as HostKeyChanged).seen, PIN);
     return true;
   });
 });

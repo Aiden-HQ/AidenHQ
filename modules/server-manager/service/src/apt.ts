@@ -29,8 +29,11 @@ export function parseOsRelease(text: string): OsRelease {
   return { ID: out.ID ?? "", VERSION_ID: out.VERSION_ID, VERSION_CODENAME: out.VERSION_CODENAME, PRETTY_NAME: out.PRETTY_NAME };
 }
 
-/** Debian's released stable codenames (a new stable adds its name here and its fixture; nothing else in the adapter changes). */
-const DEBIAN_STABLE = new Set(["bookworm", "trixie", "forky"]);
+/**
+ * Debian's released stable codenames (a new stable adds its name here and its fixture; nothing else in the adapter changes).
+ * `forky` is testing today, not a released stable: it is refused like any other testing or unstable host (§5).
+ */
+const DEBIAN_STABLE = new Set(["bookworm", "trixie"]);
 
 /**
  * Which family a host is, and why not when it is none: Ubuntu must be an even-year `.04` LTS (24.04, not 24.10), Debian must be a
@@ -226,7 +229,10 @@ export function readoutFrom(i: { os: OsRelease; policy: string; simulated?: stri
   const { upgradable, security } = classify(parsePolicy(i.policy), holds, status?.esm_apps ?? [], planned);
   return {
     family: d.family,
-    distro: i.os.PRETTY_NAME?.split(" ").slice(0, 2).join(" ") || d.family,
+    // Debian's PRETTY_NAME stops at "Debian GNU/Linux", which cannot tell 12 from 13: the version and codename name it exactly.
+    distro: d.family === "debian-stable"
+      ? `Debian ${i.os.VERSION_ID ?? "?"} (${i.os.VERSION_CODENAME ?? "?"})`
+      : i.os.PRETTY_NAME?.split(" ").slice(0, 2).join(" ") || d.family,
     upgradable,
     security,
     security_known: true,

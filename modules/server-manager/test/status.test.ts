@@ -280,3 +280,21 @@ process.stdout.write("256 SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA hos
   assert.equal(out.checked[0].reboot_needed, null);
   assert.equal(status.get("vm-one")!.state, "unreachable");
 });
+
+test("a host with no separate /boot is checked, not failed: df's non-zero for that path leaves boot_free_gb null", async () => {
+  const { root, transport } = fakeHost("ubuntu-lts");
+  // `df -Pk /boot` is the ordinary cloud-image case: the path is part of `/`, and df exits 1 saying so.
+  const real = transport.config.sshBin!;
+  const text = readFileSync(real, "utf8");
+  writeFileSync(real, text.replace(
+    'const answer = exact[cmd] ?? (prefixes.find((p) => cmd.startsWith(p[0])) ?? [])[1];',
+    'if (cmd === "df -Pk /boot") { process.stderr.write("df: /boot: No such file or directory" + String.fromCharCode(10)); process.exit(1); }\nconst answer = exact[cmd] ?? (prefixes.find((p) => cmd.startsWith(p[0])) ?? [])[1];',
+  ));
+  const status = new StatusStore(join(root, "data"));
+  const tools = configTools({ machines: () => JSON.stringify([{ name: "vm-one", address: "vm-one", user: "user", key: "vm-one-key" }]), status, transport, keys: () => ({ "vm-one-key": { private_key: KEY } }) });
+  const r = (await createMcp("server-manager", tools)({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "server_manager_check", arguments: {} } } as never, owner as never)) as any;
+  const out = JSON.parse(r.result.content[0].text);
+  assert.equal(out.checked[0].state, "ok");
+  assert.deepEqual(out.checked[0].disk, { root_free_gb: 17.58, boot_free_gb: null });
+  assert.equal(out.checked[0].pending, 3, "the rest of the read still happened");
+});
