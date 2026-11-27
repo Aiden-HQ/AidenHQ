@@ -71,9 +71,63 @@ probe_check() { # check name, probe name
   esac
 }
 
+# Every module's service answers /healthz (WOR-14006). The checks below name the services they know by hand; a module
+# whose only probe would have been one of those had none, and so landed "container up, nobody knows if it answers". This
+# reads the containers the compiled compose actually runs instead: every service carrying `aidenhq.module`
+# (scripts/compiler/services.ts writes it) and no `profiles` (an `on_demand` service starts by `docker compose run`, never
+# by an apply). Its verdict is Docker's own HEALTHCHECK (every module image that serves /healthz declares one): a service
+# whose image declares none cannot be judged here, so it is listed and never failed rather than given a contract it lacks.
+module_services() { # one "<module> <service>" line per module service the compiled compose runs
+  dc config --format json 2>/dev/null | node -e '
+let d = "";
+process.stdin.on("data", (c) => (d += c)).on("end", () => {
+  let services;
+  try { services = JSON.parse(d).services ?? {}; } catch { console.log("__unreadable__"); return; }
+  for (const s of Object.values(services)) {
+    const l = s.labels ?? {};
+    if (!l["aidenhq.module"] || [s.profiles ?? []].flat().length) continue;
+    console.log(`${l["aidenhq.module"]} ${l["aidenhq.service"] ?? "?"}`);
+  }
+});'
+}
+# The container's own state: running or not, and Docker's health (`healthy`, `unhealthy`, `starting`, or `none` when the
+# image declares no HEALTHCHECK). Chosen by the labels the compose file writes, never by a guessed container name.
+module_service_state() { # module, service -> "<running> <health>"; "absent none" without a container
+  local id
+  # Running first (the one a recreate replaced may still be listed), then any: a stopped container is a failure the probe
+  # has to report, and never a `compose run` one-off, which is not the service the host keeps up.
+  id="$(docker ps -q --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-aidenhq}" \
+    --filter "label=com.docker.compose.oneoff=False" --filter "label=aidenhq.module=$1" --filter "label=aidenhq.service=$2" | head -1)"
+  [ -n "$id" ] || id="$(docker ps -aq --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-aidenhq}" \
+    --filter "label=com.docker.compose.oneoff=False" --filter "label=aidenhq.module=$1" --filter "label=aidenhq.service=$2" | head -1)"
+  [ -n "$id" ] || { printf 'absent none'; return; }
+  docker inspect -f '{{if .State.Running}}running{{else}}stopped{{end}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$id" 2>/dev/null || printf 'absent none'
+}
+module_services_check() {
+  local model mod svc state
+  model="$(module_services)"
+  if [ -z "$model" ] || [ "$model" = "__unreadable__" ]; then
+    skip "module services (the compiled compose could not be read)"
+    return
+  fi
+  while read -r mod svc; do
+    [ -n "$mod" ] || continue
+    state="$(module_service_state "$mod" "$svc")"
+    # The check's name is `<module>/<service>`, never the service alone: two modules can each declare a service named
+    # `api`, and a baseline line for one must not excuse the other (WOR-14006 review). What changed is the detail after it,
+    # the same way `check` prints its own failures.
+    case "$state" in
+      "running healthy") printf '  ok    module service %s/%s\n' "$mod" "$svc" ;;
+      "running none") skip "module service $mod/$svc (its image declares no health check)" ;;
+      "absent none") printf '  FAIL  module service %s/%s  no container\n' "$mod" "$svc"; fails=$((fails + 1)) ;;
+      *) printf '  FAIL  module service %s/%s  %s\n' "$mod" "$svc" "$state"; fails=$((fails + 1)) ;;
+    esac
+  done <<< "$model"
+}
 echo "AidenHQ health"
 check "paperclip http (127.0.0.1:3100)" sh -c 'curl -fsS --max-time 5 http://127.0.0.1:3100/api/health | grep -q "\"status\":\"ok\""'
 check "paperclip bootstrap (account claimed)" sh -c 'curl -fsS --max-time 5 http://127.0.0.1:3100/api/health | grep -q "\"bootstrapStatus\":\"ready\""'
+module_services_check
 
 if module_on meetings; then
   ops_health="$(curl -s -m 10 "$(svc ops-mcp 8080)/healthz" 2>/dev/null)"
