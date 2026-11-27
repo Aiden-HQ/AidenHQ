@@ -51,7 +51,7 @@ export function buildServer(lane: LaneTools, caller?: Caller): McpServer {
     "wake_at",
     {
       description:
-        "Wake yourself later, with a note to your future self: a reminder for the owner, or a follow-up check (\"see whether X replied\"). when_local is the owner's local time, \"YYYY-MM-DD HH:MM\", or \"in 20 minutes\" / \"in 2 hours\" / \"in 1 day\". It echoes the time it stored: check it. With `chat: true` the wake is a turn in your fast-lane chat with the owner; with `task` it is a notice on that task, which wakes you there. At most 50 pending per agent, counting only wakes on tasks that are still open: a wake on a done or cancelled task doesn't count, and is dropped instead of posted when it comes due. `wake_list` shows yours.",
+        "Wake yourself later, with a note to your future self: a reminder for the owner, or a follow-up check (\"see whether X replied\"). when_local is the owner's local time, \"YYYY-MM-DD HH:MM\", or \"in 20 minutes\" / \"in 2 hours\" / \"in 1 day\". It echoes the time it stored: check it. With `chat: true` the wake is a turn in your fast-lane chat with the owner; with `task` it is a notice on that task, which wakes you there. At most 50 pending per agent, counting only wakes on tasks that are still open: a wake on a done or cancelled task doesn't count, and is dropped instead of posted when it comes due. `wake_list` shows the ones you set this way.",
       inputSchema: z.strictObject({
         when_local: z.string().min(1).max(40),
         note: z.string().min(1).max(1000),
@@ -91,7 +91,7 @@ export function buildServer(lane: LaneTools, caller?: Caller): McpServer {
     "wake_list",
     {
       description:
-        "Your pending wakes, oldest first, with the task each is for (or your chat) and its owner-local time: what counts toward the 50-wake cap, so a refusal can be diagnosed. Wakes on tasks that are done or cancelled don't count, and are dropped when due instead of posted.",
+        "The wakes you set with `wake_at` that are still pending, oldest first, with the task each is for (or your chat) and its owner-local time: what counts toward the 50-wake cap, so a refusal can be diagnosed. Wakes on tasks that are done or cancelled don't count, and are dropped when due instead of posted. A `task_wait` isn't listed here: its resume time is in the `task_wait` result and on the task's state (scheduled for).",
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
