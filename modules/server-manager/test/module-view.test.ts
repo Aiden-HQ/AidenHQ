@@ -59,3 +59,20 @@ test("a new install is quiet: no servers yet, no routine, and the empty state sa
 test("the page has one editor per machine, and the schedule, reboot policy and quiet window are all present", () => {
   for (const label of ["Address", "User", "Port", "Key name", "Check for updates", "Weekly full pass", "Reboot policy", "Quiet window"]) assert.ok(html.includes(`"${label}"`), `page has a ${label} field`);
 });
+
+test("pending removals are kept by name, so removing two servers removes both", () => {
+  // One `removing` value would let a second Remove replace the first, and the first server would come back on Save.
+  assert.match(html, /removing = new Set\(\)/, "removals are a set of names");
+  assert.ok(!/removing = name\b/.test(html), "a removal never replaces another by assignment");
+  for (const op of ["removing.add(name)", "removing.delete(name)", "!removing.has(m.name)", "removing.has(name)"]) assert.ok(html.includes(op), `the page uses ${op}`);
+});
+
+test("the page keeps the last draft the module accepted, and never proposes a value the module would refuse", () => {
+  // A refused draft (local rule or the module's own problems) drops back to the last accepted one, so the bar's Save is what the
+  // screen shows; the page checks the entry rules itself before it proposes anything.
+  assert.match(html, /const local = problemsOf\(list\)/);
+  assert.match(html, /drafts = structuredClone\(lastGood.drafts\)/);
+  assert.match(html, /The last good draft is what Save carries/);
+  // A saved entry the module could not read is reported, not silently dropped by an unrelated edit.
+  assert.match(html, /isn't listed/);
+});

@@ -24,14 +24,9 @@ contributes:
           keys_from: servers_machines[].key
           fields:
             - { name: private_key, label: "Private key", kind: key, maxLength: 4096 }
-  # src_servers: one sanitized latest-status row per machine (server-manager/src/status.ts). No key names, no key material,
-  # no addresses, no user names, no action rows, no package lists.
-  warehouse.sources:
-    - schema: src_servers
-      about: "src_servers.servers (one sanitized status row per machine: distro, pending, security, reboot needed, disk, last check) / fleet"
-      views:
-        - { name: servers, time: updated_at }
-        - { name: fleet, time: updated_at }
+  # contributes.warehouse.sources (`src_servers`) arrives with the read path that fills it (slice 2: src/status.ts and the
+  # warehouse writer). This build declares no source it cannot serve: a view needs its writer, its schema and its login shipped
+  # together, or a fresh install would advertise a view the warehouse does not have.
 roles:
   # kernel.tasks: the service files a task for the agent when a run needs a judgement (§13). kernel.wake: it wakes that task.
   requests: [ kernel.tasks, kernel.wake ]
@@ -134,8 +129,6 @@ services:
       port: 8103
       # Servers are usually private, so this service (alone) reaches them: agent computers can't.
       egress: true
-      # The warehouse's shared-sources network, reached through scripts/modules.ts LEGACY_LINKS (a closed, test-pinned list).
-      links: [ sources ]
       data: ["state:/data"]
       secrets: [ servers_keys ]
       env:

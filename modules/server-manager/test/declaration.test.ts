@@ -74,3 +74,12 @@ test("the one secret is the JSON map the Sign-ins panel writes, and the service 
   assert.deepEqual(def.services.run.ssh.env.SERVERS_KEYS_FILE, "/run/secrets/servers_keys");
   assert.equal(def.services.run.ssh.port, 8103);
 });
+
+test("no warehouse source is advertised before its writer, schema and login ship", () => {
+  // A source a fresh install advertises must be queryable: this build has no src_servers writer (slice 2 does), so it declares no
+  // source. When the writer lands, this test flips with it, together with ops/warehouse-sources.sh and sources.sql.
+  const sources = def.contributes["warehouse.sources"];
+  assert.equal(sources, undefined);
+  // The warehouse is still required: the page and the status row's point live there.
+  assert.ok(def.requires.includes("warehouse"));
+});

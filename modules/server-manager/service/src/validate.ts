@@ -5,7 +5,7 @@
 //     fails closed when this hook can't be asked).
 // A written key value is checked only for shape by the kernel (its setup pattern); the key material is never read, logged or echoed
 // here — this function looks at a key's NAME in the list and nothing else.
-import { listProblems, machinesUsingKey, readMachines } from "./config.ts";
+import { listProblems, savedUsersOfKey } from "./config.ts";
 
 export interface ValidateInput {
   settings?: Record<string, unknown>;
@@ -27,7 +27,11 @@ export function validate(input: ValidateInput, saved?: string): Validation {
   // The kernel sends no settings with a clear, so the machines come from the list the instance holds (`saved`), never from an
   // absent field: treating "no settings" as "no machines" would let a key a machine still uses be cleared.
   if (input.secret?.name === KEYS_SECRET && input.key !== undefined && input.value === undefined) {
-    const used = machinesUsingKey(machines ?? readMachines(saved).machines, input.key);
+    // Every saved entry that names the key counts, valid or not: an entry with a bad port is still in the list with its key, and
+    // dropping the key first would leave the owner unable to fix it (the value cannot be read back).
+    const used = Array.isArray(machines)
+      ? savedUsersOfKey(JSON.stringify(machines), input.key)
+      : savedUsersOfKey(saved, input.key);
     if (used.length) errors.push({ field: "servers_keys", message: `the key ${input.key} is still used by ${used.join(", ")}: change ${used.length === 1 ? "that machine's key" : "those machines' keys"} first` });
   }
   return errors.length ? { ok: false, errors } : { ok: true };

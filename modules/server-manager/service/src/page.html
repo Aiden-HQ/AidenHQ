@@ -61,9 +61,11 @@
 <script>
 /*kit:js*/
   const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-  // cfg.machines: [{ name, set, effective, summary }]; cfg.defaults: what an entry falls back to.
+  // cfg.machines: [{ name, set, effective, summary }]; cfg.defaults: what an entry falls back to; cfg.problems: saved entries the
+  // module refused (never shown as machines, and never dropped by a Save unless the owner removes them).
   let cfg = { machines: [], defaults: null };
-  let added = [], drafts = {}, lastGood = { drafts: {}, removing: null, added: [] }, sentRev = 0, removing = null, openName = null, drawn = false;
+  // removing: a set of names on their way out; each removal stays until the owner keeps that server or the page starts over.
+  let added = [], drafts = {}, lastGood = { drafts: {}, removing: new Set(), added: [] }, sentRev = 0, removing = new Set(), openName = null, drawn = false;
   // Each machine's last readout (server_manager_status), by name: the page shows its state, last check and counts, never a key.
   let stateOf = {};
   const advOpen = new Set();
@@ -72,22 +74,58 @@
   const saved = (name) => machines().find((m) => m.name === name).effective;
   const draft = (name) => (drafts[name] ??= { ...saved(name) });
   const dirty = (name) => name in drafts && !eq(drafts[name], saved(name));
+  // The server-manager service's own rules (service/src/config.ts), so a draft the module would refuse is caught here first: a bad
+  // value never becomes a proposal, and the bar keeps the last draft the module accepted.
+  const NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/, ADDR_RE = /^[A-Za-z0-9.:[\]-]{1,253}$/, USER_RE = /^[a-z_][a-z0-9_-]{0,31}$/,
+    KEY_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/, FP_RE = /^(SHA256:[A-Za-z0-9+/]{43})?$/, HHMM_RE = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
+  const PROBLEMS = {
+    name: "Use lowercase letters, digits and -, up to 32 characters.",
+    address: "A host name or address: letters, digits, . : [ ] and -, never a user or a URL.",
+    user: "The login name: lowercase letters, digits, _ and -, up to 32 characters.",
+    key: "The name of one key in the Sign-ins panel: lowercase letters, digits, _ and -, up to 63 characters.",
+    expected_fingerprint: "Optional: SHA256: and 43 characters, or empty.",
+    weekly_time: "A 24-hour time, HH:MM.", quiet_start: "A 24-hour time, HH:MM.", quiet_end: "A 24-hour time, HH:MM.",
+    port: "A port, 1 to 65535.", security_minutes: "How often to check, in minutes: 15 to 1440.",
+  };
+  function problemsOf(list) {
+    const out = [], seen = new Set();
+    list.forEach((e, i) => {
+      const at = `Servers[${i}]`;
+      // An absent optional field takes its default (as the module does); the four required ones must be there.
+      for (const k of ["name", "address", "user", "key"]) if (e[k] == null || e[k] === "") out.push(`${at}: ${k === "name" ? "a name is required" : `${k} is required`}`);
+      for (const [k, re] of [["name", NAME_RE], ["address", ADDR_RE], ["user", USER_RE], ["key", KEY_RE], ["expected_fingerprint", FP_RE], ["weekly_time", HHMM_RE], ["quiet_start", HHMM_RE], ["quiet_end", HHMM_RE]])
+        if (e[k] != null && !re.test(String(e[k]))) out.push(`${at}: ${PROBLEMS[k] ?? `${k} is not valid`}`);
+      if (e.port != null && !(Number.isInteger(e.port) && e.port >= 1 && e.port <= 65535)) out.push(`${at}: ${PROBLEMS.port}`);
+      if (e.security_minutes != null && !(Number.isInteger(e.security_minutes) && e.security_minutes >= 15 && e.security_minutes <= 1440)) out.push(`${at}: ${PROBLEMS.security_minutes}`);
+      if (typeof e.name === "string" && e.name) { if (seen.has(e.name)) out.push(`${at}: ${e.name} is listed twice`); seen.add(e.name); }
+    });
+    return out;
+  }
   // The draft, whole, as the owner's one settings change: the module checks each entry and returns the change the board's bar saves.
   function propose(live) {
-    const list = machines().filter((m) => m.name !== removing).map((m) => { const e = drafts[m.name] ?? saved(m.name); const out = { name: m.name }; for (const k of Object.keys(e)) if (k !== "name" && e[k] !== "" && e[k] != null) out[k] = e[k]; return out; });
-    const sent = { drafts: structuredClone(drafts), removing, added: [...added] }, rev = ++sentRev;
+    const list = machines().filter((m) => !removing.has(m.name)).map((m) => { const e = drafts[m.name] ?? saved(m.name); const out = { name: m.name }; for (const k of Object.keys(e)) if (k !== "name" && e[k] !== "" && e[k] != null) out[k] = e[k]; return out; });
+    // A draft that breaks a rule is not proposed: the bar keeps the last draft the module accepted, and the owner is told which
+    // value to fix. A committed edit (blur, Enter) drops back to that last draft, so what the bar carries is what the screen shows.
+    const local = problemsOf(list);
+    if (local.length) {
+      if (!live) { drafts = structuredClone(lastGood.drafts); removing = new Set(lastGood.removing); added = [...lastGood.added]; redraw(); }
+      say(`${local[0]}. ${live ? "" : "The last good draft is what Save carries; "}Fix it to update the proposal.`, true);
+      return;
+    }
+    const sent = { drafts: structuredClone(drafts), removing: new Set(removing), added: [...added] }, rev = ++sentRev;
     inOrder(async () => {
       try {
         const out = await tool("server_manager_config", { edits: { machines: list } });
-        // A draft the module refuses comes back with its problems and no change: draw those, and never say it is proposed.
+        // A draft the module refuses comes back with its problems and no change: drop back to the last draft it accepted (so the
+        // bar's proposal is what is on screen) and say what is wrong. Never claim a refused draft is proposed.
         if (out && Array.isArray(out.problems) && out.problems.length) {
-          if (rev === sentRev) { lastGood = sent; say(out.problems[0].field + " " + out.problems[0].message, true); }
+          if (rev === sentRev) { drafts = structuredClone(lastGood.drafts); removing = new Set(lastGood.removing); added = [...lastGood.added]; redraw(); say(`${out.problems[0].field} ${out.problems[0].message}. The last good draft is what Save carries.`, true); }
           return;
         }
         lastGood = sent;
-        say(Object.keys(drafts).length || sent.removing || sent.added.length ? "Changes are proposed: Save in the bar above applies them." : "");
+        say(Object.keys(drafts).length || sent.removing.size || sent.added.length ? "Changes are proposed: Save in the bar above applies them." : "");
       } catch (e) {
-        if (rev === sentRev) { drafts = structuredClone(lastGood.drafts); removing = lastGood.removing; added = [...lastGood.added]; redraw(); }
+        if (rev === sentRev) { drafts = structuredClone(lastGood.drafts); removing = new Set(lastGood.removing); added = [...lastGood.added]; redraw(); }
         say(e.message, true);
       }
     });
@@ -170,12 +208,12 @@
   }
 
   function card(m) {
-    const name = m.name, open = openName === name, d = draft(name), gone = removing === name, fresh = added.includes(name);
+    const name = m.name, open = openName === name, d = draft(name), gone = removing.has(name), fresh = added.includes(name);
     const tags = [fresh ? h("span", { className: "tag edit", textContent: "Added on Save" }) : dirty(name) ? h("span", { className: "tag edit", textContent: "Edited" }) : null, gone ? h("span", { className: "tag failed", textContent: "Removed on Save" }) : null];
     const btn = (label, fn, cls = "") => { const b = h("button", { type: "button", textContent: label, className: cls }); b.addEventListener("click", fn); return b; };
-    const acts = gone ? [btn("Keep", () => { removing = null; redraw(); propose(); })]
+    const acts = gone ? [btn("Keep", () => { removing.delete(name); redraw(); propose(); })]
       : open && fresh ? [btn("Discard", () => { added = added.filter((x) => x !== name); delete drafts[name]; redraw(); propose(); })]
-      : open ? [btn("Remove", () => { removing = name; redraw(); propose(); })]
+      : open ? [btn("Remove", () => { removing.add(name); redraw(); propose(); })]
       : [btn("Edit", () => { openName = name; redraw(); })];
     const st = stateOf[name];
     const stTags = st ? [
@@ -224,12 +262,16 @@
   async function load() {
     try {
       cfg = await tool("server_manager_config", {});
+      // A saved entry the module refused is listed with its problems below the machines, not silently left out: the owner can see
+      // what to fix, and a Save that leaves it out is refused by the module rather than deleting it.
+      const saved = Array.isArray(cfg.problems) ? cfg.problems : [];
       // The last readout per machine, for the state tags under each name (empty until a machine's first check).
       let status = { servers: [] };
       try { status = await tool("server_manager_status", {}); } catch { /* the config still draws; a status read that fails says so below */ }
       stateOf = Object.fromEntries((status.servers ?? []).map((s) => [s.name, s]));
       $("addbtn").disabled = false;
-      drafts = {}; added = []; lastGood = { drafts: {}, removing: null, added: [] }; removing = null; draw();
+      drafts = {}; added = []; lastGood = { drafts: {}, removing: new Set(), added: [] }; removing = new Set(); draw();
+      if (saved.length) say(`One saved server has a problem and isn't listed: ${saved[0].field} ${saved[0].message}. Fix it in the instance settings, or remove it there; this page won't drop it.`, true);
     } catch (e) { say(e.message, true); }
   }
   start("server-manager", load);

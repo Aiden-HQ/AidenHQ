@@ -55,6 +55,35 @@ test("a draft the schema refuses comes back with its problems and no change", as
   assert.ok(sc.problems.some((p: { field: string }) => p.field === "servers_machines[0].key"));
 });
 
+test("a draft that would drop a saved entry the list can't read is refused, naming the entry", async () => {
+  // The saved list holds one entry with a bad port: the page never renders it, so an unrelated edit's whole-list draft must not
+  // delete it. The module refuses and names it; fixing the entry (the draft carries it, valid) lets the same save through.
+  const broken = JSON.stringify([{ name: "vm-one", address: "vm-one", user: "user", key: "vm-one-key" }, { name: "vm-two", address: "vm-two", user: "user", key: "vm-two-key", port: 70000 }]);
+  const tools = configTools({ machines: () => broken, status });
+  const handle = createMcp("server-manager", tools, []);
+  const owner2 = async () => ({ agent: "", key: "", name: "", roles: [], tool: "", call: "", kind: "owner", assertion: "" });
+  const draft = [{ name: "vm-one", address: "vm-one", user: "user", key: "vm-one-key", port: 2222 }];
+  const r = await (handle({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "server_manager_config", arguments: { edits: { machines: draft } } } }, owner2 as never) as Promise<any>);
+  assert.equal(r.result.structuredContent._aidenhq, undefined);
+  assert.ok(r.result.structuredContent.problems.some((p: { message: string }) => /vm-two/.test(p.message)));
+  // A deliberate removal, or the entry carried and fixed, is allowed.
+  for (const machines of [[...draft, { name: "vm-two", address: "vm-two", user: "user", key: "vm-two-key" }]]) {
+    const ok = await (handle({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "server_manager_config", arguments: { edits: { machines } } } }, owner2 as never) as Promise<any>);
+    assert.ok(ok.result.structuredContent._aidenhq?.settings_change, "a draft that carries the entry is a change");
+  }
+});
+
+test("a saved entry with no name is never deleted by a draft either", async () => {
+  // The page cannot render a nameless entry, so it cannot carry or remove one: any whole-list draft that omits it is refused, and
+  // the message says where to fix it.
+  const broken = JSON.stringify([{ name: "vm-one", address: "vm-one", user: "user", key: "vm-one-key" }, { address: "vm-two", user: "user", key: "vm-two-key" }]);
+  const handle = createMcp("server-manager", configTools({ machines: () => broken, status }), []);
+  const owner2 = async () => ({ agent: "", key: "", name: "", roles: [], tool: "", call: "", kind: "owner", assertion: "" });
+  const r = await (handle({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "server_manager_config", arguments: { edits: { machines: [{ name: "vm-one", address: "vm-one", user: "user", key: "vm-one-key", port: 2222 }] } } } }, owner2 as never) as Promise<any>);
+  assert.equal(r.result.structuredContent._aidenhq, undefined);
+  assert.ok(r.result.structuredContent.problems.some((p: { message: string }) => /no name/.test(p.message)));
+});
+
 test("server_manager_status shows each machine's last readout, and the view is served", async () => {
   const r = await call({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "server_manager_status", arguments: {} } });
   const out = JSON.parse(r.result.content[0].text);

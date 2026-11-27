@@ -3,7 +3,7 @@
 // The SSH reads (`server_manager_check`) and the writes come in later slices; this file answers from settings and the status store
 // only, so it never opens a connection and never holds a key.
 import type { Tool } from "./mcp.ts";
-import { readMachines, withDefaults, MACHINE_FIELDS, DEFAULTS, listProblems, type Machine } from "./config.ts";
+import { readMachines, MACHINE_FIELDS, DEFAULTS, listProblems, savedList, type Machine, type Problem } from "./config.ts";
 import type { StatusStore } from "./status-store.ts";
 
 type Dict = Record<string, unknown>;
@@ -17,6 +17,26 @@ export function summaryOf(m: Machine): string {
 }
 
 export function configTools(d: { machines: () => string; status: StatusStore }): Tool[] {
+  /**
+   * A saved entry that failed its own check is not in `readMachines`' list, so a whole-list replacement built from that list would
+   * silently delete it. A draft may not drop a saved entry the draft does not itself name and carry: the page shows the entries
+   * with their problems instead, and the owner fixes or removes one deliberately.
+   */
+  function droppedInvalid(saved: string | undefined, list: Record<string, unknown>[]): Problem[] {
+    const now = savedList(saved) ?? [];
+    const keep = new Set(list.flatMap((e) => (typeof e.name === "string" ? [e.name] : [])));
+    const problems = readMachines(saved).problems;
+    const broken = new Set(problems.flatMap((p) => { const m = /^servers_machines\[(\d+)\]/.exec(p.field); return m ? [Number(m[1])] : []; }));
+    const out: Problem[] = [];
+    now.forEach((e, i) => {
+      if (!broken.has(i)) return;
+      // A nameless entry can never be carried by a draft (an entry needs a name), so the page cannot show or remove it: the owner
+      // fixes it in the instance settings. Either way a whole-list draft that omits it would delete it, so the draft is refused.
+      if (typeof e.name !== "string" || !e.name) return void out.push({ field: `servers_machines[${i}].name`, message: "an entry is saved with no name; fix it in the instance settings, or the Save would delete it" });
+      if (!keep.has(e.name)) out.push({ field: `servers_machines[${i}].name`, message: `${e.name} is saved but has a problem; fix it or remove it here, or the Save would delete it` });
+    });
+    return out;
+  }
   return [
     {
       name: "server_manager_config",
@@ -39,7 +59,7 @@ export function configTools(d: { machines: () => string; status: StatusStore }):
         // The page's draft, whole: checked here, then handed to the board as the owner's one settings change. A draft the schema
         // refuses is returned with its problems and no change, so the bar never offers a value the module would reject.
         const list = Array.isArray(edits.machines) ? edits.machines : undefined;
-        const bad = list ? listProblems(list) : [{ field: "servers_machines", message: "is a list of servers" }];
+        const bad = list ? [...listProblems(list), ...droppedInvalid(d.machines(), list)] : [{ field: "servers_machines", message: "is a list of servers" }];
         if (bad.length) return { ...current, problems: bad };
         return { changes: [`Servers: ${list!.length} machine${list!.length === 1 ? "" : "s"}`], _aidenhq: { settings_change: [{ kind: "setting", key: "servers_machines", value: list }] } };
       },

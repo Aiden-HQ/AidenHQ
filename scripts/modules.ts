@@ -137,8 +137,6 @@ export const LEGACY_LINKS: Record<string, { until: string; to: string[] }> = {
   // Slack's advanced part (what channel-slack was): the src_slack writer's warehouse network, beside the sign-in's board link.
   slack: { until: "3g", to: ["board", "sources"] },
   security: { until: "4c", to: ["paperclip", "sources"] },
-  // The server-manager service's status writer reaches the shared warehouse on the sources network, like every source writer.
-  "server-manager": { until: "3g", to: ["sources"] },
   // The task search service writes src_tasks like every source writer, until 3g removes the lists (owner-directed: task
   // search moved out of the kernel into the warehouse module, 2026-11-23).
   warehouse: { until: "3g", to: ["sources"] },

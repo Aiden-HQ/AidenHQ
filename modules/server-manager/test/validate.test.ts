@@ -45,6 +45,18 @@ test("a clear the kernel sends with no settings is judged against the list the i
   assert.deepEqual(validate({ secret: { name: "servers_keys" }, key: "another-key" }, JSON.stringify([entry])), { ok: true });
 });
 
+test("a saved entry with a bad field still protects its key: a clear is refused until the entry is fixed", () => {
+  // The entry has an out-of-range port, so the service would not run it; it is still in the list with its key, so clearing that
+  // key first would leave nothing to connect with once the port is fixed.
+  const r = validate({ secret: { name: "servers_keys" }, key: "vm-one-key" }, JSON.stringify([{ ...entry, port: 70000 }]));
+  assert.equal(r.ok, false);
+  if (r.ok) return;
+  assert.match(r.errors[0]!.message, /vm-one/);
+  // A nameless broken entry is still refused, under its position (a list cannot lose its key to a bad hand edit).
+  const nameless = validate({ secret: { name: "servers_keys" }, key: "vm-one-key" }, JSON.stringify([{ address: "vm-one", user: "user", key: "vm-one-key" }]));
+  assert.equal(nameless.ok, false);
+});
+
 test("another secret's clear is not this hook's to judge", () => {
   assert.deepEqual(validate({ settings: settings([entry]), secret: { name: "something_else" }, key: "vm-one-key" }), { ok: true });
 });

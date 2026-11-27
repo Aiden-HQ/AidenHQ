@@ -123,3 +123,24 @@ export function machinesUsingKey(list: unknown, key: string): string[] {
   if (!Array.isArray(list)) return [];
   return list.flatMap((e) => (isMap(e) && e.key === key && typeof e.name === "string" ? [e.name] : []));
 }
+
+/**
+ * The names of every saved entry that still names this key, valid or not: `readMachines` drops an entry with a bad field, but the
+ * entry is still in the instance's list with its key, so a clear of that key must still be refused (the key would be gone before
+ * the owner fixes the bad field). A nameless entry is reported under its position, since the Sign-ins panel names keys by entry.
+ */
+export function savedUsersOfKey(text: string | undefined, key: string): string[] {
+  let list: unknown = [];
+  try { list = text && text.trim() ? JSON.parse(text) : []; } catch { return []; }
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((e, i) => (isMap(e) && e.key === key ? [typeof e.name === "string" && e.name ? e.name : `entry ${i + 1}`] : []));
+}
+
+/** The list the instance holds, as entries (a broken saved list is not one to compare a draft against). */
+export function savedList(text: string | undefined): Record<string, unknown>[] | undefined {
+  try {
+    const list = text && text.trim() ? JSON.parse(text) : [];
+    if (!Array.isArray(list)) return undefined;
+    return list.filter(isMap);
+  } catch { return undefined; }
+}

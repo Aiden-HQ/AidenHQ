@@ -198,9 +198,6 @@ test("legacy lists stay closed: links, root secrets and host variables may only 
   // gateway as a source writer, the same link and key as every other writer until 3g.
   was.links.warehouse = ["sources"];
   was.secrets.warehouse = ["gateway_source_key"];
-  // The server-manager service's status writer reaches the shared warehouse (src_servers), the same link every source writer keeps
-  // until 3g removes the lists.
-  was.links["server-manager"] = ["sources"];
   const within = (now, before) => Object.entries(now).every(([m, l]) => l.every((x) => (before[m] ?? before[split[m]] ?? []).includes(x)));
   assert.ok(within(Object.fromEntries(Object.entries(LEGACY_LINKS).map(([m, v]) => [m, v.to])), was.links));
   assert.ok(within(LEGACY_SECRETS, was.secrets));
