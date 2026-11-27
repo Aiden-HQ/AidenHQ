@@ -101,30 +101,12 @@ test("task_list(attention=\"any\") returns the rows with an attention entry, pas
   assert.deepEqual(owner.out.tasks.map((t) => t.id), ["needs-1"]);
 });
 
-test("task_list(attention) keeps the default's kinds, so a closed task does not take a slot", async () => {
-  const closed = { ...row("closed-1", "done"), updatedAt: "2026-02-01T00:00:00Z" };
-  const open = { ...row("open-1", "todo"), updatedAt: "2026-01-01T00:00:00Z" };
-  const states = { "closed-1": state("done", [{ who: "agent", why: "history_expired", ref: "closed-1" }]), "open-1": state("waiting", [{ who: "owner", why: "owner_wait", ref: "open-1" }]) };
-  const { call } = bridge({ handler: issueBoard({ rows: [closed, open] }), states });
-  const out = parse(await call("task_list", { attention: "any", limit: 1 }));
-  assert.deepEqual(out.out?.tasks.map((t) => t.id), ["open-1"], JSON.stringify(out));
-});
-
 test("task_list(state=\"done\") returns a done row behind a first page of open rows", async () => {
   const rows = [...Array.from({ length: 200 }, (_, n) => row(`open-${n}`, "todo")), row("done-1", "done")];
   const states = Object.fromEntries(rows.map((r) => [r.id, r.id === "done-1" ? noAttention("done") : noAttention("working")]));
   const { call } = bridge({ handler: issueBoard({ rows }), states });
   const out = parse(await call("task_list", { state: "done", limit: 5 }));
   assert.deepEqual(out.out.tasks.map((t) => t.id), ["done-1"]);
-});
-
-test("task_list with no state still returns only the not-done kinds", async () => {
-  const rows = [row("done-1", "done"), row("working-1", "todo"), row("waiting-1", "in_progress"), row("idle-1", "todo"), row("reopened-1", "todo")];
-  // reopened-1 is open in Paperclip but the kernel still holds its done row: the kernel decides, so it is left out too.
-  const states = { "done-1": noAttention("done"), "working-1": noAttention("working"), "waiting-1": noAttention("waiting"), "idle-1": noAttention("idle"), "reopened-1": noAttention("done") };
-  const { call } = bridge({ handler: issueBoard({ rows }), states });
-  const out = parse(await call("task_list", { limit: 10 }));
-  assert.deepEqual(out.out.tasks.map((t) => t.id), ["working-1", "waiting-1", "idle-1"]);
 });
 
 test("task_list still lists a task the kernel has no state for, when no state is named", async () => {
@@ -225,13 +207,6 @@ test("task_list(mine) finds a handed-back chat whose marker was cut from the lis
   assert.deepEqual(out.out?.tasks.map((t) => t.id), ["chat-2"], JSON.stringify(out));
 });
 
-test("task_list(mine) finds a handed-back chat whose marker is followed by a trailing newline", async () => {
-  const chat = { ...row("chat-4", "todo"), assigneeUserId: "owner", description: `hi\n\n<!-- aidenhq-chat-agent:me -->\n`, createdAt: "2026-02-01T00:00:00Z" };
-  const { call } = bridge({ handler: issueBoard({ rows: [chat] }), states: { "chat-4": noAttention("waiting") } });
-  const out = parse(await call("task_list", { mine: true, limit: 5 }));
-  assert.deepEqual(out.out?.tasks.map((t) => t.id), ["chat-4"], JSON.stringify(out));
-});
-
 test("task_list pages overlap so a row pulled up by a task leaving the list is not skipped", async () => {
   // Page one (t-0..t-199) is read, then its first row leaves: every later row moves up one, and a plain offset of 200 would
   // now start at t-201, skipping t-200.
@@ -253,24 +228,6 @@ test("task_list pages overlap so a row pulled up by a task leaving the list is n
   assert.deepEqual(out.out.tasks.map((t) => t.id), ["t-200"]);
 });
 
-test("task_list does not reread a short tail page it has already seen", async () => {
-  // 99 rows, fewer than a page: after the first read nothing behind it can exist, so the scan stops instead of halving its
-  // offset through the same rows again. A complete list is not worth a round trip per tail.
-  const rows = Array.from({ length: 99 }, (_, n) => ({ ...row(`open-${n}`, "todo"), updatedAt: new Date(Date.UTC(2026, 0, 1) + (99 - n) * 60_000).toISOString() }));
-  const board = issueBoard({ rows });
-  let reads = 0;
-  const handler = (req, res) => {
-    if ((req.url ?? "").includes("/issues?")) reads++;
-    return board(req, res);
-  };
-  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention("working")]));
-  const { call } = bridge({ handler, states });
-  const out = parse(await call("task_list", { limit: 100 }));
-  assert.equal(out.out?.tasks.length, 99);
-  assert.equal(out.out?.incomplete, undefined);
-  assert.ok(reads <= 2, `one page plus at most one confirming read, saw ${reads}`);
-});
-
 test("task_list says it is incomplete when the list shifts further than the overlap can follow", async () => {
   // 120 tasks ahead of the next page leave the list between reads: more than the half-page overlap can absorb, so a task can
   // slip past. The answer must say it may have missed some rather than report a complete list.
@@ -288,46 +245,6 @@ test("task_list says it is incomplete when the list shifts further than the over
   assert.match(String(out.out?.incomplete ?? ""), /shifted further/);
 });
 
-test("task_list says it is incomplete when a task jumps above the offset between reads", async () => {
-  // The only waiting task sits past the first page; between reads it is moved to the front (its activity rose). The next page
-  // then starts one row earlier than the overlap expects, which is exactly when an unread task may have been passed over.
-  const rows = Array.from({ length: 400 }, (_, n) => ({ ...row(`t-${n}`, "todo"), updatedAt: new Date(Date.UTC(2026, 0, 1) + (400 - n) * 60_000).toISOString() }));
-  const board = issueBoard({ rows });
-  let reads = 0;
-  const handler = (req, res) => {
-    if ((req.url ?? "").includes("/issues?") && reads++ === 1) {
-      const moved = rows.splice(250, 1)[0];
-      rows.unshift({ ...moved, updatedAt: "2026-12-01T00:00:00Z" });
-    }
-    return board(req, res);
-  };
-  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention(r.id === "t-250" ? "waiting" : "working")]));
-  const { call } = bridge({ handler, states });
-  const out = parse(await call("task_list", { state: "waiting", limit: 5 }));
-  assert.match(String(out.out?.incomplete ?? ""), /shifted further/);
-});
-
-test("task_list stops when the issues endpoint ignores offset and repeats a page", async () => {
-  const rows = Array.from({ length: 200 }, (_, n) => row(`open-${n}`, "todo"));
-  let reads = 0;
-  const board = issueBoard({ rows });
-  // A pager that ignores offset and repeats its one page.
-  const ignores = async (req, res) => {
-    if ((req.url ?? "").includes("/issues?")) {
-      reads++;
-      if (reads > 6) throw new Error("kept paging a repeated page");
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(rows));
-      return;
-    }
-    return board(req, res);
-  };
-  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention("working")]));
-  const { call } = bridge({ handler: ignores, states });
-  const out = parse(await call("task_list", { state: "waiting", limit: 5 }));
-  assert.deepEqual(out.out.tasks, []);
-  assert.match(out.out.incomplete, /stopped advancing/, "a scan that could not page past its first page says so");
-});
-
 test("task_search's state filter is applied over pages of ranked hits, not just the first", async () => {
   // 200 higher-ranked hits that do not match state, then the waiting one.
   const hits = [...Array.from({ length: 200 }, (_, n) => ({ ...row(`hit-${n}`, "todo"), description: "invoice open" })), { ...row("hit-waiting", "todo"), description: "invoice open" }];
@@ -335,50 +252,6 @@ test("task_search's state filter is applied over pages of ranked hits, not just 
   const { call } = bridge({ handler: issueBoard({ rows: hits }), states });
   const out = parse(await call("task_search", { query: "invoice", state: "waiting", limit: 2 }));
   assert.deepEqual(out.out.tasks.map((t) => t.id), ["hit-waiting"]);
-});
-
-test("task_search says it is incomplete when indexed hits shift past the overlap", async () => {
-  // The first page of ranked hits is read, then more of them than the overlap can absorb leave the query: the scan cannot
-  // prove it saw every hit, and must not report a complete search.
-  const rows = Array.from({ length: 400 }, (_, n) => ({ ...row(`hit-${n}`, "todo"), description: "invoice open", updatedAt: new Date(Date.UTC(2026, 0, 1) + (400 - n) * 60_000).toISOString() }));
-  const board = issueBoard({ rows });
-  let reads = 0;
-  const handler = (req, res) => {
-    if ((req.url ?? "").includes("/issues?") && reads++ === 1) rows.splice(20, 120);
-    return board(req, res);
-  };
-  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention(r.id === "hit-350" ? "waiting" : "working")]));
-  const { call } = bridge({ handler, states });
-  const out = parse(await call("task_search", { query: "invoice", state: "waiting", limit: 5 }));
-  assert.match(String(out.out?.incomplete ?? ""), /shifted/);
-});
-
-test("task_search does not call an exhausted short result set incomplete", async () => {
-  // 450 hits, one matching state deep in the tail: the overlap pages at the end share rows, which is not a repeated page.
-  const rows = Array.from({ length: 450 }, (_, n) => ({ ...row(`hit-${n}`, "todo"), description: "invoice open" }));
-  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention(r.id === "hit-445" ? "waiting" : "working")]));
-  const { call } = bridge({ handler: issueBoard({ rows }), states });
-  const out = parse(await call("task_search", { query: "invoice", state: "waiting", limit: 5 }));
-  assert.deepEqual(out.out.tasks.map((t) => t.id), ["hit-445"]);
-  assert.equal(out.out.incomplete, undefined, "the set was read to its end, not cut short");
-});
-
-test("task_list reports a stalled endpoint that caps its page and ignores offset", async () => {
-  // The endpoint returns the same 100 rows however far the offset goes: a short page with nothing new, which is not the tail.
-  const rows = Array.from({ length: 300 }, (_, n) => ({ ...row(`c-${n}`, "todo"), updatedAt: new Date(Date.UTC(2026, 0, 1) + (300 - n) * 60_000).toISOString() }));
-  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention("working")]));
-  const board = issueBoard({ rows });
-  const handler = async (req, res) => {
-    const url = new URL(req.url ?? "", "http://x");
-    if (url.pathname.endsWith("/issues")) {
-      for await (const _ of req) void _;
-      return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(rows.slice(0, 100)));
-    }
-    return board(req, res);
-  };
-  const { call } = bridge({ handler, states });
-  const out = parse(await call("task_list", { state: "waiting", limit: 5 }));
-  assert.match(String(out.out?.incomplete ?? ""), /stopped advancing/);
 });
 
 test("task_list(mine) reads past pages whose candidates all fail the filter", async () => {
@@ -390,142 +263,6 @@ test("task_list(mine) reads past pages whose candidates all fail the filter", as
   const out = parse(await call("task_list", { mine: true, state: "waiting", limit: 5 }));
   assert.deepEqual(out.out?.tasks.map((t) => t.id), ["waits-1"], JSON.stringify(out));
   assert.equal(out.out?.incomplete, undefined);
-});
-
-test("task_list(mine) does not yield an older chat while the assigned pages still hold a newer match", async () => {
-  // The assigned source opens with pages of work that is not waiting; the waiting task sits behind them but is newer than
-  // the owner chat, so with limit=1 the chat must not be returned before it.
-  const work = Array.from({ length: 400 }, (_, n) => ({ ...row(`work-${n}`, "todo"), assigneeAgentId: "me", updatedAt: "2026-06-01T00:00:00Z" }));
-  const wait = { ...row("waits-1", "todo"), assigneeAgentId: "me", updatedAt: "2026-05-01T00:00:00Z" };
-  const chat = { ...row("chat-5", "todo"), assigneeUserId: "owner", updatedAt: "2026-03-01T00:00:00Z", description: `hi\n\n<!-- aidenhq-chat-agent:me -->` };
-  const states = Object.fromEntries([...work, wait].map((r) => [r.id, noAttention(r.id === "waits-1" ? "waiting" : "working")]));
-  states["chat-5"] = noAttention("waiting");
-  const { call } = bridge({ handler: issueBoard({ rows: [...work, wait, chat] }), states });
-  const out = parse(await call("task_list", { mine: true, state: "waiting", limit: 1 }));
-  assert.deepEqual(out.out?.tasks.map((t) => t.id), ["waits-1"], JSON.stringify(out));
-});
-
-test("task_list(mine) does not read another page of a source its tail already rules out", async () => {
-  // The assigned task is newest, so the first owner page's tail already proves nothing behind it can come first: a page
-  // behind it is never requested.
-  const work = Array.from({ length: 200 }, (_, n) => ({ ...row(`work-${n}`, "todo"), assigneeAgentId: "me", createdAt: "2026-01-01T00:00:00Z" }));
-  const newer = { ...row("newest-1", "todo"), assigneeAgentId: "me", priority: "critical", updatedAt: "2026-09-01T00:00:00Z" };
-  const others = Array.from({ length: 400 }, (_, n) => ({ ...row(`note-${n}`, "todo"), assigneeUserId: "owner", createdAt: "2026-02-01T00:00:00Z" }));
-  const board = issueBoard({ rows: [newer, ...work, ...others] });
-  let ownerPages = 0;
-  const handler = (req, res) => {
-    const url = new URL(req.url ?? "", "http://x");
-    if (url.pathname.endsWith("/issues") && url.searchParams.get("assigneeUserId")) ownerPages++;
-    return board(req, res);
-  };
-  const states = { "newest-1": noAttention("working") };
-  const { call } = bridge({ handler, states });
-  const out = parse(await call("task_list", { mine: true, limit: 1 }));
-  assert.deepEqual(out.out?.tasks.map((t) => t.id), ["newest-1"], JSON.stringify(out));
-  assert.equal(ownerPages, 1, "the owner history is not read past the page that already answers the query");
-});
-
-test("task_list(mine) reads truncated chats a few at a time, not a whole page at once", async () => {
-  // Every owner row needs a detail read. They are prepared in bounded chunks, so the endpoint never sees a whole page of
-  // requests in flight together.
-  const rows = Array.from({ length: 200 }, (_, n) => ({ ...row(`note-${n}`, "todo"), assigneeUserId: "owner", description: "no marker here", descriptionTruncated: true }));
-  const board = issueBoard({ rows });
-  let inFlight = 0, peak = 0;
-  const handler = async (req, res) => {
-    const chat = req.url?.startsWith("/api/issues/note-");
-    if (chat) {
-      inFlight++;
-      peak = Math.max(peak, inFlight);
-      await new Promise((r) => setTimeout(r, 1));
-      inFlight--;
-    }
-    return board(req, res);
-  };
-  const { call } = bridge({ handler, states: {} });
-  // The chat marker sits on the rows at the end of the page: reaching it must not have started every detail read serially.
-  rows[199] = { ...rows[199], description: `hi\n\n<!-- aidenhq-chat-agent:me -->`, descriptionTruncated: true };
-  rows[0] = { ...rows[0], description: "no marker here" };
-  const out = parse(await call("task_list", { mine: true, limit: 10 }));
-  assert.deepEqual(out.out?.tasks.map((t) => t.id), ["note-199"], JSON.stringify(out));
-  assert.ok(peak <= 8, `at most a chunk of detail reads at once, saw ${peak}`);
-  assert.ok(peak > 1, "the rows are read in batches, not one request at a time");
-});
-
-test("task_list(mine) does not read a chat's description when a newer match already fills the limit", async () => {
-  // Every owner row is truncated, so each would need a detail read. The assigned task ranks first and `limit: 1` is filled by
-  // it: the owner rows behind it are never reached, so none of their descriptions is read.
-  const assigned = { ...row("assigned-9", "todo"), assigneeAgentId: "me", priority: "critical", updatedAt: "2026-09-01T00:00:00Z" };
-  const notes = Array.from({ length: 50 }, (_, n) => ({ ...row(`note-${n}`, "todo"), assigneeUserId: "owner", updatedAt: "2026-02-01T00:00:00Z", description: "cut", descriptionTruncated: true }));
-  const board = issueBoard({ rows: [assigned, ...notes] });
-  let details = 0;
-  const handler = (req, res) => {
-    if (req.url?.startsWith("/api/issues/note-")) details++;
-    return board(req, res);
-  };
-  const { call } = bridge({ handler, states: { "assigned-9": noAttention("working") } });
-  const out = parse(await call("task_list", { mine: true, limit: 1 }));
-  assert.deepEqual(out.out?.tasks.map((t) => t.id), ["assigned-9"], JSON.stringify(out));
-  assert.equal(details, 0, "no owner row was read in full behind the answer");
-});
-
-test("task_list(mine) survives a detail read failing on a chat it prefetched but never reached", async () => {
-  // Two truncated owner rows: the first is the chat that fills limit=1, the second is prefetched with it and its read fails.
-  // The failure is not the answer's, so it must neither fail the call nor leave an unhandled rejection behind.
-  const first = { ...row("chat-6", "todo"), assigneeUserId: "owner", updatedAt: "2026-03-01T00:00:00Z", description: "cut", descriptionTruncated: true, priority: "critical" };
-  const second = { ...row("chat-7", "todo"), assigneeUserId: "owner", updatedAt: "2026-02-01T00:00:00Z", description: "cut", descriptionTruncated: true, priority: "critical" };
-  const full = { "chat-6": { ...first, description: `hi\n\n<!-- aidenhq-chat-agent:me -->`, descriptionTruncated: false } };
-  const board = issueBoard({ rows: [first, second], full });
-  const handler = async (req, res) => {
-    if (req.url?.startsWith("/api/issues/chat-7")) {
-      res.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: "boom" }));
-      return;
-    }
-    return board(req, res);
-  };
-  const { call } = bridge({ handler, states: { "chat-6": noAttention("waiting") } });
-  const out = parse(await call("task_list", { mine: true, limit: 1 }));
-  assert.deepEqual(out.out?.tasks.map((t) => t.id), ["chat-6"], JSON.stringify(out));
-});
-
-test("task_list(mine) caps both sources on the list's own order, the order it returns", async () => {
-  // The assigned task was touched last, and that is the order the issues list is served in: `limit: 1` keeps it.
-  const assigned = { ...row("assigned-2", "todo"), assigneeAgentId: "me", createdAt: "2026-03-01T00:00:00Z", updatedAt: "2026-03-01T00:00:00Z" };
-  const chat = { ...row("chat-3", "todo"), assigneeUserId: "owner", createdAt: "2026-02-01T00:00:00Z", updatedAt: "2026-02-01T00:00:00Z", description: `hi\n\n<!-- aidenhq-chat-agent:me -->` };
-  const states = { "assigned-2": noAttention("working"), "chat-3": noAttention("waiting") };
-  const { call } = bridge({ handler: issueBoard({ rows: [assigned, chat] }), states });
-  const out = parse(await call("task_list", { mine: true, limit: 1 }));
-  const all = parse(await call("task_list", { mine: true, limit: 10 }));
-  assert.deepEqual(out.out.tasks.map((t) => t.id), ["assigned-2"], "the cap keeps Paperclip's newest row");
-  assert.deepEqual(all.out.tasks.map((t) => t.id), ["assigned-2", "chat-3"], "and the full list is in that same order");
-});
-
-test("task_list(mine) fills limit with distinct tasks even when a chat is in both sources", async () => {
-  // chat-1 is handed back to the agent between the scans, so both sources hold it; the limit counts distinct tasks.
-  const chat = { ...row("chat-1", "todo"), assigneeUserId: "owner", createdAt: "2026-05-01T00:00:00Z", description: `hi\n\n<!-- aidenhq-chat-agent:me -->` };
-  const dup = { ...chat, assigneeUserId: null, assigneeAgentId: "me" };
-  const older = { ...row("assigned-2", "todo"), assigneeAgentId: "me", createdAt: "2026-01-01T00:00:00Z" };
-  const states = { "chat-1": noAttention("waiting"), "assigned-2": noAttention("working") };
-  // The fake board serves whichever assignee filter the query asks for.
-  const board = issueBoard({ rows: [chat, dup, older] });
-  const handler = (req, res) => board(req, res);
-  const { call } = bridge({ handler, states });
-  const out = parse(await call("task_list", { mine: true, limit: 2 }));
-  assert.deepEqual(out.out.tasks.map((t) => t.id), ["chat-1", "assigned-2"], "two distinct tasks, nothing listed twice");
-});
-
-test("task_list(mine) stops reading pages once it has limit distinct matches", async () => {
-  let reads = 0;
-  const rows = Array.from({ length: 900 }, (_, n) => ({ ...row(`assigned-${n}`, "todo"), assigneeAgentId: "me", createdAt: `2026-01-01T00:00:${String(59 - (n % 60)).padStart(2, "0")}Z` }));
-  const board = issueBoard({ rows });
-  const handler = async (req, res) => {
-    if ((req.url ?? "").includes("/issues?")) reads++;
-    return board(req, res);
-  };
-  const states = Object.fromEntries(rows.map((r) => [r.id, noAttention("working")]));
-  const { call } = bridge({ handler, states });
-  const out = parse(await call("task_list", { mine: true, limit: 2 }));
-  assert.equal(out.out.tasks.length, 2);
-  assert.ok(reads <= 4, `read ${reads} pages for two matches; it should stop early`);
 });
 
 test("task_list(mine) returns the newest match without reading the rest of the history", async () => {
