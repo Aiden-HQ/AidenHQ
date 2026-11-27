@@ -75,13 +75,16 @@ test("a second apply waits for the first, then runs: never refused for being sec
   writeFileSync(join(dir, "bin/git"), "#!/usr/bin/env bash\n[ -e \"$0.ran\" ] || { : > \"$0.ran\"; until [ -e \"$0.release\" ]; do sleep 0.05; done; }\nexit 0\n");
   chmodSync(join(dir, "bin/git"), 0o755);
   const first = run(dir, `bash ops/apply-config.sh`).then((r) => ({ ...r, end: Date.now() }));
-  await until(() => existsSync(join(dir, "bin/git.ran")));
-  const queued = run(dir, `bash ops/apply-config.sh`);
-  const second = queued.then((r) => ({ ...r, end: Date.now() }));
-  let said = "";
-  queued.child.stdout.on("data", (d) => { said += d; });
-  await until(() => said.includes("waits its turn")); // it says so just before it blocks on the lock
-  writeFileSync(join(dir, "bin/git.release"), "");
+  let queued, second, said = "";
+  try {
+    await until(() => existsSync(join(dir, "bin/git.ran")));
+    queued = run(dir, `bash ops/apply-config.sh`);
+    second = queued.then((r) => ({ ...r, end: Date.now() }));
+    queued.child.stdout.on("data", (d) => { said += d; });
+    await until(() => said.includes("waits its turn")); // it says so just before it blocks on the lock
+  } finally {
+    writeFileSync(join(dir, "bin/git.release"), ""); // a failed wait must not leave the first apply held in its git
+  }
   const [a, b] = [await first, await second];
   assert.match(b.out, /another apply is running: this one waits its turn/, b.out);
   assert.doesNotMatch(b.out, /refusing/, b.out);
