@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { dropQueuedNeeds, flushDigest, queueDigest } from "../src/attention.js";
 import { openStore } from "../src/store.js";
 import { notify, type Deps } from "../src/notify.js";

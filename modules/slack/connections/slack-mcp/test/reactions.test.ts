@@ -7,7 +7,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import pino from "pino";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { servedTool } from "../src/admission.js";
 import { interceptReactionSearch, planReactionSearch, readUserId, scanMyReactions } from "../src/reactions.js";
 import { upstreamArgs } from "../src/slack.js";
@@ -309,7 +309,8 @@ describe("scanMyReactions", () => {
     let n = 0;
     const fetchImpl = (async () => (n++ === 0 ? Response.json(page([item("C1", "1.1")], "next")) : new Response("slow down", { status: 503 }))) as unknown as typeof fetch;
     const scan = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }], nextCursor: expect.any(String) });
+    expect(scan).toMatchObject({ ok: true, messages: [{ channel: "C1", ts: "1.1" }] });
+    expect(typeof (scan as { nextCursor?: unknown }).nextCursor).toBe("string"); // read apart: Bun's toMatchObject overwrites a property matched with expect.any
     // With nothing found yet there is nothing to keep: the failure itself is the answer, never an empty page.
     n = 0;
     const failed = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl: (async () => new Response("down", { status: 503 })) as unknown as typeof fetch });
@@ -322,7 +323,8 @@ describe("scanMyReactions", () => {
     const one = page([item("C1", "1.1", "pushpin", [ME], { text: big }), item("C2", "2.2", "pushpin", [ME], { text: big }), item("C3", "3.3", "pushpin", [ME], { text: big })]);
     const fetchImpl = (async () => Response.json(one)) as unknown as typeof fetch;
     const first = await scanMyReactions({ emoji: "pushpin" }, { authorization: "Bearer x", userId: ME }, { fetchImpl, budget: 10 * 1024 });
-    expect(first).toMatchObject({ ok: true, messages: [{ channel: "C1" }, { channel: "C2" }], nextCursor: expect.any(String) });
+    expect(first).toMatchObject({ ok: true, messages: [{ channel: "C1" }, { channel: "C2" }] });
+    expect(typeof (first as { nextCursor?: unknown }).nextCursor).toBe("string"); // read apart: Bun's toMatchObject overwrites a property matched with expect.any
     const second = await scanMyReactions({ emoji: "pushpin", cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer x", userId: ME }, { fetchImpl, budget: 10 * 1024 });
     expect(second).toEqual({ ok: true, messages: [expect.objectContaining({ channel: "C3" })], nextCursor: null });
   });
@@ -333,7 +335,8 @@ describe("scanMyReactions", () => {
     const one = page([item("C1", "1.1"), item("C2", "2.2"), item("C3", "3.3"), item("C4", "4.4")]);
     const fetchImpl = (async () => Response.json(one)) as unknown as typeof fetch;
     const first = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    expect(first).toMatchObject({ ok: true, messages: [{ channel: "C1" }], nextCursor: expect.any(String) });
+    expect(first).toMatchObject({ ok: true, messages: [{ channel: "C1" }] });
+    expect(typeof (first as { nextCursor?: unknown }).nextCursor).toBe("string"); // read apart: Bun's toMatchObject overwrites a property matched with expect.any
     const next = (first as { nextCursor: string }).nextCursor;
     expect(next).not.toBeNull();
     // The continuation re-reads the same page and picks up at C2: nothing skipped, nothing repeated.
@@ -597,7 +600,8 @@ describe("interception through the proxy", () => {
   it("refuses a continuation issued for another Slack account, instead of skipping that account's messages", async () => {
     const { fetchImpl } = fakeSlack([page([item("C1", "1.1")], "more"), page([item("C2", "2.2")])]);
     const first = await scanMyReactions({ emoji: "pushpin", limit: 1 }, { authorization: "Bearer x", userId: ME }, { fetchImpl });
-    expect(first).toMatchObject({ ok: true, nextCursor: expect.any(String) });
+    expect(first).toMatchObject({ ok: true });
+    expect(typeof (first as { nextCursor?: unknown }).nextCursor).toBe("string"); // read apart: Bun's toMatchObject overwrites a property matched with expect.any
     // The owner reconnects as someone else: the same `seen` keys would suppress a message that account reacted to.
     const other = await scanMyReactions({ emoji: "pushpin", limit: 1, cursor: (first as { nextCursor: string }).nextCursor }, { authorization: "Bearer y", userId: "U0OTHER02" }, { fetchImpl });
     expect(other).toMatchObject({ ok: false, detail: expect.stringContaining("Slack account") });

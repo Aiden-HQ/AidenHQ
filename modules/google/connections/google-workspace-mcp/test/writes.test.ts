@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { MultiWorkspace, toolFailure } from "../src/accounts.js";
 import { readNeed } from "../src/aidenhq-sdk/needs.js";
 import { SCOPES } from "../src/google.js";

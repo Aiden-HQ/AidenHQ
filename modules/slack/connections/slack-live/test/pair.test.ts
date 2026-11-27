@@ -1,8 +1,6 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "bun:test";
 import { createPairing, handlePairingDm } from "../src/pair.js";
 import { openStore } from "../src/store.js";
-
-afterEach(() => vi.unstubAllGlobals());
 
 /** conversations.info as the bot token sees it: our DMs are D1/D2, anyone else's DM is not found. */
 const botSees = (...channels: string[]) =>

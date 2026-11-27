@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { parse } from "yaml";
 import { tmpdir } from "node:os";
@@ -69,7 +69,7 @@ describe("sandbox refuses", () => {
     ["an unknown key", { some_future_key: 1 }],
     ["build entitlements", { build: { context: `${DATA}/.platform/demo/src`, entitlements: ["network.host"] } }],
     ["build cache export to the host", { build: { context: `${DATA}/.platform/demo/src`, cache_to: ["type=local,dest=/tmp/x"] } }],
-  ])("%s", (_n, s, o?: { realpath: (p: string) => string }) => expect(() => sandbox(svc(s), app(), { APPS_DATA: DATA, ...o })).toThrow(PolicyError));
+  ])("%s", (...row: unknown[]) => { const [, s, o] = row as [string, Record<string, unknown>, { realpath: (p: string) => string }?]; expect(() => sandbox(svc(s), app(), { APPS_DATA: DATA, ...o })).toThrow(PolicyError); });
 
   it("refuses every bind on a remote host", () => {
     const bind = { volumes: [{ type: "bind", source: `${DATA}/.platform/demo/src/init`, target: "/r", read_only: true }] };

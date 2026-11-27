@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { GitHubNeed } from "../src/client.js";
 import { needQueue, reportNeed, reportOrgOk } from "../src/module-caller.js";
 

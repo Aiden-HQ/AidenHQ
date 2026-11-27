@@ -1,6 +1,6 @@
 // Channel memory: written only by the bound agent from a thread task of that same channel, whole-note replace with a revision,
 // returned fenced by slack_channel_context, cleared on unbind or reassign.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "bun:test";
 import { channelContext, mention } from "../src/bind.js";
 import { memoryWriter } from "../src/memory.js";
 import { openStore } from "../src/store.js";

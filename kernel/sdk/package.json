@@ -43,11 +43,10 @@
     "pg": "8.23.1",
     "pino": "10.4.0",
     "typescript": "7.0.2",
-    "vitest": "5.1.0",
     "zod": "4.6.7"
   },
   "scripts": {
-    "test": "NODE_PATH=../node_modules node --test test/checks.test.ts test/engine-kit.test.ts test/executor.test.ts test/paperclip.test.ts test/tiers.test.ts ../../modules/engine-*/test/*.test.ts && vitest run test/vendor-proxy.test.ts",
+    "test": "NODE_PATH=../node_modules bun test --parallel --timeout=30000 ./test/ ../../modules/engine-codex/test/ ../../modules/engine-opencode/test/",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepack": "node ../../scripts/sdk-pack.ts"
   }

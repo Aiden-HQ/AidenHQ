@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { openPrs, recordedOpenPrs } from "../src/open-prs.js";
 
 const none = async () => null;

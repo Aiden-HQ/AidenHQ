@@ -9,6 +9,6 @@
   },
   "description": "Completion checks: the rubric rows, the one check after close and the board's read.",
   "scripts": {
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts"
+    "test": "bun test --parallel --timeout=60000 ./test/"
   }
 }

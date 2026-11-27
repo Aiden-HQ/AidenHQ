@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { expect, test } from "vitest";
+import { expect, test } from "bun:test";
 import { buildServer } from "../src/mcp.js";
 import { openStore } from "../src/store.js";
 import { READ_STATE_METHODS } from "../src/td.js";

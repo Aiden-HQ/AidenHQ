@@ -1,4 +1,4 @@
-import { expect, it, vi } from "vitest";
+import { expect, it, vi } from "bun:test";
 import { ownersPage } from "../src/adapter.js";
 import { selected, syncObject, syncReference } from "../src/sources.js";
 import type { SourceStore } from "../src/source-store.js";
@@ -196,8 +196,14 @@ it("a search that ran from its start to its end reports HubSpot's total against 
 const withRetries = async (run: () => Promise<unknown>) => {
   vi.useFakeTimers({ now: NOW });
   try {
+    // Bun's fake timers have no async advance: let the retry's awaits settle, then step the clock a second at a time.
     const p = run();
-    await vi.advanceTimersByTimeAsync(30_000);
+    let settled = false;
+    p.then(() => (settled = true), () => (settled = true));
+    for (let i = 0; i < 30 && !settled; i++) {
+      await new Promise<void>((r) => setImmediate(r));
+      vi.advanceTimersByTime(1_000);
+    }
     await p;
   } finally {
     vi.useRealTimers();

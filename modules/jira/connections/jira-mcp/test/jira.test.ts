@@ -1,5 +1,5 @@
 import pino from "pino";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { siteCloudId, siteHooks } from "../src/site.js";
 
 const site = "https://acme.atlassian.net";

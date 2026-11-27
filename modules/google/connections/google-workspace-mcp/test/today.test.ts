@@ -3,7 +3,7 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { verifyCaller } from "../src/aidenhq-sdk/caller.js";
 import { FixtureWorkspace } from "../src/fixtures.js";
 import { calendarToday, eventUrl } from "../src/today.js";

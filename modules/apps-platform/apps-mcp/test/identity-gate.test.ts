@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "bun:test";
 import { finishedJob, IDENTITY_SCRIPT, identityPorts, identityProbes, judgeIdentity, NO_SIGN_IN, noHttpSurface, unprobedServices, type Door, type PortAnswers } from "../src/checks.js";
 import { agentSigner, forgedIdentity, IDENTITY_HEADER } from "../src/identity.js";
 import { parseApp } from "../src/registry.js";
@@ -27,7 +27,7 @@ const freePort = () => new Promise<number>((ok) => { const s = createServer().li
 /** The starter's server.mjs on a free port, with the env the platform gives an app (policy.ts withSecrets). */
 async function starter(env: Record<string, string>, code?: string, host = "127.0.0.1"): Promise<string> {
   const port = await freePort();
-  const c = spawn(process.execPath, code ? ["--input-type=module", "-e", code] : [SERVER], { env: { PATH: process.env.PATH, PORT: String(port), HOST: host, DIST_DIR: dist, ...env }, stdio: "ignore" });
+  const c = spawn("node", code ? ["--input-type=module", "-e", code] : [SERVER], { env: { PATH: process.env.PATH, PORT: String(port), HOST: host, DIST_DIR: dist, ...env }, stdio: "ignore" });
   children.push(c);
   for (let i = 0; i < 100; i++) {
     if (await fetch(`http://${host}:${port}/api/health`).then((r) => r.ok, () => false)) return `http://${host}:${port}`;
@@ -59,7 +59,7 @@ function scan(app: typeof tailnet, exposed: number[], o: { required?: Door[]; ip
   return new Promise<ReturnType<typeof identityPorts>>((ok, fail) => {
     // Sockets off unless `keep`: here /proc/net/tcp is the test host's, not one app container's.
     const script = o.keep || o.proc ? IDENTITY_SCRIPT : IDENTITY_SCRIPT.replace('[[proc + "/net/tcp", v4], [proc + "/net/tcp6", v6]]', "[]");
-    const c = execFile(process.execPath, ["-e", script], (err, out) => {
+    const c = execFile("node", ["-e", script], (err, out) => {
       if (err) return fail(err);
       const sockets = (JSON.parse(out) as { sockets: any[] }).sockets.filter((k) => o.proc || (o.keep ?? exposed).includes(k.port)); // only this test's servers
       ok(identityPorts(sockets.map((k) => ({ service: "app", port: k.port, host: k.host, listening: k.listening, raw: k.raw, ...(k.tls ? { tls: k.tls } : {}), answers: k.statuses.map((status: number, i: number) => ({ probe: probes[i]!, status })) })), o.required ?? [], [], noHttpSurface(app)));
@@ -76,7 +76,7 @@ function scan(app: typeof tailnet, exposed: number[], o: { required?: Door[]; ip
 /** A raw TCP server on a free port: `code` is its connection handler `(s) => ...`. */
 async function tcp(code: string, host = "127.0.0.1"): Promise<number> {
   const port = await freePort();
-  children.push(spawn(process.execPath, ["-e", `require("net").createServer(${code}).listen(${port}, "${host}")`], { stdio: "ignore" }));
+  children.push(spawn("node", ["-e", `require("net").createServer(${code}).listen(${port}, "${host}")`], { stdio: "ignore" }));
   await new Promise((r) => setTimeout(r, 300));
   return port;
 }
@@ -148,7 +148,8 @@ describe("identity gate", () => {
     // Every counted request answered an error: nothing shows the app checks identity, and it is not a confirmed-open app.
     const errored = judgeIdentity([probe(500), { probe: { method: "HEAD" as const, path: "/health", forged: false, counts: true }, status: 502 }]);
     expect(errored.ok).toBe(false);
-    expect(errored.findings[0]).toMatchObject({ hard: true, verdict: "errored", what: expect.stringContaining("couldn't confirm") });
+    expect(errored.findings[0]).toMatchObject({ hard: true, verdict: "errored" });
+    expect(errored.findings[0]!.what).toContain("couldn't confirm");
     expect(errored.findings[0]!.what).not.toContain(NO_SIGN_IN);
 
     // A refusal (401/403) is the only answer that lets the gate pass.

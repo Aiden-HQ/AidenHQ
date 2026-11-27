@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { relay } from "../src/relay.js";
 
 it("lends slack-live the sign-in's reads and whose it is, never the token, and only with its key", async () => {

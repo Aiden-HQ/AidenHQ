@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { healthChecks } from "../src/app.js";
 import { canonicalNotePath } from "../src/render/notes.js";
 import { makeEnv } from "./helpers.js";

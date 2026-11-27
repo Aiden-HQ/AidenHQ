@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "bun:test";
 import { connectorToken, tokenAuth } from "../src/token.js";
 import { createVendorProxy } from "../src/vendor/proxy.js";
 

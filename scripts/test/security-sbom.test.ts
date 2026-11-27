@@ -3,9 +3,9 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { availableParallelism, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, test as nodeTest } from "node:test";
+import { describe, test as nodeTest } from "bun:test";
 import { fileURLToPath } from "node:url";
 
 // Every test has its own temp dir, fake PATH and lock file, so they run side by side (this suite is the slowest one): the
@@ -1367,6 +1367,10 @@ test("security-sbom: an app checkout with no git of its own still scans and reco
   assert.match(syft(calls, "app:roadmap-keeper").line, new RegExp(`-v ${src}:/src:ro`));
 });
 
-describe("security-sbom", { concurrency: Math.max(4, availableParallelism()) }, () => {
-  for (const args of tests) nodeTest(...args);
+describe.concurrent("security-sbom", () => {
+  // Bun ignores the options node:test takes, so a `{ skip }` option becomes `.skip`.
+  for (const [name, a, b] of tests) {
+    const fn = b ?? a;
+    (b && a?.skip ? nodeTest.skip : nodeTest)(name, fn);
+  }
 });

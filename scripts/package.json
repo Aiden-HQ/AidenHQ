@@ -4,7 +4,7 @@
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
-    "test": "node --test test/*.test.ts",
+    "test": "bun test --parallel --timeout=60000 ./test/",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

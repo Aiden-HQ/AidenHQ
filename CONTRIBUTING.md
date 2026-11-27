@@ -54,13 +54,13 @@ are files something loads by a fixed `.js`/`.mjs` name.
 Before you push, run `node scripts/ci-local.ts`: it runs the suites CI would run for your diff, with CI's own selection
 and commands (`--list` shows the selection only, `--base <ref>` changes the base, default `origin/main`).
 
-No live instance and no paid keys are needed. Use Node 24 (plus Bun 1.4.5 for the board's tests) and run `npm ci` once in each package.
+No live instance and no paid keys are needed. Use Node 24 (the product's runtime) and Bun 1.4.5 (the test runner: `bun test`, run by each package's `npm test`), and run `npm ci` once in each package.
 
 | Package | Commands |
 |---|---|
 | `scripts` (compiler, setup, shared-code drift) | `npm test && npm run typecheck` |
 | `kernel` | `npm test && npm run typecheck` |
-| `services/computer` | `node --test test/*.test.ts` |
+| `services/computer` | `bun test --parallel=2 --timeout=60000 ./test/` |
 | `modules/apps-platform/gate` | `npm test && npm run typecheck` |
 | `services/board` | `npm test && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run lint && npm run build` |
 | `modules/apps-platform/apps-mcp`, `modules/*/connections/*`, `modules/security/scanner` | `npm test && npm run typecheck` |

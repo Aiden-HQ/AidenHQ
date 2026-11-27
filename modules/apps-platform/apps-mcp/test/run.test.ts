@@ -1,6 +1,6 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { createEngine } from "../src/deploy.js";
 import { parseApp } from "../src/registry.js";
 import { assertOwner, runArgv, scriptCommand } from "../src/run.js";

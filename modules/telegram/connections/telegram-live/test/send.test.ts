@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "vitest";
+import { expect, test } from "bun:test";
 import { CHAT_GAP_MS, SEND_CAP_PER_HOUR, normalise, sender } from "../src/send.js";
 import { openStore } from "../src/store.js";
 import { READ_STATE_METHODS } from "../src/td.js";

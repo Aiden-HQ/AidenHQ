@@ -7,7 +7,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import pino from "pino";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { readNeed, servedSignedIn } from "../src/vendor/needs.js";
 import { AuthError, oauth, redirectAllowed, staticAuth, type Auth } from "../src/vendor/oauth.js";
 import { createVendorProxy, type VendorProxy } from "../src/vendor/proxy.js";

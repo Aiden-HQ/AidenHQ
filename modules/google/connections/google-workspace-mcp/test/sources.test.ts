@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import type { SourceStore } from "../src/source-store.js";
 import { syncDrive } from "../src/sources.js";
 

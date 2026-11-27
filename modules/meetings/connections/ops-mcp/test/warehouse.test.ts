@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { openDb } from "../src/db/db.js";
 import type { SourceStore } from "../src/source-store.js";
 import { syncMeetings } from "../src/warehouse.js";

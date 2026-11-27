@@ -5,5 +5,5 @@
   "type": "module",
   "engines": { "node": ">=24" },
   "description": "Code Review: the review state service (watcher, triggers, commands) and its review recipe.",
-  "scripts": { "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts" }
+  "scripts": { "test": "bun test --parallel --timeout=240000 ./test/" }
 }
