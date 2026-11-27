@@ -1,12 +1,17 @@
-// A cancelled run must post no red `ci-required`: an edited PR run cancels the run before it, and that superseded run's jobs
-// are `cancelled`, not failed, so an `always()` aggregate turned that into a red check on a head no test condemned (issue
-// #1935). The fix is `if: ${{ !cancelled() }}`: a run cancelled by a newer one posts nothing, while a run with a genuinely
-// failed job still posts `failure`. The data is the product's own `.github/workflows/ci.yml`; each `if` expression is
-// evaluated with GitHub's truthiness (only false, 0, -0, NaN, null, undefined and "" are falsy: the string "false" is
-// truthy) against the payloads named here, so an equivalent rewrite of a condition still passes.
+// How `.github/workflows/ci.yml` treats a PR `edited` event (a title or body edit, e.g. a republish with no new commit). Two
+// rules: a cancelled run posts no red `ci-required` (issue #1935 — its jobs are `cancelled`, not failed), and an edit that
+// changes no code runs only `policy`'s title check — it plans no suite and cancels nothing. It still posts a `ci-required`
+// verdict, never a `skipped` one (GitHub counts a skip as a pass): that job restates the head's newest real results, so a
+// fixed title clears a title-only red and a real failure stays red. A retarget is an `edited` event too but changes what CI
+// must test, so it runs in full. The code host's gate reads the same way (merge-gate.ts judgedOnHead, pinned in
+// modules/github/test/merge-queue.test.ts). The data is the product's own workflow; each `if`
+// expression is evaluated with GitHub's truthiness (only false, 0, -0, NaN, null, undefined and "" are falsy: the string
+// "false" is truthy) against the payloads named here, so an equivalent rewrite of a condition still passes.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parse } from "yaml";
@@ -16,12 +21,13 @@ type Job = { if?: unknown; needs?: string | string[]; steps?: { run?: string }[]
 type Workflow = { concurrency: { group: string; "cancel-in-progress": unknown }; jobs: Record<string, Job> };
 const workflow = () => parse(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8")) as Workflow;
 
-const ctx = (over: { action?: string; event?: string; ref?: string; run?: number; cancelled?: boolean } = {}) => ({
+const ctx = (over: { action?: string; event?: string; ref?: string; run?: number; cancelled?: boolean; retarget?: boolean } = {}) => ({
   github: {
     event_name: over.event ?? "pull_request",
     ref: over.ref ?? "refs/pull/42/merge",
     run_id: String(over.run ?? 100),
-    event: { action: over.action ?? "synchronize" },
+    // `changes.base` is set only when the edit moved the PR's base: a retarget, which changes what CI must test.
+    event: { action: over.action ?? "synchronize", ...(over.retarget ? { changes: { base: { ref: { from: "release" } } } } : {}) },
   },
   cancelled: over.cancelled ?? false,
 });
@@ -81,6 +87,8 @@ function evaluate(expression: unknown, context: Context): unknown {
     for (const op of ["==", "!="]) {
       if (take(op)) {
         const right = primary();
+        // GitHub's loose equality: null and undefined are equal, and a number compares as a number.
+        if (left == null || right == null) return op === "==" ? left == null && right == null : !(left == null && right == null);
         const numeric = typeof left === "number" || typeof right === "number";
         const [a, b] = numeric ? [Number(left), Number(right)] : [String(left).toLowerCase(), String(right).toLowerCase()];
         return op === "==" ? a === b : a !== b;
@@ -104,39 +112,48 @@ const group = (context: Context, wf = workflow()) =>
   wf.concurrency.group.replace(/\$\{\{([\s\S]*?)\}\}/g, (_m, expr: string) => String(evaluate(expr, context)));
 const cancelInProgress = (context: Context, wf = workflow()) => truthy(evaluate(wf.concurrency["cancel-in-progress"], context));
 
-test("ci-required stops on a cancelled run and still runs after a synchronize or an edited run", () => {
+test("ci-required posts nothing for a cancelled run, and a verdict for a title/body edit and every real run", () => {
   const job = workflow().jobs["ci-required"]!;
   assert.equal(runs(job, ctx({ action: "synchronize" })), true, "an ordinary PR run posts its verdict");
-  assert.equal(runs(job, ctx({ action: "edited" })), true, "an edited run still posts the verdict for the head it re-ran");
   assert.equal(runs(job, ctx({ action: "synchronize", cancelled: true })), false, "a cancelled run judged nothing: no red aggregate");
+  // An edit posts a verdict too, never a `skipped` aggregate: the job restates the head's newest real results (the step below),
+  // so a fixed title clears a title-only red and a real failure stays red. A skip would read as a pass to GitHub.
+  assert.equal(runs(job, ctx({ action: "edited" })), true, "an edit restates the head's verdict");
   assert.equal(runs(job, ctx({ action: "edited", cancelled: true })), false);
+  assert.equal(runs(job, ctx({ action: "edited", retarget: true })), true, "a retarget runs the suites in full, so it posts their verdict");
   assert.equal(runs(job, ctx({ event: "push", ref: "refs/heads/main" })), true, "a push to main still posts");
   assert.equal(runs(job, ctx({ event: "push", ref: "refs/heads/main", cancelled: true })), false, "a cancelled merge train posts nothing");
 });
 
-test("no job is guarded off an edited event, so the head ends on a full real verdict", () => {
+test("a title/body edit runs only policy; a retarget and every real run plan the suites in full", () => {
   const { jobs } = workflow();
-  // No job carries an action guard: an edit re-runs the whole suite, so a retarget re-plans against its new base and a title
-  // edit still runs `policy`'s check (an invalid new title posts red through `ci-required`). Asserting on the expressions, not
-  // on every job's other conditions (a suite's `needs.checks` output is evaluated by GitHub, not here).
+  // `checks` plans every suite; without it packages, modules, board, image-scan and reviewer-eval skip on `needs.checks`, and
+  // post-checks on `needs.checks.result`. It is the only job an edit guards off: policy has no `needs`, so it runs for the title.
+  assert.equal(runs(jobs.checks!, ctx({ action: "edited" })), false, "an edit changes no code: nothing to plan");
+  assert.equal(runs(jobs.checks!, ctx({ action: "synchronize" })), true, "a push to the PR plans its suites");
+  assert.equal(runs(jobs.checks!, ctx({ action: "edited", retarget: true })), true, "a retarget tests a new base, so it plans in full");
+  assert.equal(jobs.policy!.needs, undefined, "policy is the title check an edit exists for");
+  assert.equal(runs(jobs.policy!, ctx({ action: "edited" })), true, "policy must still check the edited title");
+  // Every other job keeps its own condition; none of them may carry a second edit guard that could skip a real run's job.
   for (const [name, job] of Object.entries(jobs)) {
+    if (name === "checks" || name === "ci-required") continue;
     const condition = typeof job.if === "string" ? job.if : "";
-    assert.doesNotMatch(condition, /event\.action|['"]edited['"]/i, `${name} must not be guarded off an edited event`);
+    assert.doesNotMatch(condition, /event\.action|['"]edited['"]/i, `${name} must not be guarded off an edited event itself`);
   }
-  // The plan and the title check run on an edit like any other: neither is conditional at all.
-  assert.equal(jobs.checks!.if, undefined, "checks plans on an edit");
-  assert.equal(jobs.policy!.if, undefined, "policy checks the edited title");
 });
 
-test("an edited run keeps the ci-<ref> group and cancels the run before it; main and merge trains keep their own group", () => {
+test("an edit that changes only the title or body gets its own group and cancels nothing; a retarget keeps the PR's group", () => {
   const ref = "refs/pull/42/merge";
   const edited = ctx({ action: "edited", ref, run: 101 });
+  const retarget = ctx({ action: "edited", ref, run: 103, retarget: true });
   const synchronize = ctx({ action: "synchronize", ref, run: 102 });
-  assert.equal(group(edited), group(synchronize), "an edit joins the PR's group, so one verdict is the head's newest");
-  assert.equal(group(synchronize), `ci-${ref}`);
-  assert.equal(cancelInProgress(edited), true, "an edit cancels the run before it, as any newer PR run does");
-  assert.equal(cancelInProgress(synchronize), true);
-  // A push to main and a merge train run to the end: a newer one joins a different group.
+  assert.notEqual(group(edited), group(synchronize), "an edit must not join the in-flight run's group");
+  assert.equal(cancelInProgress(edited), false, "an edit must not cancel the run testing the head");
+  assert.equal(group(synchronize), `ci-${ref}`, "a synchronize run still shares the PR's group");
+  assert.equal(cancelInProgress(synchronize), true, "a newer push still cancels the older run");
+  assert.equal(group(retarget), `ci-${ref}`, "a retarget joins the PR's group: its run must replace the stale one");
+  assert.equal(cancelInProgress(retarget), true, "and cancels it");
+  // A push to main and a merge train keep their own per-run group, so a newer one never cancels the run the merge queue reads.
   for (const branch of ["refs/heads/main", "refs/heads/merge-train/7"]) {
     assert.notEqual(group(ctx({ event: "push", ref: branch, run: 200 })), group(ctx({ event: "push", ref: branch, run: 201 })));
     assert.equal(cancelInProgress(ctx({ event: "push", ref: branch, run: 200 })), false);
@@ -144,9 +161,9 @@ test("an edited run keeps the ci-<ref> group and cancels the run before it; main
 });
 
 test("ci-required's gate still fails a genuinely failed suite and still passes skipped ones", () => {
-  // The gate script, run as CI runs it: a skipped job is fine (the change doesn't touch it), a failed one is not. That is why
-  // a cancelled run is kept off it by the `if` above, never by relaxing the gate.
-  const run = workflow().jobs["ci-required"]!.steps![0]!.run!;
+  // The gate script, run as CI runs it for a real run: a skipped job is fine (the change doesn't touch it), a failed one is not.
+  // That is why a cancelled run is kept off it by the `if` above, never by relaxing the gate.
+  const run = workflow().jobs["ci-required"]!.steps!.find((step) => step.run?.includes(".checks.result"))!.run!;
   const results = (over: Record<string, { result: string }>) => ({
     checks: { result: "success" }, policy: { result: "success" }, packages: { result: "skipped" },
     modules: { result: "skipped" }, board: { result: "skipped" }, "reviewer-eval": { result: "skipped" }, ...over,
@@ -159,4 +176,68 @@ test("ci-required's gate still fails a genuinely failed suite and still passes s
   assert.equal(gate(results({ checks: { result: "failure" } })), 1, "a failed suite fails the gate");
   assert.equal(gate(results({ "reviewer-eval": { result: "failure" } })), 1);
   assert.equal(gate(results({ policy: { result: "failure" } })), 1, "an invalid edited title still posts red");
+});
+
+test("an edit's ci-required restates the head's real verdict: a fixed title clears it, a real failure stays red", async () => {
+  // The edit path's own step, run as CI runs it: it reads the head's check runs from the API (one per name, newest by id, the
+  // edit's own skips being newer and no failure of a suite the change did not touch) and posts the verdict. Never a skip.
+  const step = workflow().jobs["ci-required"]!.steps!.find((s) => s.run?.includes("check-runs?filter=all"))!;
+  const run = step.run!;
+  // The script is a single-quoted `node -e '…'` argument: an apostrophe in it (a comment saying "head's") ends the quote and
+  // makes bash fail on the next word, which reads as a red gate. It must parse.
+  execFileSync("bash", ["-n", "-c", run], { stdio: "pipe" });
+  // GitHub's default is `filter=latest`, one run per name: the newest is the edit's skip, so the older failure it must judge is
+  // never returned. The read has to ask for all of them.
+  assert.match(run, /check-runs\?filter=all/, "the head read must include superseded runs");
+  assert.doesNotMatch(run, /check-runs\?per_page/, "never the filter=latest default");
+  // Every read in the step asks for all of them, the wait loop included.
+  for (const m of run.matchAll(/check-runs\?([^`\s&]*)/g)) assert.match(m[1]!, /^filter=all/, `a read without filter=all: ${m[0]}`);
+  const at = (name: string, conclusion: string, id: number) => ({ id, name, status: "completed", conclusion });
+  // A tiny GitHub: the head's check runs, newest `policy` from the edit; `ci-required` itself is never read back.
+  const gate = (runs: ReturnType<typeof at>[], title = "success", fork = "false") => {
+    const server = createServer((req, res) => {
+      if (!req.url!.startsWith("/repos/acme/x/commits/" + "a".repeat(40) + "/check-runs")) { res.writeHead(404); res.end(); return; }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ total_count: runs.length, check_runs: runs }));
+    });
+    return new Promise<number>((ok) => server.listen(0, "127.0.0.1", () => {
+      const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+      // The step builds GitHub's URL; point it at the fake. Asynchronous, so the in-process server can answer while it runs.
+      const script = run.replace("https://api.github.com", url);
+      const child = spawn("bash", ["-c", script], { env: { ...process.env, GITHUB_TOKEN: "t", REPO: "acme/x", SHA: "a".repeat(40), TITLE: title, FORK: fork }, stdio: "ignore" });
+      child.on("close", (code) => { server.close(); ok(code ?? 1); });
+    }));
+  };
+  // A title-only red: the full run's `policy` failed and its aggregate did too; the fix's edit posts a green `policy`, and the
+  // aggregate it clears was a title failure, so the edit passes.
+  assert.equal(await gate([at("policy", "failure", 1), at("ci-required", "failure", 2), at("ci-required", "skipped", 3), at("policy", "success", 4)]), 0,
+    "a fixed title clears a title-only red");
+  // The title is still invalid: this run's own `policy` failed.
+  assert.equal(await gate([at("ci-required", "failure", 1), at("policy", "success", 2)], "failure"), 1,
+    "an invalid edited title still posts red");
+  // A check still running on the head is no verdict: the edit must not pass it before it finishes.
+  assert.equal(await gate([at("policy", "success", 1), at("ci-required", "success", 2), at("ci-required", "skipped", 3), { ...at("packages (2)", "success", 4), status: "in_progress", conclusion: null }]), 1,
+    "an in-progress check on the head is a wait, never a pass");
+  // A failure only the aggregate shows (the fork reviewer-eval guard) is not cleared by an edit whose components are all green.
+  assert.equal(await gate([at("policy", "success", 1), at("ci-required", "failure", 2), at("ci-required", "skipped", 3), at("policy", "success", 4)]), 1,
+    "an aggregate failure no component shows stays red");
+  // The edit's own `ci-required` is already visible as in_progress while its step runs, and its id is the newest: it must not
+  // become the cutoff, or the edit's newer skips survive and hide the real failure they superseded.
+  assert.equal(await gate([at("packages (2)", "failure", 1), at("ci-required", "failure", 2), at("ci-required", "skipped", 3), at("packages (2)", "skipped", 4),
+    { ...at("ci-required", "success", 9), status: "in_progress", conclusion: null }]), 1,
+    "the running aggregate is not the cutoff");
+  // A fork PR's aggregate can fail on its own reviewer-eval guard, which no component check shows: a green title does not
+  // prove the aggregate red was the title, so it is not excused there.
+  assert.equal(await gate([at("policy", "failure", 1), at("ci-required", "failure", 2), at("ci-required", "skipped", 3), at("policy", "success", 4)], "success", "true"), 1,
+    "a fork PR's aggregate red is not excused by a green title");
+  // A prior `policy` failure is only cleared by this edit running the whole job green on the same head: the job covers the
+  // supply-chain vets too, so a title that passes while the job is red is not a title-only red.
+  assert.equal(await gate([at("policy", "failure", 1), at("ci-required", "failure", 2), at("ci-required", "skipped", 3)], "failure"), 1,
+    "a still-red policy is not excused");
+  // A genuinely failed suite stays red through the edit, whatever the title says.
+  assert.equal(await gate([at("packages (2)", "failure", 1), at("ci-required", "failure", 2), at("policy", "success", 4), at("ci-required", "skipped", 5), at("packages (2)", "skipped", 6)]), 1,
+    "a real failure is not cleared by an edit");
+  // The edit's own skips of suites the change did not touch are no failure.
+  assert.equal(await gate([at("modules (1)", "skipped", 1), at("ci-required", "success", 2), at("policy", "success", 3), at("ci-required", "skipped", 4)]), 0,
+    "a suite skipped by the run that judged the head stays a pass");
 });

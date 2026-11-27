@@ -7,6 +7,8 @@ type Json = any;
 export const CODE_REVIEW_STATUS = "aidenhq/review";
 /** The aggregate check a repository's CI may end with (the product's ci.yml `ci-required`). */
 export const GATE_CHECK = "ci-required";
+/** The product's PR-metadata job: its title check (and the supply-chain checks), the one job an `edited` run still runs. */
+export const POLICY_CHECK = "policy";
 
 /** One context's result: a check run's conclusion once completed, else PENDING; a status's state. */
 export const contextStatus = (n: Json): string | null | undefined => (n.__typename === "CheckRun" ? (n.status === "COMPLETED" ? n.conclusion : "PENDING") : n.state);
@@ -76,15 +78,68 @@ export function namedChecks(rollup: Json): Check[] {
   return contextChecks(rollup).filter((c) => c.name !== CODE_REVIEW_STATUS);
 }
 
+/**
+ * Whether a check is the aggregate gate reporting that it judged nothing: `ci-required` `skipped` (a job skipped by an `if`, as
+ * an `edited` run's is) or `cancelled` (a run superseded before the job started). GitHub counts a skip as a pass for branch
+ * protection; nothing here does. Scoped to the gate name: a suite's own skip is a real result (the change didn't touch it).
+ */
+export const gateJudgedNothing = (c: { name?: string; status?: string | null }) => c.name === GATE_CHECK && ["SKIPPED", "CANCELLED"].includes(String(c.status ?? "").toUpperCase());
+
+/** Whether a report actually judged something: a job skipped by `if` or a run cancelled before it started judged nothing. */
+export const judgedSomething = (c: { status?: string | null }) => !["SKIPPED", "CANCELLED"].includes(String(c.status ?? "").toUpperCase());
+
+/**
+ * Whether the head's newest aggregate report judged nothing: the `ci-required` an `edited` run posts, skipped because that run
+ * planned no suite. Every check that run posted is a skip too, and those skips are newer than the run that tested the head — so
+ * they are no verdict, and reading them as passes is exactly the bug this rule exists to stop.
+ */
+export function newestGateSkipped<T extends { name?: string; kind?: "run" | "status"; rank?: number; status?: string | null }>(checks: T[]): boolean {
+  const runs = checks.filter((c) => c.name === GATE_CHECK && (c.kind ?? "run") === "run" && typeof c.rank === "number");
+  const newest = runs.reduce<T | undefined>((a, b) => (a === undefined || (b.rank as number) > (a.rank as number) ? b : a), undefined);
+  return newest !== undefined && gateJudgedNothing(newest);
+}
+
+/**
+ * The reports that judge a head, for a reader that decides on its checks. A run that plans no suite (`edited`) posts a
+ * `skipped` check for every job it did not run — and a job `if` skips is still a check GitHub counts as a pass. Those reports
+ * are newer than the run that tested the head, so judging them would let a body edit read as green over a real failure and
+ * hide it.
+ *
+ * Per name and kind: when the newest report is `skipped` and an older report of that same name judged something, the skip is
+ * dropped and the older result stands — it is the run that tested the code, and an edit's skip says nothing about it. Two runs
+ * on one head differ only in the event (an edit against a push or a re-run); within one run a path-filtered suite is skipped
+ * the same way both times, so an older judgement of the same name is the same tree's. A name whose only report is a skip keeps
+ * it: a suite skipped by the run that judged the head is a real result (the change didn't touch it). An unranked report proves
+ * no order, so it is never dropped. `cancelled` is left alone: latestChecks still reads it as a superseded run's red.
+ */
+export function judgedOnHead<T extends { name?: string; kind?: "run" | "status"; rank?: number; status?: string | null }>(checks: T[]): T[] {
+  const groups = new Map<string, T[]>();
+  for (const c of checks) {
+    if (typeof c.rank !== "number") continue;
+    const key = `${c.name ?? ""}\u0000${c.kind ?? "run"}`;
+    groups.set(key, [...(groups.get(key) ?? []), c]);
+  }
+  const drop = new Set<T>();
+  for (const group of groups.values()) {
+    const ranked = [...group].sort((a, b) => (b.rank as number) - (a.rank as number));
+    if (String(ranked[0]?.status ?? "").toUpperCase() !== "SKIPPED") continue;
+    // Drop the newest run of skips only when something older judged the name: then they are a later run's skips, not its result.
+    const firstJudged = ranked.findIndex((c) => judgedSomething(c));
+    if (firstJudged <= 0) continue;
+    for (const c of ranked.slice(0, firstJudged)) drop.add(c);
+  }
+  return drop.size ? checks.filter((c) => !drop.has(c)) : checks;
+}
+
 const IMAGE_FILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
 /**
  * `image-scan` skipped on a PR that changes an image definition (or whose files can't all be read): nothing was scanned.
- * The scan's newest run at the head is the judgement (latestChecks), like every other name: a run that scanned the head after
- * an edit superseded a skip cleared the question, so the obsolete skip is not one, and a skip that is the newest run is.
+ * The scan's newest report that judged the head is the judgement (judgedOnHead): a run that scanned the head after an edit
+ * superseded a skip cleared the question, so the obsolete skip is not one, and a skip that is the newest judgement is.
  */
 export function skippedImageScan(pr: Json): boolean {
   const nodes = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
-  const scans = latestChecks(contextChecks({ contexts: { nodes } }).filter((c) => c.name === "image-scan"));
+  const scans = latestChecks(judgedOnHead(contextChecks({ contexts: { nodes } })).filter((c) => c.name === "image-scan"));
   if (!scans.some((c) => c.status === "SKIPPED")) return false;
   return !pr.files || pr.files.pageInfo?.hasNextPage || (pr.files.nodes ?? []).some((f: Json) => IMAGE_FILE.test(f.path ?? ""));
 }

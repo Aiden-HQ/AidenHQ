@@ -12,7 +12,7 @@
 // productMergeEligible) is checked again right before the merge; no longer eligible, it fails and the merge is filed again.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CODE_REVIEW_STATUS, contextChecks, contextRank, namedChecks, skippedImageScan, type Check } from "./aidenhq-sdk/checks.ts";
+import { CODE_REVIEW_STATUS, contextChecks, contextRank, judgedOnHead, namedChecks, skippedImageScan, type Check } from "./aidenhq-sdk/checks.ts";
 import { waitReason, type Flow } from "./flow.ts";
 import { randomUUID } from "node:crypto";
 import { mergeable, trailer } from "./git-auth.ts";
@@ -394,7 +394,8 @@ export function createMerges(d: {
       // credited.
       // CI on this head is over once every named check has finished: seen here, at the first poll that finds it so. Each name is
       // judged by its newest run (headChecks), as decide does: a run an edit superseded neither holds the poll nor reads failing.
-      const named = headChecks(namedChecks(pull?.commits?.nodes?.[0]?.commit?.statusCheckRollup));
+      // An edit that planned no suite posts skips newer than the run that tested the head (judgedOnHead): those are no verdict.
+      const named = headChecks(judgedOnHead(namedChecks(pull?.commits?.nodes?.[0]?.commit?.statusCheckRollup)));
       if (p.checked !== p.head && pull?.headRefOid === p.head && named.length && named.every((c) => !c.pending)) {
         p.checked = p.head;
         d.flow?.checksCompleted(p.repo, p.number, p.head, named.filter((c) => !c.ok).map((c) => c.name).slice(0, 20));
@@ -799,10 +800,11 @@ export function createMerges(d: {
       const gated = memberComments.length ? { ...ctx, comments: true } : ctx;
       const v = memberComments.length ? decide(data, head, { ...gated, approve: false }) : first;
       const approval = v.do === "wait" && decide(data, head, { ...gated, approve: true }).do === "approve";
-      const failing = [...new Set(headChecks(checks).filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
+      const onHead = judgedOnHead(checks);
+      const failing = [...new Set(headChecks(onHead).filter((c) => required.includes(c.name) && !c.ok && !c.pending).map((c) => c.name))];
       // Every named check red on the head, required or not: a repo whose rules require only `ci-required` hides the `policy` job's
       // own red behind it, and ship's title-only wake reads it from here (a check red on the base too is ship's to filter).
-      const redChecks = [...new Set(headChecks(checks).filter((c) => c.name !== CODE_REVIEW_STATUS && !c.ok && !c.pending).map((c) => c.name))];
+      const redChecks = [...new Set(headChecks(onHead).filter((c) => c.name !== CODE_REVIEW_STATUS && !c.ok && !c.pending).map((c) => c.name))];
       return { ...v, ...(memberComments.length ? { memberComments } : {}), failing, redChecks, dirty: data.repository.pullRequest?.mergeStateStatus === "DIRTY", queue, ...(approval ? { approval } : {}), ...(v.do === "fix_review" && g && "findingsKey" in g && g.findingsKey ? { findingsKey: g.findingsKey } : {}), ...(v.do === "enqueue" ? { groupFailing: await groupFailing(repo, number, String(data.repository.pullRequest?.baseRefName ?? ""), required) } : {}) };
     },
     /** The approved record's queue (once per id): resolves with its outcome when the queue ends. */

@@ -3,7 +3,7 @@
 // as data for the caller to fence. Nothing here closes a task or decides a card: it only reports what is true.
 import { createHash } from "node:crypto";
 import { findPrs, staleHead } from "./text.ts";
-import { CODE_REVIEW_STATUS, GATE_CHECK, contextStatus, latestChecks, namedChecks, skippedImageScan } from "../aidenhq-sdk/checks.ts";
+import { CODE_REVIEW_STATUS, GATE_CHECK, contextStatus, judgedOnHead, latestChecks, namedChecks, skippedImageScan } from "../aidenhq-sdk/checks.ts";
 import { closedBy } from "../aidenhq-sdk/closed-event.ts";
 import { forOthers } from "../aidenhq-sdk/for-others.ts";
 import { downscalePng, imageInfo, pngStamp, type ImageInfo } from "./images.ts";
@@ -225,8 +225,10 @@ const nameOf = (f: any) => String(f.originalFilename ?? f.name ?? "");
 function gateOn(pr: any, checks: any[]): string {
   // The gate's newest run at the head (checks.ts latestChecks): an edit re-runs CI and cancels the run before it, and that
   // superseded run's check stays on the head forever. It cannot make a head whose latest `ci-required` passed read red. A check
-  // run and a status sharing the gate's name are two judgements: the worst one counts, as the merge gate reads them.
-  const gates = latestChecks(checks.filter((c: any) => c.name === GATE_CHECK));
+  // run and a status sharing the gate's name are two judgements: the worst one counts, as the merge gate reads them. An edit
+  // that planned no suite posts a `skipped` aggregate, which is no verdict either (judgedOnHead): the run that tested the head
+  // is the one the facts state, so a skip never reads as green over a real failure.
+  const gates = latestChecks(judgedOnHead(checks).filter((c: any) => c.name === GATE_CHECK));
   if (gates.length) return gates.some((c: any) => c.pending) ? "running" : gates.every((c: any) => c.status === "SUCCESS") ? "green" : "red";
   if (pr.state !== "OPEN" || !checks.length) return "missing";
   return namedChecks(pr.baseRef?.target?.statusCheckRollup).some((c: any) => c.name === GATE_CHECK) ? "running" : "missing";
@@ -642,7 +644,7 @@ export async function prEvidence(prs: any[], ref: string, deps: any): Promise<an
     // Each name's newest run at the head, as GitHub's branch protection reads it: a cancelled run an edit superseded is not a
     // judgement of this head, and a name whose only runs were cancelled reads not green rather than still running. A name still
     // reported twice (a check run and a status) is stated once, as its worst judgement: that is the one the merge gate holds on.
-    const latest = latestChecks(namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup));
+    const latest = latestChecks(judgedOnHead(namedChecks(pr.commits?.nodes?.[0]?.commit?.statusCheckRollup)));
     const gate = gateOn(pr, latest);
     const checks = worstPerName(latest, pr, gate);
     // A read caught mid-run is never a verdict. A check still queued or running is one (GitHub also reports the rollup as

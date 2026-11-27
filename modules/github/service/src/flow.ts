@@ -24,7 +24,7 @@ import { churnFromGit, DEFAULT_CHURN_EXCLUDE } from "./aidenhq-sdk/churn.ts";
 import { factEmitter, kernelClient, type FactIn, type KernelError } from "./aidenhq-sdk/kernel-client.ts";
 import { hasFooter, hasTrailer } from "./aidenhq-sdk/attribution.ts";
 import type { Hook } from "./feed.ts";
-import { latestChecks, namedChecks } from "./aidenhq-sdk/checks.ts";
+import { judgedOnHead, latestChecks, namedChecks } from "./aidenhq-sdk/checks.ts";
 
 type Json = any;
 /** GitHub as the owner, background (git-auth.ts Gh). */
@@ -333,8 +333,9 @@ export function createFlow(d: FlowDeps) {
   /** The head's named checks, check runs and commit statuses alike (the design and code reviews left out): once none is pending, CI
    * completed for each PR on it, at the later of the last run's completion and the last status's time. */
   const ciDone = (repo: string, head: string, prs: number[]) => {
-    // Each name's newest judgement at the head: a cancelled run an edit superseded is settled, not a check still running.
-    const named = latestChecks(namedChecks(feed.rollup(repo, head)));
+    // Each name's newest judgement at the head: a cancelled run an edit superseded is settled, not a check still running, and an
+    // edit that planned no suite posts skips newer than the run that tested the head (judgedOnHead), which are no verdict either.
+    const named = latestChecks(judgedOnHead(namedChecks(feed.rollup(repo, head))));
     if (!named.length || named.some((c) => c.pending)) return;
     const statuses = ((feed.rollup(repo, head) as { contexts: { nodes: { __typename: string; context?: string; createdAt?: string }[] } }).contexts.nodes).filter((n) => n.__typename === "StatusContext" && named.some((c) => c.name === n.context));
     const ends = [...feed.runs(repo, head).map((r) => r.completed ?? ""), ...statuses.map((s) => s.createdAt ?? "")].map((v) => Date.parse(v)).filter(Number.isFinite);
