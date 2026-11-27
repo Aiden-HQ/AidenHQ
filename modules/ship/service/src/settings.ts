@@ -26,8 +26,9 @@ export interface ShipSettings {
   enabled: boolean;
   handoff: (typeof HANDOFF)[number];
   rebase: (typeof REBASE)[number];
-  /** `ci`: the check (job) name in which the repo's own CI regenerates these paths, instead of a `command`: the repair takes their
-   * base side and runs no generator, and ship merges such a repair's head only once that check passed on it (rounds.ts). */
+  /** `ci`: the file (in .github/workflows) of the workflow in which the repo's own CI regenerates these paths, instead of a
+   * `command`: the repair takes their base side and runs no generator, and ship merges such a repair's head only once that
+   * workflow's newest run on it succeeded (rounds.ts). */
   generated: { globs: string[]; command: string; ci?: string } | null;
   fix: (typeof FIX)[number][];
   protected: string[];
@@ -183,9 +184,9 @@ function checkEntry(errors: string[], at: string, e: unknown) {
     if (!isMap(g) || Object.keys(g).some((k) => !["globs", "command", "ci"].includes(k))) errors.push(`${at}.generated: { globs, command } or { globs, ci }`);
     else {
       strings(errors, `${at}.generated.globs`, g.globs ?? []);
-      if (g.command !== undefined && (typeof g.command !== "string" || g.command.length > 500)) errors.push(`${at}.generated.command: text (when the repo's CI regenerates these paths, set generated.ci to that check's name instead)`);
-      if (g.ci !== undefined && (typeof g.ci !== "string" || !/^[^`\r\n]{1,100}$/.test(g.ci))) errors.push(`${at}.generated.ci: the name of the check in which the repo's CI regenerates these paths`);
-      if (g.ci !== undefined && g.command) errors.push(`${at}.generated: a command or a ci check, not both`);
+      if (g.command !== undefined && (typeof g.command !== "string" || g.command.length > 500)) errors.push(`${at}.generated.command: text (when the repo's CI regenerates these paths, set generated.ci to that workflow's file instead)`);
+      if (g.ci !== undefined && (typeof g.ci !== "string" || !WORKFLOW.test(g.ci))) errors.push(`${at}.generated.ci: the file name in .github/workflows of the workflow that regenerates these paths, e.g. schema-generate.yml`);
+      if (g.ci !== undefined && g.command) errors.push(`${at}.generated: a command or a ci workflow, not both`);
     }
   }
   if ("actions" in e) {
@@ -255,7 +256,7 @@ export function loosens(before: unknown, after: unknown, scope: Scope = ALL): st
     // Back from an explicit list to discovery: the discovered paths may reach past the list, so that is a loosening too.
     if (x.generated && !y.generated) add("generated");
     // `ci` (the repo's CI regenerates) is no loosening: the repair then runs nothing and writes only the base's own blobs on those
-    // paths, which the globs already bound, and such a head merges only once that check passed on it.
+    // paths, which the globs already bound, and such a head merges only once that workflow passed on it.
     // A new ignored account: its comments no longer gate a merge (an agent could name a person), so it is the owner's. Dropping
     // one is free.
     const ignored = (l: string[]) => new Set(l.map((x) => x.toLowerCase()));

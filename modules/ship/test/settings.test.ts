@@ -55,8 +55,8 @@ test("loosens names each loosened field by repo, and the same policy spelled dif
   const gen = (globs: string[], command = "make gen") => ({ repos: { "a/b": { preset: "cautious", generated: { globs, command } } } });
   assert.deepEqual(loosens(gen(["gen/**"]), gen(["gen/**", "src/**"])), ["a/b.generated.globs"]);
   assert.deepEqual(loosens(gen(["gen/**"]), gen(["gen/**"], "npm run gen")), []);
-  // The repo's CI regenerating (a ci check) runs nothing and writes only the base's blobs: an ordinary change.
-  assert.deepEqual(loosens(gen(["gen/**"]), { repos: { "a/b": { preset: "cautious", generated: { globs: ["gen/**"], ci: "regenerate" } } } }), []);
+  // The repo's CI regenerating (a ci workflow) runs nothing and writes only the base's blobs: an ordinary change.
+  assert.deepEqual(loosens(gen(["gen/**"]), { repos: { "a/b": { preset: "cautious", generated: { globs: ["gen/**"], ci: "schema-generate.yml" } } } }), []);
   // Ignored accounts: adding one (its comments stop gating a merge) is the owner's; the same login in another case, or dropping one, isn't.
   const ign = (l: string[]) => ({ repos: { "a/b": { preset: "cautious", ignore_authors: l } } });
   assert.deepEqual(loosens(ign([]), ign(["acme-bot"])), ["a/b.ignore_authors"]);
@@ -67,12 +67,13 @@ test("loosens names each loosened field by repo, and the same policy spelled dif
 test("repo hooks are workflows naming the PR with {pr}; comment steps and bad logins are refused", () => {
   const scope = { fleet: ["a/*"], listed: [] };
   const v = (e: unknown) => validate({ repos: { "a/b": e } }, scope);
-  assert.deepEqual(v({ actions: { conflict: [{ workflow: "pr-rebase.yml", inputs: { pr: "{pr}" } }] }, generated: { globs: ["gen/**"], ci: "regenerate" }, ignore_authors: ["acme-bot", "renovate[bot]"] }), []);
+  assert.deepEqual(v({ actions: { conflict: [{ workflow: "pr-rebase.yml", inputs: { pr: "{pr}" } }] }, generated: { globs: ["gen/**"], ci: "schema-generate.yml" }, ignore_authors: ["acme-bot", "renovate[bot]"] }), []);
   assert.match(v({ actions: { conflict: [{ comment: "/rebase" }] } }).join(), /comment steps are gone/);
   assert.match(v({ actions: { conflict: [{ workflow: "pr-rebase.yml" }] } }).join(), /name the PR with \{pr\}/);
   assert.match(v({ actions: { conflict: [{ workflow: "x.yml", inputs: { pr: "{pr}", ref: "{head}" } }] } }).join(), /only placeholder is \{pr\}/);
   assert.match(v({ ignore_authors: ["not a login"] }).join(), /ignore_authors/);
-  assert.match(v({ generated: { globs: ["gen/**"], command: "make gen", ci: "regenerate" } }).join(), /a command or a ci check, not both/);
+  assert.match(v({ generated: { globs: ["gen/**"], command: "make gen", ci: "schema-generate.yml" } }).join(), /a command or a ci workflow, not both/);
+  assert.match(v({ generated: { globs: ["gen/**"], ci: "generate" } }).join(), /generated\.ci: the file name in \.github\/workflows/);
   assert.match(v({ generated: { globs: ["gen/**"], command: null } }).join(), /generated\.command: text/);
 });
 

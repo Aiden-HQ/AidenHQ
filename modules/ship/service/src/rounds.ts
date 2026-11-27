@@ -271,12 +271,13 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   if (v.do === "repair" && !f.dirty && s.rebase === "conflict" && !f.front && !f.queue) return "nothing";
   // A head the fleet made with the base side of generated paths the repo's CI regenerates (`generated.ci`): ship's repair when github
   // says it took some, or the Engineer's push after a conflict wake (which tells it to take them) isn't approved, queued or merged
-  // until that check passed on it: the regenerated files may not be committed yet. A newer head (the CI's own regenerate commit) is
-  // a normal round. 30 minutes without the check passing holds the PR, loudly, whatever the gate says meanwhile (a required check
-  // that never comes is a wait there). A read that fails throws: the next pass asks again.
+  // until that workflow's newest run on it passed: the regenerated files may not be committed yet. A newer head (the CI's own
+  // regenerate commit) is a normal round. The workflow is named by its file, so no other workflow's job of the same name answers
+  // for it, and a skipped run is no pass. 30 minutes without that holds the PR, loudly, whatever the gate says meanwhile (a required
+  // check that never comes is a wait there). A read that fails throws: the next pass asks again.
   const mergeish = ["approve", "enqueue", "merge"].includes(v.do);
   if ((mergeish || v.do === "wait") && s.generated?.ci) {
-    const check = s.generated.ci;
+    const workflow = s.generated.ci;
     if (a.repair && a.repair.checked !== pr.head && a.ciRegen?.head !== pr.head) {
       // Whether this head is the repair's own commit, and whether it took the base side of a generated path (github says so).
       const made = await d.kernel.call("GET", `/v1/objects?ref=${encodeURIComponent(`github:${(pr.headRepo ?? pr.repo).toLowerCase()}@${pr.head}`)}`);
@@ -289,14 +290,14 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
       d.state.put(a);
     }
     if (a.ciRegen?.head === pr.head) {
-      const runs = await d.gh!("GET", `/repos/${pr.repo}/commits/${pr.head}/check-runs?check_name=${encodeURIComponent(check).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}&per_page=100`);
-      if (runs.status >= 300) throw new Error(`GitHub GET check-runs: ${runs.status}`);
-      // Several workflows can share a job name (GitHub's default `filter=latest` keeps each one's newest attempt): one must pass,
-      // and none may still run or fail (a skipped or neutral one is another workflow's job that didn't apply).
-      const named = ((runs.body?.check_runs ?? []) as { name?: string; status?: string; conclusion?: string | null }[]).filter((c) => c.name === check);
-      const pending = named.find((c) => !(c.status === "completed" && ["success", "skipped", "neutral"].includes(String(c.conclusion))));
-      if (!named.some((c) => c.conclusion === "success") || pending) {
-        if (Date.now() - Date.parse(a.ciRegen.at) > 30 * 60_000) return hold(`the repo's \`${check}\` check didn't pass on ship's repair head \`${pr.head.slice(0, 12)}\` within 30 minutes (${pending ? `a run is ${pending.status}${pending.conclusion ? `, ${pending.conclusion}` : ""}` : "it never appeared"}), so its generated files may be stale`, HOLD.ciRegen(check));
+      const runs = await d.gh!("GET", `/repos/${pr.repo}/actions/workflows/${workflow}/runs?head_sha=${pr.head}&per_page=20`);
+      // A workflow GitHub doesn't know (renamed, deleted, misspelled) or a name that isn't a workflow file: no run will ever come.
+      if (runs.status === 404 || runs.status === 403) return hold(`the repo's \`${workflow}\` workflow can't be read (${runs.status}): set \`generated.ci\` to the file in .github/workflows of the workflow that regenerates these paths`, HOLD.ciRegen(workflow));
+      if (runs.status >= 300) throw new Error(`GitHub GET workflow runs: ${runs.status}`);
+      const newest = ((runs.body?.workflow_runs ?? []) as { status?: string; conclusion?: string | null; run_number?: number; run_attempt?: number }[])
+        .sort((x, y) => (y.run_number ?? 0) - (x.run_number ?? 0) || (y.run_attempt ?? 0) - (x.run_attempt ?? 0))[0];
+      if (!(newest?.status === "completed" && newest.conclusion === "success")) {
+        if (Date.now() - Date.parse(a.ciRegen.at) > 30 * 60_000) return hold(`the repo's \`${workflow}\` workflow didn't pass on ship's repair head \`${pr.head.slice(0, 12)}\` within 30 minutes (${newest ? `its newest run is ${newest.status}${newest.conclusion ? `, ${newest.conclusion}` : ""}` : "it never ran on this head"}), so its generated files may be stale`, HOLD.ciRegen(workflow));
         if (mergeish) return "nothing";
       }
     }
@@ -418,7 +419,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
           // The box lacks the generator's tool: the Engineer's computer is the same image, so the PR holds, and the report suggests
           // the repo's own workflow as an `actions` step.
           const missing = /^ship-generator/.test(text) && /^toolchain missing: ([\w.+-]{1,60})/m.exec(text)?.[1];
-          if (missing) return hold(`toolchain missing: ${missing} (the repair box doesn't have it): configure the repo's own regenerate workflow as an \`actions\` step for conflicts${suggest.length ? ` (${suggest[0]})` : ""}, or set \`generated.ci\` to the check in which the repo's CI regenerates these paths`, HOLD.repair);
+          if (missing) return hold(`toolchain missing: ${missing} (the repair box doesn't have it): configure the repo's own regenerate workflow as an \`actions\` step for conflicts${suggest.length ? ` (${suggest[0]})` : ""}, or set \`generated.ci\` to the workflow file in which the repo's CI regenerates these paths`, HOLD.repair);
           if (/^ship-leftovers/.test(text) || /^ship-generator/.test(text)) {
             if (a!.repair.woke) return "nothing";
             a = { ...a!, repair: { ...a!.repair, woke: true } };
@@ -427,7 +428,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
                 ? `${pr.url} conflicts with \`${pr.base}\` at head ${pr.head}, and ship's repair left ${left} conflict(s) no generator rewrites (its outcome is on record ${a!.repair!.record}).`
                 : `${pr.url} conflicts with \`${pr.base}\` at head ${pr.head}, and ship's repair stopped on a generator (its outcome is on record ${a!.repair!.record}).`,
               s.generated?.ci
-                ? `Resolve it as the \`ship\` skill says: merge \`origin/${pr.base}\` in, resolve, take the base side of the generated files (${s.generated.globs.map((g) => `\`${g}\``).join(", ") || "none listed"}) and don't regenerate them: the repo's CI does, in its \`${s.generated.ci}\` check. One commit.`
+                ? `Resolve it as the \`ship\` skill says: merge \`origin/${pr.base}\` in, resolve, take the base side of the generated files (${s.generated.globs.map((g) => `\`${g}\``).join(", ") || "none listed"}) and don't regenerate them: the repo's CI does, in its \`${s.generated.ci}\` workflow. One commit.`
                 : `Resolve it as the \`ship\` skill says: merge \`origin/${pr.base}\` in, resolve, regenerate the generated files, one commit.`,
               push(),
             ].join("\n"));
