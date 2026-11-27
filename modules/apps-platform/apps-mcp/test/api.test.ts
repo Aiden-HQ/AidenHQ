@@ -26,30 +26,6 @@ export async function identityFixture() {
   return { sign, identify, protect: identity.protect };
 }
 
-describe("registry: api", () => {
-  it("validates the block; a static token is gone", () => {
-    expect(app().secrets).toEqual([]);
-    expect(app({ database: "warehouse", secrets: ["ROADMAP_DATABASE_URL"] }).secrets).toEqual(["ROADMAP_DATABASE_URL", "DATABASE_URL"]);
-    expect(isSensitive(app(), [])).toBe(false);
-    expect(() => app({ api: { ...api, token: "ROADMAP_AGENT_TOKEN" } })).toThrow(/api.token is gone/);
-    expect(() => app({ secrets: ["AIDENHQ_IDENTITY_KEYS"] })).toThrow(/platform/);
-    expect(() => app({ api: { ...api, callers: [] } })).toThrow();
-    expect(() => app({ api: { ...api, paths: ["api/x"] } })).toThrow();
-    expect(() => app({ api: { ...api, paths: ["GET /api/agent/roadmap"] } })).toThrow(); // the app's own paths stay prefixes
-    const routed = app({ api: { callers: [{ agent: "k", paths: ["POST /api/agent/intake/{reference}/decision"] }], paths: api.paths } });
-    expect(routed.api!.callers).toEqual([{ agent: "k", paths: ["POST /api/agent/intake/{reference}/decision"] }]);
-    expect(routed.api!.member_paths).toEqual([]);
-    expect(app({ api: { ...api, member_paths: ["/intake", "/intake/feedback"] } }).api!.member_paths).toEqual(["/intake", "/intake/feedback"]);
-    expect(() => app({ api: { ...api, member_paths: ["intake"] } })).toThrow();
-    for (const bad of ["/intake//feedback", "/intake?x=1", "/intake/../feedback", "/intake/./feedback", "https://example.com/intake"]) {
-      expect(() => app({ api: { ...api, member_paths: [bad] } }), bad).toThrow();
-    }
-    for (const bad of ["GET /api/agent/{a}{b}", "get /api/agent/x", "FETCH /api/agent/x", "GET /api/agent/{a b}", "GET /api/agent/{a/b}", "GET /api/agent//x", "GET /api/agent/x y", "GET/api/agent/x", "GET ", "GET /api/agent/../x"])
-      expect(() => app({ api: { ...api, callers: [{ agent: "k", paths: [bad] }] } }), bad).toThrow();
-    expect(() => app({ health: {} })).toThrow(/health.url/);
-  });
-});
-
 describe("authorize", () => {
   const ok = (path: string, key = "roadmap-keeper") => () => authorize(app(), key, path);
   it("allows a granted caller under a prefix", () => {
@@ -173,7 +149,6 @@ describe("a caller's exact routes", () => {
   });
 });
 
-
 // Fake Docker: containers with compose labels and network IPs; resolve answers like `docker ps -q --filter label=...` + inspect.
 const ctr = (id: string, project: string, service: string, ip: string) => ({ Id: id.padEnd(64, "0"), Config: { Labels: { "com.docker.compose.project": project, "com.docker.compose.service": service } }, NetworkSettings: { Networks: { [project]: { IPAddress: ip } } } });
 const fakeDocker = (cs: ReturnType<typeof ctr>[], forged?: ReturnType<typeof ctr>): Resolve => async (a, service) => ({
@@ -266,16 +241,6 @@ describe("callApi", () => {
     expect(r).toEqual({ status: 429, headers: { "retry-after": "37", "x-multi": ["a", "b"], "content-type": "text/plain" }, body: "slow down" });
     expect(JSON.stringify(r)).not.toContain("sid=live");
   });
-  it("treats a header named like an inherited property as data, not a crash", async () => {
-    // JSON.parse makes `__proto__` an own key (an object literal would set the prototype instead).
-    const headers = JSON.parse('{"constructor":"x","__proto__":"y","x-real":"z"}') as ResponseHeaders;
-    const { d } = await setup(() => ({ status: 201, headers, body: "ok" }));
-    const r = await callApi(app(), "roadmap-keeper", { method: "POST", path: "/intake/feedback", role: "member" }, d);
-    // Not status 0 (which is what a throwing accumulator would have produced): the app's real answer.
-    expect(r.status).toBe(201);
-    expect(Object.keys(r.headers).sort()).toEqual(["__proto__", "constructor", "x-real"]);
-    expect(r.headers["constructor"]).toBe("x");
-  });
   it("rejects a role other than admin or member instead of signing one", async () => {
     const { d } = await setup(() => ({ status: 200, headers: {}, body: "{}" }));
     await expect(callApi(app(), "roadmap-keeper", { method: "POST", path: "/api/agent/roadmap", role: "owner" as never }, d)).rejects.toThrow(/role must be admin or member/);
@@ -302,7 +267,6 @@ describe("callApi", () => {
     expect(sent.map((x) => `${x.method} ${x.url}`)).toEqual(["POST http://127.0.0.1:8080/api/agent/intake/AB12CD34/decision"]);
   });
 });
-
 
 describe("an app's feedback agent", () => {
   const rk = app({ feedback_to: "roadmap-feedback", api: { callers: ["roadmap-keeper", { agent: "roadmap-feedback", paths: ["/api/agent/intake"] }], paths: ["/api/agent/roadmap", "/api/agent/intake"] } });

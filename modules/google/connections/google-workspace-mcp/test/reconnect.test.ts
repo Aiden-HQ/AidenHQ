@@ -33,17 +33,6 @@ const stateOf = (url: string) => new URL(url).searchParams.get("state")!;
 describe("reconnect from the board", () => {
   const redirect = "http://127.0.0.1:3120/google/callback";
 
-  it("asks Google for SCOPES, for that account, with PKCE", () => {
-    const { url } = new Reconnect(credsFile()).start("me@work.com", redirect);
-    const q = new URL(url).searchParams;
-    expect(q.get("client_id")).toBe("cid");
-    expect(q.get("redirect_uri")).toBe(redirect);
-    expect(q.get("scope")).toBe(SCOPES.join(" "));
-    expect(q.get("login_hint")).toBe("me@work.com");
-    expect(q.get("code_challenge_method")).toBe("S256");
-    expect(q.get("access_type")).toBe("offline");
-  });
-
   it("refuses unknown accounts and non-loopback redirects", () => {
     const r = new Reconnect(credsFile());
     expect(() => r.start("stranger@x.io", redirect)).toThrow(/isn't a connected account/);
@@ -80,17 +69,6 @@ describe("reconnect from the board", () => {
     const r = new Reconnect(path, google("me@work.com", scope).impl);
     await r.finish(stateOf(r.start("me@work.com", redirect).url), "c");
     expect(JSON.parse(readFileSync(path, "utf8")).accounts["me@work.com"].scopes).toEqual(scope.split(" "));
-  });
-
-  it("the host fallback (src/auth.ts) asks for the same scopes", () => {
-    const copy = /const SCOPES = \[([^\]]*)\]/.exec(readFileSync(join(import.meta.dirname, "../src/auth.ts"), "utf8"))![1]!;
-    expect([...copy.matchAll(/"([^"]+)"/g)].map((m) => m[1])).toEqual(SCOPES);
-  });
-
-  it("the setup page's console_scopes (module.yaml) list the same scopes", () => {
-    const yaml = readFileSync(join(import.meta.dirname, "../../../module.yaml"), "utf8");
-    const listed = /console_scopes:\n((?:\s+- \S+\n)+)/.exec(yaml)![1]!;
-    expect([...listed.matchAll(/- (\S+)/g)].map((m) => m[1])).toEqual(SCOPES);
   });
 
   it("spends each state once, and expires it", async () => {

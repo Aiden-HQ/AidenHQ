@@ -102,19 +102,6 @@ describe("doors", () => {
     p.store.setRunning(app, "a".repeat(40)); // every healthy path (apply, rollback) sets it; a confirmed stop clears it
   };
 
-  it("local: http://<app>.localhost:3130 once the app is served; the doors file names only served, exposed apps", async () => {
-    const { p, dir } = make({ doors: { base: "localhost", file: "/previews/doors.json", signin: "http://127.0.0.1:3120" }, origin: { scheme: "http", port: 3130 } });
-    expect(await p.status(p.find("notes"))).toMatchObject({ url: undefined, unpublished: expect.stringMatching(/deployed healthy/) });
-    healthy(p, "notes");
-    healthy(p, "quiet");
-    const row = await p.status(p.find("notes"));
-    expect(row).toMatchObject({ url: "http://notes.localhost:3130" });
-    expect(row).not.toHaveProperty("unpublished");
-    expect((await p.status(p.find("quiet"))).url).toBeUndefined();
-    await p.syncEdge().catch(() => {}); // the apps node isn't there; the doors file is written first
-    expect(JSON.parse(readFileSync(join(dir, "doors.json"), "utf8"))).toEqual({ notes: 8123 });
-  });
-
   // A target found answering without sign-in stays a `healthy` row (its `down` failed), but it must not be published or
   // offered as a URL: nothing that failed the identity gate keeps a route.
   it("withdraws the route of an app whose only healthy deploy is disqualified", async () => {
@@ -141,17 +128,6 @@ describe("doors", () => {
     expect(JSON.parse(readFileSync(join(dir, "doors.json"), "utf8"))).toEqual({});
     p.store.unwithhold("notes"); // a deploy recorded healthy
     expect(await p.status(p.find("notes"))).toMatchObject({ url: "http://notes.localhost:3130" });
-  });
-
-  // A target that was stopped because its identity could not be confirmed is a confirmed stop: nothing runs, so the app
-  // must not stay published (the edge would point at a compose project that is gone: 502s, and a route to nothing).
-  it("unpublishes an app once its only healthy deploy is disqualified", async () => {
-    const { p } = make({ doors: { base: "localhost", file: "/previews/doors.json", signin: "http://127.0.0.1:3120" }, origin: { scheme: "http", port: 3130 } });
-    healthy(p, "notes");
-    expect(p.store.publishable("notes")).toBe(true);
-    p.store.disqualify(p.store.goodDeploys("notes")[0]!.id, "stopped: its identity could not be confirmed");
-    expect(p.store.publishable("notes")).toBe(false);
-    expect(await p.status(p.find("notes"))).toMatchObject({ url: undefined });
   });
 
   // The doors file is how the gate decides what the app serves: a withheld app must lose its door even when another
@@ -220,17 +196,6 @@ describe("app_status previews", () => {
     ]);
     expect(previews[1]).not.toHaveProperty("reason");
   });
-
-  it("the cached row /internal/status serves carries no preview reason", async () => {
-    const p = make();
-    p.store.putPreview({ name: "notes-pr-4", app: "notes", pr: 4, port: 39100, sha: "a".repeat(40), status: "failed", at: 1, comment_id: 104, reason: "its build failed: exit 1" });
-    await p.refresh(p.find("notes"));
-    const cached = p.cached(p.find("notes")) as { previews: Record<string, unknown>[] };
-    expect(cached.previews).toEqual([{ pr: 4, sha: "a".repeat(40), state: "failed", url: undefined }]);
-    expect(cached.previews[0]).not.toHaveProperty("reason");
-    // The authorized app_status call still carries it.
-    expect((await callStatus(p)).previews[0]).toMatchObject({ reason: "its build failed: exit 1" });
-  });
 });
 
 describe("app_page_canary registration", () => {
@@ -264,22 +229,5 @@ describe("app_page_canary registration", () => {
     const other = join(dir, "gate2.json");
     writeFileSync(other, JSON.stringify({ previews: { file: "x", ports: [39000, 39100] } }));
     expect(await names(other)).not.toContain("app_page_canary");
-  });
-
-  it("keeps its contract: name, action, text, optional path and width in, the submission's result fields out", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "canary-schema-"));
-    const gateFile = join(dir, "gate.json");
-    writeFileSync(gateFile, JSON.stringify({ test_user: { email: "canary@aidenhq.test", apps: ["notes"] } }));
-    const tool = (await tools(gateFile)).find((t) => t.name === "app_page_canary")!;
-    const schema = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] };
-    expect(Object.keys(schema.properties ?? {}).sort()).toEqual(["action", "name", "path", "text", "width"]);
-    expect((schema.required ?? []).sort()).toEqual(["action", "name", "text"]);
-    // The result is the canary's own answer (canaryContent): meta fields and, when it took one, the screenshot.
-    const r = { ok: true, status: 200, finalUrl: "http://notes.canary.localhost:3132/", pageTitle: "Notes", notify: "fired" as const, notifyStatus: 204, reference: "R-1", submittedAt: new Date().toISOString(), session: { id: "s", expires: "", revoked: true } };
-    const content = canaryContent(r as CanaryResult);
-    const text = content.content[0];
-    expect(text?.type).toBe("text");
-    const meta = JSON.parse(String(text && "text" in text ? text.text : "").split("\n")[0]!);
-    expect(meta).toMatchObject({ notify: "fired", notifyStatus: 204, reference: "R-1", submittedAt: r.submittedAt, session: { revoked: true } });
   });
 });

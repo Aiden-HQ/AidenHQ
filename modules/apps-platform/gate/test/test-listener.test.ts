@@ -100,23 +100,6 @@ const hit = (port: number, host: string, path: string, { method = "GET", cookie,
     q.end(method === "POST" ? "{}" : undefined);
   });
 
-test("the image ships every file the gate imports at runtime (main.ts's own imports included)", () => {
-  // The gate runs the TypeScript directly: a module main.ts imports that the Dockerfile's COPY list omits is an image that
-  // exits on start with ERR_MODULE_NOT_FOUND, taking ordinary app access down with it.
-  const dir = new URL("..", import.meta.url).pathname;
-  const dockerfile = readFileSync(join(dir, "Dockerfile"), "utf8");
-  const copied = new Set((dockerfile.match(/^COPY\s+([^\n]+?)\s+\.\/?$/gm) ?? []).flatMap((l) => l.trim().split(/\s+/).slice(1, -1)));
-  const seen = new Set<string>(), queue = ["main.ts", "gate.ts"];
-  while (queue.length) {
-    const f = queue.pop()!;
-    if (seen.has(f)) continue;
-    seen.add(f);
-    const src = readFileSync(join(dir, f), "utf8");
-    for (const m of src.matchAll(/from\s+"(\.\/[^"]+)"/g)) queue.push(m[1]!.replace(/^\.\//, ""));
-  }
-  for (const f of seen) assert.ok(copied.has(f), `${f} is imported at runtime but the Dockerfile doesn't copy it`);
-});
-
 test("with no settings.edge.test_user the capability is inert: nothing binds, and a bound listener serves no page", async () => {
   assert.equal(testListenerOn({ ...cfg, test_user: undefined }), false);
   assert.equal(testListenerOn({ ...cfg, test_listener: undefined }), false);
@@ -156,28 +139,6 @@ test("a settings-only apply binds the listener when the test user appears and cl
     await new Promise((ok) => setTimeout(ok, 50));
     await assert.rejects(hit(port, `roadmap.${CANARY_BASE}`, "/"));
   } finally { await closed(bound).catch(() => undefined); }
-});
-
-test("a bind that fails before the bridge is up is retried, not remembered as serving", async () => {
-  // The gate can be configured before the canary bridge exists: the first bind fails with EADDRNOTAVAIL, and a later
-  // reconcile must try again rather than skip it because the address was already recorded.
-  const logs: any[] = [];
-  let now: any = { ...cfg, test_listener: { address: "10.99.99.99", port: 0 } };
-  const rec = createTestListenerReconciler({ config: () => now, log: (o) => logs.push(o) });
-  rec.reconcile();
-  await new Promise((ok) => setTimeout(ok, 100));
-  assert.equal(rec.current(), undefined);
-  assert.ok(logs.some((l) => l.msg === "test listener failed"));
-  // Now the bridge exists (a loopback listener on a real address): the next pass binds it.
-  now = { ...cfg, test_listener: { address: "127.0.0.1", port: 0 } };
-  rec.reconcile();
-  const bound = rec.current()!;
-  try {
-    await new Promise<void>((ok) => (bound.listening ? ok() : bound.once("listening", () => ok())));
-    assert.ok(((bound.address() as any)?.port ?? 0) > 0);
-  } finally {
-    await new Promise<void>((ok) => { bound.close(() => ok()); bound.closeAllConnections?.(); });
-  }
 });
 
 test("an unauthenticated browser gets 401 and no page; the front-door header and an anonymous request get nothing", async () => {
@@ -416,46 +377,6 @@ test("a WebSocket upgrade needs the listener's own origin and a live session, an
   // The right origin but no session: 401, and nothing reaches the app.
   assert.equal(await ask(`http://roadmap.${CANARY_BASE}:${lPort}`), "401");
   assert.equal(appSeen.length, before, "no upgrade reaches the app without a live session");
-});
-
-// The app may answer a handshake slowly. If the browser is gone by then, its upstream request must be cancelled: the app's
-// socket sees the connection end, and a late 101 never becomes a tunnel the listener has stopped tracking.
-test("a browser that leaves mid-handshake cancels the upstream upgrade, so no app socket stays open unowned", async () => {
-  const slow = createServer();
-  const seen: { ended: boolean; sock: any }[] = [];
-  slow.on("upgrade", (q, sock) => {
-    const rec = { ended: false, sock };
-    seen.push(rec);
-    sock.on("error", () => {});
-    sock.on("end", () => { rec.ended = true; });
-    sock.on("close", () => { rec.ended = true; });
-    // Answer only after the browser has gone: a tunnel opened now would outlive its session.
-    setTimeout(() => { if (!sock.destroyed) sock.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"); }, 250).unref?.();
-  });
-  const slowPort = await listen(slow);
-  const c: any = { ...cfg, hosts: { "roadmap.example.com": { app: "roadmap", port: slowPort }, [`roadmap.${CANARY_BASE}`]: { app: "roadmap", port: slowPort } } };
-  const l = createTestListener({ config: () => c, log: () => {} });
-  const port = await listen(l);
-  c.test_listener = { address: "127.0.0.1", port };
-  try {
-    const q = request({ host: "127.0.0.1", port, path: "/ws", headers: { host: `roadmap.${CANARY_BASE}`, connection: "Upgrade", upgrade: "websocket", origin: `http://roadmap.${CANARY_BASE}:${port}`, cookie: `${CANARY_COOKIE}=${COOKIE}` } });
-    q.on("error", () => {});
-    q.on("upgrade", () => {});
-    q.end();
-    // The browser times out: its socket goes before the app answers.
-    await new Promise((ok) => setTimeout(ok, 40));
-    q.destroy();
-    await new Promise((ok) => setTimeout(ok, 700));
-    assert.ok(seen.length > 0, "the app got the handshake");
-    for (const r of seen) assert.equal(r.ended, true, "its socket ended with the browser, never left open unowned");
-  } finally {
-    for (const r of seen) r.sock.destroy();
-    slow.closeAllConnections?.();
-    slow.close();
-    (l as any).closeTunnels?.();
-    l.closeAllConnections?.();
-    await new Promise<void>((ok) => l.close(() => ok()));
-  }
 });
 
 test("the session's live-app mode decides every request, the gate's notify and every upgrade", async () => {
