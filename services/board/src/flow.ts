@@ -23,7 +23,6 @@ export interface FlowSummary {
   dora: { deploys_per_day: number; lead_p50: number | null; failure_rate: number | null; restore_p50: number | null } | null;
   churn: { rewritten_30d: number | null; hot_lines: number } | null;
   fleet: {
-    first_pass_grade?: number | null;
     first_pass_review?: number | null;
     cost_per_outcome?: number | null;
     [k: string]: unknown;

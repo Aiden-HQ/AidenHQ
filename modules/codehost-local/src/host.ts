@@ -7,7 +7,7 @@
 // A change request is git refs in its bare repo, never a database (apps-mcp's codehost.ts reads them for previews):
 //   refs/changes/<n>/head    its head                      refs/changes/<n>/merged  the squash commit, once merged
 //   refs/changes/<n>/base    the default branch's tip when the head last moved    refs/changes/<n>/closed  written when it is closed
-//   refs/changes/<n>/opened  the default branch's tip when it was opened (never moved by a push): the grader's base commit
+//   refs/changes/<n>/opened  the default branch's tip when it was opened (never moved by a push): the change's base commit
 //   refs/changes/<n>/meta    { title, body, branch, base (the branch it merges into), task, opened_at, draft }
 // Its URL is codehost:local/<name>/change/<n>. A job's commits come in as a bundle its box wrote (git.ts ingest). A merge needs the change's checks green on its exact head: the `change` check
 // job (check_jobs in module.yaml, run in a credential-free box from a snapshot) with a receipt the kernel signed.
@@ -73,7 +73,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
     const main = await rev(repo, `refs/heads/${await defaultBranch(repo)}`);
     const base = main ? await g(repo, ["merge-base", main, head]).catch(() => "") : "";
     // The base ref's commit recorded on the change: the default branch's tip when it was opened, as GitHub records `baseRefOid` on
-    // a PR and does not move on a push. It is the grader's base commit; `base` above is the merge base and is never substituted.
+    // a PR and does not move on a push. It is the change's base commit; `base` above is the merge base and is never substituted.
     // `base` is not it: that ref was rewritten on every push before `opened` existed, so a change without `opened` (legacy) states
     // no base commit rather than passing the tip it was last pushed against off as the one it opened against.
     const baseRef = await rev(repo, `refs/changes/${n}/opened`);
@@ -321,7 +321,7 @@ export function localHost({ root, sources = {}, tasksDir, scratchDir, instanceRe
         } catch (e) {
           throw failed(`${(e as Error).message.slice(0, 300)}`);
         }
-        // The first line as codehost-github's merge queue writes it (merges.ts MERGED_LINE): what the grader reads as merged.
+        // The first line as codehost-github's merge queue writes it (merges.ts MERGED_LINE): what a record reader takes as merged.
         return { ok: true, text: `${evidence()}Merged: ${done.join(", ")}` };
       }
       if (action === "close") {

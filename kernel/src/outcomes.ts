@@ -9,7 +9,6 @@
 // timeout) stays pending, and the retry asks the plugin to look for the tagged write first, so it never posts twice.
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { Finish } from "./checks.ts";
 import { factWriter, iso } from "./factlog.ts";
 import type { Facts } from "./facts.ts";
 import { createOnce } from "./once.ts";
@@ -29,7 +28,7 @@ export class OutcomeError extends Error {
   status: number; code: string;
   constructor(status: number, code: string, message: string) { super(message); this.status = status; this.code = code; }
 }
-export interface Outcome { comment: string | null; status: string | null; again?: boolean; finish?: Finish }
+export interface Outcome { comment: string | null; status: string | null; again?: boolean }
 export interface PostRequest { kind: string; body: string; status?: string; blockedBy?: string[]; /** A session's finished turn (its text's id): one reply per turn, where a job otherwise has one per kind. */ turn?: string; child?: { title: string; description?: string; assigneeAgentId?: string }; scope?: "listed" }
 
 /**
@@ -90,8 +89,8 @@ export function createOutcomes({ db, plugin, delegates, finish, relay, facts, ag
   facts?: Facts; agentKey?: (agent: string) => string;
   /** The ids of the agents an agent may hand a child task to (grants `delegate_to`). */
   delegates: (agent: string) => Promise<string[]>;
-  /** The finish gate (checks.ts): a `done` that doesn't pass is posted without its status. */
-  finish: (task: string, agent: string) => Promise<Finish>;
+  /** The finish gate (checks.ts): a `done` it refuses throws, and nothing is posted. */
+  finish: (task: string) => Promise<void>;
   /** A reply, once posted, also goes to the channel the owner wrote from (relay.ts). */
   relay?: (job: { agent: string; task: string }, body: string) => Promise<void>;
   /** The grants table's `chat_task` for an agent: the only task a `listed` post may name (the lane's reply). */
@@ -124,12 +123,8 @@ export function createOutcomes({ db, plugin, delegates, finish, relay, facts, ag
     // The tag's job field is at most 64 of [A-Za-z0-9_-] (the plugin's post.js): a turn is a short hash of its id after the job's.
     const key = tag(req.turn ? `${job.id}-${createHash("sha1").update(req.turn).digest("hex").slice(0, 16)}` : job.id, req.kind);
     const { value, again } = await once(key, async (retry): Promise<Outcome> => {
-      let status = req.status;
-      let gate: Finish | undefined;
-      if (status === "done") {
-        gate = await finish(job.task, job.agent);
-        if (!gate.pass) status = undefined;
-      }
+      const status = req.status;
+      if (status === "done") await finish(job.task);
       const params = { issueId: job.task, tag: key, body: req.body, ...(req.scope ? { scope: req.scope } : {}), ...(retry ? { again: true } : {}), ...(status ? { status } : {}), ...(status === "blocked" ? { blockedBy: req.blockedBy ?? [] } : {}), ...(status === "done" ? { gated: true } : {}), ...(req.child ? { child: req.child, delegateTo: await delegates(job.agent) } : {}) };
       const r = await plugin.post(job.agent, params);
       // A 5xx (502: the plugin is down, or it threw) leaves the key pending: whether it wrote is unknown, and the retry looks.
@@ -141,9 +136,9 @@ export function createOutcomes({ db, plugin, delegates, finish, relay, facts, ag
       // A 404 is the plugin's route missing while setup reinstalls the plugin during an apply: retried (a 502), never final.
       if (r.status === 404) throw new OutcomeError(502, "unknown", "the post action isn't there (the plugin is being reinstalled): try again");
       if (r.status >= 300 || !data || data.refused) throw new OutcomeError(r.status >= 400 && r.status !== 429 ? r.status : r.status >= 300 ? 502 : 422, "refused", data?.refused ?? `the post action answered ${r.status}`);
-      log("outcome posted", { job: job.id, kind: req.kind, task: job.task, status: data.status ?? null, ...(gate && !gate.pass ? { finish: "held" in gate ? "held" : "reopened" } : {}) });
+      log("outcome posted", { job: job.id, kind: req.kind, task: job.task, status: data.status ?? null});
       if (data.comment) fact({ type: "task.commented", subject: `task:${job.task}`, version: String(data.comment), at: iso(Date.now()), actor: `agent:${agentKey(job.agent)}`, task: job.task, data: { kind: req.kind, job: job.id } });
-      return { comment: data.comment, status: data.status ?? null, ...(gate ? { finish: gate } : {}) };
+      return { comment: data.comment, status: data.status ?? null };
     });
     // A reply also goes to the channel the owner wrote from: its own once, after the post. A read that fails now fails this call
     // (a 502), so the dispatcher's retry, which gets the post back as it was, relays it then; a 4xx is final.

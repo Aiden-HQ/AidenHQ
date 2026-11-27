@@ -201,7 +201,6 @@ function Week({ id }: { id: string }) {
           bars={bars((d) => d.costUsd, usd)}
         />
         <div className="agp-counts">
-          <StatBlock label="Sent back" value={s.reopen.graded ? <span title={`${s.reopen.reopened} of ${s.reopen.graded} graded tasks`}>{s.reopen.reopened}</span> : dash("No graded tasks this week")} tone={s.reopen.reopened ? "bad" : undefined} />
           <StatBlock label="Cards rejected" value={s.approvals.filed ? <span title={`${s.approvals.rejected} of ${s.approvals.filed} filed`}>{s.approvals.rejected}</span> : dash("No cards filed this week")} tone={s.approvals.rejected ? "bad" : undefined} />
           <StatBlock label="Runs failed" value={s.runsFailed} tone={s.runsFailed ? "bad" : undefined} />
         </div>

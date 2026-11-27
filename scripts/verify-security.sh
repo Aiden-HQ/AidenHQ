@@ -124,12 +124,11 @@ for c in $containers; do
         && pass "primer-mcp: only its own token directory and secrets mounted" || fail "primer-mcp has unexpected mounts: $mounts"
       ;;
     *-grading-1)
-      # Graded done (lean-core 3h): nothing published; each caller's route needs that caller's key (the kernel's check, the
-      # board's) and a rubric filing needs the tasks module's caller assertion. No control-plane key; no runner route left.
+      # Completion checks: nothing published; each caller's route needs that caller's key (the kernel's check, the board's) and a
+      # rubric filing needs the tasks module's caller assertion. No control-plane key.
       [ "$(docker inspect "$c" --format '{{json .HostConfig.PortBindings}}')" = "{}" ] && pass "grading: no published ports" || fail "grading publishes ports"
       g="http://$(cip "$c"):8096"
-      [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$g/check/finish" -d '{}')" = "403" ] \
-        && [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'authorization: Bearer x' "$g/internal/grades")" = "404" ] \
+      [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$g/check/rubric" -d '{}')" = "403" ] \
         && [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$g/board/grades" -d '{"ids":[]}')" = "403" ] \
         && [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$g/grades" -d '{}')" = "403" ] \
         && pass "grading: every route refuses without its caller's key or assertion" || fail "grading: a route answers without its caller's key"

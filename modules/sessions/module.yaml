@@ -59,7 +59,7 @@ agents:
       slack?: write
       slack_live?: write
       # The chief of staff's task set, with task_wait: a session waits on a time or a task, and reports on its own task.
-      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_create, task_update, task_comment, task_handoff, task_block, task_cancel, task_finish, task_team, task_delegate, task_amend_rubric, task_wait, fleet_status, fleet_costs, fleet_control, fleet_catalog, task_relay_owner_words, chat_open, app_request_from_owner ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_create, task_update, task_comment, task_handoff, task_block, task_cancel, task_finish, task_team, task_delegate, task_wait, fleet_status, fleet_costs, fleet_control, fleet_catalog, task_relay_owner_words, chat_open, app_request_from_owner ]
       sessions: [ watch_arm, watch_list, watch_cancel ]
 # The events a watch reads, from the kernel's log (github.resync: a repo's first feed pass, after which its armed watches are
 # checked live). `github?`: while no enabled module's connection declares events (GitHub is not in the install), the

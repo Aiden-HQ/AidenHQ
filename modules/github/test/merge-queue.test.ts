@@ -521,7 +521,7 @@ test("a PR already merged at its bound head before the queue polled it is merged
   assert.match(outcomes[0].text, /was already merged/);
   const [line] = outcomes[0].text.split("\n");
   const listed = JSON.parse(line.replace(/^merged-prs: /, ""));
-  assert.deepEqual(listed, [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the bound head and its real merge commit, what the grader reads as verified merges");
+  assert.deepEqual(listed, [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: mergeSha }], "the bound head and its real merge commit, the verified merges the record names");
   assert.match(listed[0].head, /^[0-9a-f]{40}$/);
   assert.match(listed[0].sha, /^[0-9a-f]{40}$/);
   assert.equal(outcomes[0].objects, undefined, "the merge wasn't the queue's, so it names no object as made here");
@@ -1245,7 +1245,7 @@ test("a squash merge someone else made is never the queue's, even when its commi
   assert.match(outcomes[0].text, /was already merged/, "someone else's squash merge is not this queue's");
   assert.doesNotMatch(outcomes[0].text, /Merged https:/);
   assert.equal(outcomes[0].objects, undefined, "its commit names no object as made here");
-  // Still the task's own evidence at the bound head: the grader credits what landed the task, whoever merged it.
+  // Still the task's own record at the bound head, whoever merged it.
   assert.deepEqual(JSON.parse(outcomes[0].text.split("\n")[0].replace(/^merged-prs: /, "")), [{ repo: "acme-agents/widget", number: 1, head: HEAD, sha: "a1".repeat(20) }]);
 });
 
@@ -1300,7 +1300,7 @@ test("a planted record-id token in the PR body does not credit another writer's 
 });
 
 test("a maximum-size mixed batch keeps the whole evidence line: the queue's merges and linked already-merged PRs, whole JSON under the kernel's cap", async (t) => {
-  // The grading reader takes the outcome's first line, and 30 PRs on a long repo name run past the kernel's old 4,000-character cap
+  // The merged-prs reader takes the outcome's first line, and 30 PRs on a long repo name run past the kernel's old 4,000-character cap
   // by themselves: the line must stay whole JSON inside what the kernel now keeps (records.ts OUTCOME_MAX), not cut mid-entry.
   // Two PRs were merged before the queue polled them, 28 it merges itself: the line carries both kinds, its own first.
   const repo = "acme-agents/widget";
@@ -1331,9 +1331,9 @@ test("a maximum-size mixed batch keeps the whole evidence line: the queue's merg
   assert.equal(kept.length, 30, `every PR of the batch is on the line, not truncated; it has ${kept.length}`);
   assert.deepEqual(kept.map((p) => p.number), [...Array(28)].map((_, i) => i + 1).concat([29, 30]), "the queue's own merges first, then the ones already merged");
   assert.deepEqual(kept.slice(28), already, "the already-merged rows carry their own merge commits");
-  // The grading reader's contract, pinned here without importing it (verifiedMerges, kernel-loop.ts: 40 hex either side).
+  // The reader's contract (tasks-mcp mergedEvidence), pinned here without importing it: 40 hex either side.
   const SLUG = /^[\w.-]+\/[\w.-]+$/, SHA = /^[0-9a-f]{40}$/;
-  assert.ok(kept.every((p) => SLUG.test(p.repo) && Number.isInteger(p.number) && SHA.test(p.head) && SHA.test(p.sha)), "every row is one the grading reader keeps");
+  assert.ok(kept.every((p) => SLUG.test(p.repo) && Number.isInteger(p.number) && SHA.test(p.head) && SHA.test(p.sha)), "every row is one the reader keeps");
 });
 
 test("a merge call that times out after GitHub merged is reported merged, and an outcome the kernel didn't take is delivered again", async () => {
@@ -1435,7 +1435,7 @@ test("a merge call is persisted before the PUT, so a restart mid-call still prov
 });
 
 test("the stored outcome's first line is whole inside the kernel's cap whenever any line can be, and the summary is what is cut", async (t) => {
-  // The first line is the grading reader's evidence; the kernel keeps OUTCOME_MAX characters and cuts only the end. The summary
+  // The first line is the reader's evidence; the kernel keeps OUTCOME_MAX characters and cuts only the end. The summary
   // after it is sized to the room left, so the line's end is never what the kernel cuts.
   const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", state: "MERGED", merged: "d".repeat(40) } };
   const cacheDir = mkdtempSync(join(tmpdir(), "codehost-cap-"));

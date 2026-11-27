@@ -3,7 +3,7 @@
 ## What it does
 
 The Engineer: it does the coding jobs, whether apps, the fleet's own setup or the product. The kernel runs each job in
-an engineer computer (Codex on OpenRouter models, through the model gateway), and the work is graded.
+an engineer computer (Codex on OpenRouter models, through the model gateway), and its deliverables carry a rubric checked against its done report.
 
 ## Connect
 

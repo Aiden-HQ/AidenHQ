@@ -221,8 +221,7 @@ test("legacy lists stay closed: links, root secrets and host variables may only 
   was.links.slack = ["board", "sources"];
   // 3h moved the grade rows out of the board into the grading module: its one link is the pair network to the board, for the
   // board's reads of those rows, until the board is a module (4a). No root secret, no host variable.
-  // One-way phase 2: and a pair link to apps-mcp for the grader's app reads (role apps.read), until 4c.
-  was.links["board-grades"] = ["board", "apps-mcp"];
+  was.links["board-grades"] = ["board"];
   // The Fleet Steward service reads apps-mcp as a module holding apps.read (the detector moved out of the board).
   was.links["fleet-steward"] = ["apps-mcp"];
   // Task search left the kernel for the warehouse module (2026-11-23): its service writes src_tasks and calls the model
@@ -410,13 +409,12 @@ test("enumeration (spec §9): every shipped write or destructive tool maps to a 
   assert.throws(() => writeKinds("m", { ...def, writes: { k: { floor: 1, binds: [], tools: ["w"] } } }, product), /binds is a list of target fields/);
 });
 
-test("checks: a task.finish check may observe; a hard gate or a write.filed check may not", () => {
-  const def = (c) => ({ secrets: { provided: ["k"] }, checks: [{ id: "finish", at: "task.finish", post: "http://m:1/check", auth: "k", ...c }] });
-  assert.equal(checkEntries("judge", def({ mode: "observe" }))["judge.finish"].mode, "observe");
-  assert.equal(checkEntries("judge", def({}))["judge.finish"].mode, undefined);
-  assert.throws(() => checkEntries("judge", def({ mode: "warn" })), /mode is observe or enforce/);
-  assert.throws(() => checkEntries("platform", { checks: [{ id: "product-gate", at: "write.filed", mode: "observe" }] }), /hard gate: it always enforces/);
-  assert.throws(() => checkEntries("judge", { checks: [{ id: "lint", at: "write.filed", mode: "observe" }] }), /write\.filed check gates writes/);
+test("checks: a task.rubric check carries post and auth only; task.finish and its old keys are refused", () => {
+  const def = (c) => ({ secrets: { provided: ["k"] }, checks: [{ id: "rubric", at: "task.rubric", post: "http://m:1/check", auth: "k", ...c }] });
+  assert.deepEqual(checkEntries("judge", def({})), { "judge.rubric": { module: "judge", at: "task.rubric", url: "http://m:1/check", auth_secret: "k" } });
+  assert.throws(() => checkEntries("judge", { secrets: { provided: ["k"] }, checks: [{ id: "finish", at: "task.finish", post: "http://m:1/check", auth: "k" }] }), /at is write\.filed or task\.rubric/);
+  for (const k of ["label", "rubric", "grade", "agents", "mode"]) assert.throws(() => checkEntries("judge", def({ [k]: "x" })), /is not allowed/);
+  assert.throws(() => checkEntries("judge", def({ auth: "other" })), /own secrets/);
   // A write.filed check reaches the kernel with its kinds (it runs in process there), and names at least one.
   assert.deepEqual(checkEntries("platform", { checks: [{ id: "product-gate", at: "write.filed", kinds: ["github.push"] }] }), { "platform.product-gate": { module: "platform", at: "write.filed", kinds: ["github.push"] } });
   assert.throws(() => checkEntries("platform", { checks: [{ id: "product-gate", at: "write.filed" }] }), /names the write kinds/);

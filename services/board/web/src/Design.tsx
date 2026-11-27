@@ -34,7 +34,7 @@ const TASK_STATES: ShownState[] = [
   st({ kind: "waiting", reason: "blocked", lane: "blocked", refLabel: "WOR-5121" }),
   st({ kind: "idle", reason: "orphaned", lane: "idle" }),
   st({ kind: "waiting", reason: "chat_turn", lane: "idle" }),
-  st({ kind: "done", reason: "closed", lane: "done", grade: "pass" }),
+  st({ kind: "done", reason: "closed", lane: "done" }),
 ];
 const TASK_TITLES = ["Decide the brief's weekly scope", "Fix the sbom job", "Ingest the Slack channel list", "Lint the Primer docs", "Refile the weekly tasks", "Close the parent task", "Idle with nothing scheduled", "A chat waiting for your next message", "Hold the closed PR"];
 

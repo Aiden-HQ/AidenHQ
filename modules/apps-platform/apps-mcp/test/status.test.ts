@@ -11,7 +11,7 @@ import type { TlsCheck } from "../src/doors.js";
 import { isSensitive, parseApp } from "../src/registry.js";
 import { canaryContent, type CanaryResult } from "../src/canary.js";
 
-// The status row is what the board's grader reads for "deployed at the merged commit": it carries the running commit, who
+// The status row carries the running commit, who
 // deployed it and the recent deploy history, so a reader can tell the platform's own auto-deploy from a hand deploy.
 describe("status row", () => {
   const setup = () => {
@@ -36,42 +36,6 @@ describe("status row", () => {
       ["b", "auto-deploy", "healthy"],
       ["a", "reconcile", "healthy"],
     ]);
-  });
-
-  // The grader's "no HTTP surface" fact rests on this field: it is the running commit's own proven verdict, never a registry
-  // shape and never an older deploy's. A redeploy or a failed probe moves it off, so a stale pass cannot label an app no page.
-  it("carries no_http_proven only for the commit that is running and whose own probe proved it", async () => {
-    const p = setup();
-    const older = "a".repeat(40), running = "b".repeat(40);
-    p.store.addDeploy({ app: "notes", sha: older, images_json: "[]", by: "auto-deploy", at: 1, status: "healthy", detail: "", no_http_proven: 1 });
-    p.store.setRunning("notes", older);
-    expect((await p.status(p.find("notes"))).no_http_proven).toBe(true);
-    // A redeploy to a commit with no verdict: the older row's proof does not carry over.
-    p.store.addDeploy({ app: "notes", sha: running, images_json: "[]", by: "auto-deploy", at: 2, status: "healthy", detail: "" });
-    p.store.setRunning("notes", running);
-    expect((await p.status(p.find("notes"))).no_http_proven).toBeUndefined();
-    // The running commit's own proved row sets it again.
-    p.store.addDeploy({ app: "notes", sha: running, images_json: "[]", by: "auto-deploy", at: 3, status: "healthy", detail: "", no_http_proven: 1 });
-    expect((await p.status(p.find("notes"))).no_http_proven).toBe(true);
-    // A later failed deploy of another commit leaves what is running unproven-ness alone, but a failed row never proves.
-    p.store.addDeploy({ app: "notes", sha: "c".repeat(40), images_json: "[]", by: "auto-deploy", at: 4, status: "failed", detail: "", no_http_proven: 1 });
-    expect((await p.status(p.find("notes"))).no_http_proven).toBe(true);
-    p.store.clearRunning("notes");
-    expect((await p.status(p.find("notes"))).no_http_proven).toBeUndefined();
-  });
-
-  // The row's list is bounded, so the grader looks a merge commit up by exact sha: that read is over every deploy the app
-  // ever had, not the newest few, or a merge that deployed would stop being provable once later deploys pushed it out.
-  it("looks one exact commit's deploys up over the whole table, past the row's bounded list", async () => {
-    const p = setup();
-    const old = "c".repeat(40);
-    p.store.addDeploy({ app: "notes", sha: old, images_json: "[]", by: "auto-deploy", at: 1, status: "healthy", detail: "" });
-    for (let i = 0; i < 10; i++) p.store.addDeploy({ app: "notes", sha: `${i}`.repeat(40), images_json: "[]", by: "auto-deploy", at: 100 + i, status: i === 9 ? "failed" : "healthy", detail: "" });
-    expect(p.store.recentDeploys("notes", 20).some((d) => d.sha === old)).toBe(true);
-    expect(p.store.recentDeploys("notes").map((d) => d.sha)).not.toContain(old);
-    expect(p.store.deploysOf("notes", old).map((d) => [d.sha.slice(0, 1), d.by, d.status])).toEqual([["c", "auto-deploy", "healthy"]]);
-    // A commit that was never deployed has no row at all: the reader can tell that from aged-out.
-    expect(p.store.deploysOf("notes", "f".repeat(40))).toEqual([]);
   });
 });
 

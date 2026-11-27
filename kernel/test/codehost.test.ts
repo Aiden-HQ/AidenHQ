@@ -22,7 +22,7 @@ async function setup(t, { enabled = true, localSnapshot } = {}) {
       { module: "code-review", setup: { repos: ["*/*"], paths: [".deepsec/data/*/INFO.md", ".deepsec/package.json"] } },
       { module: "apps-platform", fetch: { repos: ["acme-agents/x"] }, clone: { repos: ["acme-agents/*"] } },
       { module: "registry", fetch: { repos: ["@instance", "@product"] }, snapshot: { repos: ["@agents/*"] } },
-      { module: "grading", read: { repos: ["*/*"] }, evidence: { repos: ["*/*"], paths: [".github/ci/areas.json", ".github/workflows/ci.yml"] }, exists: { repos: ["*/*"] } },
+      { module: "sessions", read: { repos: ["*/*"] } },
       { module: "reviewer", snapshot: { repos: ["local/*", "acme-agents/*"] } },
     ],
     repos: () => ({ instance: "acme-agents/aidenhq-instance", agentsOrgs: ["acme-agents"], orgs: ["partner"] }),
@@ -136,27 +136,13 @@ test("setup passes only the grant's paths and the fields it names, to the code h
   assert.deepEqual(seen.at(-1).body, { module: "code-review", repo: "acme/widgets", files: body.files, allow: [".deepsec/data/*/INFO.md", ".deepsec/package.json"], title: "Add deepsec", body: "Setup.", task: "T-1" });
 });
 
-test("a file read needs the evidence grant and a listed path; the general read never reaches it", async (t) => {
+test("a read is a PR or the open PRs, under the read grant", async (t) => {
   const { call, seen } = await setup(t);
-  const ref = "a".repeat(40);
-  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "file", path: ".github/ci/areas.json", ref })).status, 200);
-  assert.deepEqual(seen.at(-1).body, { module: "grading", repo: "acme/x", kind: "file", path: ".github/ci/areas.json", ref });
-  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "file", path: ".github/workflows/ci.yml", ref })).status, 200, "the workflow the fact compares");
-  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "file", path: ".github/workflows/release.yml", ref })).status, 403, "an unlisted path");
-  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "file", path: "../secrets", ref })).status, 400, "not a path in the repo");
-  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "file", path: ".github/ci/areas.json", ref: "main" })).status, 400, "a full sha");
-  assert.equal((await call("github", "read", { repo: "acme/x", kind: "file", path: ".github/ci/areas.json", ref })).status, 403, "a read grant is not an evidence grant");
-  // `exists` is its own grant and takes any path: it answers only whether it is a directory, never contents, so it is not
-  // tied to the evidence paths a `file` read needs.
-  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "exists", path: "kernel", ref })).status, 200, "an exists read");
-  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "exists", path: "../../etc", ref })).status, 400, "still a repo path");
-  assert.equal((await call("reviewer", "read", { repo: "acme/x", kind: "exists", path: "kernel", ref })).status, 403, "a module without the exists grant");
-  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "run", id: 7 })).status, 200, "a run is an ordinary read");
-  assert.deepEqual(seen.at(-1).body, { module: "grading", repo: "acme/x", kind: "run", id: 7 });
-  // A commit's parents are an ordinary read (`pr` and the rest), and its ref is a full sha like every other.
-  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "commit", ref })).status, 200, "a commit read");
-  assert.deepEqual(seen.at(-1).body, { module: "grading", repo: "acme/x", kind: "commit", ref });
-  assert.equal((await call("grading", "read", { repo: "acme/x", kind: "commit", ref: "main" })).status, 400, "a full sha");
+  assert.equal((await call("sessions", "read", { repo: "acme/x", kind: "pr", number: 7 })).status, 200);
+  assert.deepEqual(seen.at(-1).body, { module: "sessions", repo: "acme/x", kind: "pr", number: 7 });
+  assert.equal((await call("sessions", "read", { repo: "acme/x", kind: "prs" })).status, 200);
+  assert.equal((await call("sessions", "read", { repo: "acme/x", kind: "file", path: "a.json", ref: "a".repeat(40) })).status, 400, "no other kind is a read");
+  assert.equal((await call("reviewer", "read", { repo: "acme/x", kind: "pr", number: 7 })).status, 403, "a module without the read grant");
 });
 
 // The real code host's ops (modules/github/service/src/ops.ts) behind the kernel's broker, with a fake GitHub: whatever an op
@@ -201,7 +187,6 @@ test("no op answer carries the token", async (t) => {
   const sha = "a".repeat(40);
   assert.equal((await ask("head", { repo: "acme/x", ref: "feat" })).status, 200);
   assert.equal((await ask("read", { repo: "acme/x", kind: "prs" })).status, 200);
-  assert.equal((await ask("read", { repo: "acme/x", kind: "diff", number: 3 })).status, 200);
   assert.equal((await ask("comment", { repo: "acme/x", number: 3, body: "hello" })).status, 200);
   assert.equal(calls.at(-1).body.body, "hello\n\n🤖 Generated by m with [AidenHQ](https://aidenhq.ai)", "the footer is added in the code host");
   // Through POST /v1/codehost/comment: a new comment's ref is remembered (so editing it is allowed), an edit adds nothing.
@@ -215,8 +200,8 @@ test("no op answer carries the token", async (t) => {
   assert.deepEqual(put.committer, { name: "Owner", email: "1+owner@users.noreply.github.com" });
   assert.equal((await ask("commit", { repo: "acme/x", branch: "feat", path: "apps.yaml", content: "a: 1\n", parent: "d".repeat(40), message: "tune" })).status, 409, "the branch is not at parent");
   assert.equal((await ask("runner_token", { org: "acme" })).status, 200);
-  assert.equal((await ask("read", { repo: "acme/x", kind: "issue", number: 1 })).status, 502, "an error that echoed the token");
-  assert.ok(answers.length >= 8);
+  assert.equal((await ask("read", { repo: "acme/x", kind: "pr", number: 1 })).status, 502, "an error that echoed the token");
+  assert.ok(answers.length >= 7);
   for (const a of answers) assert.ok(!a.text.includes(TOKEN) && !a.headers.includes(TOKEN), a.text);
   assert.match(answers.at(-1).text, /\*\*\*/, "scrubbed, not dropped");
 });

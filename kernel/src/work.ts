@@ -1,12 +1,12 @@
-// Reads of the kernel's jobs (phase 2 W7, W12): what the grading module and the monitoring side see, from the jobs table and the
+// Reads of the kernel's jobs (phase 2 W7, W12): what the monitoring side sees, from the jobs table and the
 // records. Read-only; the loops that use them are started at the big switch, where the runner's copies are deleted.
-//   GET /v1/work?task=<id>   a task's (by id or identifier) jobs (newest first) and the write records filed on it (with their args, outcome text and, for an apply, the card's diff, which the grading module reads PRs and applies from): { status, busy, jobs, records }
+//   GET /v1/work?task=<id>   a task's (by id or identifier) jobs (newest first) and the write records filed on it (with their args and outcome text): { status, busy, jobs, records }
 //   GET /v1/work             what runs now, what waits (queued) and what ended lately, and the agents failing (their last 3 jobs all failed or were lost): the board's Agents view;
 //                            `capacity` (the computers the kernel admits jobs into), `waiting` (wakes that could start now, not an agent's with a live job: count, oldest_at, oldest_cause) and `last_started_at` say whether dispatch has stalled
 //   GET /v1/work?job=<id>    one job for its run page (the board): state, times, why it ended, its engine's token count, its
 //                            progress (said, plan, steps) and final words (both the agent's: untrusted)
 //   GET /v1/work?record=<id> one write record (an approval card) by its id: state, kind, task, identifier, ok and outcome text
-//                            (the grader resolves a card a report cites; never the card's args or its requester)
+//                            (never the card's args or its requester)
 //   GET /v1/work?agent=<id>[&since=<iso>][&brief=1]  an agent's last 50 jobs (newest first; with `since`, every job `at` or after
 //                            it, newest first, uncut), each with how it ended (and `started`: whether the run got a shell, false for
 //                            one that failed or was cancelled before launching) and the routine its task traces to, and for the
@@ -108,9 +108,7 @@ export function createWork({ db, records, generationsFile = "", capacity = () =>
       const final = (rows("SELECT final FROM jobs WHERE task = ? AND final != '' ORDER BY at DESC LIMIT 1", task)[0]?.final as string | undefined) ?? "";
       return {
         status, busy: jobs.some((j) => j.state === "running"), jobs, prs: [...prs.values()], paths: [...paths], final,
-        // An apply's diff is what its grader reads against the rubric (modules/grading evidence.ts applyEvidence): the card's
-        // details, sent for apply records only (every other kind's card is not a deliverable's evidence here).
-        records: recs.map((r) => ({ id: r.id, kind: r.kind, state: r.state, ok: r.outcome?.ok ?? null, args: r.args ?? null, outcome_text: r.outcome?.text ?? null, ...(r.kind === "kernel.apply" ? { details: r.card?.details ?? "" } : {}), decided_at: r.decided_at ?? null, updated_at: r.updated_at, created_at: r.created_at })),
+        records: recs.map((r) => ({ id: r.id, kind: r.kind, state: r.state, ok: r.outcome?.ok ?? null, args: r.args ?? null, outcome_text: r.outcome?.text ?? null, decided_at: r.decided_at ?? null, updated_at: r.updated_at, created_at: r.created_at })),
       };
     },
     agent(id: string, o: { shown?: boolean; since?: number; brief?: boolean } = {}) {

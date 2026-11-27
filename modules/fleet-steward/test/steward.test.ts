@@ -70,14 +70,13 @@ test("the last-three failing check treats a SIGTERM stop (failed, exit 143) as n
 });
 
 // One fake control plane and kernel for the stuck-work checks: tasks by id, jobs by agent, the kernel's records, comments by task.
-function world({ tasks, jobs = {}, records = [], work = {}, comments = {}, chatLabel = false, inReview = [], todo = [], prs = [], grading = [], finals = {} }) {
+function world({ tasks, jobs = {}, records = [], work = {}, comments = {}, chatLabel = false, inReview = [], todo = [], prs = [], finals = {} }) {
   return {
     read: async (p) => {
       if (p === "/api/companies") return [{ id: "co" }];
       if (p.endsWith("/agents")) return Object.keys(jobs).map((id) => ({ id, name: id, status: "idle" }));
-      if (p.endsWith("/labels")) return [{ id: "lg", name: "grading" }, ...(chatLabel ? [{ id: "lc", name: "chat" }] : [])];
+      if (p.endsWith("/labels")) return [...(chatLabel ? [{ id: "lc", name: "chat" }] : [])];
       if (p.includes("labelId=lc")) return Object.values(tasks).filter((i) => i.labels?.some((l) => l.name === "chat"));
-      if (p.includes("labelId=lg")) return grading.map((id) => tasks[id]);
       if (p.includes("labelId=")) return [];
       if (p.includes("status=in_review")) return inReview.map((id) => tasks[id]);
       if (p.includes("status=todo")) return todo.map((id) => tasks[id]);
@@ -127,32 +126,27 @@ test("a branch parked by five judged rejections (MAX_REJECTS) that nothing moved
   assert.match(found[0].reason, /WOR-T1: the AI reviewer rejected acme-app-feat-a 5 times \(parked at 5\) and nothing has moved for 420 min/);
 });
 
-test("the same failure on 3 tasks in 30 minutes is one component incident and one Steward check notice, and the per-task incidents it explains are not raised; other errors stay separate; it recovers", async () => {
-  const fail = (id, reason, m = 5) => ({ task: id, at: minsAgo(m), reason });
-  const g = (id) => task(id, { status: "in_review", labels: [{ name: "grading" }], updatedAt: minsAgo(5) });
-  const e404 = (n) => `the grader failed (OpenRouter 404: no such route for model gpt-luna-${n})`;
+test("the same failed-job error on 3 tasks in 30 minutes is one component incident and one Steward check notice; other errors and one task's repeats stay separate; it recovers", async () => {
+  const job = (n, task, m = n) => ({ id: `j${n}`, agent: "a1", task, state: "failed", exit: 1, started_at: minsAgo(m + 1), ended_at: minsAgo(m) });
+  const t = (id) => task(id, { status: "in_progress", updatedAt: minsAgo(5) });
   const w = world({
-    tasks: { a: g("a"), b: g("b"), c: g("c"), d: g("d"), e: g("e"), f: g("f") },
-    jobs: { a1: [1, 2, 3, 4, 5].map((n) => ({ id: `j${n}`, agent: "a1", task: n < 4 ? "a" : "z", state: "failed", exit: 1, started_at: minsAgo(n + 1), ended_at: minsAgo(n) })) },
-    finals: { j1: "The job failed: engine exited 1", j2: "The job failed: engine exited 1", j3: "The job failed: engine exited 1" },
+    tasks: { a: t("a"), b: t("b"), c: t("c"), d: t("d"), z: t("z") },
+    jobs: { a1: [job(1, "a"), job(2, "b"), job(3, "c"), job(4, "d"), job(5, "z"), job(6, "z"), job(7, "z")] },
+    finals: { j1: "The job failed: engine crashed", j2: "The job failed: engine crashed", j3: "The job failed: engine crashed", j4: "The job failed: out of disk", j5: "The job failed: engine hung", j6: "The job failed: engine hung", j7: "The job failed: engine hung" },
   });
-  const failures = [fail("a", e404(1)), fail("b", e404(2)), fail("c", e404(3)), fail("d", "the grader failed (OpenRouter 429: rate limited)"), fail("e", "the grader failed (timeout)"), fail("f", e404(4), 90)];
-  w.read = ((read) => async (p) => (p === "/api/issues/z" ? task("z") : read(p)))(w.read);
   const sent = [];
   const kv = kvOf();
-  const all = checks({ kernel: w, kv, apps: async () => [], alerts: async () => [], openKeys: () => Object.keys(detectorState(kv).open), notify: async (text, key) => void sent.push([text, key]), gradeFailures: async () => failures, now: () => NOW });
+  const all = checks({ kernel: w, kv, apps: async () => [], alerts: async () => [], openKeys: () => Object.keys(detectorState(kv).open), notify: async (text, key) => void sent.push([text, key]), now: () => NOW });
   const filed = [];
-  await tick(kv, { component: all.component, grade: all.grade, run: all.run }, async (b) => (filed.push(b.incidents), true), async () => {}, new Date(NOW), 0);
+  await tick(kv, { component: all.component, run: all.run }, async (b) => (filed.push(b.incidents), true), async () => {}, new Date(NOW), 0);
   const open = Object.keys(detectorState(kv).open);
-  assert.equal(open.filter((k) => k.startsWith("component:grader:")).length, 1, open.join());
-  assert.ok(!open.some((k) => k.startsWith("component:job-runner")), "three failed jobs of one task are one task, not a component");
-  assert.ok(!open.some((k) => k.startsWith("grade:") || k.includes(":repeat:")), open.join());
+  assert.equal(open.filter((k) => k.startsWith("component:job-runner")).length, 1, open.join());
   assert.equal(sent.length, 1);
-  assert.match(detectorState(kv).open[open.find((k) => k.startsWith("component:"))].reason, /untrusted-data[\s\S]*openrouter 404: no such route for model gpt-#/);
+  assert.match(detectorState(kv).open[open.find((k) => k.startsWith("component:"))].reason, /untrusted-data[\s\S]*engine crashed/);
   await tick(kv, { component: all.component }, async () => true, async () => {}, new Date(NOW), 0);
   assert.equal(sent.length, 1, "told once while it stays open");
-  // The notes age out of the window: recovered.
-  const later = checks({ kernel: w, kv, apps: async () => [], alerts: async () => [], openKeys: () => Object.keys(detectorState(kv).open), notify: async () => {}, gradeFailures: async () => failures, now: () => NOW + 40 * 60_000 });
+  // The failures age out of the window: recovered.
+  const later = checks({ kernel: w, kv, apps: async () => [], alerts: async () => [], openKeys: () => Object.keys(detectorState(kv).open), notify: async () => {}, now: () => NOW + 40 * 60_000 });
   await tick(kv, { component: later.component }, async () => true, async () => {}, new Date(NOW + 40 * 60_000), 0);
   assert.deepEqual(Object.keys(detectorState(kv).open).filter((k) => k.startsWith("component:")), []);
   assert.equal(detectorState(kv).recovered.length, 1);
@@ -248,7 +242,7 @@ test("a routine whose last 3 jobs failed is an incident (never paused by code); 
     read: async (p) => (p === "/api/companies" ? [{ id: "co" }] : p.endsWith("/agents") ? [{ id: "a1", name: "a1" }] : p.endsWith("/routines") ? [{ id: "r1", title: "Daily brief", status: status.v }] : []),
     call: async (_m, p) => (p === "/v1/work?pauses=1" ? { pauses } : p.startsWith("/v1/work?agent=a1") ? { jobs: [job("j1", "a1", "failed", 30), job("j2", "a1", "timeout", 20), job("j3", "a1", "failed", 10), job("j0", "a1", "done", 50)] } : { final: "" }),
   };
-  const c = checks({ kernel, kv: kvOf(), apps: async () => [], alerts: async () => [], openKeys: () => [], gradeFailures: async () => [], now: () => NOW });
+  const c = checks({ kernel, kv: kvOf(), apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW });
   const r = await c.routine();
   assert.deepEqual(r.map((i) => i.key), ["r1"]);
   assert.match(r[0].reason, /its last 3 runs failed/);
@@ -277,7 +271,7 @@ test("notices (the Steward's checks, and the owner's two lines) are marked told 
   const k2 = kvOf(), sent = [];
   let fail = true;
   const kernel = { call: async () => ({ waiting: { count: 1, oldest_at: minsAgo(20), oldest_cause: "x" }, last_started_at: minsAgo(20) }) };
-  const c = checks({ kernel, kv: k2, apps: async () => [], alerts: async () => [], openKeys: () => ["dispatch:stalled"], owner: async (t) => { if (fail) throw new Error("503"); sent.push(t); }, gradeFailures: async () => [], now: () => NOW });
+  const c = checks({ kernel, kv: k2, apps: async () => [], alerts: async () => [], openKeys: () => ["dispatch:stalled"], owner: async (t) => { if (fail) throw new Error("503"); sent.push(t); }, now: () => NOW });
   await c.dispatch();
   fail = false;
   await c.dispatch();

@@ -76,12 +76,9 @@ test("a module's task goes to the agent holding the role, once per source, marke
   assert.equal((await file("codehost", { ...graded, rubric: undefined })).status, 400, "a deliverable without its rubric is refused");
   assert.equal((await file("codehost", graded)).status, 200);
   assert.deepEqual(rubrics.map((r) => [r.module, r.deliverable.kind, r.rubric.length]), [["github", "issue", 3]]);
-  // Graded status is the kernel's own row, not the task's text: a dedup hit on a task this module didn't file graded takes no rubric.
-  const gradedTask = [...made.values()].find((i) => i.description.includes("source:graded:1"));
-  assert.equal(db.prepare("SELECT module FROM graded_tasks WHERE task = ?").get(gradedTask.id).module, "github");
-  db.prepare("DELETE FROM graded_tasks WHERE task = ?").run(gradedTask.id);
-  assert.equal((await file("codehost", graded)).status, 409, "a rubric is never attached to a task that wasn't filed graded");
-  assert.equal(rubrics.length, 1);
+  // A retry files the same rubric again (the rubric module records its filer and takes an identical filing as a no-op).
+  assert.equal((await file("codehost", graded)).status, 200);
+  assert.equal(rubrics.length, 2);
   // It comments on its own open card as the card's agent, tagged so it wakes nobody; another module can't.
   const otherTasks = { ...who.other, roles: ["kernel.tasks"], module: "jira" };
   who.jira = otherTasks;

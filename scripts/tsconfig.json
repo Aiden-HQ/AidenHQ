@@ -59,7 +59,6 @@
     "../modules/tasks/connections/tasks-mcp/src/models.ts",
     "../modules/tasks/connections/tasks-mcp/src/tools.ts",
     "../ops/ci-runner-token.ts",
-    "../ops/grades-move.ts",
     "../ops/slack-live-move.ts",
     "../services/board/web/dev/mock-api.ts",
     "../services/computer/launcher.ts",

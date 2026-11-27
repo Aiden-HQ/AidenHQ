@@ -143,7 +143,7 @@ It is idempotent. The Engineer runs it for you after you approve a change.
   it cannot fix it.
 - The Fleet Steward (module `fleet-steward`): its service (`modules/fleet-steward/service/src`) runs the detector every
   `fleet_ops_interval_minutes`: from the kernel's job ledger (`/v1/work`) a run stuck past twice its timeout, an agent's last 3
-  runs failed, or 3 runs in a day with no steps and no output; a task held for grading over a day; from apps-mcp (a module token
+  runs failed, or 3 runs in a day with no steps and no output; from apps-mcp (a module token
   holding `apps.read`) an app incident open over 15 minutes (or apps-mcp not answering for 15 minutes), a source with no good
   pass in an hour or failing for 15 minutes, an app's failing quality check and an agents-org pull request open over an hour
   without merging; and Alertmanager's alerts (one incident per firing alert, posted to `POST /alerts` and reconciled against its
@@ -263,7 +263,7 @@ tasks for the Fleet Steward; neither tells the owner.
 `kernel/src/retention.ts` runs ten minutes after the kernel starts and then daily (stopped by a drain, one batch of 100 rows at a time):
 
 - **Kernel rows.** A finished row loses its big text 14 days after its last move. Records: the card's details (replaced by an
-  "expired" note, `card.expired`; an apply's stays, it is the grader's evidence), `context`, and every arg value over 1,000
+  "expired" note, `card.expired`; an apply's stays), `context`, and every arg value over 1,000
   characters (the connection and tool a veto binds to, and a write's `prs` and `only`, always stay; `paths` is filled from the
   diff first). Jobs (any state but admitted and running):
   `full_prompt` and the step list (`progress` keeps the last words and `stepCount`). Checks (any state but running): `spec` and

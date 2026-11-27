@@ -24,7 +24,7 @@ function setup() {
 test("the routes need a module holding kernel.work-read", async (t) => {
   const { work } = setup();
   const whoami = async (token) => (token === "none" ? Promise.reject(new Error("no")) : { kind: "module", module: "grading", roles: token === "reader" ? ["kernel.work-read"] : token === "grader" ? ["kernel.grader"] : [], tools: [] });
-  const handle = createBackplane({ whoami, asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), work, graderToken: (task, agent) => `tok-${task}-${agent}`, checks: { held: (module, task) => module === "grading" && task?.id === "t1" }, owner: async (_m, path) => (path === "/api/issues/t1" ? { status: 200, json: { id: "t1", assigneeAgentId: "a1" } } : { status: 404, json: {} }) });
+  const handle = createBackplane({ whoami, asserter: { jwks: {} }, proxy: async () => {}, cp: async () => {}, grantsFile: () => ({}), work, graderToken: (task, agent) => `tok-${task}-${agent}`, owner: async (_m, path) => (path === "/api/issues/t1" ? { status: 200, json: { id: "t1", status: "done", assigneeAgentId: "a1" } } : path === "/api/issues/t2" ? { status: 200, json: { id: "t2", status: "in_progress", assigneeAgentId: "a1" } } : { status: 404, json: {} }) });
   const server = http.createServer(handle).listen(0);
   t.after(() => server.close());
   const get = (path, token) => fetch(`http://127.0.0.1:${server.address().port}${path}`, { headers: { authorization: `Bearer ${token}` } });
@@ -35,7 +35,8 @@ test("the routes need a module holding kernel.work-read", async (t) => {
   const post = (token, task = "t1") => fetch(`http://127.0.0.1:${server.address().port}/v1/work/grader-token`, { method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ task }) });
   assert.equal((await post("reader")).status, 403, "without the role");
   assert.deepEqual(await (await post("grader")).json(), { token: "tok-t1-a1" }, "billed to the task's assignee");
-  assert.equal((await post("grader", "unknown")).status, 403, "a task no finish check of the module holds");
+  assert.equal((await post("grader", "unknown")).status, 403, "no such task");
+  assert.equal((await post("grader", "t2")).status, 403, "a task not done yet");
   assert.equal((await get("/v1/work/metrics", "reader")).headers.get("content-type").startsWith("text/plain"), true);
 });
 
@@ -70,19 +71,6 @@ test("a record read says whether its missing identifier is still owed or the con
   const ended = file();
   records.close(ended.id, "unknown", "unknown: it was claimed and its outcome never came back; it is not run again");
   assert.deepEqual([work.record(ended.id).state, work.record(ended.id).identifier, work.record(ended.id).identifier_pending], ["unknown", null, false]);
-});
-
-test("a task's read carries an apply's card diff (its grader's APPLY_CHANGE) and no other kind's card details", () => {
-  const { work, records } = setup();
-  const card = (details) => ({ sentence: "s", changes: "c", reads: "r", cost: "none", details });
-  const file = (kind, details) => records.file({ kind, module: "kernel", args: {}, targets: {}, executor: { module: "kernel" }, policy: "p", tier: 1, card: card(details), requester: { agent: "a1", key: "eng", name: "eng", roles: [], kind: "job" }, task: "t1", state: "review" });
-  const apply = file("kernel.apply", "diff --git a/instance.yaml b/instance.yaml\n+product: bbbb\n");
-  const cap = file("acme.post", "note: hello");
-  const rows = work.task("t1").records;
-  const byId = (id) => rows.find((r) => r.id === id);
-  assert.equal(byId(apply.id).details, "diff --git a/instance.yaml b/instance.yaml\n+product: bbbb\n", "the apply's committed diff is sent to its grader");
-  assert.equal(byId(apply.id).kind, "kernel.apply");
-  assert.equal("details" in byId(cap.id), false, "another kind's card is not the task's evidence");
 });
 
 test("the board reads GET /v1/work with its key, one job included, and nothing else under /v1/work", async (t) => {

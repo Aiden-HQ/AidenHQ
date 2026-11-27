@@ -1,4 +1,4 @@
-// How GitHub check results are read: the one copy the merge gate, the PR watcher and the grader share. A rollup's contexts
+// How GitHub check results are read: the one copy the merge gate and the PR watcher share. A rollup's contexts
 // (check runs and commit statuses) become named checks; a skipped image scan on a PR that could change an image is not green.
 type Json = any;
 

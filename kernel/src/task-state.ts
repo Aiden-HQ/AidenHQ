@@ -5,8 +5,7 @@
 //   2. an unresolved failure (the last job failed, timed out or was lost) stays until a retry (a job queued or started), a
 //      reassignment or closure; comments never clear it
 //   3. open obligations, each counted: a running job; a queued (or due, unbound) or held job; an open card; an owner,
-//      delegator or agent wait; a module's wait (a PR on its checks: `module_wait`, its reason as `ref`; a finish check holding
-//      the task in review: `module_wait`, the check's module as `ref`, until its verdict or the task leaves review); a blocker not closed; a
+//      delegator or agent wait; a module's wait (a PR on its checks: `module_wait`, its reason as `ref`); a blocker not closed; a
 //      scheduled wake; the task handed to the owner by an agent (handback), or the owner's own task (owner_task: held by the
 //      owner, never handed from an agent), neither while in backlog; backlog; a chat's turn
 //   4. a stage hint (a module's stage open ≤ 24 h) only says what a running job or a wait is doing; it never changes kind,
@@ -80,11 +79,10 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   const status = statuses.at(-1);
   const assigns = mine.filter((f) => f.type === "task.assignee_changed");
   const holder = assigns.length ? (str(assigns.at(-1)!.data.to) ?? null) : null;
-  const grade = gradeOf(own);
 
   // 1. closed
   if (status && CLOSED.has(String(status.data.to))) {
-    return laned({ kind: "done", reason: status.data.to === "cancelled" ? "cancelled" : "closed", since: status.at, holder, attention: [], ...(grade ? { grade } : {}) });
+    return laned({ kind: "done", reason: status.data.to === "cancelled" ? "cancelled" : "closed", since: status.at, holder, attention: [] });
   }
   if (!created) {
     const first = own[0];
@@ -106,7 +104,6 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   let wait: { f: FactRow; end?: number } | undefined;
   const mwaits = new Map<string, FactRow>(); // a module's waits by subject (a PR), until its work.resumed or a job starts
   let handback: { f: FactRow; fromAgent: boolean } | undefined;
-  const holds = new Map<string, FactRow>(); // the finish checks holding the task in review, by check
   let who: string | null = null; // the holder as each fact happened
   let quiet = Math.max(ms(created.at), reopen ? ms(reopen.at) : 0); // when the latest obligation ended or anything not a hint happened
   const queuedAt: number[] = [];
@@ -135,9 +132,6 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
         else if (isChat && f.data.state === "done" && f.data.acted !== true && f.data.no_reply !== true) silent = f;
         break;
       case "task.assignee_changed": if (f.subject === self) failure = silent = undefined; break;
-      case "task.status_changed": if (f.subject === self && f.data.to !== "in_review") holds.clear(); break;
-      case "finish.held": holds.set(String(f.data.check), f); break;
-      case "finish.verdict": holds.delete(String(f.data.check)); break;
       case "work.waiting": if (f.subject === `wait:${task}`) wait = { f }; else if (moduleFact(f)) mwaits.set(f.subject, f); break;
       case "work.resumed": if (moduleFact(f)) mwaits.delete(f.subject); break;
       case "task.commented": {
@@ -205,7 +199,6 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
     const until = str(w.data.until) ? ms(w.data.until as string) : Infinity;
     if (until > now) open.push({ reason: "module_wait", ref: str(w.data.reason) ?? subject, since: ms(w.at) });
   }
-  for (const [check, h] of holds) open.push({ reason: "module_wait", ref: check.split(".")[0]!, since: ms(h.at) });
   if (handback && status?.data.to !== "backlog") open.push({ reason: handback.fromAgent ? "handback" : "owner_task", ref: self, since: ms(handback.f.at) });
   const blockedBy = mine.filter((f) => f.type === "task.blocked_changed").at(-1);
   for (const b of Array.isArray(blockedBy?.data.blocked_by) ? (blockedBy!.data.blocked_by as unknown[]).map(String) : []) {
@@ -265,9 +258,3 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   return laned({ kind: "idle", reason, since: iso(since), holder, attention });
 }
 
-/** The final attempt's verdict (grading's `grade.verdict`, attempt in data). */
-function gradeOf(facts: FactRow[]): "pass" | "fail" | undefined {
-  let best: FactRow | undefined;
-  for (const f of facts) if (f.type === "grade.verdict" && (!best || Number(f.data.attempt ?? 0) >= Number(best.data.attempt ?? 0))) best = f;
-  return best ? (best.data.pass === true ? "pass" : "fail") : undefined;
-}

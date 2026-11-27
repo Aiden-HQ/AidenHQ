@@ -254,7 +254,7 @@ the board key (it writes as the owner). Agents never claim something is done unt
 
 - AidenHQ acts on GitHub only as the owner, through the one Connect GitHub sign-in (no App). Among services and modules only the
   github module's code host holds the owner's token; any other caller (apps-mcp reading private fleet-org app repos and pushing the
-  registry, the grader's evidence reads, the kernel cloning an Engineer's repos, checks, the ci module's runner registration) gets a
+  registry, the kernel cloning an Engineer's repos, checks, the ci module's runner registration) gets a
   typed operation (snapshot, clone, fetch, head, read, comment, commit, runner_token) through the kernel's `POST /v1/codehost/:op`,
   under a literal `codehost:` grant in its `module.yaml`; no op returns the token. The instance checkout pulls with
   `ops/git-credential-github.mjs` as its credential helper (`credential.useHttpPath true`), which reads the token file directly.

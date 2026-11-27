@@ -25,7 +25,6 @@ const prResumed = (m) => f("work.resumed", m, { reason: "checks" }, "module:gith
 const card = (k, m, state = "owner") => f("record.filed", m, { kind: "push", tier: 2, state }, "agent:kai", { subject: `record:${k}` });
 const comment = (actor, m, o = {}) => f("task.commented", m, { kind: "comment" }, actor, o);
 const stageOpen = (m) => f("pr.checks_started", m, {}, "module:github", { subject: "pr:acme/x#1", version: `github/${m}` });
-const grade = (pass, attempt, m) => f("grade.verdict", m, { pass, attempt }, "module:grading", { subject: `grade:t1:${attempt}`, version: `grading/${attempt}` });
 
 const NOW = 30;
 /** got matches want: `attention` exactly (each item partially), a function as a predicate, anything else deep-equal. */
@@ -117,14 +116,8 @@ const cases = [
   ["an owner wait's start shows under a running job", [created(), assignee("kai", 0), wait("owner_wait", 1, { question: "q" }), job("job.started", 3)], NOW, { kind: "working", reason: "job_running", wait_since: iso(1), question: "q" }],
   ["chat after a reply", [created(0, { chat: true }), job("job.ended", 1, { state: "done", acted: true })], 120, { kind: "waiting", reason: "chat_turn", attention: [] }],
   ["history expired", [status("todo", 1)], NOW, { kind: "idle", reason: "history_expired", attention: [{ who: "agent", why: "history_expired" }] }],
-  ["done with its final grade", [created(), grade(false, 1, 1), grade(true, 2, 2), status("done", 3)], NOW, { kind: "done", grade: "pass" }],
   ["since is when the reason and ref began", [created(), card("k1", 1), card("k2", 5)], NOW,
     { reason: "card_owner", ref: "record:k1", since: iso(1), attention: [{ why: "card", ref: "record:k1" }, { why: "card", ref: "record:k2" }] }],
-  // A finish check's hold (grading): in review is never orphaned.
-  ["a finish hold waits on the check's module", [created(), assignee("kai", 0), status("in_review", 2), f("finish.held", 2, { check: "grading.finish" })], NOW,
-    { kind: "waiting", reason: "module_wait", ref: "grading", since: iso(2), attention: [] }],
-  ["a hold ends when the task leaves review", [created(), assignee("kai", 0), status("in_review", 2), f("finish.held", 2, { check: "grading.finish" }), status("todo", 5, "in_review")], NOW,
-    { kind: "idle", reason: "orphaned" }],
 ];
 // The lane (laneOf): read from every obligation, never from the representative reason alone.
 const blockedBy = (m, ...ids) => f("task.blocked_changed", m, { blocked_by: ids });

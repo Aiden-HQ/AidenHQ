@@ -6,7 +6,6 @@
 //   GET  /v1/agents            (module token) every agent's key, roles, profile and the fields setup records for it, never its tools
 //   POST /c/<connection>/mcp   (run or module token) the tool proxy (proxy.ts)
 //   ANY  /v1/cp/agent/<path>   (module token + caller assertion) cp.ts; a status change to done passes the finish gate
-//   POST /v1/checks/:task      (a check's module) release its label on a task, or resolve a hold it placed (checks.ts)
 //   POST /v1/compile/check     (a module with role kernel.apply) {product, instance?, pin?}: does the instance at that commit (its
 //                              main by default), pinned to `pin` (product, by default), compile against `product`? The apply's own
 //                              staged compile, read-only (compile-check.ts): {ok} or {ok: false, error: the compiler's first message}
@@ -36,8 +35,7 @@
 //                              (idle.ts): a work.waiting fact and a wake at `until`
 //   POST /v1/wakes             (a module with role kernel.wake) a scheduled wake {task, agent?, at?, cause?, id?}; with
 //                              {task, text}: a labelled wake notice on the task now, which wakes its agent (no scheduled row); with
-//                              to: "asker", on the task's open requester instead when it has one; with quiet: true, a note that wakes
-//                              nobody and is not anyone's words
+//                              to: "asker", on the task's open requester instead when it has one
 //   GET  /v1/wakes/pending?task=  (a module with role kernel.jobs) whether a wake for the task still waits to start a job
 //   POST /v1/wakes/claim, POST /v1/wakes/:key/drop  (a module with role kernel.jobs) claim inbox rows; give one up
 //   POST /v1/routines/cancel   (a module with role kernel.jobs) {task, why: coalesced|stale, body}: an open or blocked routine run of an
@@ -74,7 +72,7 @@
 //                              state, computed from its facts (task-state.ts): `ids` (≤ 200, ids or identifiers, closures included) or
 //                              every open task (and every task closed since `closed_since`, no id limit), in one snapshot, with the needs-you, failed and unexplained-idle counts (task-state-read.ts)
 //   POST /v1/work/grader-token  (the one module with role kernel.grader) {task} -> a gateway
-//                              token billed to the task's assignee under its caps, for a task its finish check holds; one live token per task
+//                              token billed to the task's assignee under its caps, for a task that is done (its rubric check)
 //   POST /v1/jobs/:job/post    (that job's module) {kind: reply|status|notice, body, status?, blocked_by?, turn?}: posted on the job's
 //                              task as its agent, once per kind (per `turn` for a session's turn reply, outcomes.ts)
 //   POST /v1/checks, GET /v1/checks/:check, POST /v1/receipts/verify  (a module with role kernel.checks) a credential-free check
@@ -184,7 +182,6 @@ export const ROUTES = [
   { method: "POST", path: "/c/:connection/mcp", auth: "bearer" },
   { method: "DELETE", path: "/c/:connection/mcp", auth: "bearer" },
   { method: "ANY", path: "/v1/cp/agent/*", auth: "module+assertion" },
-  { method: "POST", path: "/v1/checks/:task", auth: "module" },
   { method: "POST", path: "/v1/writes", auth: "bearer" },
   { method: "GET", path: "/v1/writes", auth: "board" },
   { method: "GET", path: "/v1/writes/:id", auth: "bearer" },
@@ -364,7 +361,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, answers, repos = () => ({}), graderToken = () => "", dropGraderToken = () => {}, advisories = () => [], testSessions, accounts, checks, checkJobs, jobTools, moduleTool, precheck, repoBundle, appToken, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, compileCheck, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, views, log = () => {} }: {
+export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, answers, repos = () => ({}), graderToken = () => "", advisories = () => [], testSessions, accounts, checks, checkJobs, jobTools, moduleTool, precheck, repoBundle, appToken, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, compileCheck, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, views, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts, and GET /v1/facts for incremental readers. */
   facts?: Facts;
   /** Projects (projects.ts): a code host's new PR fills in its task's project. */
@@ -407,8 +404,6 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
   repos?: () => Record<string, unknown>;
   /** A grader-kind gateway token for a task (the kernel is the only minter). */
   graderToken?: (task: string, agent: string) => string;
-  /** Forget a task's cached grader token (its hold resolved or was released). */
-  dropGraderToken?: (task: string) => void;
   /** 4e: the open marketplace advisories. */
   advisories?: () => unknown[];
   /** 3g: the accounts' routes (auth-api.ts). */
@@ -588,13 +583,6 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           return send(res, 200, await views(m[0]!, await json(req, 400_000)));
         }
         case "ANY /v1/cp/agent/*": return await cp(req, res, m[0]!, query);
-        case "POST /v1/checks/:task": {
-          const w = await moduleOf(req);
-          if (!checks) throw fail(503, "unavailable", "checks are off");
-          const resolved = await checks.resolve(w.module!, m[0]!, await json(req));
-          dropGraderToken(m[0]!);
-          return send(res, 200, resolved);
-        }
         case "POST /v1/notify": {
           // A module that tells the owner about its work (role kernel.owner-notice: the dispatch module's dead ends) queues too.
           if (!isBoard(req) && !(await whoami(bearer(req)).catch(() => undefined))?.roles?.includes("kernel.owner-notice")) throw fail(401, "unauthorized", "the board's key, or a module with role kernel.owner-notice, is required");
@@ -1017,11 +1005,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
             // carries that key, so a producer's retry (its answer was lost) never wakes the task's agent twice.
             const id = typeof b.id === "string" && /^[\w.-]{1,80}$/.test(b.id) ? b.id : undefined;
             if (b.id !== undefined && !id) throw fail(400, "bad_request", "id is [A-Za-z0-9_.-]{1,80}");
-            // `quiet`: a note on the task, never a notice: it wakes nobody and is not anyone's words (the grading loop's failed-pass
-            // note, which its agent has nothing to act on). It carries the grader's own marker so the evidence read skips it.
-            const quiet = b.quiet === true;
             // `to: "asker"`: whoever asked for the task hears it, its open parent (asker.tell's open-parent path), else the task itself.
-            const said = async (on: string) => wakeNotice(owner, on, text, id === undefined ? undefined : `${id}@${on}`, quiet).catch((e: Error) => { throw fail(502, "upstream", e.message); });
+            const said = async (on: string) => wakeNotice(owner, on, text, id === undefined ? undefined : `${id}@${on}`).catch((e: Error) => { throw fail(502, "upstream", e.message); });
             if (b.to === "asker") {
               // A read that failed says nothing about the requester: retried (502), never read as "none" and posted on the task.
               const parent = await owner("GET", `/api/issues/${encodeURIComponent(task)}`).then((i) => {
@@ -1148,9 +1133,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           if (!owner) throw fail(503, "unavailable", "the control plane is off");
           const issue = await owner("GET", `/api/issues/${encodeURIComponent(b.task.slice(0, 100))}`);
           if (issue.status !== 200 && issue.status !== 404) throw fail(502, "upstream", `the control plane answered ${issue.status}`);
-          // Only a task the module's own finish check holds (finished, waiting for its verdict), and only for as long as it
-          // does: the recorded hold row, or the check's own label on a task still in review.
-          if (issue.status === 404 || !(await checks?.held(w.module!, issue.json))) throw fail(403, "forbidden", `no finish check of ${w.module} holds task ${b.task.slice(0, 100)}`);
+          // Only a closed task: its rubric is checked once it is done.
+          if (issue.status === 404 || issue.json.status !== "done") throw fail(403, "forbidden", `task ${b.task.slice(0, 100)} isn't done`);
           if (typeof issue.json.assigneeAgentId !== "string") throw fail(404, "not_found", `no task ${b.task.slice(0, 100)} with an assignee`);
           return send(res, 200, { token: graderToken(b.task.slice(0, 100), issue.json.assigneeAgentId) });
         }

@@ -23,7 +23,7 @@ open). Kernel writers insert a fact in the same transaction as the state change 
 |---|---|
 | `seq` | ingestion order, for incremental readers |
 | `id` | `<type>:<subject>:<version>`; a duplicate delivery, a poll seeing the same change, or a re-run backfill records once |
-| `type` | namespaced, past tense: `task.*`, `wake.*`, `job.*`, `record.*`, `check.ended`, `deploy.applied`, `pr.*`, `grade.*`, `work.waiting`, ... |
+| `type` | namespaced, past tense: `task.*`, `wake.*`, `job.*`, `record.*`, `check.ended`, `deploy.applied`, `pr.*`, `work.waiting`, ... |
 | `subject` | `task:<uuid>`, `job:<id>`, `record:<id>`, `pr:<owner/repo>#<n>` (CI per head `...@<head>`), `issue:<owner/repo>#<n>`, `deploy:<generation>`; PR and issue subjects lowercase |
 | `task` | the Paperclip task uuid, the main join key |
 | `at` / `seen_at` | when it happened at the source (UTC `Z`) / when the kernel recorded it |
@@ -70,7 +70,6 @@ line, a batch the kernel refused. Current emitters:
 |---|---|
 | `github` (`service/src/flow.ts`; task from `pr-tasks.json`) | `pr.opened`, `pr.pushed`, `pr.closed`, `pr.checks_started`, `pr.checks_completed`, `pr.merged`, `pr.reverted`, `issue.opened`, `issue.labeled`, `work.waiting` / `work.resumed` for merge-queue waits (reasons: checks, eval, retry, conflict), `code.added`, `code.rewritten` |
 | `codehost-local` | the same `pr.*`, `work.*` (reason checks) and `code.*` facts, written by the kernel itself (`kernel/src/codehost.ts` `localFacts`) |
-| `grading` | `grade.requested`, `grade.verdict`, `work.waiting` / `work.resumed` (reason `grade_retry`) |
 | `maintainer` | `issue.triaged` (the stage starts at the issue's creation) |
 | `code-review` | `review.started`, `review.ended` per review run |
 

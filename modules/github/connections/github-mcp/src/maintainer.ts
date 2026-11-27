@@ -21,15 +21,14 @@ const FILE_CAP = 256 * 1024;
 // The open PRs one pr_list reads in full (each human PR costs a handful of reads): the rest wait for a later look.
 const PR_CAP = 100;
 
-// A close's note must cite a PR in a form the grader's parser reads (owner/name#number or its full /pull/ URL): a bare
+// A close's note must cite a PR in a linkable form (owner/name#number or its full /pull/ URL): a bare
 // "PR #12" reads as no citation at all, so the issue looks closed without one. The word PR standing on its own is the
 // bare form wherever it sits — "PR #12", "PR#12", "the PR #12", "abc/PR #12", "see acme/product/PR #12" — unless the
 // token is part of the owner/name#N citation itself. The span decides, not what precedes the token, because that is
-// what the parser does: a repo whose name ends in PR ("acme/foo-PR#12") is one citation, while a real link beside a
+// what a citation reader does: a repo whose name ends in PR ("acme/foo-PR#12") is one citation, while a real link beside a
 // "PR #700" leaves that token uncited.
 const PR_TOKEN = /(?<!\w)PR\s*#\s*\d+\b/gi;
-// The parser's owner/name#N form, mirrored from modules/grading/service/src/grader/text.ts (findPrs): github-mcp is its
-// own build context and doesn't import the grading module.
+// The owner/name#N citation form.
 const OWNER_NAME_PR = /(?<![\w./:-])[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+\b/g;
 
 /** Why a close's `note` is refused, or undefined when it cites what it must. */
@@ -636,7 +635,7 @@ export class Maintainer {
   /**
    * Close as completed or not_planned, or reopen, refusing an untrusted label. A `note` is posted as a comment first, with
    * the same owner-data scrub as `comment` and signed by `agent` (the AidenHQ footer), and the state changes only once it is posted. A note citing a PR only as a bare
-   * "PR #N" is refused before anything is written: the grader's citation parser doesn't read it.
+   * "PR #N" is refused before anything is written: it links nowhere.
    *
    * The note goes once, and this process records the comment it posted (id, GitHub's `created_at`) keyed by the issue, the state
    * and the note's text; no comment on the issue (whose author this can't verify) can suppress a note. A retry whose note was

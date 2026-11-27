@@ -17,7 +17,7 @@ modules in its instance repo (`modules/<name>/`, [AGENTS.md](AGENTS.md) "Local m
 | `apps-platform` | Apps platform: DevOps Engineer, apps-mcp, the gate, the app starter, the design system. Always installed. |
 | `board`, `tasks`, `chief-of-staff` | The owner's board, task tools, and Aiden, the chief of staff. |
 | `agent-builder`, `design`, `fleet-steward`, `maintainer`, `security`, `engineering` | Specialist agents: Agent Architect, Designer, Fleet Steward, Maintainer, Security Watch, Engineers. |
-| `ai-reviewer`, `grading`, `platform` | AI review of writes, graded "done", and the product's own change gate. |
+| `ai-reviewer`, `grading`, `platform` | AI review of writes, the rubric check on finished work, and the product's own change gate. |
 | `engine-codex` | The coding-job engine: Codex on OpenRouter models, in an agent computer. |
 | `github`, `ci` | GitHub: one sign-in; agents read and write as you, labelled as AidenHQ (GitHub's own MCP server, read-only, AidenHQ's tools and the code host); self-hosted CI runners. |
 | `channel-telegram`, `chat-lane` | Owner channels and the fast chat lane (`slack` is an owner channel too, in its advanced part). |

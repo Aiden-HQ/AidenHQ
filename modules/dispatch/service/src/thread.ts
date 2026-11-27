@@ -28,7 +28,7 @@ export interface Issue {
 }
 export interface Comment { id: string; body?: string | null; authorType?: string; authorAgentId?: string | null; createdAt?: string; deletedAt?: string | null }
 /** The grants table's directory (kernel GET /v1/agents), by agent id. */
-export type Directory = Record<string, { key?: string; roles?: string[]; profile?: string; graded?: boolean }>;
+export type Directory = Record<string, { key?: string; roles?: string[]; profile?: string }>;
 /** A Paperclip agent, for names and personas. */
 export interface Agent { id: string; name?: string; companyId?: string; metadata?: { persona?: { name?: string; voice?: string } } }
 

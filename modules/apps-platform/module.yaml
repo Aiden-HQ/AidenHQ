@@ -10,7 +10,7 @@ roles:
     - { id: app-incidents, description: "Change any app with an open incident." }
     - { id: app-requests, description: "In-app requests and people roles of every shared app (apps-mcp app_requests, app_role_set)." }
     - { id: app-tester, description: "Sign in as the test user (settings.edge.test_user) on its own open task, through the gate's test listener: read-only, or app_page_canary's one submission (kernel/src/test-session.ts)." }
-    - { id: apps.read, description: "Read every app's status, deploy history and live view (apps-mcp /internal/status, /deploys, /view, /sources, /quality, /open-prs): a module that grades or reports on apps, with its own token." }
+    - { id: apps.read, description: "Read the apps' source health, quality checks and open PRs (apps-mcp /internal/sources, /quality, /open-prs): a module that reports on apps, with its own token." }
 # The apps connection: apps-mcp, still in the root compose until 4c moves it here.
 connections:
   apps:
@@ -93,7 +93,7 @@ agents:
     department: platform
     skills: [ apps-platform.design-system, engineering.supply-chain, engineering.write-code, tasks.delegate-work ]
     max_parallel: 2 # independent app jobs; a backlog also made a 30-minute routine pile up duplicates
-    # Graded done: deliverables delegated to it are checked against their rubric before they close (the runner's grader).
+    # Delegated deliverables carry a rubric: its done report is checked against it after the task closes.
     graded: true
     model: ~deepseek/deepseek-flash-latest
     reasoning_effort: high
@@ -108,7 +108,7 @@ agents:
       owner_channel: [ notify ]
       chat_lane: [ wake_at, wake_list ]
       # fleet_catalog: who owns an app, and which modules are on (the ci module, before adding CI to a repo).
-      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_create, task_comment, task_block, task_cancel, task_file_upload, task_finish, task_team, task_delegate, task_amend_rubric, fleet_catalog ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_create, task_comment, task_block, task_cancel, task_file_upload, task_finish, task_team, task_delegate, fleet_catalog ]
     heartbeat: true
     # app-incidents: may change any app that has an open incident (apps-mcp); its own apps it may change anyway.
     # app-requests: handles every shared app's in-app requests and people roles (app_requests, app_role_set; apps-mcp).

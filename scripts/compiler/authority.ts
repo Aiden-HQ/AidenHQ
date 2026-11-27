@@ -56,7 +56,7 @@ const KERNEL_ROLE_GRANTS: Record<string, string> = {
   "kernel.events": "sends the events of its connections to subscribed routines, and reads their batches for their runs",
   "kernel.facts": "records flow facts of the types it declares",
   "kernel.flow-read": "reads the fleet's flow timelines and metrics",
-  "kernel.grader": "mints grader tokens",
+  "kernel.grader": "mints grader tokens for finished tasks",
   "kernel.jobs": "runs agents' jobs",
   "kernel.lane": "writes fast-lane turns to an agent's chat",
   "kernel.memory": "writes the calling agent's own memory, for its memory tools",

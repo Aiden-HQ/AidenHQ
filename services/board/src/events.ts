@@ -9,11 +9,11 @@ import type { IncomingMessage, ServerResponse } from "node:http";
  * The names a board view listens for. approvals: a card was filed, decided, claimed or finished (also the needs-you badge);
  * chat: a chat changed (a message, its state, its run, or the work handed out from it; `issue` is the chat's id); tasks: a
  * task changed or its run started or ended (`issue` is its id); progress: a run on that task (or one handed out from that
- * chat) said more, for its live words; grades: a grade changed state; fleet: a Fleet Ops tick; connections: a sign-in finished;
+ * chat) said more, for its live words; fleet: a Fleet Ops tick; connections: a sign-in finished;
  * setup: a setup flow's state changed (a secret saved, a mode chosen, a flow dismissed, a pairing completed or revoked); home:
  * what Home shows changed (a card, a task or a chat, which each also send it; the account looked or snoozed a row).
  */
-export type EventName = "approvals" | "chat" | "progress" | "grades" | "fleet" | "tasks" | "connections" | "setup" | "home";
+export type EventName = "approvals" | "chat" | "progress" | "fleet" | "tasks" | "connections" | "setup" | "home";
 /** The changes Home shows: each one also tells Home. */
 const HOME_FROM: EventName[] = ["approvals", "tasks", "chat"];
 

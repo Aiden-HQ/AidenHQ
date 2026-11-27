@@ -17,7 +17,7 @@ per revision; a colleague's words counted as the owner's; silence treated as app
 - Primer: (A) small generic PRs upstream + thin AidenHQ layer [owner's pick]; (B) AidenHQ-only polling of today's
   Primer (can't fix vanishing threads, live page or thread replies); (C) fork Primer (~75k lines to own forever).
 - Stuck watcher: new module vs extend Fleet Steward. Fleet Steward already detects stuck/failing/silent runs, held
-  gradings, stale PRs and app incidents with persisted, deduped incidents and recovery
+  stale PRs and app incidents with persisted, deduped incidents and recovery
   (`modules/fleet-steward/service/src/detector.ts`), so we extend it [my call: one detector, not two].
 - Channel memory: the agent's own memory (kernel `memory.ts`, written with `memory_note`) vs a note beside the
   Slack binding. The note [my call: it is channel context, not agent identity].
@@ -84,7 +84,7 @@ First five (from 11-10..11-18 data, r4):
 2. Repeated failed jobs per task and failure category (extends the per-agent "failing" check). WOR-8007: 5 identical
    resume failures in 13 min.
 3. Finished but not closed: in_review with no live job, open record or open PR for >=6h (81 open now, 23 >4 days);
-   extends the grading check. A merged PR is evidence, not proof of acceptance.
+   A merged PR is evidence, not proof of acceptance.
 4. Owner follow-ups going stale: owner-assigned todos with no activity >=3 days (61 open, 19 >3 days), as a ranked
    list in the morning brief with snooze/close/delegate; respects snoozes. `needsYou` keeps its meaning.
 5. Front door silent: an owner message unanswered for 15 min -> urgent alert.

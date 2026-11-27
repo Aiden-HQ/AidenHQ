@@ -8,7 +8,7 @@
 //                                    (the needs_owner answer) also in google-workspace-mcp (src/aidenhq-sdk/)
 //   kernel/sdk/src/reviewer.ts       the reviewer side of reviewer@1, in the reviewer module's service
 //   kernel/sdk/src/kernel-client.ts  the module-to-kernel client, in each module that calls the kernel
-//   kernel/sdk/src/checks.ts         how check results are read, in the merge gate (codehost-github) and the grader
+//   kernel/sdk/src/checks.ts         how check results are read, in the merge gate (codehost-github) and the PR watcher
 //   kernel/sdk/src/paperclip.ts      the one Paperclip HTTP client (lanes through the kernel, or direct), in the board, tasks-mcp and ops-mcp
 //   kernel/sdk/src/maintained-repos.ts  maintainer_repos and its per-repo duties, in github-mcp and the code host (src/aidenhq-sdk/)
 //   kernel/sdk/src/attribution.ts    the AidenHQ commit trailer and text footer, in github-mcp and the code host (src/aidenhq-sdk/)
@@ -100,12 +100,12 @@ export function sharedCopies(root = repo) {
   "kernel/sdk/src/tiers.ts": ["modules/code-review/service/src/aidenhq-sdk/tiers.ts", "modules/code-review/recipe/tiers.ts", "services/computer/images/engineer/code-review/tiers.ts", "modules/ci/template/.github/tiers.ts"],
   // The judges' shared library (design §4.4): the reviewer and the grader keep their own contracts and credentials.
   "kernel/sdk/src/judge.ts": ["modules/ai-reviewer/service/src/aidenhq-sdk/judge.ts", "modules/grading/service/src/aidenhq-sdk/judge.ts"],
-  // How GitHub check results are read: the merge gate, the PR watcher and the grader.
-  "kernel/sdk/src/checks.ts": ["modules/github/service/src/aidenhq-sdk/checks.ts", "modules/grading/service/src/aidenhq-sdk/checks.ts", "modules/ship/service/src/aidenhq-sdk/checks.ts"],
+  // How GitHub check results are read: the merge gate and the PR watcher.
+  "kernel/sdk/src/checks.ts": ["modules/github/service/src/aidenhq-sdk/checks.ts", "modules/ship/service/src/aidenhq-sdk/checks.ts"],
   // The one parser of maintainer_repos (per-repo duties): github-mcp's Maintainer tools and the code host's PR watch read.
   "kernel/sdk/src/maintained-repos.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/maintained-repos.ts", "modules/github/service/src/aidenhq-sdk/maintained-repos.ts", "modules/maintainer/service/src/aidenhq-sdk/maintained-repos.ts", "modules/ship/service/src/aidenhq-sdk/maintained-repos.ts"],
-  // What closed an issue (the newest ClosedEvent): the code host's issue read for the grader and github-mcp's github_issue_read.
-  "kernel/sdk/src/closed-event.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/closed-event.ts", "modules/github/service/src/aidenhq-sdk/closed-event.ts", "modules/grading/service/src/aidenhq-sdk/closed-event.ts"],
+  // What closed an issue (the newest ClosedEvent): github-mcp's github_issue_read.
+  "kernel/sdk/src/closed-event.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/closed-event.ts"],
   "kernel/sdk/src/attribution.ts": ["modules/github/connections/github-mcp/src/aidenhq-sdk/attribution.ts", "modules/github/service/src/aidenhq-sdk/attribution.ts", "modules/ship/service/src/aidenhq-sdk/attribution.ts"],
   // Code churn: the code host's churn pass and backfill (codehost-local calls the original from the kernel).
   "kernel/sdk/src/churn.ts": ["modules/github/service/src/aidenhq-sdk/churn.ts"],
@@ -132,8 +132,8 @@ export function sharedCopies(root = repo) {
     "modules/security/scanner/src/source-store.ts",
     "modules/warehouse/search/src/source-store.ts",
   ],
-  // Who said it: a comment posted for someone else is never the owner's words (dispatch, the grader, task_comments, the board).
-  "kernel/sdk/src/for-others.ts": ["modules/dispatch/service/src/aidenhq-sdk/for-others.ts", "modules/grading/service/src/aidenhq-sdk/for-others.ts", "modules/tasks/connections/tasks-mcp/src/aidenhq-sdk/for-others.ts", "services/board/src/aidenhq-sdk/for-others.ts"],
+  // Who said it: a comment posted for someone else is never the owner's words (dispatch, task_comments, the board).
+  "kernel/sdk/src/for-others.ts": ["modules/dispatch/service/src/aidenhq-sdk/for-others.ts", "modules/tasks/connections/tasks-mcp/src/aidenhq-sdk/for-others.ts", "services/board/src/aidenhq-sdk/for-others.ts"],
   // Whether an agent is paused (Paperclip's lifecycle holds, never its status): the board, the Telegram channel and the Fleet Steward.
   // The one Paperclip client: the board (owner lane), the task tools (agent lane) and ops-mcp (its own key).
   "kernel/sdk/src/paperclip.ts": ["services/board/src/aidenhq-sdk/paperclip.ts", "modules/tasks/connections/tasks-mcp/src/aidenhq-sdk/paperclip.ts", "modules/meetings/connections/ops-mcp/src/aidenhq-sdk/paperclip.ts"],
@@ -147,9 +147,6 @@ export function sharedCopies(root = repo) {
   // A teammate's name and kit face: one rule for compile, the board and the kernel (docs/configuration.md "teammate").
   "services/shared/teammate-name.ts": ["services/board/src/teammate-name.ts"],
   "services/shared/face-kit.ts": ["services/board/src/face-kit.ts"],
-  // A rubric criterion claiming a file's contents lack something: refused wherever a rubric is written (the grading service
-  // files and amends; the task tools validate a delegation and an amendment before they send it).
-  "services/shared/absence.ts": ["modules/grading/service/src/absence.ts", "modules/tasks/connections/tasks-mcp/src/absence.ts"],
   // The task a delegation was asked to be filed under when the control plane placed it elsewhere (Paperclip's agent
   // task-tree cap): the kernel's delegator, notices and dispatch read it, and the task tools group siblings by it.
   "services/shared/requested-parent.ts": ["modules/tasks/connections/tasks-mcp/src/requested-parent.ts", "modules/dispatch/service/src/requested-parent.ts", "modules/grading/service/src/requested-parent.ts"],

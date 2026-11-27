@@ -111,7 +111,7 @@ const clears = (e: unknown) => e instanceof KernelError && (e.status === 403 || 
  * `task-closed` belongs here without asking whose word woke it. The platform records no sound link between a comment and the
  * close it might have caused: the board closes a task with a PATCH and comments with a separate POST, and the close fact's actor
  * is the last non-unknown event in a debounce window, not provably the closer. Any "his comment caused the close" test is then a
- * guess with a silent loss behind it (a crew cascade, a grader's settle or the kernel's own close leaves no agent comment, so the
+ * guess with a silent loss behind it (a crew cascade or the kernel's own close leaves no agent comment, so the
  * owner's unanswered request would vanish), so this follows the owner's rule for #1676 instead: a refusal for an already-closed
  * task is bookkeeping, not a page. `#1611`'s page is retired with it; a finished chat reopens on his comment through the kernel
  * (wakes.ts), so his word still reaches a run.

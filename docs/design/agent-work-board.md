@@ -171,7 +171,7 @@ resolved from the `attention` entry or the state, and each a link to what it nam
 | Waiting | blue dot and the kernel's words (`stateWords`: "AI review", "CI checks", "an answer from Research Lead") |
 | Blocked | red callout "Failed: <how the job ended>" (opens the run), or "Blocked by WOR-7744" (opens that task); a chat run that ended with no reply (`fail` ref `no_reply`, no job) is "Failed: Run ended without a reply", opening the task's drawer (its activity) |
 | Idle | grey dot and why ("Backlog", "Scheduled for tomorrow 08:00", "Your task", "No reported state") |
-| Done | quiet title, "Done, graded pass" or "Stopped" |
+| Done | quiet title, "Done" or "Stopped" |
 
 One card, one accent: the callout colour is the only saturated area on a card, so a column scans by colour.
 

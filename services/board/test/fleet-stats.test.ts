@@ -15,7 +15,7 @@ const card = (n: number, identifier: string, outcome: Approval["outcome"], actio
   decidedBy: "reviewer:m", decidedAt: at, usedAt: at, outcome, outcomeText: outcome === "failed" ? "the card was rejected" : null, wait: null, createdAt: at, updatedAt: at,
   ownerReason: null, replaced: false, panel: false, reviewFirst: null, wakes: false, live: false,
 });
-const facts = (approvals: Approval[]): Facts => ({ closed: [issue(1), issue(2), issue(3)], approvals, grades: () => undefined, cost: [], runs: [] });
+const facts = (approvals: Approval[]): Facts => ({ closed: [issue(1), issue(2), issue(3)], approvals, cost: [], runs: [] });
 const shipped = (f: Facts) => fleetSummary(f, { window: "24h", blocked: [], names: new Map(), now }).shipped.tasks.map((t) => t.identifier);
 
 describe("fleet summary: shipped tasks come from the card data, not the closing comment", () => {

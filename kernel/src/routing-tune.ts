@@ -43,7 +43,7 @@ export function criterionProblem(c: unknown): string | undefined {
 }
 
 /** A decision with what the kernel recorded of its task since. */
-export type Outcome = { task: string; identifier?: string; member: string | null; at: number; repos: string[]; blocked: boolean; status: string; cycle_hours: number | null; reopens: number; gate_reopens: number };
+export type Outcome = { task: string; identifier?: string; member: string | null; at: number; repos: string[]; blocked: boolean; status: string; cycle_hours: number | null; reopens: number };
 /** One metric over decisions: its value and sample (null value: no sample). */
 export function measure(metric: Criterion["metric"], rows: Outcome[]): { value: number | null; sample: number } {
   if (metric === "blocked_rate") return { value: rows.length ? rows.filter((r) => r.blocked).length / rows.length : null, sample: rows.length };
@@ -51,8 +51,8 @@ export function measure(metric: Criterion["metric"], rows: Outcome[]): { value: 
     const done = rows.filter((r) => r.cycle_hours !== null);
     return { value: done.length ? done.reduce((s, r) => s + r.cycle_hours!, 0) / done.length : null, sample: done.length };
   }
-  const seen = rows.filter((r) => r.status === "done" || r.reopens + r.gate_reopens > 0);
-  return { value: seen.length ? seen.filter((r) => r.reopens + r.gate_reopens > 0).length / seen.length : null, sample: seen.length };
+  const seen = rows.filter((r) => r.status === "done" || r.reopens > 0);
+  return { value: seen.length ? seen.filter((r) => r.reopens > 0).length / seen.length : null, sample: seen.length };
 }
 
 /** A typed routing change: new weights (partial) and members' new repo patterns (null drops them). */
@@ -125,7 +125,6 @@ export function createRouting(d: RoutingDeps) {
         status: t.status === 200 ? String(t.json?.status ?? "unknown") : "missing",
         cycle_hours: done ? Math.round(((Date.parse(t.json.completedAt) - r.at) / 3_600_000) * 100) / 100 : null,
         reopens: (q("SELECT COUNT(*) AS n FROM wakes WHERE task = ? AND cause = 'reopen'").get(r.task) as { n: number }).n,
-        gate_reopens: (q("SELECT COUNT(*) AS n FROM facts WHERE +type = 'finish.verdict' AND actor = 'kernel' AND task = ? AND json_extract(data, '$.verdict') = 'reopen'").get(r.task) as { n: number }).n,
       });
     }
     return out;

@@ -981,14 +981,6 @@ test("a comment with a marker and no id edits this account's own comment that ca
   assert.deepEqual((await call("/ops/comment", { ...post, id: 99 })).json, { id: 77 });
 });
 
-test("reading a job: a missing one is null, a permission refusal stays a 403 and any other failure a 502", async (t) => {
-  const { call } = await setup(t, { routes: (m, p) => (p === "/repos/acme/gone/actions/jobs/1" ? { status: 404, body: {} } : p === "/repos/acme/denied/actions/jobs/1" ? { status: 403, body: { message: "Resource not accessible by integration" } } : p === "/repos/acme/down/actions/jobs/1" ? { status: 500, body: {} } : undefined) });
-  const job = (repo) => call("/ops/read", { kind: "job", repo, id: 1 });
-  assert.equal((await job("acme/gone")).status, 200);
-  assert.equal((await job("acme/denied")).status, 403);
-  assert.equal((await job("acme/down")).status, 502);
-});
-
 test("the owner's commit identity for job boxes; 503 while GitHub isn't connected", async (t) => {
   let on = true;
   const { get } = await setup(t, { connected: () => on });

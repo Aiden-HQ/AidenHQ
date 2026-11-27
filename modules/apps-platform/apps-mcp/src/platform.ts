@@ -279,29 +279,16 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
   /** A preview's URL (previews.ts): its gate host when the gate serves previews, else the apps' tailnet node (none without one). */
   const previewUrl = (app: App): string | undefined => (app.share?.host ? (gatePreviews() ? `https://${app.share.host}` : undefined) : nodeUrl(app));
 
-  /**
-   * Whether the running commit's own identity probe proved the app serves no HTTP: true only from a healthy deploy row of the
-   * commit that is running now. A redeploy moves the app, so an older row's verdict never carries over; a probe that was
-   * missing, denied or inconclusive stored nothing, which reads as not proven.
-   */
-  const noHttpProven = (name: string): boolean => {
-    const running = store.running(name);
-    return !!running && store.deploysOf(name, running).some((d) => d.status === "healthy" && d.no_http_proven === 1);
-  };
-
   async function status(app: App) {
     const last = store.lastDeploy(app.name);
     const inc = store.openIncident(app.name);
     // A deploy that got nothing running reads as failed: a failed first deploy, or one whose build never ran and had nothing to fall back on.
     const state = !last ? "not deployed" : last.status === "failed" || (last.status === "build_failed" && !store.goodDeploys(app.name).length) ? "failed" : (healthy.get(app.name) ?? (await engine.containersHealthy(app).catch(() => false))) ? "healthy" : "unhealthy";
     const stats = last && last.status !== "failed" ? await engine.stats(app).catch(() => undefined) : undefined;
-    // The no-HTTP verdict is the running commit's own: read from a deploy row of exactly that sha (a later, failed deploy of
-    // another commit leaves it absent), never from the registry's shape and never from an older deploy of the same commit.
-    const provesNoHttp = noHttpProven(app.name);
     return {
-      name: app.name, repo: app.repo, healthy: state === "healthy", state, sha: last?.sha, deployed_at: last?.at, deployed_by: last?.by, auto_deploy: app.auto_deploy, owner: app.owner, url: url(app), ...(provesNoHttp ? { no_http_proven: true } : {}), ...(exposes(app) && !node() && door(app).unpublished ? { unpublished: door(app).unpublished } : {}), panel: app.panel,
+      name: app.name, repo: app.repo, healthy: state === "healthy", state, sha: last?.sha, deployed_at: last?.at, deployed_by: last?.by, auto_deploy: app.auto_deploy, owner: app.owner, url: url(app), ...(exposes(app) && !node() && door(app).unpublished ? { unpublished: door(app).unpublished } : {}), panel: app.panel,
       // Recent deploys (newest first): who deployed which commit and how it ended, so a reader can check a merged commit was
-      // deployed by the platform's own auto-deploy rather than by hand. Deep enough that a graded commit hasn't scrolled out.
+      // deployed by the platform's own auto-deploy rather than by hand. Deep enough that a merged commit hasn't scrolled out.
       deploys: store.recentDeploys(app.name, 20).map(({ sha, at, by, status }) => ({ sha, at, by, status })),
       // Its open PRs' previews (previews.ts): reviewers may open them; nothing depends on them.
       previews: store.previews().filter((r) => r.app === app.name).map((r) => ({ pr: r.pr, sha: r.sha, state: r.status, url: previewUrl(previewApp(app, r.pr, r.port)), ...(r.reason ? { reason: r.reason } : {}) })),
@@ -576,6 +563,6 @@ export function createPlatform(cfg: PlatformConfig, log: { warn: (o: object, m: 
     }
     return renderWith(network, script, input, timeout, before);
   };
-  return { previewUrl, gateTestUser, dropPreviewDb, healthFailure, appAnswered, noAutoRollback, sign, checkNow, qualityOf, qualityFor, syncEdge, node, noHttpProven, nodeState: () => ({ up: nodeUp, ...(nodeLogin ? { login_url: nodeLogin } : {}) }), warehouse, render, canaryRun, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
+  return { previewUrl, gateTestUser, dropPreviewDb, healthFailure, appAnswered, noAutoRollback, sign, checkNow, qualityOf, qualityFor, syncEdge, node, nodeState: () => ({ up: nodeUp, ...(nodeLogin ? { login_url: nodeLogin } : {}) }), warehouse, render, canaryRun, lookup, auditView, auditApi, resolveApi, sendApi, runPlan, store, engine, probe, apps, find, status, cached, refresh, errors, listing, raise, notifyPending, cfg, commit };
 }
 export type Platform = ReturnType<typeof createPlatform>;

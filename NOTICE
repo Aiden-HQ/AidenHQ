@@ -22,8 +22,8 @@ Third-party software
 This product includes code from Pennyworth (https://github.com/taylanpince/pennyworth),
 Copyright (c) 2026 Taylan Pince, used under the MIT License (see LICENSES/pennyworth-MIT.txt).
 AidenHQ began as a fork of Pennyworth. Files derived from it, wholly or in part, include:
-- what was ported from its runner: modules/github/ (the merge queue and git rules), modules/dispatch/,
-  modules/grading/service/src/loop.ts and services/computer/images/engineer/bin/
+- what was ported from its runner: modules/github/ (the merge queue and git rules), modules/dispatch/
+  and services/computer/images/engineer/bin/
 - services/board/ (the board server and web UI, including web/public/icon.png, which is Pennyworth's own)
 - services/paperclip-tasks-mcp/
 - modules/meetings/connections/ops-mcp/, modules/google/connections/google-workspace-mcp/,
