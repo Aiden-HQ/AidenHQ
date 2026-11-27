@@ -5,7 +5,6 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import { uncheckableAbsence } from "./absence.ts";
 import { recordedRequesterOf, requestedParentOf, withRequester } from "./requested-parent.ts";
 import { readFileSync } from "node:fs";
 import { modelTools } from "./models.ts";
@@ -441,15 +440,12 @@ async function reportsOf() {
   for (const a of all) if (isRunner(a) && !seen.has(a.id) && a.status !== "terminated") out.push(a);
   return { me, reports: out };
 }
-// Graded done: a delegated deliverable is checked against its rubric before it may close. The grading module keeps the rubric
-// (never the description, which only shows a copy); its finish check runs in the kernel's finish gate on every move to done
-// (a held close answers 202 {held}, and nothing moves but the hold).
+// Rubric: a delegated deliverable's rubric is filed with the grading module (never the description, which only shows a copy);
+// after the task closes, one check reads the assignee's done report against it.
 const GRADING = (process.env.GRADING_URL || "http://grading:8096").replace(/\/$/, "");
 const DELIVERABLES = ["pr", "app", "apply", "file", "report", "none"];
-const GRADING_NOTE = "Held for grading: the grader checks this task against its rubric, then closes it or reopens it with the unmet criteria. Nothing more to do now: end your turn.";
 const gradedAgent = (id: Json) => dirAgents()[id]?.graded === true;
-// A repo retired from service is a dead end: a brief or rubric graded on a PR there can never pass, and the grade holds and
-// reopens. Checked against this static list at filing time, with no network call, so a delegation stays fast and works offline.
+// A repo retired from service is a dead end: a brief or rubric asking for a PR there can never be met. Checked against this static list at filing time, with no network call, so a delegation stays fast and works offline.
 const RETIRED_REPOS = ["Aiden-HQ/aidenhq-modules"];
 const RETIRED_REPO_ERROR = "retired repo: modules live in Aiden-HQ/AidenHQ under modules/";
 // Every repo reference, in any shape DELIVERABLE_REF accepts and the shapes a brief writes: owner/name, owner/name#123, an
@@ -467,10 +463,10 @@ function refuseRetiredRepo(deliverable: Json, list: string[], description: Json)
 // never the whole brief: a product PR whose description notes a follow-up pin bump on the instance, or an apply task quoting
 // a product PR rubric, still files. The repo is the one the kernel's directory names, so this works for any instance.
 const INSTANCE_REPO_ERROR = "the instance repo changes only through apply — file this as `deliverable: apply` with a rubric on the apply card and the commit on `main`, not a PR.";
-const PR_HEADER = /Graded before done \(pr:([^)]*)\)/gi;
+const PR_HEADER = /Rubric \(pr:([^)]*)\)/gi;
 /** A sentence that opens a PR: the only statement of a ref-less `pr` brief's target. */
 const PR_TARGET = /\b(?:open|file|raise|submit|create|land|merge)\b[^.;\n]{0,60}?\b(?:PR|pull request)\b/i;
-/** Refuses a PR aimed at the instance repo: a `pr` deliverable's ref or rubric, a copied `Graded before done (pr:` header's
+/** Refuses a PR aimed at the instance repo: a `pr` deliverable's ref or rubric, a copied `Rubric (pr:` header's
  * ref, or — when the ref is omitted — a description that opens a PR in the instance repo. */
 function refuseInstanceRepoPr(deliverable: Json, list: string[], description: Json) {
   const instance = cx().dir.repos?.instance?.toLowerCase();
@@ -484,26 +480,6 @@ function refuseInstanceRepoPr(deliverable: Json, list: string[], description: Js
   for (const m of text.matchAll(PR_HEADER)) targets.push(m[1] ?? "");
   if (targets.flatMap(reposIn).includes(instance)) throw new Error(INSTANCE_REPO_ERROR);
 }
-// A criterion that is purely a negative ("No app code ... change was made", "the live sha is unchanged") can never be shown,
-// so it fails grading every time: one that starts with No/Nothing/Never or claims something unchanged is refused, unless it
-// is about what the grader does see in facts or pages (errors, warnings, incidents, failing checks, findings, CVEs, overflow).
-const NEGATIVE = /^(?:no|nothing|never)\s|\bunchanged\b|\bnot (?:been )?(?:changed|modified|touched)\b|\bno\b[^.;]{0,80}\bchanges?\b/i;
-const CHECKABLE_NEGATIVE = /\b(?:errors?|warnings?|incidents?|failing|failed|findings?|cves?|overflow|horizontal scroll\w*|broken links?|404s?|conflicts?|vulnerabilit\w*|secrets?|dependenc\w*|tests? pass\w*|regressions?)\b/i;
-const unprovable = (c: Json) => NEGATIVE.test(c) && !CHECKABLE_NEGATIVE.test(c);
-// Graded on evidence (owner, 2026-11-15): a criterion names a fact the grader is given. 73% of the criteria it could not
-// confirm in a day of grades were "unknown", asked of facts nobody gives it; these are the ones code can tell apart.
-const FACTS = "a PR merged into its base; a named check green on the PR's head; what the PR's diff changes (a file, a line, a test that covers X); an app deployed at a commit (the PR's merge commit) and healthy, with no open incident; what a live page at a path shows; an apply card applied, and the change it carried; a file attached to the task (its name, its contents); what a comment on the task says";
-const NO_FACT: [RegExp, string][] = [
-  [/\bafter (?:the |its |a )?deploy\w*\b|\bpost-deploy\b|\bthe next \d+\b|\bover (?:the next |a |\d+ ?)(?:h|hours?|days?|weeks?)\b|\b(?:\d+|two|three) consecutive\b|\bconsecutive runs?\b/i, "it asks what happens after the work is finished (later runs, a time window), and the grader sees the work as it stands when it finishes. Name what the change shows now instead, e.g. \"a test in the diff covers X\" or \"the /x page shows Y\""],
-  [/\b(?:returns?|responds? with) (?:an? )?(?:HTTP |status )?[1-5]\d\d\b/i, "the grader calls no API. Name a page at a path instead (it renders the page and sees its HTTP status and text), or \"a test in the diff covers the 400 for X\""],
-  [/\b(?:npm|pnpm|yarn) (?:run )?test\b|\bpytest\b|\bgo test\b|\bcargo test\b/i, "the grader runs no tests. Name the CI check instead: \"the tests check is green on the PR's head\", and \"a test in the diff covers X\" for what it must cover"],
-];
-// A page path the grader renders (grade.ts rubricPaths): "/health returns 200" is its HTTP status, which it does see.
-const PAGE_PATH = /(?<![\w:/.~-])\/[A-Za-z0-9._~-]/;
-/** Why the grader can't check this criterion from any fact it is given, or undefined. */
-const noFact = (c: string) => NO_FACT.find(([re], i) => re.test(c) && !(i === 1 && PAGE_PATH.test(c)))?.[1];
-// A criterion claiming a repository file's contents lack something cannot be shown from a diff: one rule, shared
-// byte-identically with the grading service that files and amends the row (services/shared/absence.ts), applied in rubricCriteria.
 // A brief that claims part of the tree is untouched while its own tests or requirements change that part reads as a
 // contradiction: the reviewer takes the claim literally and rejects the extra change as out of scope. Flagged where it is
 // filed, while the delegator can still reword it; the handbook rule is the judgment.
@@ -541,32 +517,22 @@ function metricWarning(description: Json, ...at: Json[]) {
   if (!stale.length) return undefined;
   return `This brief states a host or fleet metric with no time it was measured within 15 minutes of the brief (${stale.map((c: Json) => `"${c.slice(0, 90)}"`).join(", ")}). ${MEASURED_FIX}`;
 }
-/**
- * The rubric's criteria as filed or amended, validated once so both routes apply the same rules: 3-8, each at most 200
- * characters, no unprovable negative, no criterion naming a fact the grader isn't given, and no claim that a file's
- * contents lack something (a diff can't show it). Throws on the first criterion that breaks a rule.
- */
-function rubricCriteria(rubric: Json, kind?: Json) {
+/** The rubric's criteria, validated once: 3-8, each at most 200 characters. Throws when it breaks a rule. */
+function rubricCriteria(rubric: Json) {
   const list = (Array.isArray(rubric) ? rubric : []).map((c) => String(c).trim()).filter(Boolean);
-  if (list.length && (list.length < 3 || list.length > 8 || list.some((c) => c.length > 200))) throw new Error("rubric: 3-8 checkable criteria, each at most 200 characters");
-  const negative = list.find(unprovable);
-  if (negative) throw new Error(`rubric: "${negative.slice(0, 120)}" is a negative no evidence can show (the grader sees only what exists, so it fails every time): name what was delivered instead (e.g. "the PR changes only docs/plan.md", not "no code changed"). Checkable negatives such as "no console errors" or "no open incident" are fine.`);
-  const absent = uncheckableAbsence(list, kind === undefined ? undefined : String(kind));
-  if (absent) throw new Error(`rubric: "${absent.slice(0, 120)}" claims file contents are absent, which the grader can't see: it is given the diff, not the resulting files, so no diff can show a token is gone from a whole file. Name a diff-decidable alternative instead (e.g. "the diff removes every \`Linus\` line from docs/a.md").`);
-  const blind = list.find(noFact);
-  if (blind) throw new Error(`rubric: "${blind.slice(0, 120)}" names nothing the grader can see: ${noFact(blind)}. Each criterion names one of the facts the grader is given: ${FACTS}.`);
+  if (list.length && (list.length < 3 || list.length > 8 || list.some((c) => c.length > 200))) throw new Error("rubric: 3-8 criteria, each at most 200 characters");
   return list;
 }
-/** The rubric to file for a delegation to `target`, or undefined (not graded); throws when a graded assignee gets no deliverable. */
+/** The rubric to file for a delegation to `target`, or undefined (none); throws when a graded assignee gets no deliverable. */
 function gradeFor(target: Json, rubric: Json, deliverable: Json, description: Json) {
   const kind = deliverable?.kind;
   if (kind != null && !DELIVERABLES.includes(kind)) throw new Error(`deliverable.kind is one of ${DELIVERABLES.join(", ")}`);
-  const list = rubricCriteria(rubric, kind);
+  const list = rubricCriteria(rubric);
   refuseRetiredRepo(deliverable, list, description);
-  // Read-only work (a report, a question) ships nothing to check: its answer is the deliverable, and the delegator reads it.
+  // Read-only work (a report, a question) files no rubric: its answer is the deliverable, and the delegator reads it.
   if (kind === "none" || kind === "report") return undefined;
   if (!kind) {
-    if (gradedAgent(target.id)) throw new Error(`${target.name}'s work is graded: name the deliverable ({kind: pr | app | apply | file | report, ref}, or kind none when nothing ships, e.g. a question) and, ideally, a rubric (see "Graded work" in your instructions)`);
+    if (gradedAgent(target.id)) throw new Error(`${target.name}'s work needs a deliverable ({kind: pr | app | apply | file | report, ref}, or kind none when nothing ships, e.g. a question) and, ideally, a rubric (see the delegate-work skill)`);
     if (list.length) throw new Error("a rubric needs its deliverable ({kind, ref})");
     return undefined;
   }
@@ -577,9 +543,9 @@ function gradeFor(target: Json, rubric: Json, deliverable: Json, description: Js
 // The ref lands in the description the runner reads: one token of a strict shape, never a hidden <!-- … --> marker.
 const DELIVERABLE_REF = /^(?:https:\/\/[A-Za-z0-9.-]+(?::\d+)?(?:\/[A-Za-z0-9._~%/#?=&+-]*)?|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:#\d+)?|[a-z0-9][a-z0-9-]{0,62})$/;
 const noMarkers = (s: Json) => String(s).replace(/<!--|-->/g, "").slice(0, 500);
-/** The description's copy of a filed rubric (the board keeps the one the grader uses). */
-const gradedText = (grade: Json) => (grade ? `\n\nGraded before done (${grade.deliverable.kind}${grade.deliverable.ref ? `: ${grade.deliverable.ref}` : ""}):${grade.rubric.length ? grade.rubric.map((c: Json, n: Json) => `\n${n + 1}. ${c.replace(/<!--|-->/g, "")}`).join("") : ` the standard ${grade.deliverable.kind} criteria.`}` : "");
-/** Files the rubric with the grading module as the caller (its assertion); the task exists either way, so a failure is reported, not thrown. */
+/** The description's copy of a filed rubric (the grading module keeps the one the check uses). */
+const gradedText = (grade: Json) => (grade ? `\n\nRubric (${grade.deliverable.kind}${grade.deliverable.ref ? `: ${grade.deliverable.ref}` : ""}), checked against your done report after you finish:${grade.rubric.length ? grade.rubric.map((c: Json, n: Json) => `\n${n + 1}. ${c.replace(/<!--|-->/g, "")}`).join("") : ` the standard ${grade.deliverable.kind} criteria.`}` : "");
+/** Files the rubric with the grading module as the caller (its assertion). The module treats an identical replay as a no-op and lets the filer replace an open row; the task exists either way, so a failure is reported, not thrown. */
 async function fileGrade(issueId: string, grade: Json) {
   if (!grade) return {};
   try {
@@ -590,58 +556,16 @@ async function fileGrade(issueId: string, grade: Json) {
     return { graded: false, grade_error: String((err as Error).message ?? err).slice(0, 200) };
   }
 }
-/**
- * Replaces a task's filed rubric in place, as the caller (the same assertion a filing uses): the grading module decides who
- * may do it (the task's delegator, or the row's recorded filer) and refuses a settled row. Unlike a filing this is not
- * fire-and-forget: the agent asked for it, so a refusal is reported as the error it is.
- */
-async function amendGrade(issueId: string, rubric: string[]) {
-  const res = await fetch(`${GRADING}/grades/amend`, { method: "POST", headers: { "x-aidenhq-caller": cx().assertion, "content-type": "application/json" }, body: JSON.stringify({ issue: issueId, rubric }), signal: AbortSignal.timeout(20_000) });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(`the rubric was not amended: ${body.error ?? `grading answered ${res.status}`}`);
-  return { amended: true, state: body.state, rubric: body.rubric };
-}
-/**
- * A task's filed grade (the grading module's GET /grades/<task>), or undefined when it can't be read. `strict` makes a refused
- * or failed read an error instead: a caller that is not allowed to see the row must be told so, never told there is no rubric.
- */
-async function readGrade(issueId: string, strict = false) {
-  try {
-    const res = await fetch(`${GRADING}/grades/${encodeURIComponent(issueId)}`, { headers: { "x-aidenhq-caller": cx().assertion }, signal: AbortSignal.timeout(20_000) });
-    if (!res.ok) {
-      if (!strict) return undefined;
-      const body = await res.json().catch(() => ({}));
-      throw new Error(`the task's filed rubric could not be read (grading answered ${res.status}${body.error ? `: ${body.error}` : ""})`);
-    }
-    return (await res.json()).grade;
-  } catch (err) {
-    if (!strict) return undefined;
-    throw err;
-  }
-}
-/** Whether a filed grade is exactly what this delegation would file. */
-const sameFiling = (g: Json, grade: Json) => Boolean(g && grade) && JSON.stringify(g.rubric) === JSON.stringify(grade.rubric) && JSON.stringify(g.deliverable) === JSON.stringify(grade.deliverable);
-/**
- * A delegation repeated under the same parent and marker with a corrected deliverable: reads the task's filed grade and, when
- * it differs, re-files it on the existing task so the correction keeps its comments, files and runs. A plain retry files
- * nothing, and so does a grade that cannot be read just now (the next retry does it).
- */
-async function refileGrade(existing: Json, grade: Json) {
-  const filed = await readGrade(existing.id);
-  if (!filed || sameFiling(filed, grade)) return {};
-  const r = await fileGrade(existing.id, grade);
-  return r.graded ? { refiled: true } : r;
-}
-/** A graded or waiting delegation of this caller's still parked (its rubric or its blockers failed to file): a retry of the delegation starts it. */
+/** A waiting delegation of this caller's still parked (its blockers failed to attach): a retry of the delegation starts it. */
 const parked = (i: Json, me: Json, hold: Json) => Boolean(hold) && i.status === "backlog" && i.createdByAgentId === me.id;
 /**
- * Files a graded task's rubric, then starts the task: backlog to todo, or to blocked on `blockers` (the open tasks it waits on;
- * the kernel moves it to todo and wakes its agent once they are all done or cancelled). A step that fails leaves the task parked
- * and is an error: the same delegation again (its marker, or its open sibling) files the rubric (idempotent) and starts it.
+ * Files a task's rubric, then starts a parked task: backlog to todo, or to blocked on `blockers` (the open tasks it waits on;
+ * the kernel moves it to todo and wakes its agent once they are all done or cancelled). A rubric that fails to file is
+ * reported in the result and never blocks the task. A failed start leaves the task parked and is an error: the same
+ * delegation again (its marker, or its open sibling) starts it.
  */
-async function startGraded(i: Json, grade: Json, blockers: string[] = []) {
+async function startTask(i: Json, grade: Json, blockers: string[] = []) {
   const graded = await fileGrade(i.id, grade);
-  if (grade && !graded.graded) throw new Error(`${i.identifier} is filed but not started: its rubric couldn't be filed (${graded.grade_error}). Call the same delegation again in a minute to start it.`);
   if (i.status === "backlog") {
     const to = blockers.length ? "blocked" : "todo";
     try {
@@ -668,20 +592,14 @@ async function afterIds(after: Json, parent: Json) {
   }
   return ids;
 }
-/** A close the finish gate held or reopened (202): its last comment part goes on as a comment (it is evidence), the status is the check's. */
-async function heldClose(issue: Json, f: Json, comment: Json) {
-  if (!f.held && !f.reopened) return undefined;
-  if (comment && f.held) await api("POST", `/api/issues/${issueRef(issue)}/comments`, { body: comment });
-  return { ...(await brief(await api("GET", `/api/issues/${issueRef(issue)}`))), ...(f.held ? { grading: GRADING_NOTE } : { reopened: f.reopened.reason }) };
-}
 const DELIVERABLE_INPUT = {
   type: "object",
-  description: "what the task ships, graded before it may close: pr (ref: the repo or PR link), app (ref: the app name), apply, file (the assignee attaches it with task_file_upload). report (a diagnosis, research or another read-only answer) and none (a question) are not graded: you read the answer yourself. Required for an assignee whose work is graded (Engineers, the DevOps, Platform and UI/UX Engineers)",
+  description: "what the task ships: pr (ref: the repo or PR link), app (ref: the app name), apply, file (the assignee attaches it with task_file_upload). report (a diagnosis, research or another read-only answer) and none (a question) carry no rubric: you read the answer yourself. Required for an assignee whose work ships something (Engineers, the DevOps, Platform and UI/UX Engineers)",
   properties: { kind: { type: "string", enum: DELIVERABLES }, ref: { type: "string" } },
   required: ["kind"],
   additionalProperties: false,
 };
-const RUBRIC_INPUT = { type: "array", items: { type: "string" }, description: `3-8 criteria the grader checks from evidence, each naming a fact it is given: ${FACTS}. Never "high quality". Omit for the standard criteria of the deliverable's kind` };
+const RUBRIC_INPUT = { type: "array", items: { type: "string" }, description: "3-8 criteria, a checklist one model pass reads against the assignee's done report after the task closes (anything the report shows not done is sent to you). Never \"high quality\". Omit for the standard criteria of the deliverable's kind" };
 /** Creates a task assigned to `target` under the caller's current task (or a task assigned to the caller); idempotent per parent and marker. */
 /**
  * What a feedback agent (an app's registry `feedback_to`; setup marks it in the grants table) writes for others starts with
@@ -701,7 +619,7 @@ async function assignTask(me: Json, target: Json, { title, description, parent, 
   // A task that waits on others is filed parked, then blocked on them: it never runs (todo) before they close.
   // Keyed on `after` itself, not its open blockers: a retry after they closed still finds and starts the parked child.
   const blockers = await afterIds(after, p);
-  const hold = grade || after?.length;
+  const hold = after?.length;
   const origin = `${verb} ${me.name} (agent)${p ? ` from ${p.identifier}` : ""}. This is an agent request, not the owner's words.`;
   let src = "";
   if (marker) {
@@ -709,12 +627,12 @@ async function assignTask(me: Json, target: Json, { title, description, parent, 
     if (!key) throw new Error("invalid marker");
     src = `delegate:${p?.identifier ?? "root"}:${key}`;
     const existing = await findByMarker(src, `${OPEN_STATUSES},done,cancelled`);
-    if (existing && parked(existing, me, hold)) return { identifier: existing.identifier, created: false, ...(await startGraded(existing, grade, blockers)) };
+    if (existing && parked(existing, me, hold)) return { identifier: existing.identifier, created: false, ...(await startTask(existing, grade, blockers)) };
     if (existing) {
-      // The same parent and marker with a corrected deliverable re-files it on the existing task; a task already closed, or a
-      // plain retry of the same delegation, is left untouched.
+      // The same parent and marker again re-files the rubric on the existing open task (the module replaces it while the row is
+      // open and ignores an identical replay); a task already closed is left untouched.
       const own = existing.createdByAgentId === me.id;
-      const refiled = grade && own && OPEN_STATUSES.split(",").includes(existing.status) ? await refileGrade(existing, grade) : {};
+      const refiled = grade && own && OPEN_STATUSES.split(",").includes(existing.status) ? await fileGrade(existing.id, grade) : {};
       return { identifier: existing.identifier, created: false, ...refiled };
     }
   }
@@ -732,14 +650,14 @@ async function assignTask(me: Json, target: Json, { title, description, parent, 
   };
   const open = p ? await openSiblings(p, target) : [];
   const same = open.find((o) => similar(o.title, body.title) >= SAME_TITLE || similar(o.description, body.description) >= SAME_BRIEF);
-  if (same && parked(same, me, hold)) return { identifier: same.identifier, created: false, assignee: target.name, ...(await startGraded(same, grade, blockers)) };
+  if (same && parked(same, me, hold)) return { identifier: same.identifier, created: false, assignee: target.name, ...(await startTask(same, grade, blockers)) };
   if (same)
     throw new Error(
       `Refused: ${same.identifier} ("${String(same.title).slice(0, 120)}", ${same.status}) is already ${(await nameOf(same.assigneeAgentId)) ?? target.name}'s open task for this brief under ${p.identifier}. To change it, comment on ${same.identifier} with what changed (task_comment wakes them). To replace it, cancel ${same.identifier} first (task_cancel, with why), then delegate again.`,
     );
-  // A graded task is filed parked and starts only once its rubric is on file, so it never runs (and closes) ungraded.
+  // Only a task that waits on others is filed parked; its rubric is filed right after it.
   const i = await api("POST", `/api/companies/${encodeURIComponent(COMPANY())}/issues`, { ...body, ...(hold ? { status: "backlog" } : {}) });
-  const graded = await startGraded(i, grade, blockers);
+  const graded = await startTask(i, grade, blockers);
   const also = open.length ? { open_tasks: `${target.name} still has ${open.map((o) => `${o.identifier} ("${String(o.title).slice(0, 80)}", ${o.status})`).join(", ")} open under ${p.identifier}: if this task replaces one, cancel it.` } : {};
   return { identifier: i.identifier, created: true, assignee: target.name, ...(blockers.length ? { status: "blocked", waits_on: blockers.length } : {}), ...graded, ...also };
 }
@@ -1404,22 +1322,19 @@ const TOOLS: Record<string, Tool> = {
       // Idempotency keys expire after 7 days in Paperclip, so also look for an open task
       // (or, with dedupe_closed, a closed one) that already carries one of these markers.
       const statuses = dedupe_closed ? `${OPEN_STATUSES},done,cancelled` : OPEN_STATUSES;
-      // Work handed to a graded agent is graded as a delegation is (refused here, before it is created, without a deliverable).
+      // Work handed to an agent that ships something carries a rubric as a delegation does (refused here, before it is created, without a deliverable).
       const grade = target ? gradeFor(target, rubric, deliverable, description) : undefined;
-      const start = status !== "backlog";
       for (const k of new Set(markers)) {
         const existing = await findByMarker(k, statuses);
-        // A graded task left parked by a failed rubric filing: this retry files it and starts it.
-        if (existing && start && parked(existing, { id: g.id }, grade)) return { ...(await brief(existing)), deduplicated: true, ...(await startGraded(existing, grade)) };
-        if (existing) return { ...(await brief(existing)), deduplicated: true };
+        // A retry of this filing (its own marker) files the rubric again on the open task (the module ignores an identical replay).
+        if (existing) return { ...(await brief(existing)), deduplicated: true, ...(grade && k === m && OPEN_STATUSES.split(",").includes(existing.status) ? await fileGrade(existing.id, grade) : {}) };
       }
       // A new filing only: an existing task returned above is a retry, not a new PR, so the instance-repo refusal never blocks it.
       refuseInstanceRepoPr(deliverable, (Array.isArray(rubric) ? rubric : []).map((c) => String(c).trim()).filter(Boolean), description);
       const body: Args = {
         title: String(title).slice(0, 200),
         description: `${origin}${String(description).replace(/<!--|-->/g, "").slice(0, 60_000)}${gradedText(grade)}\n\n<!-- source:${m} -->`,
-        // A graded task is filed parked and starts only once its rubric is on file (startGraded), so it never runs ungraded.
-        status: (status === "backlog" || grade) && assigneeAgent ? "backlog" : "todo",
+        status: status === "backlog" && assigneeAgent ? "backlog" : "todo",
         priority: PRIORITIES.includes(priority) ? priority : "medium",
         labelIds: await labelIds(labels ?? []),
         idempotencyKey: idempotencyKey(m),
@@ -1436,8 +1351,8 @@ const TOOLS: Record<string, Tool> = {
       }
       const i = await api("POST", `/api/companies/${encodeURIComponent(COMPANY())}/issues`, body);
       if (i.deduplicated) return { ...(await brief(i)), deduplicated: true, ...(warning ? { warning } : {}) };
-      const graded = start ? await startGraded(i, grade) : await fileGrade(i.id, grade);
-      return { ...(await brief(start && grade ? { ...i, status: "todo" } : i)), deduplicated: false, ...graded, ...(warning ? { warning } : {}) };
+      const graded = await fileGrade(i.id, grade);
+      return { ...(await brief(i)), deduplicated: false, ...graded, ...(warning ? { warning } : {}) };
     },
   },
   task_team: {
@@ -1650,51 +1565,6 @@ const TOOLS: Record<string, Tool> = {
       // A brief refreshed on the day it was created: its numbers are measured then too.
       const warning = description !== undefined && isBrief(current?.description, []) ? metricWarning(description, Date.parse(current.createdAt) || Date.now(), Date.now()) : undefined;
       return warning ? { ...i, warning } : i;
-    },
-  },
-  task_amend_rubric: {
-    description:
-      "Replace a graded task's filed rubric in place, for a delegator whose criteria turned out unsatisfiable (a later comment can amend the ask, never a criterion). Takes the full new rubric (3-8 criteria, the same checks a delegation applies) and keeps the deliverable as filed: the grader reads this list from then on, and the row restarts (open, no attempts, no verdicts). Only the task's delegator or the rubric's recorded filer may do it, and only while its grade is unsettled; a settled row is refused. The task's description stays as it is.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        issue: { type: "string", description: "the graded task, e.g. WOR-12" },
-        rubric: RUBRIC_INPUT,
-      },
-      required: ["issue", "rubric"],
-      additionalProperties: false,
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    run: async ({ issue, rubric }: Args) => {
-      // An amendment always names its criteria: there is no template to fall back to when a delegator is correcting a list.
-      if (!Array.isArray(rubric) || !rubric.filter((c) => String(c).trim()).length) throw new Error("rubric: an amendment replaces the whole list, 3-8 checkable criteria");
-      const i = await api("GET", `/api/issues/${issueRef(issue)}`);
-      // The deliverable stays as filed, so the same checks a filing applies are applied against it: an absence claim a diff
-      // can't show, a retired repo, and a criterion the grader isn't given the facts for.
-      const filed = await readGrade(i.id, true);
-      if (!filed?.deliverable?.kind) throw new Error(`the rubric was not amended: ${i.identifier ?? i.id} has no filed rubric to amend (its rubric is filed with its delegation)`);
-      const list = rubricCriteria(rubric, filed.deliverable.kind);
-      refuseRetiredRepo(filed.deliverable, list, "");
-      return amendGrade(i.id, list);
-    },
-  },
-  task_rebind: {
-    description:
-      "fleet-settle role (the Fleet Steward): move a graded task's deliverable to the work that actually landed (a merged PR its own PRs didn't name, e.g. `owner/name#12`), its rubric kept, and have the grader grade it again at once. The same kind only; a settled grade or a closed task is refused. Verify first that the work landed and meets the brief.",
-    inputSchema: {
-      type: "object",
-      properties: { issue: { type: "string", description: "the graded task, e.g. WOR-12" }, deliverable: DELIVERABLE_INPUT },
-      required: ["issue", "deliverable"],
-      additionalProperties: false,
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    run: async ({ issue, deliverable }: Args) => {
-      await requireRole("fleet-settle", "rebind a task's deliverable");
-      const i = await api("GET", `/api/issues/${issueRef(issue)}`);
-      const res = await fetch(`${GRADING}/grades/rebind`, { method: "POST", headers: { "x-aidenhq-caller": cx().assertion, "content-type": "application/json" }, body: JSON.stringify({ issue: i.id, deliverable }), signal: AbortSignal.timeout(20_000) });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(`the deliverable was not rebound: ${body.error ?? `grading answered ${res.status}`}`);
-      return body;
     },
   },
   task_comments: {
@@ -1990,12 +1860,8 @@ const TOOLS: Record<string, Tool> = {
       // Your part of the user's task stays open for their replies.
       const current = issue ? await requireHeld(issue) : await api("GET", `/api/issues/${issueRef(CURRENT())}`);
       if (await isOwnPart(current)) throw new Error("this is your part of the user's task: it stays open for their replies. Finish with task_handoff instead; the user closes the task.");
-      // A graded task waits for the grader (the kernel's finish gate holds it): the result goes on as a comment instead.
       const leading = await postLeadingParts(target, comment);
-      const i = await patchIssue(target, { status: "done", comment: leading });
-      const held = await heldClose(target, i, leading);
-      if (held) return held;
-      return brief(i);
+      return brief(await patchIssue(target, { status: "done", comment: leading }));
     },
   },
   task_block: {

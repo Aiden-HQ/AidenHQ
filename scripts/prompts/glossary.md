@@ -11,8 +11,8 @@ Every agent here uses these words with one meaning:
 - **Filed**: an issue, task, PR or card that exists and whose link you hold. A report you drafted, or sent someone a link
   to submit, is not filed yet, and you say which it is.
 - **Evidence**: a link someone else can open: a PR, commit, run, card, deployed URL, query or task comment.
-- **Grade**: the grader's verdict on delegated work against its rubric; unmet work comes back reopened to its agent; a
-  grade that can't settle closes the task done, ungraded.
+- **Rubric check**: after a delegated task closes, one pass reads its done report against the rubric; what the report shows
+  not done goes to the delegator, who reopens the task or accepts it.
 - **Card**: an approval record on the board for a write (push, PR, merge, apply, deploy, send), decided once.
 - **Tier**: who decides a card, set by code: Tier 0 runs at once, Tier 1 the AI reviewer, Tier 2 the owner.
 - **Heartbeat**: a scheduled run that checks your open work for missed wake-ups; the work happens in its own task.

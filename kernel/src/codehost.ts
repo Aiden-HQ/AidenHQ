@@ -1,5 +1,5 @@
 // The one path to the code hosts' operations: every caller asks POST /v1/codehost/:op here with its own module token. That
-// covers github-mcp, apps-mcp, the grader and the ci module's runner registration. The kernel checks the caller's grant once
+// covers github-mcp, apps-mcp and the ci module's runner registration. The kernel checks the caller's grant once
 // (its module.yaml `codehost:`, kernel/schemas/codehost.json, compiled into the kernel's module table; owner authority,
 // loader/authority.ts). It then calls the github module's code host with the code host's own key, the one it calls its
 // executor with, so the code host serves ops to the kernel alone and only it holds the owner's GitHub token: no op returns it.
@@ -9,9 +9,7 @@
 //                fetches it itself, so host git never runs in a workspace a box can write
 //   fetch        {repo, ref: refs/heads/* | refs/heads/<b> | refs/pull/<n>/head} → a git bundle of those refs
 //   head         {repo, ref: <branch>} → {sha}
-//   read         {repo, kind: pr | issue | diff | job | prs | file | run | exists, ...} → that object (a PR or issue as the grader
-//                reads it, a diff, a job, the open PRs, a workflow run's identity; `file` a listed path's text at a commit, `exists`
-//                whether such a path is there)
+//   read         {repo, kind: pr | prs, ...} → that object (a PR's state, or the open PRs)
 //   comment      {repo, number, body, id?} → {id}: posts (or edits comment `id`) with the "via AidenHQ" footer
 //   commit       {repo, branch, path, content, parent, message} → {sha}: one file as the owner, with the trailer; 409 when the branch moved off parent
 //   setup        {repo, files, title, body, task} → {pr_url, branch, tip}: files the code host's own Tier 1 `github.setup` write
@@ -64,9 +62,9 @@ export type Answer = Readable & { statusCode?: number; headers: http.IncomingHtt
 // A module's grant (its `codehost:`, taken literally): repos are owner/name, owner/*, */* (anything the owner's account reaches), or
 // @instance, @product, @agents/<name|*> (in the fleet org: github_fleet_org), @orgs (every repo of each owner the instance allows,
 // github_orgs) and @maintained (the repos it maintains, maintainer_repos), which resolve from the kernel's own configuration (its
-// repos), never from a module's settings. A commit grant names the paths it writes (a setup grant the same, where a `*` stands for one path segment), an evidence grant the files it reads; a
+// repos), never from a module's settings. A commit grant names the paths it writes (a setup grant the same, where a `*` stands for one path segment), a
 // runner grant, the orgs.
-export type OpsGrant = { module: string; snapshot?: { repos: string[] }; clone?: { repos: string[] }; fetch?: { repos: string[] }; read?: { repos: string[] }; evidence?: { repos: string[]; paths: string[] }; exists?: { repos: string[] }; comment?: { repos: string[] }; commit?: { repos: string[]; paths: string[] }; setup?: { repos: string[]; paths: string[] }; runner?: { orgs: string[] } };
+export type OpsGrant = { module: string; snapshot?: { repos: string[] }; clone?: { repos: string[] }; fetch?: { repos: string[] }; read?: { repos: string[] }; comment?: { repos: string[] }; commit?: { repos: string[]; paths: string[] }; setup?: { repos: string[]; paths: string[] }; runner?: { orgs: string[] } };
 
 const SLUG = /^([\w.-]+)\/([\w.-]+|\*)$/;
 const DOTS = /^\.+$/;
@@ -129,11 +127,7 @@ function ownerNeed(answer: string): Need | undefined {
   const need = readNeed({ isError: true, structuredContent: { error: "needs_owner", need: n as Record<string, unknown> } });
   return need && { ...need, detail: typeof j!.error === "string" ? j!.error : need.detail };
 }
-const READ_KINDS = ["pr", "issue", "diff", "job", "prs", "file", "run", "exists", "commit"];
-/** The kinds their own narrow grant covers: a `file` read (a listed path's text) is `evidence`; `exists` (only whether a path is a directory) has its own grant. */
-const KIND_GRANT: Record<string, "evidence" | "exists"> = { file: "evidence", exists: "exists" };
-const PATH = /^[\w.-][\w./-]{0,499}$/;
-const SHA40 = /^[0-9a-f]{40}$/;
+const READ_KINDS = ["pr", "prs"];
 const int = (v: unknown, what: string) => {
   const n = Number(v);
   if (!Number.isSafeInteger(n) || n < 1) throw fail(400, `${what} must be a positive integer`);
@@ -159,19 +153,6 @@ function shape(op: string, b: Record<string, unknown>, paths: string[] = [], set
     const kind = String(b.kind ?? "");
     if (!READ_KINDS.includes(kind)) throw fail(400, `kind is one of ${READ_KINDS.join(", ")}`);
     if (kind === "prs") return { kind };
-    if (kind === "job") return { kind, id: int(b.id, "id") };
-    if (kind === "run") return { kind, id: int(b.id, "id") };
-    if (kind === "commit") {
-      const ref = String(b.ref ?? "");
-      if (!SHA40.test(ref)) throw fail(400, "ref is a full commit sha");
-      return { kind, ref };
-    }
-    if (kind === "file" || kind === "exists") {
-      const path = String(b.path ?? ""), ref = String(b.ref ?? "");
-      if (!PATH.test(path) || path.split("/").some((s) => s === ".." || s === "." || !s)) throw fail(400, `${path.slice(0, 100)} is not a path in the repository`);
-      if (!SHA40.test(ref)) throw fail(400, "ref is a full commit sha");
-      return { kind, path, ref };
-    }
     return { kind, number: int(b.number, "number") };
   }
   if (op === "comment") return { number: int(b.number, "number"), body: text(b.body, "body", 65_000), ...(b.id == null ? {} : { id: int(b.id, "id") }), ...(b.marker == null ? {} : { marker: text(b.marker, "marker", 100) }) };
@@ -236,8 +217,7 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
     const onLocal = m !== null && same(m[1]!, LOCAL_ORG);
     if (!onLocal && !k?.executor) throw fail(404, NO_HOST);
     if (!m || DOTS.test(m[1]!) || DOTS.test(m[2]!) || m[2] === "*") throw fail(400, `${repo} is not owner/name`);
-    const kindOf = op === "read" ? String(b?.kind ?? "") : "";
-    const key = KIND_GRANT[kindOf] ?? GRANT_KEY[op]!;
+    const key = GRANT_KEY[op]!;
     const grant = g?.[key as "snapshot"];
     if (!covers(repo, grant?.repos, repos())) throw fail(403, `${module} has no ${key} grant on ${repo}`);
     if (onLocal) {
@@ -264,8 +244,6 @@ export function createCodehost({ grants, repos, kind, secret, resolver, local = 
       out.ref = ref;
     } else {
       out = { ...out, ...shape(op, b, (g as OpsGrant).commit?.paths, (g as OpsGrant).setup?.paths) };
-      // A `file` read names its path here too: the evidence grant lists the exact ones it may read, never a prefix.
-      if (op === "read" && String(b?.kind) === "file" && !(g as OpsGrant).evidence?.paths.includes(String(out.path ?? ""))) throw fail(403, `the evidence grant doesn't list ${String(out.path ?? "").slice(0, 200)}`);
     }
     return forward(k!, module, op, out);
   }

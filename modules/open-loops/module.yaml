@@ -19,7 +19,7 @@ agents:
       github?: [ github_issue_read, github_search_issues ]
       google_workspace: [ docs_read, drive_search_files, drive_read_file, calendar_list_events, calendar_get_event, gmail_search, gmail_read_thread ]
       owner_channel: [ notify ]
-      paperclip_tasks: [ task_current, task_get, task_comments, task_list, task_update, task_comment, task_handoff, task_block, task_cancel, task_join, task_team, task_delegate, task_amend_rubric, task_finish ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_list, task_update, task_comment, task_handoff, task_block, task_cancel, task_join, task_team, task_delegate, task_finish ]
 routines:
   open-loops-sweep:
     title: Open loops sweep

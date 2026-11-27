@@ -42,7 +42,7 @@ journeys:
       - { name: ci,      label: CI,           from: [pr.checks_started, pr.pushed] }
       - { name: merge,   label: Merge review, from: [record.filed], where: { kind: [github.merge, codehost-local.merge] } }
       - { name: deploy,  label: Deploy,       from: [pr.merged] }
-      - { name: finish,  label: Finishing,    from: [pr.deployed, grade.requested] }
+      - { name: finish,  label: Finishing,    from: [pr.deployed] }
     end: [task.status_changed]
     end_where: { to: [done, cancelled] }
   - name: pr

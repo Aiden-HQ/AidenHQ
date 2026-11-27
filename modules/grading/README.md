@@ -2,22 +2,22 @@
 
 ## What it does
 
-Graded done: a delegated task's deliverable closes only once the grader finds it meeting its rubric; only a criterion
-the grader shows unmet sends it back to its agent. Fail open: a third rejected version, a grader that can't judge, or
-evidence still missing a day after a close closes it done, ungraded, and its delegator hears why. Nothing waits on you. The standard criteria per
-deliverable kind are `service/rubrics/<kind>.md`. It also holds the finish check every move to done passes and the routes the
-board reads.
+Completion checks, as housekeeping. A delegated task carries a rubric; once the task is done, one model pass reads the rubric
+against the agent's own report. Anything the report says was done counts as met, and so does anything it doesn't mention; a
+criterion is unmet only when the report itself shows it wasn't done. The result (met, or unmet with a reason per criterion) is on
+the task in the board. When something is unmet, the delegating agent gets one wake notice and decides whether to reopen.
+Nothing is held, nothing is sent back, and nothing reaches you. The standard criteria per deliverable kind are
+`service/rubrics/<kind>.md`.
 
 ## Connect
 
-Nothing to connect. The grader is a model, so it needs the OpenRouter key.
+Nothing to connect. The check is a model call, so it needs the OpenRouter key.
 
 ## What agents get
 
-No tools. Delegation is graded when an agent is `graded: true` or a `task_delegate` carries a rubric. A module holding
-`kernel.tasks` files a task with `{deliverable, rubric}` (`POST /v1/tasks`): the kernel asks `/check/rubric` (its key) to
-file the row, so that task is graded too. An `issue` deliverable is read from GitHub (state, close reason, the cited PR).
+No tools. A `task_delegate` with a rubric (required for an agent marked `graded: true`) files it here. A module holding
+`kernel.tasks` files a task with `{deliverable, rubric}` (`POST /v1/tasks`): the kernel files its rubric through `/check/rubric`.
 
 ## New installs
 
-In the default bundle. Nothing is graded until a graded task finishes.
+In the default bundle. Nothing is checked until a delegated task with a rubric closes.

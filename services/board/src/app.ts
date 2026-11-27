@@ -35,7 +35,7 @@ import { moduleAuthority, moduleStates } from "./modules.js";
 import { CommitUnreadable, agentGrants, browseModules, createResolver, marketplacesOf } from "./marketplace.js";
 import { connectionsView, readSources, readUpdates, settingsView, type Probe, type Wakes } from "./settings.js";
 import { ChangeRefused, ChangesSchema, SETTINGS_LABEL, SharePreviewSchema, changesOf, checkChange, settingsByModule, stageOf, taskFor, type Change } from "./settings-change.js";
-import { createGrading, gradePassed, type Grading } from "./grading.js";
+import { createGrading, type Grading } from "./grading.js";
 import { costReport, keyUsage, modelCatalog, modelCatalogCached, spendSummary } from "./costs.js";
 import { ledgerRange, ledgerSummary, ledgerTop } from "./cost-ledger.js";
 import { descendants, featureCost, recentFeatures, runsOf } from "./feature-cost.js";
@@ -251,8 +251,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
   if (mode !== "internal" && !opts.accounts && !opts.session) throw new Error(`the ${mode} listener needs board accounts`);
   const grading = opts.grading ?? createGrading();
   const resolveCommit = createResolver(opts.fetch ?? fetch);
-  /** The grades of these tasks; the grading module unreachable: undefined, so the caller leaves its graded closes undone. */
-  const gradesOf = (ids: string[]) => grading.grades(ids).catch((err) => (log.warn({ err: String(err) }, "grading module unreachable; not closing graded parts as done"), undefined));
+  /** The rubric rows of these tasks; the grading module unreachable: undefined (the drawer shows the check unavailable). */
+  const gradesOf = (ids: string[]) => grading.grades(ids).catch((err) => (log.warn({ err: String(err) }, "grading module unreachable"), undefined));
 
   /**
    * Every admin writes as the owner (through the kernel: agents act on their words, owner decision 2026-11-12). Which
@@ -668,10 +668,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       ownComments.set(part.id, { stamp, at });
       return at;
     };
-    // A part closes done only with a passing grade; the grading module unreachable: none closes done (cancel needs no grade).
-    const candidates = await partsToClose(open, known, ctx.assignees, ownCommentAt);
-    const view = await gradesOf(candidates.filter((c) => c.status === "done").map((c) => c.part.id));
-    const leftover = candidates.filter((c) => c.status === "cancelled" || (view && gradePassed(view, c.part.id)));
+    const leftover = await partsToClose(open, known, ctx.assignees, ownCommentAt);
     if (!leftover.length) return open;
     const busy = (await working(ctx)).map;
     const gone = new Set<string>();
@@ -798,7 +795,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       // An agent's sub-task links back to the task it works on.
       parent: parent ? { identifier: parent.identifier, title: parent.title } : null,
       crew: crew.map((m) => ({ ...m, said: said[m.agent] ?? null })),
-      grade: gradeShown(grades, issue.id, issue.status, facts),
+      grade: gradeShown(grades, issue.id, facts),
       milestones: milestonesOf(facts),
     };
   }
@@ -1222,7 +1219,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       // them (Paperclip limits concurrent list requests per client).
       const window = (body as { window?: string } | null)?.window === "7d" ? "7d" : "24h";
       const status = await fleetStatus(pc, records, kernelActivity);
-      const summary = await statusSummary(pc, recentRuns, report, records, grading, window).catch((err) => (log.warn({ err: String(err) }, "fleet summary failed"), null));
+      const summary = await statusSummary(pc, recentRuns, report, records, window).catch((err) => (log.warn({ err: String(err) }, "fleet summary failed"), null));
       // A bounded reply: the lists are what get long, and a cut-off payload is unreadable.
       return boundedFleetStatus({ ...status, summary });
     }, ["fleet-admin", "fleet-read"]) },
@@ -1898,7 +1895,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       path: /^\/api\/approvals\/(k-[0-9a-f]{16})\/explain$/,
       handle: async (m) => records.explain(m[1]!).then((explanation) => ({ explanation }), (e: Error & { status?: number }) => { throw new HttpError(e.status === 404 ? 404 : 502, e.message); }),
     },
-    { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, recentRuns, report, records, grading), m[1]!) },
+    { method: "GET", path: /^\/api\/agents\/([0-9a-f-]{36})\/scorecard$/, handle: async (m) => scorecard(await gatherFacts(pc, recentRuns, report, records), m[1]!) },
     {
       // Chats: open ones first, then the 20 newest finished ones; each with its agent and state. With `agent` (a key), that
       // agent's chats only (by the chat's own agent, handed-back ones included), no fleet-wide cap: `state=active` its open,
@@ -2407,18 +2404,11 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const patch = paperclipUpdate(issue, update, ctx);
         if (Object.keys(patch).length) await pc.updateIssue(issue.id, patch);
         log.info({ issue: issue.identifier, fields: Object.keys(patch) }, "task updated");
-        // Closed before the grader settled it: there is nothing left to grade, so its row ends (a timer catches closes made
-        // elsewhere, e.g. a cancel in Paperclip itself).
-        if (update.status === "done" || update.status === "cancelled") await grading.settle(issue.id, `the task was ${update.status} before the grader settled it`).catch((err) => log.warn({ issue: issue.identifier, err: String(err) }, "couldn't settle the grade of a closed task; the grading module's timer will"));
         // Done or cancelled closes the crew's open parts too, except one an agent is busy with or one waiting on its own trigger.
         if ((update.status === "done" || update.status === "cancelled") && issue.assigneeUserId === ctx.me) {
           const [kids, busy] = await Promise.all([pc.children(issue.id), working(ctx)]);
           const open = kids.filter((k) => !["done", "cancelled"].includes(k.status) && !waitsOnItsOwn(k) && !busy.map.has(k.identifier) && ctx.assignees.some((a) => a.kind !== "me" && a.key === k.assigneeAgentId));
-          const view = update.status === "done" ? await gradesOf(open.map((k) => k.id)) : undefined;
-          for (const k of open) {
-            if (update.status === "done" && !(view && gradePassed(view, k.id))) continue;
-            await pc.updateIssue(k.id, { status: update.status });
-          }
+          for (const k of open) await pc.updateIssue(k.id, { status: update.status });
         }
         return issueView(issue.id);
       },

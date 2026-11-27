@@ -7,7 +7,6 @@ description: "Fleet Steward, the fleet's operator: answers agents' questions fro
 # authority (role fleet-settle, owner 2026-11-22: "its only job is to keep the system running without issues and blockers"), and
 # it owns every fleet operation (owner 2026-11-23): agents' questions the kernel routes to fleet-settle (escalate.ts) and its
 # typed operations (fleet_operate, kernel.fleet_op).
-requires: [ grading ] # the detector reads the grader's failed passes
 replaces: [ fleet-ops, coach, librarian ] # the updater lists this module for an instance that ran any of them (kernel/src/updates.ts)
 roles:
   # kernel.cp-read, kernel.work-read: the control plane's tasks and agents and the kernel's jobs, records and cost, read for the detector and
@@ -19,7 +18,7 @@ roles:
   requests: [ kernel.cp-read, kernel.work-read, kernel.tasks, kernel.owner-notice, kernel.routing, kernel.flow-read, apps.read, product-issues ]
   declares:
     - { id: fleet-read, description: "The board's fleet status and the detector's incidents only (never fleet_control or relaying the owner's words)." }
-    - { id: fleet-settle, description: "The fleet's operator: settle stuck work on any agent-made task (kernel cp.ts SETTLE: answer a wait, close finished work, cancel stale tasks, task_route, task_rebind), answer the questions the kernel routes to it (escalate.ts), and file its typed operations (fleet_operate: kernel.fleet_op)." }
+    - { id: fleet-settle, description: "The fleet's operator: settle stuck work on any agent-made task (kernel cp.ts SETTLE: answer a wait, close finished work, cancel stale tasks, task_route), answer the questions the kernel routes to it (escalate.ts), and file its typed operations (fleet_operate: kernel.fleet_op)." }
     - { id: fleet-audit, description: "Read any agent's evidence (the fleet_steward connection's coach_* reads) and keep a review log (tasks bridge coach_record)." }
     - { id: librarian, description: "Read every handbook and decide proposed identity links (tasks bridge, apps-mcp)." }
     - { id: routing-tuner, description: "Read team routing decisions and their outcomes, and propose one change a day to members' repos or routing weights as a reviewed experiment (routing_*)." }
@@ -54,7 +53,7 @@ agents:
       # task, through fleet-settle. task_create/task_delegate only to delegate_to below. task_handoff only on its own part of the
       # owner's task: a todo plus a recorded wait, nothing sent to the owner; any other task is settled with task_route/task_finish/task_cancel.
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_team,
-                         task_create, task_comment, task_delegate, task_amend_rubric, task_rebind, task_route, task_handoff, task_block,
+                         task_create, task_comment, task_delegate, task_route, task_handoff, task_block,
                          task_cancel, task_finish,
                          fleet_status, fleet_catalog, fanout_map,
                          coach_record, handbook_list, handbook_read ]
@@ -174,12 +173,10 @@ services:
       port: 8097
       egress: true # the kernel's listener is a host address
       links: [ apps-mcp ] # apps-mcp's reads (role apps.read), until 4c moves it into apps-platform
-      join: [ grading ] # the grader's failed passes (grading answers only this module's token)
       data: ["steward:/data"]
       env:
         FLEET_STEWARD_STATE_FILE: /data/state.json
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
-        GRADING_URL: http://grading:8096
         FLEET_STEWARD_TOKEN_FILE: ${secrets.fleet_steward_token}
         FLEET_STEWARD_SERVICE_KEY_FILE: ${secrets.fleet_steward_service_key}
         FLEET_OPS_INTERVAL_MINUTES: "${settings.fleet_ops_interval_minutes}"

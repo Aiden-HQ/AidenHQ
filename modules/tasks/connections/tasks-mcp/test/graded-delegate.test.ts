@@ -1,12 +1,12 @@
-// Graded done through the task tools: task_delegate files the rubric with the grading module (a graded assignee must name its
-// deliverable; the ref is one strict token, so it can't forge a hidden marker in the description), and task_finish on a
-// task the kernel's finish gate holds keeps the result as a comment and leaves the status to the grader.
+// Rubrics through the task tools: task_delegate files the rubric with the grading module after the task (an assignee that ships
+// work must name its deliverable; the ref is one strict token, so it can't forge a hidden marker in the description). A rubric
+// that fails to file is reported and never blocks the task.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bridge } from "./helpers.ts";
 
-async function call(name, args, { finish, gradingDown = false, gradeReadRefused = false, assignee = "cos", feedback, repos } = {}) {
-  const seen = { created: [], filed: [], amended: [], patches: [], comments: [] };
+async function call(name, args, { gradingDown = false, assignee = "cos", feedback, repos } = {}) {
+  const seen = { created: [], filed: [], patches: [], comments: [] };
   const handler = (req, res) => {
     let body = "";
     req.on("data", (d) => (body += d));
@@ -17,10 +17,6 @@ async function call(name, args, { finish, gradingDown = false, gradeReadRefused 
       // The grading module: the caller assertion says whose call it is.
       const as = req.headers["x-aidenhq-caller"] ? "caller" : "nobody";
       if (url === "/grades") return (seen.filed.push({ ...json, as }), send({ created: true, state: "open" }));
-      if (url === "/grades/amend") return (seen.amended.push({ ...json, as }), send({ amended: true, state: "open", rubric: json.rubric }));
-      // The filed row, read before an amendment so it validates against the deliverable as filed. `gradeReadRefused` is the
-      // grading module refusing the read (a caller with no claim on the row): the tool must say so, never "no rubric".
-      if (req.method === "GET" && /^\/grades\/[^/]+$/.test(url)) return gradeReadRefused ? send({ error: "only the agent that delegated a task reads its rubric before re-filing it" }, 403) : send({ grade: { issueId: "cur", rubric, deliverable: { kind: "pr", ref: "acme/app" }, state: "open", attempts: 0, verdicts: [] } });
       if (url === "/api/agents/me") return send({ id: "cos", name: "Aiden" });
       if (url.endsWith("/agents")) return send([
         { id: "eng", name: "Kai", metadata: { setupKey: "aidenhq:engineer-openrouter", runnerEngine: true }, status: "idle" },
@@ -28,8 +24,6 @@ async function call(name, args, { finish, gradingDown = false, gradeReadRefused 
       ]);
       if (req.method === "POST" && url.endsWith("/issues")) return (seen.created.push(json), send({ id: "new", identifier: "WOR-9", title: "t", status: "todo" }));
       if (req.method === "POST" && url.endsWith("/comments")) return (seen.comments.push(json.body), send({ id: "c1" }));
-      // The kernel's finish gate on a move to done: held (202, nothing forwarded) or a failed check (503).
-      if (req.method === "PATCH" && json.status === "done" && finish) return (seen.patches.push(json), send(finish.body, finish.status));
       if (req.method === "PATCH") return (seen.patches.push(json), send({ id: "cur", identifier: "WOR-5", status: json.status }));
       if (url.startsWith("/api/issues/")) return send({ id: "cur", identifier: "WOR-5", title: "t", status: "in_progress", assigneeAgentId: assignee, parentId: null });
       send([]);
@@ -44,24 +38,25 @@ async function call(name, args, { finish, gradingDown = false, gradeReadRefused 
 const ask = { agent: "Kai", title: "Fix the total", description: "Show VAT on the totals page of acme/app." };
 const rubric = ["merged into main", "checks green on the merged head", "the totals page shows the VAT line"];
 
-test("a graded assignee needs a deliverable; the rubric goes to the board as the caller, a copy in the description", async () => {
+test("an assignee that ships work needs a deliverable; the rubric goes to the grading module as the caller, a copy in the description", async () => {
   const missing = await call("task_delegate", ask);
   assert.equal(missing.r.result?.isError, true);
-  assert.match(missing.text, /graded: name the deliverable/);
+  assert.match(missing.text, /needs a deliverable/);
   assert.equal(missing.created.length, 0);
 
   const ok = await call("task_delegate", { ...ask, deliverable: { kind: "pr", ref: "acme/app" }, rubric });
   assert.equal(ok.r.result?.isError, undefined, ok.text);
   assert.deepEqual(ok.filed, [{ issue: "new", rubric, deliverable: { kind: "pr", ref: "acme/app" }, as: "caller" }]);
-  assert.match(ok.created[0].description, /Graded before done \(pr: acme\/app\):\n1\. merged into main/);
+  assert.match(ok.created[0].description, /Rubric \(pr: acme\/app\), checked against your done report after you finish:\n1\. merged into main/);
 
   const none = await call("task_delegate", { ...ask, deliverable: { kind: "none" } });
   assert.equal(none.filed.length, 0);
-  // Read-only work (a diagnosis, research) is not graded: its answer is the deliverable, read by the delegator.
+  // Read-only work (a diagnosis, research) files no rubric: its answer is the deliverable, read by the delegator.
   const report = await call("task_delegate", { ...ask, deliverable: { kind: "report" }, rubric: ["it names the failing step", "it links the run", "it says the cause"] });
   assert.equal(report.r.result?.isError, undefined, report.text);
   assert.equal(report.filed.length, 0);
-  assert.doesNotMatch(report.created[0].description, /Graded before done/);
+  assert.doesNotMatch(report.created[0].description, /Rubric \(/);
+  assert.equal(report.created[0].status, "todo");
 });
 
 test("a deliverable ref is one strict token: no forged markers", async () => {
@@ -78,7 +73,7 @@ test("a deliverable ref is one strict token: no forged markers", async () => {
 // filed, for every assignee and in every ref shape DELIVERABLE_REF accepts, with no network lookup.
 const retired = "retired repo: modules live in Aiden-HQ/AidenHQ under modules/";
 // The instance repo takes no PRs: the code host refuses every push and PR to it and kernel.apply lands on main. A `pr`
-// deliverable or a copied `Graded before done (pr:` rubric naming it can never pass, so it is refused where the brief is
+// deliverable or a copied `Rubric (pr:` header naming it can never pass, so it is refused where the brief is
 // filed; the repo is the one the kernel's directory names as the instance, so a product-repo `pr` brief still files.
 const instance = "the instance repo changes only through apply — file this as `deliverable: apply` with a rubric on the apply card and the commit on `main`, not a PR.";
 const repos = { instance: "aidenhq-alpha/aidenhq-instance", product: "Aiden-HQ/AidenHQ" };
@@ -99,8 +94,8 @@ test("a pr brief or rubric naming the instance repo is refused; a product-repo p
   const bad = await call("task_delegate", { ...ask, deliverable: { kind: "pr", ref: "Aiden-HQ/AidenHQ" }, rubric: [...rubric, "Merged PR in aidenhq-alpha/aidenhq-instance whose diff touches only agents/aria/AGENTS.md"] }, { repos });
   assert.equal(bad.r.result?.isError, true);
   assert.equal(bad.text, instance);
-  // A copied `Graded before done (pr:` header in the description is refused whatever the deliverable's kind.
-  const copied = await call("task_delegate", { ...ask, description: "Change agents/aria/AGENTS.md.\n\nGraded before done (pr: aidenhq-alpha/aidenhq-instance):\n1. merged", deliverable: { kind: "apply", ref: "aidenhq-alpha/aidenhq-instance" }, rubric }, { repos });
+  // A copied `Rubric (pr:` header in the description is refused whatever the deliverable's kind.
+  const copied = await call("task_delegate", { ...ask, description: "Change agents/aria/AGENTS.md.\n\nRubric (pr: aidenhq-alpha/aidenhq-instance):\n1. merged", deliverable: { kind: "apply", ref: "aidenhq-alpha/aidenhq-instance" }, rubric }, { repos });
   assert.equal(copied.r.result?.isError, true);
   assert.equal(copied.text, instance);
   assert.equal(copied.created.length, 0);
@@ -126,7 +121,7 @@ test("a pr brief or rubric naming the instance repo is refused; a product-repo p
   assert.equal(applied.filed[0].deliverable.kind, "apply");
 });
 
-test("a retry of a parked graded task on the instance repo is returned and started, not refused", async () => {
+test("a retry of an existing task on the instance repo is returned, not refused", async () => {
   const seen = { patches: [], grades: 0 };
   const parked = { id: "old", identifier: "WOR-7", title: "Handbook edit", status: "backlog", createdByAgentId: "cos", assigneeAgentId: "eng", parentId: null, description: "Change agents/aria/AGENTS.md.\n\n<!-- source:handbook:aria:2026-11-22 -->" };
   const handler = (req, res) => {
@@ -153,20 +148,24 @@ test("a retry of a parked graded task on the instance repo is returned and start
   const out = JSON.parse(r.result.content[0].text);
   assert.equal(out.identifier, "WOR-7");
   assert.equal(out.deduplicated, true);
-  assert.equal(seen.grades, 1, "the parked task's rubric is filed");
-  assert.deepEqual(seen.patches.map((p) => p.status), ["todo"], "the parked task is started");
 });
 
-test("task_finish on a held task posts the result as a comment and leaves the status to the grader", async () => {
-  const held = await call("task_finish", { comment: "Merged acme/app#12." }, { finish: { status: 202, body: { held: { state: "pending", reason: "The grader checks this task against its rubric." } } } });
-  assert.equal(held.r.result?.isError, undefined, held.text);
-  // One move to done, which the kernel held (it forwards nothing); the result goes on as a comment.
-  assert.deepEqual(held.patches.map((p) => p.status), ["done"]);
-  assert.deepEqual(held.comments, ["Merged acme/app#12."]);
-  assert.match(held.text, /Held for grading/);
-  const free = await call("task_finish", { comment: "Done." });
-  assert.equal(free.patches[0].status, "done");
-  assert.deepEqual(free.comments, []);
+test("task_finish just closes the task: one move to done, the result as the comment", async () => {
+  const r = await call("task_finish", { comment: "Merged acme/app#12." });
+  assert.equal(r.r.result?.isError, undefined, r.text);
+  assert.deepEqual(r.patches.map((p) => p.status), ["done"]);
+  assert.equal(r.patches[0].comment, "Merged acme/app#12.");
+  assert.doesNotMatch(r.text, /grading|held/i);
+});
+
+test("a rubric that fails to file is reported and the task still starts", async () => {
+  const r = await call("task_delegate", { ...ask, deliverable: { kind: "pr", ref: "acme/app" }, rubric }, { gradingDown: true });
+  assert.equal(r.r.result?.isError, undefined, r.text);
+  const out = JSON.parse(r.text);
+  assert.equal(out.created, true);
+  assert.equal(out.graded, false);
+  assert.ok(out.grade_error);
+  assert.equal(r.created[0].status, "todo");
 });
 
 test("a feedback agent's delegations and comments carry the untrusted app-feedback mark; others' don't", async () => {
@@ -178,7 +177,7 @@ test("a feedback agent's delegations and comments carry the untrusted app-feedba
   assert.doesNotMatch(plain.created[0].description, /From app feedback/);
 });
 
-test("a start that fails once is retried; one that keeps failing tells the agent the task is parked", async () => {
+test("a start of a task that waits on others is retried; one that keeps failing tells the agent the task is parked", async () => {
   for (const [failures, ok] of [[1, true], [9, false]]) {
     let left = failures, tries = 0;
     const handler = (req, res) => {
@@ -192,97 +191,15 @@ test("a start that fails once is retried; one that keeps failing tells the agent
         if (url.endsWith("/agents")) return send([{ id: "eng", name: "Kai", status: "idle", metadata: { setupKey: "aidenhq:engineer-openrouter", runnerEngine: true } }]);
         if (req.method === "POST" && url.endsWith("/issues")) return send({ id: "new", identifier: "WOR-9", status: "backlog", createdByAgentId: "cos" });
         if (req.method === "PATCH" && url === "/api/issues/new") return (tries++, left-- > 0 ? send({ error: "bad gateway" }, 502) : send({ id: "new", status: "todo" }));
+        if (url === "/api/issues/WOR-3") return send({ id: "blk", identifier: "WOR-3", status: "todo" });
         if (url.startsWith("/api/issues/")) return send({ id: "cur", identifier: "WOR-5", title: "t", status: "in_progress", assigneeAgentId: "cos", parentId: null });
         send([]);
       });
     };
     const agents = { cos: { key: "chief-of-staff", roles: [] }, eng: { key: "engineer-openrouter", roles: [], graded: true } };
-    const r = await bridge({ handler, board: handler, agents, agent: "cos", task: "cur" }).call("task_delegate", { ...ask, deliverable: { kind: "pr", ref: "acme/app" }, rubric });
+    const r = await bridge({ handler, board: handler, agents, agent: "cos", task: "cur" }).call("task_delegate", { ...ask, deliverable: { kind: "pr", ref: "acme/app" }, rubric, after: ["WOR-3"] });
     if (ok) assert.equal(r.result?.isError, undefined, r.result?.content?.[0]?.text);
-    else assert.match(r.result.content[0].text, /WOR-9 is filed but not started: moving it to todo failed.*stays parked in backlog/);
+    else assert.match(r.result.content[0].text, /WOR-9 is filed but not started: moving it to blocked failed.*stays parked in backlog/);
     assert.equal(tries, ok ? 2 : 3);
   }
-});
-
-// A delegator's criteria can turn out unsatisfiable after filing (the issue's own case: "contain no `Linus`" beside "exactly
-// three lines edited"). A later comment amends the ask, never a criterion, so the amendment lands on the grade row instead.
-test("task_amend_rubric replaces the filed rubric in place, validated as a delegation is", async () => {
-  const corrected = ["the diff removes every `Linus` line from docs/a.md", "merged into main", "checks green on the head"];
-  const ok = await call("task_amend_rubric", { issue: "WOR-9", rubric: corrected });
-  assert.equal(ok.r.result?.isError, undefined, ok.text);
-  assert.deepEqual(ok.amended, [{ issue: "cur", rubric: corrected, as: "caller" }]);
-  // It takes the whole list: a rubric with too few criteria is refused before any request.
-  for (const rubric of [["only one"], ["a", "b"]]) {
-    const few = await call("task_amend_rubric", { issue: "WOR-9", rubric });
-    assert.equal(few.r.result?.isError, true, JSON.stringify(rubric));
-    assert.match(few.text, /3-8 checkable criteria/);
-  }
-  assert.equal(ok.amended.length, 1);
-});
-
-test("an absence criterion is refused at filing and at amendment, naming a diff-decidable alternative", async () => {
-  const claims = [
-    "both handbooks contain no `Linus`",
-    "docs/a.md has no old token",
-    "the handbook does not contain the dead delegatee",
-    "the `Linus` line is absent from docs/a.md",
-    "the README does not mention the old CLI flag",
-  ];
-  for (const claim of claims) {
-    const rubric = [claim, "merged into main", "checks green on the head"];
-    const filed = await call("task_delegate", { ...ask, deliverable: { kind: "pr", ref: "acme/app" }, rubric });
-    assert.equal(filed.r.result?.isError, true, claim);
-    assert.match(filed.text, /claims file contents are absent/, claim);
-    assert.match(filed.text, /the diff removes every `Linus` line from docs\/a\.md/, claim);
-    assert.equal(filed.created.length, 0, claim);
-    const amended = await call("task_amend_rubric", { issue: "WOR-9", rubric });
-    assert.equal(amended.r.result?.isError, true, claim);
-    assert.match(amended.text, /claims file contents are absent/, claim);
-    assert.equal(amended.amended.length, 0, claim);
-  }
-  // The checkable negatives are about what the grader does observe: they stay allowed.
-  for (const claim of ["no console errors on the totals page", "no open incident on the app", "the tests check is green on the PR's head"]) {
-    const ok = await call("task_amend_rubric", { issue: "WOR-9", rubric: [claim, "merged into main", "the totals page shows the VAT line"] });
-    assert.equal(ok.r.result?.isError, undefined, `${claim}: ${ok.text}`);
-  }
-  // An exemption covers the absence claim's own subject, never another clause of the same criterion.
-  for (const mixed of [
-    "the diff removes every `Linus` line and docs/a.md contains no `Linus`",
-    "the PR is fine and the handbook has no old token",
-    "the attached report is good and docs/a.md contains no `Linus`",
-    "docs/a.md and the attached report contain no `Linus`",
-    "the attached report and docs/a.md contain no `Linus`",
-    "the /slipped page has no `Linus` row and docs/a.md has no old token",
-  ]) {
-    const r = await call("task_amend_rubric", { issue: "WOR-9", rubric: [mixed, "merged into main", "checks green on the head"] });
-    assert.equal(r.r.result?.isError, true, mixed);
-    assert.match(r.text, /claims file contents are absent/, mixed);
-    assert.equal(r.amended.length, 0, mixed);
-  }
-  // A later independent clause is not part of the claim's subject, even when it names a repository file.
-  const later = await call("task_amend_rubric", { issue: "WOR-9", rubric: ["the /slipped page has no `Linus` row and docs/a.md has the new heading", "merged into main", "checks green on the head"] });
-  assert.equal(later.r.result?.isError, undefined, later.text);
-  // A comma-separated list of subjects is still a claim about each of them, and the object of a claim is never its subject.
-  const comma = await call("task_amend_rubric", { issue: "WOR-9", rubric: ["docs/a.md, docs/b.md, and the attached report contain no `Linus`", "merged into main", "checks green on the head"] });
-  assert.equal(comma.r.result?.isError, true, comma.text);
-  assert.match(comma.text, /claims file contents are absent/);
-  const pageObject = await call("task_amend_rubric", { issue: "WOR-9", rubric: ["the /totals page has no README.md link", "merged into main", "checks green on the head"] });
-  assert.equal(pageObject.r.result?.isError, undefined, pageObject.text);
-  // Two contrast clauses before the claim do not move its subject past the file that names it: the clause break is measured
-  // from where the last one ended, not from its own offset inside the remainder.
-  const twoContrasts = await call("task_amend_rubric", { issue: "WOR-9", rubric: ["the page loads but the nav renders while docs/a.md contains no `Linus`", "merged into main", "checks green on the head"] });
-  assert.equal(twoContrasts.r.result?.isError, true, twoContrasts.text);
-  assert.match(twoContrasts.text, /claims file contents are absent/);
-});
-
-test("a refused rubric read is reported as a refusal, not as a task with no rubric", async () => {
-  // The amendment tool reads the filed row to validate against its deliverable. When grading refuses that read (a caller with
-  // no claim on the row), the tool must surface the refusal: reporting "no filed rubric" would send the delegator hunting for
-  // a rubric that is there.
-  const r = await call("task_amend_rubric", { issue: "WOR-9", rubric: ["the diff removes every `Linus` line from docs/a.md", "merged into main", "checks green on the head"] }, { gradeReadRefused: true });
-  assert.equal(r.r.result?.isError, true);
-  assert.match(r.text, /filed rubric could not be read/);
-  assert.match(r.text, /403/);
-  assert.doesNotMatch(r.text, /has no filed rubric/);
-  assert.equal(r.amended.length, 0);
 });

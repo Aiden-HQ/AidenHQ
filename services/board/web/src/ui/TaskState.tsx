@@ -23,7 +23,7 @@ const moduleWords = (ref: string) => MODULE_WAIT[ref] ?? ref.replace(/_/g, " ");
 
 /** After a dot: what a reason means to the person reading it. `refLabel` names a card, a blocker or how a job ended. */
 const REASON: Record<ShownState["reason"], (s: ShownState, timeZone?: string) => string> = {
-  closed: (s) => (s.grade ? `graded ${s.grade}` : ""),
+  closed: () => "",
   cancelled: () => "stopped",
   job_running: () => "job running",
   job_queued: () => "queued",

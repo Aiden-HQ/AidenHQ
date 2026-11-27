@@ -62,7 +62,7 @@ function LaneLine({ c, s }: { c: WorkCard; s: ShownState | null }) {
     const stuck = s.attention.find((x) => x.who === "agent" && STUCK[x.why]);
     return <Callout tone="bad" head={stuck ? STUCK[stuck.why]! : "Blocked"} body={cap(stateWords(s).detail)} href={self} />;
   }
-  if (lane === "done") return <Status tone="done" text={s.reason === "cancelled" ? "Stopped" : s.grade ? `Done, graded ${s.grade}` : "Done"} />;
+  if (lane === "done") return <Status tone="done" text={s.reason === "cancelled" ? "Stopped" : "Done"} />;
   return <Status tone={lane === "waiting" ? "wait" : "idle"} text={cap(stateWords(s).detail) || (lane === "waiting" ? "Waiting" : "Idle")} />;
 }
 

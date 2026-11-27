@@ -294,22 +294,6 @@ describe("deploy engine", () => {
     expect(store.lastDeploy("demo")?.detail).not.toContain("stopped (no previous good deploy)");
   });
 
-  it("records the no-HTTP verdict only for a healthy deploy whose own identity probe proved it", async () => {
-    // The verdict is the deploy's, not the shape's: the identity check's own `noHttpProven` field is the only source, and
-    // only a healthy row keeps it, so a probe that never ran (or a build that never came up) leaves it absent.
-    const proven = setup(["v1"], undefined, async () => ({ ...probeResult("identity", "app:5433", [{ hard: false, what: "app:5433 on 127.0.0.1: not probed: not HTTP, not TLS" }]), noHttpProven: true }));
-    await proven.engine.deploy(app({ stateful: true, expose: false, port: 5433, health: {} }), { sha: "v1", by: "t", allowStateful: true });
-    expect(proven.store.deploysOf("demo", "v1")[0]?.no_http_proven).toBe(1);
-    const unproven = setup(["v1"], undefined, async () => probeResult("identity", "app:5433", [{ hard: false, what: "app:5433 on 127.0.0.1: not probed: not HTTP, not TLS" }]));
-    await unproven.engine.deploy(app({ stateful: true, expose: false, port: 5433, health: {} }), { sha: "v1", by: "t", allowStateful: true });
-    expect(unproven.store.deploysOf("demo", "v1")[0]?.no_http_proven).toBeFalsy();
-    // A deploy that never came up has no probe of what is up, so its row never carries the verdict.
-    const failed = setup(["v1"], undefined, async () => ({ ...probeResult("identity", "app:5433", []), noHttpProven: true }));
-    await failed.engine.deploy(app(), { sha: "v1", by: "t" });
-    await failed.engine.deploy(app(), { sha: "v2", by: "t" });
-    expect(failed.store.deploysOf("demo", "v2")[0]?.status).toBe("rolled_back");
-    expect(failed.store.deploysOf("demo", "v2")[0]?.no_http_proven).toBeFalsy();
-  });
   it("refuses a stateful app without approval", async () => {
     const { engine } = setup(["v1"]);
     await expect(engine.deploy(app({ stateful: true }), { sha: "v1", by: "t" })).rejects.toThrow(/stateful/);

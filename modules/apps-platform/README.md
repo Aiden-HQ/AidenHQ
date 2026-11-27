@@ -19,7 +19,7 @@ The `apps` connection (apps-mcp). Which agents get which tools is set on each ag
 - Write (kernel records the kernel executes): `app_deploy`, `app_restart`, `app_rollback`, `app_create`,
   `app_run_request`, `app_api`, `source_ack`, `person_identity_decide`, `finding_verdict`, `app_request_reply`,
   `app_role_set`. Destructive: `app_remove`.
-- The `app-maintainer` agent is graded and runs on app incidents and in-app requests (two webhook routines fired by
+- The `app-maintainer` agent carries a rubric on its deliverables and runs on app incidents and in-app requests (two webhook routines fired by
   apps-mcp and the kernel).
 
 Setting `app_login`: `access` (Cloudflare Access on every gate host), `password` (the gate signs people in with their

@@ -240,7 +240,7 @@ tasks for the Fleet Steward; neither tells the owner.
 `kernel/src/retention.ts` runs ten minutes after the kernel starts and then daily (stopped by a drain, one batch of 100 rows at a time):
 
 - **Kernel rows.** A finished row loses its big text 14 days after its last move. Records: the card's details (replaced by an
-  "expired" note, `card.expired`; an apply's stays, it is the grader's evidence), `context`, and every arg value over 1,000
+  "expired" note, `card.expired`; an apply's stays), `context`, and every arg value over 1,000
   characters (the connection and tool a veto binds to, and a write's `prs` and `only`, always stay; `paths` is filled from the
   diff first). Jobs (any state but admitted and running):
   `full_prompt` and the step list (`progress` keeps the last words and `stepCount`). Checks (any state but running): `spec` and

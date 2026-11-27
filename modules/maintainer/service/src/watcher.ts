@@ -329,7 +329,7 @@ export function maintainerFeed(env: NodeJS.ProcessEnv = process.env): PumpDeps["
  * `maintainer`, keyed by its source so the same issue is never two tasks. The text is fixed and names only the repo and the
  * number: an issue's title and body are a stranger's words, read by the Maintainer itself and never copied into a task.
  * Undefined until the module's token file has its content: the watcher is then off, rather than failing every tick.
- * `graded`: the task's deliverable and rubric, which the kernel files with the grader: its finish waits for them.
+ * `graded`: the task's deliverable and rubric, which the kernel files with the grading module: its done report is checked against the rubric after it closes.
  */
 function fileTask(env: NodeJS.ProcessEnv, title: string, description: string, source: string, graded?: { deliverable: unknown; rubric: string[] }): Promise<false | { id: string }> {
   const url = `${(env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/+$/, "")}/v1/tasks`;
@@ -343,7 +343,7 @@ const token = (env: NodeJS.ProcessEnv) => {
   try { return env.MAINTAINER_TOKEN_FILE ? readFileSync(env.MAINTAINER_TOKEN_FILE, "utf8").trim() : ""; } catch { return ""; }
 };
 
-/** The labelled-issue task's done condition, once, as "Done conditions" in the handbook says it: the grader's three criteria. */
+/** The labelled-issue task's done condition, once, as "Done conditions" in the handbook says it: its three rubric criteria. */
 const ISSUE_DONE = [
   "The issue is resolved on GitHub: closed; or left open with the Maintainer's verdict, as the repo's settings ask (a comment by an owner, member or collaborator carrying a `Not fixing: <reason>`, `Duplicate of <owner>/<repo>#<n>` or `Fixed by` line, with the `invalid`, `duplicate` or `fixed` label where it labelled, and the fix label off); or parked by the repo's owner or a member in a comment on it.",
   "Its resolution is shown there: closed as completed with a merged fixing PR cited, or as not planned or a duplicate with the reason, or that verdict comment, or the owner's parking word.",

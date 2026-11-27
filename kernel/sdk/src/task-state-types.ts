@@ -19,8 +19,6 @@ export type TaskState = {
   blocker?: string;
   /** A module stage's label, only while working or waiting. */
   stage?: string;
-  /** The final attempt's grade, only when done. */
-  grade?: "pass" | "fail";
   /** The open owner or delegator wait's question (the ask gate reads it). */
   question?: string;
   /** What the open wait's question is about (notify's `detail`, e.g. the draft to send), beside the question. */

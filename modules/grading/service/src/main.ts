@@ -1,48 +1,35 @@
 // The grading module's service: its rows in data/modules/grading/ (GRADES_DB), the kernel at AIDENHQ_KERNEL_URL with this
-// module's own token, and each caller's key from its own secret file.
+// module's own token (kernel.cp-read, kernel.grader, kernel.wake), the model gateway at AIDENHQ_GATEWAY_URL, and each caller's
+// key from its own secret file.
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { createGrading, type Kernel } from "./server.ts";
-import { createKernelGradeLoop } from "./kernel-loop.ts";
-import { createGithub } from "./github.ts";
-import { factEmitter, kernelClient } from "./aidenhq-sdk/kernel-client.ts";
+import { Store } from "./store.ts";
+import { createServer } from "./server.ts";
+import { createChecker, SCHEMA } from "./check.ts";
+import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
+import { LUNA, openRouterAsk } from "./aidenhq-sdk/judge.ts";
 
 const log = (msg: string, f: Record<string, unknown> = {}) => console.log(new Date().toISOString(), msg, JSON.stringify(f));
 const file = (name: string) => readFileSync(process.env[name] ?? "", "utf8").trim();
-const kernelUrl = (process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130").replace(/\/$/, "");
-const token = file("GRADING_TOKEN_FILE");
-
-const client = kernelClient(kernelUrl, token, { timeoutMs: 60_000 });
-const { call: kernelCall, bytes: kernelBytes } = client;
-const facts = factEmitter(client, log); // Flow's grade and retry facts (role kernel.facts)
-// apps-mcp's grader reads (an app deliverable's evidence), with this module's own token: role apps.read. A view renders for up to 45 s.
-const appsUrl = (process.env.APPS_URL ?? "http://apps-mcp:8090").replace(/\/$/, "");
-async function appsCall(method: string, path: string, body?: unknown) {
-  const r = await fetch(`${appsUrl}${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(60_000) });
-  const json = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(new Error(`apps-mcp ${method} ${path} → ${r.status}: ${JSON.stringify(json).slice(0, 200)}`), { status: r.status });
-  return json;
-}
-const kernel: Kernel = {
-  issue: (ref) => kernelCall("GET", `/v1/cp/read/api/issues/${encodeURIComponent(ref)}`),
-  repos: async () => (await kernelCall("GET", "/v1/agents")).repos ?? {},
-};
+const kernel = kernelClient(process.env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", file("GRADING_TOKEN_FILE"), { timeoutMs: 60_000 });
+const gateway = `${(process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201").replace(/\/$/, "")}/api/v1/chat/completions`;
 
 const db = new DatabaseSync(process.env.GRADES_DB ?? "/data/grades.sqlite");
 db.exec("PRAGMA journal_mode = WAL");
-const { server, tick, runner, grades } = createGrading({ db, kernel, keys: { check: file("GRADING_CHECK_KEY_FILE"), board: file("GRADING_BOARD_KEY_FILE") }, kernelUrl, log });
+const store = new Store(db);
+const server = createServer({ store, issue: (ref) => kernel.read(`/api/issues/${encodeURIComponent(ref)}`), keys: { check: file("GRADING_CHECK_KEY_FILE"), board: file("GRADING_BOARD_KEY_FILE") }, log });
 const port = Number(process.env.PORT ?? 8096);
 server.listen(port, () => log("listening", { port }));
-setInterval(() => void tick(), 5 * 60_000).unref();
-setTimeout(() => void tick(), 30_000).unref();
 
-// The grade loop on the kernel's jobs (kernel-loop.ts), once a minute: roles kernel.cp-read, kernel.work-read, kernel.grader, kernel.wake and apps.read.
-// A diff is text, which the kernel client (JSON) can't read: the same op, the same token, the body as it comes.
-const kernelText = async (path: string, body: unknown) => {
-  const r = await fetch(`${kernelUrl}${path}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
-  if (!r.ok) throw new Error(`kernel POST ${path} → ${r.status}`);
-  return r.text();
+// The model call is billed to the task: the kernel mints a grader token for a closed task.
+const ask = async (task: string, p: { system: string; user: string }) => {
+  const { token } = await kernel.call("POST", "/v1/work/grader-token", { task });
+  return openRouterAsk(token, { schema: SCHEMA, url: gateway, effort: "low" })(LUNA, p);
 };
-const loop = createKernelGradeLoop({ db, runner, due: () => ({ grades: grades.due() }), kernel: kernelCall, kernelBytes, github: createGithub({ kernel: kernelCall, text: kernelText }), apps: appsCall, gatewayUrl: process.env.AIDENHQ_GATEWAY_URL ?? "http://10.231.0.1:8201", log, emit: facts.emit });
-let grading = false;
-setInterval(() => { if (!grading) { grading = true; loop.runGrades().catch((e) => log("grade loop failed", { err: String(e.message ?? e) })).finally(() => (grading = false)); } }, 60_000).unref();
+const checker = createChecker({ store, kernel: kernel.call, ask, model: LUNA, log });
+let busy = false;
+setInterval(() => {
+  if (busy) return;
+  busy = true;
+  checker.pass().catch((e) => log("check pass failed", { err: String(e.message ?? e) })).finally(() => (busy = false));
+}, 2 * 60_000).unref();

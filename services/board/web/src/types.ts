@@ -159,7 +159,6 @@ export interface Agents {
 /** GET /api/agents/:id/scorecard (fleet-stats.ts). */
 export interface Scorecard {
   done: { count: number; prior: number; tasks: { identifier: string; title: string }[] };
-  reopen: { graded: number; reopened: number };
   approvals: { filed: number; rejected: number; priorRejected: number };
   runsFailed: number;
   cost: { usd: number; prior: number; perDone: number | null; billed: boolean };
@@ -314,15 +313,15 @@ export interface CommentView {
 }
 
 export interface GradeShown {
-  state: "none" | "unavailable" | "ungraded_close" | "open" | "pending" | "awaiting_evidence" | "satisfied" | "needs_revision" | "grading_failed" | "not_graded";
-  rubric: { text: string; met: "yes" | "no" | "unknown"; evidence?: string }[];
-  judgedAt?: string;
-  version?: string;
+  state: "none" | "unavailable" | "open" | "met" | "unmet" | "failed";
+  rubric: { text: string; met?: "yes" | "no"; reason?: string }[];
+  reason?: string;
+  checkedAt?: string;
   deliverable?: { kind: "pr" | "app" | "apply" | "file" | "report" | "issue"; ref: string; href?: string };
 }
 export interface Milestone {
   at: string;
-  kind: "created" | "run_started" | "run_ended" | "asked_you" | "approved" | "applied" | "deployed" | "graded";
+  kind: "created" | "run_started" | "run_ended" | "asked_you" | "approved" | "applied" | "deployed";
   text: string;
   href?: string;
   runId?: string;

@@ -482,7 +482,7 @@ const spark = (xs: number[]) => {
 };
 const usd = (n: number) => `$${n < 1 ? n.toFixed(3) : n.toFixed(2)}`;
 
-/** The week's diagnostics for one agent: done, sent back (grades), cards rejected, failed runs, billed cost per task; a 7-day trend. Not a ranking. */
+/** The week's diagnostics for one agent: done, cards rejected, failed runs, billed cost per task; a 7-day trend. Not a ranking. */
 export function Scorecard({ id }: { id: string }) {
   const { data: s, error } = useQuery(scorecardQuery(id));
   if (!s && error) return <section><h4>Last 7 days</h4><p className="fleet-empty">Couldn't load the scorecard.</p></section>;
@@ -497,8 +497,6 @@ export function Scorecard({ id }: { id: string }) {
           {s.done.count}
           {was(s.done.prior)} <span title="done per day">{spark(s.daily.map((d) => d.done))}</span>
         </dd>
-        <dt>Sent back</dt>
-        <dd>{s.reopen.graded ? `${s.reopen.reopened} of ${s.reopen.graded} graded tasks` : "no graded tasks"}</dd>
         <dt>Cards rejected</dt>
         <dd>
           {s.approvals.rejected} of {s.approvals.filed} filed{was(s.approvals.priorRejected)}

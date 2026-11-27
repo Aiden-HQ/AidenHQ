@@ -278,13 +278,14 @@ const chatDetail = (ref: string) => {
 };
 
 const kid = (n: number, title: string, agent: string, state: ReturnType<typeof st>, o: Record<string, unknown> = {}) => ({ identifier: `WOR-${n}`, title, agent, model: "deepseek-flash high", state: named(`WOR-${n}`, state), latest: { text: "Working through the export tests.", at: ago(4) }, tokens: 182_000, usd: 0.42, startedAt: ago(90), endedAt: state.kind === "done" ? ago(30) : null, children: [], approvals: [], ...o });
-// The task drawer's Done means by ref: WOR-798 no grade row, WOR-795 grading down, WOR-796 closed without a verdict, WOR-797 a report not yet opened, else graded.
+// The task drawer's rubric by ref: WOR-798 no rubric row, WOR-795 grading down, WOR-796 failed check, WOR-797 open (checked after close), WOR-799 met, else unmet.
 const gradeFor = (ref: string) =>
   ref === "WOR-798" ? { state: "none", rubric: [] }
   : ref === "WOR-795" ? { state: "unavailable", rubric: [] }
-  : ref === "WOR-796" ? { state: "ungraded_close", rubric: [{ text: "Export respects the current filter", met: "unknown" }], deliverable: { kind: "pr", ref: "acme-agents/invoices#41", href: "https://github.com/acme-agents/invoices/pull/41" } }
-  : ref === "WOR-797" ? { state: "open", rubric: [{ text: "Says what was found", met: "unknown" }, { text: "Cites sources", met: "unknown" }], deliverable: { kind: "pr", ref: "" } }
-  : { state: "needs_revision", judgedAt: ago(30), version: "9f3a1c2e77b0", rubric: [{ text: "Export respects the current filter", met: "yes", evidence: "ExportButton passes the filter state; test covers it." }, { text: "Totals row uses the account currency", met: "no", evidence: "The total row is hard-coded to USD in export.ts line 88." }, { text: "Docs mention the new export", met: "unknown" }], deliverable: { kind: "pr", ref: "acme-agents/invoices#41", href: "https://github.com/acme-agents/invoices/pull/41" } };
+  : ref === "WOR-796" ? { state: "failed", reason: "The model could not be reached.", rubric: [{ text: "Export respects the current filter" }], deliverable: { kind: "pr", ref: "acme-agents/invoices#41", href: "https://github.com/acme-agents/invoices/pull/41" } }
+  : ref === "WOR-797" ? { state: "open", rubric: [{ text: "Says what was found" }, { text: "Cites sources" }], deliverable: { kind: "pr", ref: "" } }
+  : ref === "WOR-799" ? { state: "met", checkedAt: ago(30), rubric: [{ text: "Says what was found", met: "yes", reason: "The report lists the findings." }, { text: "Cites sources", met: "yes", reason: "Sources are linked." }], deliverable: { kind: "report", ref: "" } }
+  : { state: "unmet", checkedAt: ago(30), rubric: [{ text: "Export respects the current filter", met: "yes", reason: "The report says the filter state is passed to ExportButton." }, { text: "Totals row uses the account currency", met: "no", reason: "The report says the total row is hard-coded to USD." }, { text: "Docs mention the new export", met: "yes", reason: "Docs updated." }], deliverable: { kind: "pr", ref: "acme-agents/invoices#41", href: "https://github.com/acme-agents/invoices/pull/41" } };
 const milestones = () => [
   { at: ago(240), kind: "created", text: "Created" },
   { at: ago(235), kind: "run_started", text: "Run started", runId: "j-aaaaaaaaaaaaaaaa" },
@@ -293,7 +294,6 @@ const milestones = () => [
   { at: ago(60), kind: "approved", text: "Card approved by the AI reviewer", href: "#/approvals/k-00000000000000a1" },
   { at: ago(50), kind: "applied", text: "Card applied: pr", href: "#/approvals/k-00000000000000a1" },
   { at: ago(35), kind: "deployed", text: "Deployed in generation 7", href: "https://github.com/acme-agents/invoices/pull/41" },
-  { at: ago(30), kind: "graded", text: "Graded: criteria unmet" },
 ];
 const lineage = (identifier: string) => {
   if (identifier !== "WOR-818" || mock.empty) return { identifier, children: [], total: { tasks: 0, running: 0, needs: 0, failed: 0, tokens: 0, usd: 0, ms: 0 } };
@@ -808,7 +808,7 @@ function route(method: string, url: URL): [number, unknown] {
     const rows = [{ identifier: "WOR-790", title: "Ship the invoices app's export", state: named("WOR-790", STATES.running), updatedAt: ago(12), from: "WOR-818" }, { identifier: "WOR-806", title: "Why did the health check fail?", state: named("WOR-806", FAILED), updatedAt: ago(52), from: null }];
     return url.searchParams.get("view") === "history" ? [200, { rows: [{ identifier: "WOR-700", title: "Set up the invoices repo", state: named("WOR-700", STATES.done), updatedAt: ago(3000), from: null }, { identifier: "WOR-698", title: "A task you stopped", state: named("WOR-698", STATES.stopped), updatedAt: ago(4000), from: null }], next: null }] : [200, { needs: [rows[1]], ongoing: [rows[0], { identifier: "WOR-831", title: "Re-run the nightly import", state: named("WOR-831", STATES.held), updatedAt: ago(6), from: null }, { identifier: "WOR-832", title: "Merge the export change", state: named("WOR-832", STATES.review), updatedAt: ago(4), from: "WOR-818" }, { identifier: "WOR-834", title: "Wait for CI on the export PR", state: named("WOR-834", STATES.moduleWait), updatedAt: ago(50), from: null }, { identifier: "WOR-835", title: "Wait for the design review", state: named("WOR-835", STATES.stalled), updatedAt: ago(400), from: null }, { identifier: "WOR-833", title: "Wait for the design answer", state: named("WOR-833", STATES.delegator), updatedAt: ago(33), from: "WOR-818" }] }];
   }
-  if ((x = m(/^\/api\/agents\/([^/]+)\/scorecard$/))) return [200, { done: { count: 14, prior: 9, tasks: [] }, reopen: { graded: 12, reopened: 1 }, approvals: { filed: 6, rejected: 1, priorRejected: 2 }, runsFailed: 1, cost: { usd: 4.18, prior: 5.02, perDone: 0.3, billed: true }, daily: days.map((day, i) => ({ day, done: [1, 3, 2, 0, 4, 2, 2][i], costUsd: [0.4, 0.9, 0.6, 0.1, 1.1, 0.5, 0.58][i] })) }];
+  if ((x = m(/^\/api\/agents\/([^/]+)\/scorecard$/))) return [200, { done: { count: 14, prior: 9, tasks: [] }, approvals: { filed: 6, rejected: 1, priorRejected: 2 }, runsFailed: 1, cost: { usd: 4.18, prior: 5.02, perDone: 0.3, billed: true }, daily: days.map((day, i) => ({ day, done: [1, 3, 2, 0, 4, 2, 2][i], costUsd: [0.4, 0.9, 0.6, 0.1, 1.1, 0.5, 0.58][i] })) }];
   if ((x = m(/^\/api\/modules\/([^/]+)$/))) {
     const mod = modules().find((r) => r.id === decodeURIComponent(x![1]!)) ?? modules()[0]!;
     return [200, { module: mod, agents: mod.agents.map(profile), ongoing: [], routines: [], authority: { connections: mod.connections, writes: [{ kind: "push", tier: 1 }], secrets: [], prompts: [], readme: `# ${mod.name}\n\n${mod.description}` }, neededBy: mod.neededBy, requires: mod.requires }];

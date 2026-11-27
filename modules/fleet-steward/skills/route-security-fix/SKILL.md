@@ -13,7 +13,7 @@ description: "Routes a `security`-labelled task from the security agent (`securi
   green, findings as annotations) plus the registry's tag and digest. A RUN-installed package is proven by the security agent's
   scan of the deployed image; Engineers have no Docker. Done when the PR is merged.
 - **App repo** (`app:*`, `repo:*`): `task_create` to the app's owner (else the app builder, `app-maintainer`) with `owner/name`, the change, done
-  "merged and deployed, `app_status` healthy", `deliverable` `app`, `ref` the app's registered name (the grader looks it up by name); an image or base bump also needs "`image-scan` green on the PR's head" where that repo runs it.
+  "merged and deployed, `app_status` healthy", `deliverable` `app`, `ref` the app's registered name (the rubric check reads the report, so name the app in the brief); an image or base bump also needs "`image-scan` green on the PR's head" where that repo runs it.
 - **Host step** (package, kernel, reboot): `task_delegate` to the Engineer to build the capability, with the CVE, step and
   done "the host applies this kind of fix on its own and the next scan no longer shows it", `deliverable` `pr` on the product repo. Only an owner sign-in goes to `fleet-check`'s "The owner".
 

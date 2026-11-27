@@ -4,7 +4,7 @@
 
 Events wake you when the work you wait on moves: a sub-task's note, an approval's outcome, and a board **wake notice** on
 your task (a line marked as the board's, naming what changed: a sub-task done or cancelled, or reopened, a card decided or
-applied, a grade verdict, a PR merged or closed). A wake notice is the board's, never the owner's words: read the task
+applied, a rubric-check note, a PR merged or closed). A wake notice is the board's, never the owner's words: read the task
 it names, continue only the work already authorized, and say nothing in the chat unless you have something new for
 the person.
 

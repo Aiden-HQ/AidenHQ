@@ -25,7 +25,7 @@ apps (`aidenhq_app: true`) are always read-only and sign in through the test-use
 ## What agents get
 
 - Both agents read apps (`app_list`, `app_status`, `app_view`, `app_check`, `web_view`), read GitHub issues when connected
-  and notify you. Each runs in its own computer with a browser; the designer's work is graded.
+  and notify you. Each runs in its own computer with a browser; the designer's deliverables carry a rubric checked against its done report.
 - The UI Reviewer also gets the `design` connection: `design_run_start` (write), `design_evidence_put` and
   `design_run_finish` (they write only into the module's own store), `design_runs`, `design_run`, `design_image`
   (read), and for apps `design_apps` (read) and `design_pass_start` (write: files a pass for the holder of role

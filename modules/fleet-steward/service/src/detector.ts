@@ -283,7 +283,7 @@ interface CommentRow { authorType?: string; authorAgentId?: string | null; body?
 const KERNEL_TAG = /<!--\s*aidenhq:job=kernel\b[^>]*-->\s*$/;
 /** The board's "Not right" correction: the owner's one line, carrying a marker of its own but still their words. */
 const CORRECTION_TAG = /<!--\s*aidenhq-correction\s*-->/;
-/** A note the kernel wrote to move or annotate the task (a park, an unblock, a route, a grade note): bookkeeping, never an answer. */
+/** A note the kernel wrote to move or annotate the task (a park, an unblock, a route): bookkeeping, never an answer. */
 const kernelNote = (c: CommentRow) => KERNEL_TAG.test(String(c.body));
 /**
  * A comment the fleet's own machinery wrote, never someone's words: the kernel's `<!-- aidenhq-…` markers (a wake, an approval,
@@ -575,7 +575,7 @@ export function slowerStages(now: FlowStage[], before: FlowStage[]): string[] {
 }
 
 /** The owner's alert list, as checks. `apps` reads apps-mcp (a module holding apps.read); `alerts` is Alertmanager's list. */
-export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; owner?: (text: string) => Promise<void>; gradeFailures: () => Promise<{ task: string; at: string; reason: string }[]>; now?: () => number; log?: (msg: string, f?: Record<string, unknown>) => void }): Record<string, Check> {
+export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string) => Promise<T>; alerts: () => Promise<Incident[]>; openKeys: () => string[]; notify?: (text: string, key: string) => Promise<void>; owner?: (text: string) => Promise<void>; now?: () => number; log?: (msg: string, f?: Record<string, unknown>) => void }): Record<string, Check> {
   const now = d.now ?? (() => Date.now());
   let appsOkAt = now(); // apps-mcp's last answer: a restart (an apply) is not an outage
   const companies = async () => (await d.kernel.read("/api/companies")) as Company[];
@@ -632,19 +632,13 @@ export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string
   };
   const suppressed = (task: string, key: string) => explained.has(task) && !d.openKeys().includes(key);
   return {
-    // The same failure on several tasks is one component down (the grader, the job runner), whatever the per-task checks below see.
-    // Runs first: it fills `explained` for them. The grader's cause is read from the grading service's record, a job's from its ledger line (both written by code, never by an agent).
+    // The same failure on several tasks is one component down (the job runner), whatever the per-task checks below see.
+    // Runs first: it fills `explained` for them. A job's cause is read from its ledger line (written by code, never by an agent).
     async component() {
       const t = now();
       jobCache = new Map();
       explained = new Set();
       const hits: { component: string; error: string; id: string; name: string }[] = [];
-      // The grader's failed passes, from the grading service's own record (never a task comment, which anyone can write).
-      const graderRead = await d.gradeFailures().catch(() => undefined);
-      for (const f of (graderRead ?? []).filter((f) => age(f.at, t) < SHARED_FAIL.windowMs)) {
-        const name = await lookup()(f.task);
-        if (name) hits.push({ component: "grader", error: f.reason, id: f.task, name });
-      }
       let looked = 0;
       for (const a of await agents()) {
         for (const j of await jobsOf(a.id)) {
@@ -656,8 +650,7 @@ export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string
         }
       }
       const open = d.openKeys();
-      // The grading service couldn't be asked: its open incidents stay open.
-      const out: Incident[] = graderRead ? [] : open.filter((k) => k.startsWith("component:grader:")).map((k) => ({ key: k.slice("component:".length), reason: "" }));
+      const out: Incident[] = [];
       for (const g of groupFailures(hits)) {
         const key = `${g.component.replace(/\W+/g, "-")}:${createHash("sha256").update(g.error).digest("hex").slice(0, 8)}`;
         const isOpen = open.includes(`component:${key}`);
@@ -748,18 +741,6 @@ export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string
       const text = `No agent work has started for ${mins(Math.min(age(w.last_started_at, t), age(w.waiting.oldest_at, t)))} while ${w.waiting.count} wake${w.waiting.count === 1 ? "" : "s"} wait (oldest: ${slug(w.waiting.oldest_cause)}).`;
       await announce("dispatch-stalled", text, (x) => d.owner?.(x));
       return [{ key: "stalled", critical: true, reason: text }];
-    },
-    // A task held for grading (label grading, in review) for over a day: the grader's verdict is overdue.
-    async grade() {
-      const t = now();
-      const out: Incident[] = [];
-      for (const c of await companies()) {
-        const label = ((await d.kernel.read(`/api/companies/${c.id}/labels`)) as { id: string; name: string }[]).find((l) => l.name === "grading");
-        if (!label) continue;
-        const held = (await d.kernel.read(`/api/companies/${c.id}/issues?labelId=${label.id}&status=in_review&limit=100&excludeRoutineExecutions=true`)) as IssueRow[];
-        for (const i of held.filter((x) => age(x.updatedAt, t) > DAY_MS && !suppressed(x.id, `grade:${x.id}`))) out.push({ key: i.id, reason: `task ${i.identifier ?? i.id} held for grading for ${mins(age(i.updatedAt, t))}` });
-      }
-      return out;
     },
     // Orphaned work: the kernel's task state (nothing running, filed or waiting on the task: unpolled, orphaned, unknown or
     // history expired), over 2 hours. The one stuck-work rule.

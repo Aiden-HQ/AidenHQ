@@ -43,12 +43,6 @@ async function apps<T>(path: string): Promise<T> {
   if (!r.ok) throw new Error(`apps-mcp: ${body.slice(0, 300)}`);
   return JSON.parse(body) as T;
 }
-/** The grading service's record of failed grader passes, as this module (it asks the kernel who the caller is). */
-const gradeFailures = async () => {
-  const r = await fetch(`${(env.GRADING_URL ?? "http://grading:8096").replace(/\/$/, "")}/steward/grade-failures`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) });
-  if (!r.ok) throw new Error(`grading: ${r.status}`);
-  return ((await r.json()) as { failures: { task: string; at: string; reason: string }[] }).failures;
-};
 const hashOf = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
 /** The owner's lines: only the Steward itself unreachable, or dispatch stalled (the self-healer, or every agent, is down, so
  * someone outside the fleet must know). */
@@ -82,7 +76,7 @@ async function fileCheck(body: { incidents: { key: string; critical?: boolean }[
 const fileJam = (keys: string[]) => toSteward(`Gates jammed: these have been jammed for over two hours and the Fleet Steward has not cleared them (a pull request waiting on code review, an approval card with the AI reviewer, or a task that never resumed after its answer): ${keys.map((k) => `\`${k}\``).join(", ")}. Each key names its task or card.`, `jammed:${hashOf([...keys].sort().join(","))}`);
 
 const coach = coachReads({ kernel, kv, apps });
-const all = checks({ kernel, kv, apps, alerts: () => alertIncidents(kv, toSteward), openKeys: () => Object.keys(detectorState(kv).open), notify: toSteward, owner: ownerNotice, gradeFailures, log });
+const all = checks({ kernel, kv, apps, alerts: () => alertIncidents(kv, toSteward), openKeys: () => Object.keys(detectorState(kv).open), notify: toSteward, owner: ownerNotice, log });
 let busy = false;
 const run = async () => {
   if (busy) return;

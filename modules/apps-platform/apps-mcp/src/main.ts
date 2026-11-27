@@ -17,7 +17,6 @@ import { promisify } from "node:util";
 import { posix } from "node:path";
 import { show } from "./git.js";
 import { MANIFEST_FILE, parseManifest } from "./manifest.js";
-import { GRADER_SNAPSHOT_CAP, SNAPSHOT_CAP, graderView } from "./view.js";
 import { githubApi, startPreviews } from "./previews.js";
 import { bootRegistry, inAgentsOrg } from "./git.js";
 import { codeHostOps, isLocal, localChanges, localRepos, localRoot, readFleetOrg, readOrgs, withLocal } from "./codehost.js";
@@ -125,13 +124,13 @@ const readBody = async (req: IncomingMessage): Promise<any> => {
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined;
 };
 const internalAuthorized = (req: IncomingMessage): boolean => bearerIs(req, internalToken);
-// The reads of a module holding apps.read (readers.ts): the grader's deploys and view, the Fleet Steward's quality and open PRs and (besides
-// the board's internal token, for its connections view) its sources.
+// The reads of a module holding apps.read (readers.ts): the Fleet Steward's quality and open PRs and (besides the board's internal
+// token, for its connections view) its sources.
 const reader = appsReader(kernelUrl);
 const readerIdentity = appsReaderIdentity(kernelUrl);
 
 // Nothing is published to the host: only containers on the compose network reach this port. /internal/* is the board's and
-// watcher's API, and the grader's reads (a module holding apps.read); the one write (a stateful deploy, already approved in
+// watcher's API, and the reads of a module holding apps.read; the one write (a stateful deploy, already approved in
 // chat) needs the internal token, which agents and modules don't have.
 let reconcile: () => Promise<void> = async () => undefined; // set once the loops start
 const http = createServer(async (req, res) => {
@@ -205,15 +204,6 @@ const http = createServer(async (req, res) => {
       );
       return send(res, 200, { prs: [...r.rows, ...local] });
     }
-    // Every deploy of one exact commit, over the app's whole deploy table (the grading module): a commit the bounded status
-    // list has moved past is still provable here, and a commit with no row really was never deployed.
-    const deployHistory = /^\/internal\/deploys\/([a-z0-9-]{1,63})\/([0-9a-f]{40})$/.exec(url.pathname);
-    if (deployHistory && req.method === "GET") {
-      const refused = await reader(req);
-      if (refused) return send(res, refused, { error: refused === 403 ? `role apps.read is required` : "unauthorized" });
-      const a = p.find(deployHistory[1]!);
-      return send(res, 200, { deploys: p.store.deploysOf(a.name, deployHistory[2]!).map(({ sha, at, by, status }) => ({ sha, at, by, status })) });
-    }
     // A shared app's manifest (custom roles, default role) at the commit that is running (the board's app access).
     const manifestPath = /^\/internal\/apps\/([a-z][a-z0-9-]{1,30})\/manifest$/.exec(url.pathname);
     if (manifestPath && req.method === "GET") {
@@ -222,16 +212,6 @@ const http = createServer(async (req, res) => {
       const sha = p.store.running(a.name);
       if (!sha) return send(res, 200, { sha: null, roles: [] });
       return send(res, 200, { sha, ...parseManifest(await show(p.cfg.git, a, sha, posix.join(a.path, MANIFEST_FILE))) });
-    }
-    // The grader's live view of one page of a deployed app (the grading module): view.ts graderView. The larger snapshot is
-    // the grading module's alone: any other apps.read caller (the Fleet Steward) gets the ordinary SNAPSHOT_CAP, and no caller
-    // can raise it from the request.
-    if (url.pathname === "/internal/view" && req.method === "POST") {
-      const who = await readerIdentity(req);
-      if (typeof who === "number") return send(res, who, { error: who === 403 ? `role apps.read is required` : "unauthorized" });
-      const b = await readBody(req);
-      const cap = who.module === "grading" ? GRADER_SNAPSHOT_CAP : SNAPSHOT_CAP;
-      return send(res, 200, await graderView(p.find(String(b?.name ?? "")), { path: b?.path, width: b?.width, cap }, { resolve: p.resolveApi, render: p.render, sign: p.sign, running: p.store.running, noHttpProven: p.noHttpProven, audit: p.auditView }));
     }
     if (url.pathname === "/internal/deploy" && req.method === "POST") {
       if (!internalAuthorized(req)) return send(res, 401, { error: "unauthorized" });

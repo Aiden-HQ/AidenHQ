@@ -1,6 +1,6 @@
 {
  "name": "security-fix-product-change",
- "why": "A security fix needing a product change goes to the Platform Engineer as a graded PR.",
+ "why": "A security fix needing a product change goes to the Platform Engineer as a PR.",
  "routine": "security-fix",
  "input": "Run task: a task assigned to you. Today is 2026-11-18, now 2026-11-18T14:00:00+04:00.\n\ntask_current -> {\"id\":\"T-90\",\"title\":\"Security fix: board image: bump undici\",\"labels\":[\"security\"],\"description\":\"undici 6.21.0 in services/board/package-lock.json of Aiden-HQ/AidenHQ has GHSA-xxxx (high); fixed in 6.21.2, released 2026-11-02. Change: bump undici to 6.21.2 in that lockfile. Done: image-scan green on the PR head.\"}\ntask_search \"Fleet issues\" -> [{\"id\":\"T-1\",\"title\":\"Fleet issues\",\"status\":\"todo\"}]\ntask_comments T-1 (recent) -> []\ntask_team -> [{\"key\":\"fleet-engineer\",\"name\":\"Platform Engineer\"}]\n",
  "expect": [

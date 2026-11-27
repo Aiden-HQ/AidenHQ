@@ -115,7 +115,7 @@ export function Conversation({ refId, row, mobile, crew, faces, prefix, go, onSi
   // Changes arrive at once (events.ts): a message from either side, the run starting, saying more or ending, the work
   // handed out moving on, a card filed or decided, a grade.
   useEvents(["chat", "tasks", "progress"], load, chat?.id);
-  useEvents(["approvals", "grades"], load);
+  useEvents(["approvals"], load);
 
   const scroller = useRef<HTMLDivElement>(null);
   const [atEnd, setAtEnd] = useState(true);

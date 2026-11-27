@@ -43,7 +43,7 @@ A new install gets the defaults: `spend_day_usd` 50 (a UTC day) and `spend_month
 
 - Compile writes the limits into `config/gateway.json` (`install_day_usd`, `install_month_usd`).
 - The gateway counts them in the same transaction as every other check (`reserve`), for every model call: agents,
-  Engineer jobs, check jobs, the AI reviewer, the grader, the source writers, the board's side chat and CI review. Spent is
+  Engineer jobs, check jobs, the AI reviewer, completion checks, the source writers, the board's side chat and CI review. Spent is
   the ledger's sum for the period (settled and in flight).
 - Past either, a call gets `402 cap_reached` (worded so Paperclip doesn't retry it) and the owner is told once per limit,
   period and value through the kernel's notify path (no card). The owner changes the setting in Settings.

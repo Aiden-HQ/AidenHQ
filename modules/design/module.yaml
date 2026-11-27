@@ -50,7 +50,7 @@ agents:
     department: engineering
     skills: [ apps-platform.design-system, engineering.supply-chain, engineering.write-code, tasks.delegate-work ]
     max_parallel: 2 # mockups are independent; each run gets its own box
-    # Graded done: mockups and design work delegated to it are checked against their rubric before they close.
+    # Mockups and design work delegated to it carry a rubric: its done report is checked against it after the task closes.
     graded: true
     # Looks at screenshots: DeepSeek Flash takes images on OpenRouter (input_modalities text, image). The owner's blind UI
     # bake-off (2026-11-13) ranked it first at high effort, and every objective check agreed; Kimi was dropped ("lacked taste").
@@ -64,7 +64,7 @@ agents:
       apps: [ app_list, app_status, app_view, app_check, web_view ]
       github?: [ github_whoami, github_issue_read, github_search_issues ]
       # fleet_catalog: which agent owns an app, so a redesign or a review brings that agent in.
-      paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, task_delegate, task_amend_rubric, task_comment, task_handoff, task_block, task_cancel, task_file_upload, task_finish, fleet_catalog ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, task_delegate, task_comment, task_handoff, task_block, task_cancel, task_file_upload, task_finish, fleet_catalog ]
     heartbeat: true
     # repo-checkout: a commit of an agents-org repo in its computer.
     roles: [ repo-checkout ]
@@ -88,7 +88,7 @@ agents:
       # design issue and an issue per verified bug (AI-reviewed writes).
       github?: [ github_whoami, github_issue_read, github_search_issues, github_issue_comment, github_issue_create, github_issue_update ]
       # fleet_catalog: which agent owns an app, so a redesign or a review brings that agent in.
-      paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, task_delegate, task_amend_rubric, task_comment, task_handoff, task_block, task_cancel, task_file_upload, task_finish, fleet_catalog ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, task_delegate, task_comment, task_handoff, task_block, task_cancel, task_file_upload, task_finish, fleet_catalog ]
     # Woken only by a request, never by a schedule or a PR event.
     # repo-checkout: a PR's head and base in its computer. ui-login: its passes' job tools (the supplied login). app-tester: a
     # read-only test-user session of an AidenHQ app for its own pass (never test-write or any; the kernel refuses them).

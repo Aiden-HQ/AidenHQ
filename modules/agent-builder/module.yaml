@@ -32,7 +32,7 @@ agents:
       # thread replies. No live edits: people's edits and comments wake it, its own never do.
       primer?: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_get_document_comments, primer_list_documents, primer_find_document, primer_get_doc, primer_create_document, primer_add_version, primer_reply_to_thread ]
       ops_mcp?: [ obsidian_search, obsidian_read, obsidian_read_document_map, voice_note_read, knowledge_list, knowledge_index, knowledge_search, knowledge_read ]
-      paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, fleet_catalog, task_delegate, task_amend_rubric, task_comment, task_handoff, task_block, task_cancel, task_finish ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_files, task_file_read, task_search, task_list, task_approvals, task_team, fleet_catalog, task_delegate, task_comment, task_handoff, task_block, task_cancel, task_finish ]
     heartbeat: true
     # architect: the tasks it files may run on the product line (kernel admission's platform filers).
     # repo-checkout: the instance repo's agents/ and handbooks, read-only, once the Architect has a computer (`image:`).
