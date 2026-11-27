@@ -51,4 +51,4 @@ code keeps its own licence. See [NOTICE](NOTICE) and [LICENSES/](LICENSES/).
 
 ## Contributing and security
 
-See the repository's [CONTRIBUTING.md](../CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+See the repository's [CONTRIBUTING.md](../CONTRIBUTING.md) and [SECURITY.md](../SECURITY.md).

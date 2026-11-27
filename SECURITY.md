@@ -9,4 +9,4 @@ Include what you found, how to reproduce it and which module is affected. Report
 fixes ship as a normal PR once a patch is ready.
 
 Supply-chain rules (pinned dependencies, 7-day minimum age) are in the product repo's
-[CONTRIBUTING.md](../CONTRIBUTING.md).
+[CONTRIBUTING.md](CONTRIBUTING.md).
