@@ -180,7 +180,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   const since = data.since && <SinceCard since={data.since} timezone={timezone} from={data.since_from} all={() => setPane({ kind: "since" })} />;
   const idea = data.idea && <IdeaCard idea={data.idea} fail={fail} reload={reload} />;
   // Needs takes the full width when nothing sits beside it, so its edges line up with the sections below.
-  const sideEmpty = !(paneOpen && !mobile) && !data.start?.nextUp && !since && !idea;
+  const sideEmpty = !(paneOpen && !mobile) && !data.start?.nextUp && !idea;
   // Needs you shows only while something is in it (or a receipt from this visit); empty, the box is left out.
   const needsShown = rows.length > 0;
   // The rows still open here: an answered row leaves the count at once, before the kernel catches up.
@@ -262,22 +262,18 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
           ) : (
             <>
               {data.start?.nextUp && <NextUp next={data.start.nextUp} reload={reload} />}
-              {since}
               {idea}
             </>
           )}
         </div>}
       </div>}
       {mobile && detail}
-      {paneOpen && !mobile && (since || idea) && (
-        <div className="home-pair">
-          {since}
-          {idea}
-        </div>
-      )}
+      {paneOpen && !mobile && idea && <div className="home-pair">{idea}</div>}
       {data.start && <MoreTeam more={data.start.more} />}
       {day && onDone && <YourDay day={day} onDone={onDone} />}
       <World world={data.world} reload={reload} />
+      {/* What changed is a glance, not a call to act: below the work, just above the team. */}
+      {since && <div className="home-since enter" style={{ "--i": 4 } as CSSProperties}>{since}</div>}
       <TeamRow team={data.team} />
     </Page>
   );

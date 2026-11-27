@@ -134,9 +134,9 @@ outside `tokens.css`, and no class the kit replaced (`web/legacy-classes.json`, 
 ## Home
 
 `Home.tsx`, one read (`GET /api/home`): Needs you (answers, approval cards and handed-back tasks, oldest first, answered in
-place as `DecisionRow`s), Since you last looked (what the team told the owner and what closed, grouped by teammate, top
-three and "All N"), Your world (who the owner waits on; today's calendar), Your team (teammates with news, and Hire a
-teammate) and one Idea. **A block with no source or no data is left out**, never shown empty: Needs you too, and the
+place as `DecisionRow`s), Your day, Your world (who the owner waits on; today's calendar), Since you last looked (what
+the team told the owner and what closed, grouped by teammate, top three and "All N"; a glance, so it sits below the work),
+Your team (teammates with news, and Hire a teammate) and one Idea. **A block with no source or no data is left out**, never shown empty: Needs you too, and the
 greeting then says only "Good morning, <name>." (Needs you counts only what teammates ask, so it never claims "nothing").
 A fresh install sees the greeting, Next up and the team row.
 
