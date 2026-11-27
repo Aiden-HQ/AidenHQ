@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "jsPlugins": ["./oxlint-plugin.mjs"],
-  "ignorePatterns": ["dist", "node_modules", "src/catalog"],
+  "ignorePatterns": ["dist", "node_modules", "/test", "src/catalog"],
   "rules": {
     "app/nav": "error",
     "app/header": "error",
