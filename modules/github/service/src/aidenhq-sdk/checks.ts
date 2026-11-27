@@ -133,13 +133,16 @@ export function judgedOnHead<T extends { name?: string; kind?: "run" | "status";
 
 const IMAGE_FILE = /(^|\/)(Dockerfile|Containerfile)[^/]*$|\.dockerfile$/i;
 /**
- * `image-scan` skipped on a PR that changes an image definition (or whose files can't all be read): nothing was scanned.
+ * `image-scan` skipped on a PR that changes an image definition (or whose files weren't read at all): nothing was scanned.
  * The scan's newest report that judged the head is the judgement (judgedOnHead): a run that scanned the head after an edit
  * superseded a skip cleared the question, so the obsolete skip is not one, and a skip that is the newest judgement is.
+ * The file list answers on its own: a truncated list is answered on the pages that were read; paging happens at the caller.
  */
 export function skippedImageScan(pr: Json): boolean {
   const nodes = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
   const scans = latestChecks(judgedOnHead(contextChecks({ contexts: { nodes } })).filter((c) => c.name === "image-scan"));
   if (!scans.some((c) => c.status === "SKIPPED")) return false;
-  return !pr.files || pr.files.pageInfo?.hasNextPage || (pr.files.nodes ?? []).some((f: Json) => IMAGE_FILE.test(f.path ?? ""));
+  // No file list at all (ship's list read carries none) is no evidence: the full PR read answers instead.
+  if (!Array.isArray(pr.files?.nodes)) return true;
+  return pr.files.nodes.some((f: Json) => IMAGE_FILE.test(f.path ?? ""));
 }

@@ -160,8 +160,26 @@ test("the PR query asks for each check's external_id and whether the check list 
   assert.match(query, /CheckRun \{ databaseId name status conclusion startedAt completedAt externalId checkSuite \{ app \{ slug \} \} \}/,
     "a suite check carries its external_id, the App that posted it, and the id and times the gate picks the newest run by");
   assert.match(query, /statusCheckRollup \{ contexts\(first: 100\) \{ pageInfo \{ hasNextPage \}/, "a truncated check list is refused, not read as complete");
-  assert.match(query, /files\(first: 100\) \{ pageInfo \{ hasNextPage \}/, "a truncated file list is refused too");
+  assert.match(query, /files\(first: 100\) \{ pageInfo \{ hasNextPage endCursor \} nodes \{ path \} \}/, "the file list carries its page cursor, so the read pages past a cut list");
   assert.match(query, /baseRef \{ target \{ oid /, "the PR's own base oid comes back, for a merged run whose pull_requests list GitHub dropped");
+});
+
+test("a PR read pages its file list past the first 100, and a page it can't read is no answer at all", async () => {
+  const first = Array.from({ length: 100 }, (_, i) => ({ path: `src/f${i}.ts` }));
+  const answers = (body: unknown) => answerOp("read", { module: "grading", repo: "acme/app", kind: "pr", number: 7 },
+    withRest(ctx(), async (_m, path, sent) => (path === "/graphql"
+      ? ok((sent as any)?.variables?.after === "f1" ? body : { data: { repository: { pullRequest: { number: 7, files: { pageInfo: { hasNextPage: true, endCursor: "f1" }, nodes: first } } } } })
+      : ok({}))));
+  const whole = await answers({ data: { repository: { pullRequest: { files: { pageInfo: { hasNextPage: false }, nodes: [{ path: "deploy/Dockerfile" }] } } } } });
+  const files = whole.json.repository.pullRequest.files;
+  assert.deepEqual(files.pageInfo, { hasNextPage: false });
+  assert.equal(files.nodes.length, 101, "every page is read");
+  assert.equal(files.nodes.at(-1).path, "deploy/Dockerfile", "the image definition on the second page is in the list");
+  // A second page GitHub refuses is no answer: a partial list would hide an image definition past the cut.
+  await assert.rejects(() => answerOp("read", { module: "grading", repo: "acme/app", kind: "pr", number: 7 },
+    withRest(ctx(), async (_m, path, sent) => (path === "/graphql"
+      ? (sent as any)?.variables?.after === "f1" ? { status: 502, body: {}, headers: new Headers() } : ok({ data: { repository: { pullRequest: { number: 7, files: { pageInfo: { hasNextPage: true, endCursor: "f1" }, nodes: first } } } } })
+      : ok({})))), /502/);
 });
 
 test("a PR read keeps GitHub's explicit nulls, so grading can tell a PR that is gone from one it could not read", async () => {

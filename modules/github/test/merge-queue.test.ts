@@ -30,6 +30,11 @@ function fakeGitHub(prs) {
       const repo = `${v.owner}/${v.repo}`;
       const p = prs[`${repo}#${v.number}`] ?? prs[repo];
       if (!p) return { status: 400, body: { errors: [{ message: `fake GitHub: no PR ${repo}#${v.number}` }] } };
+      // `filePages`: a PR whose file list GitHub cut at 100, answered one page at a time by the cursor ("f1" is page 2).
+      if (body.query.includes("after: $after")) {
+        const page = p?.filePages?.[Number(String(v.after).replace(/^f/, ""))];
+        return page ? { status: 200, body: { data: { repository: { pullRequest: { files: { pageInfo: { hasNextPage: page.length >= 100, endCursor: `f${Number(String(v.after).replace(/^f/, "")) + 1}` }, nodes: page.map((path) => ({ path })) } } } } } } : { status: 500, body: { errors: [{ message: "fake GitHub: no such file page" }] } };
+      }
       if (body.query.includes("pullRequest(number")) {
         // `lag`: GitHub's read still shows the PR open for that many polls (its merge not yet reflected); a repo's allowed
         // methods can change between the PUT and the poll (`squash: false, rebase: true`).
@@ -39,8 +44,10 @@ function fakeGitHub(prs) {
           id: "PR_1", number: v.number, url: `https://github.com/${repo}/pull/${v.number}`, state: stale ? "OPEN" : p.state ?? "OPEN", isDraft: false, reviewDecision: p.review ?? null,
           mergedAt: stale ? null : p.mergedAt ?? null, mergeCommit: !stale && p.merged ? { oid: p.merged, message: String(p.message ?? "") } : null,
           mergeStateStatus: p.checks === "SUCCESS" ? "CLEAN" : "BLOCKED", headRefOid: p.head, headRefName: "feature", isCrossRepository: false, baseRefName: p.base ?? "main",
-          files: { pageInfo: { hasNextPage: false }, nodes: (p.files ?? ["lib/x.mjs"]).map((path) => ({ path })) }, latestOpinionatedReviews: { nodes: [] },
-          commits: { nodes: [{ commit: { statusCheckRollup: rollup(p.checks, p) } }] },
+          files: p.filePages
+            ? { pageInfo: { hasNextPage: true, endCursor: "f1" }, nodes: p.filePages[0].map((path) => ({ path })) }
+            : { pageInfo: { hasNextPage: false }, nodes: (p.files ?? ["lib/x.mjs"]).map((path) => ({ path })) }, latestOpinionatedReviews: { nodes: [] },
+          commits: { nodes: [{ commit: { statusCheckRollup: p.rollup ?? rollup(p.checks, p) } }] },
           baseRef: { compare: { behindBy: 0 }, target: { oid: "b".repeat(40), statusCheckRollup: rollup(p.baseState ?? "SUCCESS", { names: p.baseNames }) } },
         } } } } };
       }
@@ -1914,4 +1921,42 @@ test("a wait is recorded only after the kernel takes it: a restart mid-delivery 
   assert.equal(after.waitSent, "code review: 1 important finding open");
   await merges.step();
   assert.equal(waits.length, 1, "once acknowledged, the same reason is not re-posted");
+});
+
+test("a PR cut at 100 files is read page by page: non-image files with a skipped image scan merge, an image on a later page does not", async (t) => {
+  // Aiden-HQ/AidenHQ#1955: a PR over 100 files is truncated by `files(first: 100)`, and the truncation alone used to read as
+  // "changes an image". The gate now reads every page first, so a skip over ordinary files is no image change and an image
+  // definition past the first page is caught.
+  const plain = Array.from({ length: 100 }, (_, i) => `src/f${i}.ts`);
+  const skipped = { state: "SUCCESS", contexts: { pageInfo: { hasNextPage: false }, nodes: [check("image-scan", "SKIPPED"), check("build", "SUCCESS")] } };
+  const runs = [{ name: "image-scan", status: "completed", conclusion: "skipped" }, { name: "build", status: "completed", conclusion: "success" }];
+  const files = ["lib/x.mjs"];
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", filePages: [plain, files], rollup: skipped, runs } };
+  const { handle, outcomes, merge, settle } = await setup(t, { prs });
+  await merge("k-00000000000000f9", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await handle.stepMerges();
+  await settle();
+  assert.equal(outcomes[0]?.ok, true, JSON.stringify(outcomes));
+
+  // The same cut list with a Dockerfile on the second page is an image change with a skipped scan: the merge fails for that reason.
+  const second = { head: HEAD, checks: "SUCCESS", filePages: [plain, ["deploy/Dockerfile"]], rollup: skipped, runs };
+  const other = await setup(t, { prs: { "acme-agents/widget": second } });
+  await other.merge("k-00000000000000fa", [{ repo: "acme-agents/widget", number: 1, head: HEAD }]);
+  await other.handle.stepMerges();
+  await other.settle();
+  assert.equal(other.outcomes[0]?.ok, false);
+  assert.match(String(other.outcomes[0]?.text), /changes an image but its image-scan check was skipped/);
+});
+
+test("a file page that can't be read throws, so the gate never answers from the pages it happens to have", async (t) => {
+  const prs = { "acme-agents/widget": { head: HEAD, checks: "SUCCESS", filePages: [Array.from({ length: 100 }, (_, i) => `src/f${i}.ts`), ["deploy/Dockerfile"]] } };
+  const github = fakeGitHub(prs);
+  // The first read answers the cut page; the page read then fails.
+  const gh = async (method, path, body) => (String(body?.query ?? "").includes("after: $after")
+    ? { status: 502, body: {} }
+    : github.gh(method, path, body));
+  const merges = createMerges({ dir: mkdtempSync(join(tmpdir(), "codehost-files-")), gh, fleetOrg: "acme-agents", reviewGate: async () => ({ pass: true }), report: async () => {} });
+  void merges.enqueue("k-00000000000000fb", { prs: [{ repo: "acme-agents/widget", number: 1, head: HEAD }] });
+  await merges.step();
+  assert.deepEqual(github.merges(), [], "a partial file list is never a merge");
 });

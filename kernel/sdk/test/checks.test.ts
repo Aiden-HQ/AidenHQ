@@ -15,9 +15,16 @@ test("checks are read as named results; code review is advisory; an image scan s
   assert.equal(checks.find((c) => c.name === "docs").skipped, true);
 
   const pr = (path, extra = {}) => ({ commits: { nodes: [{ commit: { statusCheckRollup: rollup(run("image-scan", "COMPLETED", "SKIPPED")) } }] }, files: { nodes: [{ path }] }, ...extra });
-  assert.equal(skippedImageScan(pr("services/x/Dockerfile")), true);
+  assert.equal(skippedImageScan(pr("services/x/Dockerfile")), true, "a Dockerfile on the first page is an image change");
   assert.equal(skippedImageScan(pr("src/a.ts")), false);
-  assert.equal(skippedImageScan(pr("src/a.ts", { files: { pageInfo: { hasNextPage: true }, nodes: [] } })), true);
+  // A list cut at the first page answers on the pages read: truncation alone is not an image change.
+  const truncated = (paths) => ({ files: { pageInfo: { hasNextPage: true }, nodes: paths.map((path) => ({ path })) } });
+  assert.equal(skippedImageScan(pr("src/a.ts", truncated(["src/a.ts", "src/b.ts"]))), false, "a truncated list of non-image files is no image change");
+  assert.equal(skippedImageScan(pr("src/a.ts", truncated(["src/a.ts", "services/x/Dockerfile"]))), true, "an image definition on the first page of a truncated list still counts");
+  // Paging happens at the caller: it hands over every page read, and an image definition on a page after the first counts.
+  const paged = (pages) => ({ files: { pageInfo: { hasNextPage: false }, nodes: pages.flat().map((path) => ({ path })) } });
+  assert.equal(skippedImageScan(pr("src/a.ts", paged([["src/a.ts", "src/b.ts"], ["deploy/Dockerfile"]]))), true, "an image definition on a page after the first is an image change");
+  assert.equal(skippedImageScan(pr("src/a.ts", paged([["src/a.ts"], ["src/c.ts"]]))), false, "two pages of non-image files are no image change");
   // The scan's newest run at the head is its judgement: a replacement run that scanned the Dockerfile clears an obsolete skip.
   const scanned = (conclusion, databaseId) => ({ commits: { nodes: [{ commit: { statusCheckRollup: rollup(
     { __typename: "CheckRun", name: "image-scan", databaseId: 30, status: "COMPLETED", conclusion: "SKIPPED" },
