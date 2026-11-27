@@ -151,17 +151,6 @@ const pick = <T>(rows: T[], want: string, label: string, names: (r: T) => (strin
   return hits[0]!;
 };
 
-interface CostRow {
-  agentName: string;
-  eventCount: number;
-  apiRunCount: number;
-  subscriptionRunCount?: number;
-  inputTokens: number;
-  cachedInputTokens: number;
-  outputTokens: number;
-  costCents: number;
-}
-
 /** fleet_status, plus what is running now (with age) and the open approval cards (tier, state, age). */
 export async function fleetStatus(pc: Paperclip, records: Pick<Records, "list">, activity: () => Promise<KernelActivity>) {
   const co = `/api/companies/${pc.companyId}`;
@@ -228,17 +217,36 @@ export function boundedFleetStatus<T extends Record<string, unknown>>(reply: T, 
   return ordered as T & { truncated?: string[] };
 }
 
-export async function fleetCosts(pc: Paperclip, days?: number) {
+/**
+ * Token usage per agent per UTC day over the last `days` days (today included), from the board's usage ledger: the model
+ * gateway's calls (costs.ts pullUsage), which is where every agent run spends. Paperclip records no agent spend of its own.
+ * One row per agent and day, summed across models and lanes; OpenRouter leaves some calls unpriced (costCents 0), so the
+ * tokens and runs are the reliable figures.
+ */
+export async function fleetCosts(pc: Paperclip, store: Store, days?: number) {
   const n = Math.min(Math.max(Math.floor(days ?? 7) || 7, 1), 31);
   const today = Date.parse(new Date().toISOString().slice(0, 10));
-  const perDay = await Promise.all(
-    Array.from({ length: n }, async (_, k) => {
-      const d = new Date(today - k * DAY).toISOString().slice(0, 10);
-      const rows = await pc.request<CostRow[]>("GET", `/api/companies/${pc.companyId}/costs/by-agent?from=${d}T00:00:00.000Z&to=${d}T23:59:59.999Z`);
-      return rows.filter((r) => r.eventCount || r.inputTokens || r.outputTokens).map((r) => ({ agent: r.agentName, day: d, runs: r.apiRunCount + (r.subscriptionRunCount ?? 0), inputTokens: r.inputTokens, cachedInputTokens: r.cachedInputTokens, outputTokens: r.outputTokens, costCents: r.costCents }));
-    }),
-  );
-  return { days: n, note: "OpenRouter usage is unpriced (costCents 0): use tokens and runs.", usage: perDay.flat() };
+  const from = new Date(today - (n - 1) * DAY).toISOString();
+  const to = new Date(today + DAY).toISOString();
+  const agents = await pc.request<Agent[]>("GET", `/api/companies/${pc.companyId}/agents`);
+  const cells = store.ledgerCube(from, to, "day");
+  const nameOf = (id: string | null) => (id ? (agents.find((a) => a.id === id)?.name ?? `Agent ${id.slice(0, 8)}`) : "System calls");
+  const rows = new Map<string, { agent: string; day: string; runs: number; inputTokens: number; cachedInputTokens: number; outputTokens: number; costUsd: number }>();
+  for (const c of cells) {
+    const agent = nameOf(c.agentId);
+    const key = `${c.t}\0${c.agentId ?? ""}`;
+    const r = rows.get(key) ?? { agent, day: c.t, runs: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costUsd: 0 };
+    r.runs += c.calls;
+    r.inputTokens += c.input;
+    r.cachedInputTokens += c.cached;
+    r.outputTokens += c.output;
+    r.costUsd += c.usd;
+    rows.set(key, r);
+  }
+  const usage = [...rows.values()]
+    .sort((a, b) => (a.day === b.day ? a.agent.localeCompare(b.agent) : a.day.localeCompare(b.day)))
+    .map((r) => ({ agent: r.agent, day: r.day, runs: r.runs, inputTokens: r.inputTokens, cachedInputTokens: r.cachedInputTokens, outputTokens: r.outputTokens, costCents: Math.round(r.costUsd * 100) }));
+  return { days: n, note: "Usage from the board's ledger (the model gateway's calls, pulled every minute). OpenRouter is unpriced where costCents is 0: use tokens and runs.", usage };
 }
 
 export async function fleetControl(pc: Paperclip, caller: Agent, a: z.infer<typeof ControlSchema>, store: Pick<Store, "meta" | "setMeta" | "delMeta">) {
