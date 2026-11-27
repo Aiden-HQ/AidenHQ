@@ -33,10 +33,13 @@ export function ConnectionsPage({ conns, can, refresh, onRefresh }: { conns: Con
   const ok = rows.filter((x) => x.v.status === "connected");
   const idle = rows.filter((x) => x.v.status === "not_connected");
   const built = rows.filter((x) => x.v.status === "builtin");
+  // A ?connect= link opens one dialog: the row whose sign-in it names, else the row of that name.
+  const want = q.get("connect");
+  const target = want ? (rows.find((x) => x.r.signIn?.id === want) ?? rows.find((x) => x.r.name === want))?.r.name : undefined;
   const tiles = (list: typeof rows) => (
     <TileGrid>
       {list.map(({ r, v }) => (
-        <ConnectionTile key={r.name} r={r} v={v} can={can} connect={q.get("connect") === (r.signIn?.id ?? r.name) ? { error: q.get("error"), account: q.get("account") } : undefined} onAsked={clear} />
+        <ConnectionTile key={r.name} r={r} v={v} can={can} connect={target === r.name ? { error: q.get("error"), account: q.get("account") } : undefined} onAsked={clear} />
       ))}
     </TileGrid>
   );

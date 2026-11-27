@@ -108,7 +108,7 @@ export function buildServer(d: { td: TdClient | undefined; store: Store; me: () 
       // TDLib's history starts AT from_message_id: ask for one more and drop the boundary, so a page never repeats its cursor.
       const before = a.before_message_id ? Number(a.before_message_id) : 0;
       const limit = a.limit ?? 30;
-      const r = await td.invoke<{ messages: Msg[] | null }>({ _: "getChatHistory", chat_id: Number(a.chat_id), from_message_id: before, offset: 0, limit: before ? limit + 1 : limit, only_local: false });
+      const r = await td.invoke<{ messages: Msg[] | null }>({ _: "getChatHistory", chat_id: Number(a.chat_id), from_message_id: before, offset: 0, limit: before ? Math.min(limit + 1, 100) : limit, only_local: false });
       return { messages: (r.messages ?? []).filter((m: Msg) => !before || m.id < before).slice(0, limit).map(fmtMsg) };
     },
   );
