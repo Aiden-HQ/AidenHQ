@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { CodeReviewReader, codeReviewRoute } from "../src/code-review-read.js";
 import { GitHub } from "../src/github.js";
 import { accessFor } from "./fake-access.js";

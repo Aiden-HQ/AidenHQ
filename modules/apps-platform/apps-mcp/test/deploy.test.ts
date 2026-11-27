@@ -1,6 +1,6 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { createEngine, type Deps, STOPPED_OPEN, STOPPED_UNCONFIRMED, TEARDOWN_FAILED } from "../src/deploy.js";
 import { NO_SIGN_IN, judgePage, probeResult } from "../src/checks.js";
 import { previewApp } from "../src/previews.js";

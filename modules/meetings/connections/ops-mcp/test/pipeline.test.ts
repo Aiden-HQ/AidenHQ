@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { renderCanonicalNote } from "../src/render/notes.js";
 import { EXTRACTION, event, makeEnv, OMS_PRIVY, people, writeAt } from "./helpers.js";
 

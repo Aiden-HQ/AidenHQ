@@ -66,12 +66,13 @@ line here. Docs say how the product works now: no history notes; history goes to
 
 ## Build and test
 
-Everything runs offline; no live instance or paid key is needed. Node 24. Install each package once with `npm ci`.
+Everything runs offline; no live instance or paid key is needed. Node 24 runs the product; tests run on Bun 1.4.5 (`bun test --parallel`: every
+test file in its own process, so a suite has no shared state between files). Install each package once with `npm ci`.
 Before pushing, run `node scripts/ci-local.ts`: it runs what CI would run for your diff.
 
 ```sh
 cd scripts && npm test && npm run typecheck  # compiler, setup, sync-shared drift; types of the converted scripts and modules
-cd services/computer && node --test test/*.test.ts
+cd services/computer && bun test --parallel=2 --timeout=60000 ./test/
 cd modules/apps-platform/gate && npm test && npm run typecheck
 cd services/board && npx vitest run && npx tsc -p tsconfig.build.json --noEmit && npm run typecheck && npm run lint && npm run build
 # kernel, modules/apps-platform/apps-mcp, modules/*/connections/*, modules/security/scanner:

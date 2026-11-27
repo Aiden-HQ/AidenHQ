@@ -1,5 +1,5 @@
 // Channel binding: only the owner binds; an @mention in a bound channel is one thread call; the context read answers only the bound agent.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "bun:test";
 import { binder, channelContext, slashCommand } from "../src/bind.js";
 import { poster } from "../src/post.js";
 import { openStore } from "../src/store.js";

@@ -10,7 +10,7 @@
   "description": "The kernel host service: the model gateway, the tool proxy in front of every connection, caller identity and assertions.",
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning src/main.ts",
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts",
+    "test": "bun test --parallel --timeout=60000 ./test/",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

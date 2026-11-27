@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { ConfigSchema } from "../src/config.js";
 import { decide, scoreCandidates } from "../src/matching/score.js";
 import type { SourceEvidence } from "../src/matching/types.js";

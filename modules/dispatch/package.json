@@ -9,6 +9,6 @@
   },
   "description": "Turns the kernel's wakes into jobs: wake selection by the asker rules, and the job's prompt.",
   "scripts": {
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts"
+    "test": "bun test --parallel --timeout=60000 ./test/"
   }
 }

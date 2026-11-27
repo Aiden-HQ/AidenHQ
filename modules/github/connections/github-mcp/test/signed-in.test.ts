@@ -3,7 +3,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { servedSignedIn, signedIn } from "../src/vendor/needs.js";
 
 it("a registered tool's signed-in mark reaches the client; an unmarked success (github_issue_link) carries none", async () => {

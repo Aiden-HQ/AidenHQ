@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { PGlite } from "@electric-sql/pglite";
 import { scopeIssues, sourceHealth, type WarehouseDeps } from "../src/sources.js";
 

@@ -5,5 +5,5 @@
   "type": "module",
   "engines": { "node": ">=24" },
   "description": "The Maintainer's issue watcher and its handbook checks.",
-  "scripts": { "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts" }
+  "scripts": { "test": "bun test --parallel --timeout=60000 ./test/" }
 }

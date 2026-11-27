@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { GitHub, GitHubRefused, guard } from "../src/github.js";
 import { ReviewPoster } from "../src/review-post.js";
 import { gitHubApp, type GitHubApp } from "../src/github-app.js";

@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -130,7 +130,7 @@ it("src_security: one row per finding key across passes and paths, gone findings
   // A complete batch with no row that could be this image settles it: no container runs it and no configured image names
   // it, so the target retires with no replacement instead of staying absent with an error. The last row is this pass's
   // (the first pass's clean scan is still in `runs`).
-  expect(rows.get("image:aidenhq/board:local|openssl|3.0.1|CVE-2024-0001")).toMatchObject({ present: false, resolved_reason: /retired: no container runs this image and no configured image names it/ });
+  expect(rows.get("image:aidenhq/board:local|openssl|3.0.1|CVE-2024-0001")).toMatchObject({ present: false, resolved_reason: expect.stringMatching(/retired: no container runs this image and no configured image names it/) });
   expect(runs.filter((r) => r.scope === "image:aidenhq/board:local").at(-1)).toMatchObject({ status: "retired", error: null });
 
   // A stale batch (the host timer stopped) resolves nothing and is reported.
@@ -179,18 +179,20 @@ it("src_security: a mapped target absent from a fresh batch is retired against i
   expect(runs.filter((x) => x.scope === retired)).toHaveLength(1);
 
   // The finding the replacement does not carry is gone, with the replacement named as the reason.
-  expect(rows.get(retiredOnly)).toMatchObject({ present: false, resolved_reason: expect.stringContaining(replacement) });
+  expect(rows.get(retiredOnly)).toMatchObject({ present: false });
+  expect(rows.get(retiredOnly)!.resolved_reason).toContain(replacement);
   expect(rows.get(retiredOnly)!.resolved_at).toEqual(new Date(now));
   expect(rows.get(retiredOnly)!.resolved_reason).toMatch(/does not report/);
   // The finding the replacement carries is settled on the retired target as covered, and stays present on the replacement.
-  expect(rows.get(carried)).toMatchObject({ present: false, resolved_reason: expect.stringContaining(replacement) });
+  expect(rows.get(carried)).toMatchObject({ present: false });
+  expect(rows.get(carried)!.resolved_reason).toContain(replacement);
   expect(rows.get(carried)!.resolved_reason).toMatch(/covered by replacement/);
   expect(rows.get(replacementRow)).toMatchObject({ present: true, resolved_at: null });
 
   // An image that is neither mapped nor a configured computer image retires too: the batch is complete and nothing in it
   // could be this image, so no container runs it and no configured image names it.
   expect(runs.find((x) => x.scope === unmapped)).toMatchObject({ status: "retired", error: null });
-  expect(rows.get(unmappedRow)).toMatchObject({ present: false, resolved_reason: /retired: no container runs this image and no configured image names it/ });
+  expect(rows.get(unmappedRow)).toMatchObject({ present: false, resolved_reason: expect.stringMatching(/retired: no container runs this image and no configured image names it/) });
 });
 
 it("src_security: an absent image target retires against the one clean target of its repository in this pass", async () => {
@@ -227,9 +229,11 @@ it("src_security: an absent image target retires against the one clean target of
   const run = runs.find((x) => x.scope === oldTag)!;
   expect(run).toMatchObject({ status: "retired", error: null });
   expect(runs.filter((x) => x.scope === oldTag)).toHaveLength(1);
-  expect(rows.get(retiredOnly)).toMatchObject({ present: false, resolved_reason: expect.stringContaining(newTag) });
+  expect(rows.get(retiredOnly)).toMatchObject({ present: false });
+  expect(rows.get(retiredOnly)!.resolved_reason).toContain(newTag);
   expect(rows.get(retiredOnly)!.resolved_reason).toMatch(/does not report/);
-  expect(rows.get(carried)).toMatchObject({ present: false, resolved_reason: expect.stringContaining(newTag) });
+  expect(rows.get(carried)).toMatchObject({ present: false });
+  expect(rows.get(carried)!.resolved_reason).toContain(newTag);
   expect(rows.get(carried)!.resolved_reason).toMatch(/covered by replacement/);
   expect(rows.get(`${newTag}|openssl|3.0.1|CVE-2024-0001`)).toMatchObject({ present: true, resolved_at: null });
 });

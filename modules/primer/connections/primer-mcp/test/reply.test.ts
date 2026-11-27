@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { replier } from "../src/reply.js";
 import type { Owner, Owners } from "../src/owners.js";
 

@@ -5,7 +5,7 @@
 // continuation says so; a post that fails pauses the agent's turns; wakes are owner-local and fire once.
 import { createHmac } from "node:crypto";
 import http from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "bun:test";
 import { lineOf, type Chat } from "../src/lane/chat.js";
 import type { LaneAgent } from "../src/lane/config.js";
 import { makeLane } from "../src/lane/lane.js";

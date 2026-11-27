@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { createAuth } from "../src/auth.js";
 import { TdError } from "../src/td.js";
 import { FakeTd } from "./fake-td.js";

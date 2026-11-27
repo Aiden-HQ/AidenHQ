@@ -2,7 +2,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { apiTarget, authorize, callApi, targetContainer, type ApiRequest, type ResponseHeaders, type Resolve } from "../src/api.js";
 import { agentSigner } from "../src/identity.js";
 import { feedbackOnly } from "../src/mcp.js";

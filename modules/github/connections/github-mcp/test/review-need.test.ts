@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { z } from "zod";
 import { GitHubNeed, needResult } from "../src/client.js";
 import { GitHubRefused } from "../src/github.js";

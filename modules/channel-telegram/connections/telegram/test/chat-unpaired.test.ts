@@ -1,7 +1,7 @@
 // A private chat that isn't paired is answered once with how to pair, and logged; a chatty stranger isn't answered again
 // inside the window, and a burst of chats can't put more notices in flight than the cap. Nothing on that path reaches the
 // kernel.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import {
   UNPAIRED_NOTICE,
   UNPAIRED_NOTICE_MAX_INFLIGHT,

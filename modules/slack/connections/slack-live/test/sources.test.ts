@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { eventWrite, gapSync, MESSAGE, messageWrite, type Api } from "../src/sources.js";
 import type { SourceStore } from "../src/source-store.js";
 

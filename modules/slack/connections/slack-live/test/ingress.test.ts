@@ -1,6 +1,6 @@
 // The socket ingress line: one info log per inbound events_api message, with its shape and never its text, before the pairing,
 // owner-chat and routing filters can drop it. A DM that pairs nobody must still be observable.
-import { expect, it, vi } from "vitest";
+import { expect, it, vi } from "bun:test";
 
 const handlers: ((msg: unknown) => Promise<void>)[] = [];
 const states = { connected: [] as (() => void)[], disconnected: [] as (() => void)[], close: [] as (() => void)[] };

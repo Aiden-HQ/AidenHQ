@@ -7,7 +7,7 @@
   "engines": { "node": ">=24" },
   "description": "The warehouse module's task search service: one src_tasks row per task, and the board's hybrid search over them.",
   "scripts": {
-    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts",
+    "test": "bun test --parallel --timeout=60000 ./test/",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

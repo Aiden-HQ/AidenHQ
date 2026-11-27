@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { READ_STATE_METHODS } from "../src/td.js";
 import { NOW_MS, chat, ingestOn, msg, newMessage, openStore, outbox, scriptedTd, tmpDb, fakeKernel, fakeWarehouse } from "./helpers.js";
 

@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { provisionDatabase } from "../src/database.js";
 import { isSensitive, parseApp } from "../src/registry.js";
 

@@ -5,7 +5,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { COALESCE_MS, createSubscriber, type Kernel } from "../src/subscriber.js";
 
 const T1 = "11111111-1111-4111-8111-111111111111";

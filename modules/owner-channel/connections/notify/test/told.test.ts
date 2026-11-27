@@ -1,6 +1,6 @@
 // The ledger of what the owner was told: written once per message that reached them or waits for the digest; notify_recent reads it.
 import { generateKeyPairSync, sign } from "node:crypto";
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { flushDigest, queueDigest } from "../src/attention.js";

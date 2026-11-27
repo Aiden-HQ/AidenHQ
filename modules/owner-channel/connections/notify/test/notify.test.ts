@@ -1,5 +1,5 @@
 // One notify: every owner message lands once, on the first channel that delivers it, and waits while every channel is down.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { buildServer } from "../src/mcp.js";
@@ -119,15 +119,15 @@ describe("notify", () => {
     expect(refused).toEqual({ sent: false, reason: "error", note: "Question 1's option 1 has no visible text (send an option the owner can read, not a label or punctuation). Nothing was sent." });
     // A bare label prefix is no more readable than punctuation; "A" or "1" on its own is text and stays legal.
     for (const option of ["A)", "A.", "1)", "1.", "--", "..."])
-      expect(await notify(d, ask([{ question: "Which layout?", options: ["Wide", option] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: /Question 1's option 2 has no visible text[^]*Nothing was sent\./ });
+      expect(await notify(d, ask([{ question: "Which layout?", options: ["Wide", option] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: expect.stringMatching(/Question 1's option 2 has no visible text[^]*Nothing was sent\./) });
     // A label in brackets is still only a label; "A" and "1" alone stay legal.
     for (const option of ["(A)", "(1)", "(b)"])
-      expect(await notify(d, ask([{ question: "Which layout?", options: [option, "Wide"] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: /Question 1's option 1 has no visible text[^]*Nothing was sent\./ });
+      expect(await notify(d, ask([{ question: "Which layout?", options: [option, "Wide"] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: expect.stringMatching(/Question 1's option 1 has no visible text[^]*Nothing was sent\./) });
     // The chat renders markdown: a marker hidden in markup would show twice to the owner.
-    expect(await notify(d, ask([{ question: "Which layout?", options: ["Wait", "Publish (**recommended**)"] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: /Question 1's option 2 writes the tool's own "\(recommended\)" marker[^]*Nothing was sent\./ });
+    expect(await notify(d, ask([{ question: "Which layout?", options: ["Wait", "Publish (**recommended**)"] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: expect.stringMatching(/Question 1's option 2 writes the tool's own "\(recommended\)" marker[^]*Nothing was sent\./) });
     // The tool marks the first option itself, so a caller writing the marker shows two recommendations.
-    expect(await notify(d, ask([{ question: "Which layout?", options: ["Wide (recommended)", "Narrow"] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: /Question 1's option 1 writes the tool's own "\(recommended\)" marker[^]*Nothing was sent\./ });
-    expect(await notify(d, ask([{ question: "Which layout? (recommended)", options: ["Wide", "Narrow"] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: /Question 1's text writes the tool's own "\(recommended\)" marker[^]*Nothing was sent\./ });
+    expect(await notify(d, ask([{ question: "Which layout?", options: ["Wide (recommended)", "Narrow"] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: expect.stringMatching(/Question 1's option 1 writes the tool's own "\(recommended\)" marker[^]*Nothing was sent\./) });
+    expect(await notify(d, ask([{ question: "Which layout? (recommended)", options: ["Wide", "Narrow"] }]), agent("a1"))).toMatchObject({ sent: false, reason: "error", note: expect.stringMatching(/Question 1's text writes the tool's own "\(recommended\)" marker[^]*Nothing was sent\./) });
     expect([sent.length, posted.length, d.store.waiting().length]).toEqual([0, 0, 0]);
     // A form the owner can read still sends, "A" and "1" included.
     expect(await notify(d, ask([{ question: "Ship?", options: ["Wait", "Publish"] }], "Context."), agent("a1"))).toEqual({ sent: true, onChat: true });

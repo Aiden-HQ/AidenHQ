@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { quickCommand } from "../src/commands.js";
 
 describe("quick commands", () => {

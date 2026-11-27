@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { checkGoogle, NoGoogleAccounts, toolFailure } from "../src/accounts.js";
 import { readNeed } from "../src/aidenhq-sdk/needs.js";
 import { GoogleAuthError } from "../src/google.js";

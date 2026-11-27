@@ -14,7 +14,6 @@ import { modelsList } from "./models-list.ts";
 
 const serve = (handler) => new Promise((r) => { const s = http.createServer(handler).listen(0, "127.0.0.1", () => r({ s, url: `http://127.0.0.1:${s.address().port}` })); });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const closedPort = async () => { const x = await serve(() => {}); await new Promise((r) => x.s.close(r)); return x.url; };
 // OpenRouter's models list as stubbed here: $1 per million output tokens, input free, so a call asking for 10,000 output
 // tokens reserves exactly $0.01.
 const LIST = await modelsList({ flat: { in: 0, cached_in: 0, out: 1, max_output: 10_000 }, priced: { in: 1, cached_in: 0.1, out: 2, max_output: 10_000 }, astra: { in: 8, cached_in: 0.4, out: 40, max_output: 128_000 } });
@@ -144,16 +143,11 @@ test("a definite upstream refusal before any output is released at $0; a cut str
   const r = await rig(t, { answer: (body, res) => res.writeHead(429, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: "rate limited" } })) });
   assert.equal((await r.call({ model: "flat", messages: [] })).status, 429);
   assert.deepEqual(r.rows().map((x) => [x.status, x.cost_usd]), [["upstream_429", 0]]);
-  // A connection refused before the request left: nothing reached the upstream, nothing is charged.
-  const dir = mkdtempSync(join(tmpdir(), "spend-refused-"));
-  writeFileSync(join(dir, "grants.json"), JSON.stringify({ agents: { ag: { key: "eng" } } }));
-  writeFileSync(join(dir, "gateway.json"), "{}");
-  const gw = createGateway({ dbFile: join(dir, "kernel.db"), grantsFile: join(dir, "grants.json"), settingsFile: join(dir, "gateway.json"), secret: () => "js", upstream: await closedPort(), modelsUrl, jobLive: () => true, retryDelaysMs: [0, 0] });
-  const front = await serve((req, res) => gw.handle(req, res));
-  t.after(() => { front.s.close(); gw.close(); });
-  const res = await fetch(`${front.url}/api/v1/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${mintToken("js", { kind: "job", job: "j-WOR-1", agentId: "ag", issueId: "WOR-1" }, Date.now())}` }, body: JSON.stringify({ model: "flat", messages: [] }) });
-  assert.equal(res.status, 502);
-  assert.deepEqual(gw.db.prepare("SELECT status, cost_usd FROM calls").all().map((x) => [x.status, x.cost_usd]), [["upstream_error", 0]]);
+  // A connection refused before the request left: nothing reached the upstream, nothing is charged. The gateway reads the
+  // refusal's code from fetch's error `cause`, which is where Node (production) puts it, so this runs under Node.
+  const out = spawnSync("node", ["--disable-warning=ExperimentalWarning", join(import.meta.dirname, "fixtures", "spend-refused.ts")], { encoding: "utf8" });
+  assert.equal(out.status, 0, out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), { status: 502, rows: [["upstream_error", 0]] });
 });
 
 test("A12: stream cut, restart mid-call, no usage, a usage block without its cost, an id OpenRouter doesn't list", async (t) => {

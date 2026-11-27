@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { buildServer } from "../src/mcp.js";
 import { ownerReader } from "../src/signin.js";
 import { openStore } from "../src/store.js";

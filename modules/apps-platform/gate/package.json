@@ -6,7 +6,7 @@
   "engines": { "node": ">=24" },
   "scripts": {
     "start": "node main.ts",
-    "test": "node --test test/*.test.ts",
+    "test": "bun test --parallel --timeout=60000 ./test/",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

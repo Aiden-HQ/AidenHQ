@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { createPlatform } from "../src/platform.js";
 
 // The apps node without a join key (tailscale mode, no TS_APPS_AUTHKEY): it is a door only once logged in; until then apps

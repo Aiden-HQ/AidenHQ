@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import { openStore } from "../src/store.js";
 import { answerMarkup, buttonsMarkup, fromAnswerCallback, fromTelegramCallback } from "../src/telegram.js";
 import { pressAnswer } from "../src/chat.js";
 import { markOwnerMessage, transportSend } from "../src/send.js";
 
-afterEach(() => vi.unstubAllGlobals());
+const realFetch = globalThis.fetch;
+afterEach(() => { globalThis.fetch = realFetch; });
 
 describe("Telegram buttons", () => {
   it("a press delivers exactly the label the owner saw, once", () => {
@@ -59,7 +60,7 @@ describe("the transport", () => {
   });
   it("an alert is marked; a chat's message is headed with its agent and remembered for the owner's reply", async () => {
     const fetchMock = vi.fn(async (_u: string, _i?: RequestInit) => new Response(JSON.stringify({ ok: true, result: { message_id: 55 } })));
-    vi.stubGlobal("fetch", fetchMock);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
     const store = openStore(":memory:");
     expect(await transportSend(cfg, store, { kind: "alert", text: "prod is down" }, 1_000)).toEqual({ sent: true });
     expect(JSON.parse(String(fetchMock.mock.calls[0]![1]!.body)).text).toBe("🚨 Needs you now\nprod is down");
@@ -70,7 +71,7 @@ describe("the transport", () => {
   });
   it("a message with a one-tap answer carries bound buttons; a label that can't be a button leaves the text alone", async () => {
     const fetchMock = vi.fn(async (_u: string, _i?: RequestInit) => new Response(JSON.stringify({ ok: true, result: { message_id: 56 } })));
-    vi.stubGlobal("fetch", fetchMock);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
     const store = openStore(":memory:");
     const head = { agent: "Aiden", task: "WOR-9", issue: "issue-9" };
     await transportSend(cfg, store, { kind: "decision", text: "Ship?", head, asks: true, answer: { options: ["Wait", "Publish"], since: "2026-11-24T10:00:00.000Z" } }, 1_000);

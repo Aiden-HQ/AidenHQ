@@ -72,4 +72,4 @@ Supply chain: opencode is `1.19.6` (2026-11-17), both plugins are older than 7 d
 
 `test/config.test.ts` and `test/engine.test.ts` run anywhere (a stand-in `opencode`, `tmux`, `ttyd` and `setsid` in
 `test/bin`). `test/fresh-session.e2e.test.ts` runs the real opencode 1.19.6 and is skipped where it is not on PATH:
-`docker run --rm -v "$PWD":/m -w /m aidenhq/computer-session node --test test/fresh-session.e2e.test.ts`.
+`docker run --rm -v "$PWD":/m -w /m aidenhq/computer-session bun test test/fresh-session.e2e.test.ts`.

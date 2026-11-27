@@ -8,6 +8,7 @@ import { execFile } from "node:child_process";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { NODE_DIR } from "./node-dir.ts";
 import { fileURLToPath } from "node:url";
 
 
@@ -53,7 +54,7 @@ function run(dir) {
   return new Promise((resolve) => {
     execFile("bash", [join(dir, "scripts/healthcheck.sh")], {
       cwd: dir,
-      env: { ...process.env, PATH: `${join(dir, "bin")}:${dirname(process.execPath)}:/usr/bin:/bin`, HOME: join(dir, "home"), EXECSTART: join(dir, "execstart"), AIDENHQ_SECRETS_DIR: join(dir, "secrets"), HEALTHZ: join(dir, "healthz") },
+      env: { ...process.env, PATH: `${join(dir, "bin")}:${NODE_DIR}:/usr/bin:/bin`, HOME: join(dir, "home"), EXECSTART: join(dir, "execstart"), AIDENHQ_SECRETS_DIR: join(dir, "secrets"), HEALTHZ: join(dir, "healthz") },
     }, (error, stdout, stderr) => resolve({ status: error ? error.code : 0, out: `${stdout}${stderr}` }));
   });
 }

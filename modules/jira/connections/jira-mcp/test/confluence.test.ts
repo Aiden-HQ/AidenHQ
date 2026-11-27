@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "bun:test";
 import { CONFLUENCE_PROMPT_VERSION, summarisePages, syncConfluence } from "../src/confluence.js";
 import type { SourceStore } from "../src/source-store.js";
 

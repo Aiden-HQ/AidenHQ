@@ -1,13 +1,14 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import { transportSend } from "../src/send.js";
 
-afterEach(() => vi.unstubAllGlobals());
+const realFetch = globalThis.fetch;
+afterEach(() => { globalThis.fetch = realFetch; });
 
 describe("slack-live-mcp", () => {
 
   it("the transport: a DM to the paired owner, an alert as a STOP page; off until a bot and an owner are set up", async () => {
     const fetchMock = vi.fn(async (_u: string, _i?: RequestInit) => new Response(JSON.stringify({ ok: true })));
-    vi.stubGlobal("fetch", fetchMock);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
     expect(await transportSend({ botToken: "", ownerId: "U1" }, { kind: "done", text: "x" })).toEqual({ sent: false, off: true });
     const cfg = { botToken: "xoxb-test", ownerId: "U1" };
     expect(await transportSend(cfg, { kind: "done", text: "**PR merged** <@U9>", head: { agent: "Aiden", task: "WOR-9", issue: "i9" } })).toEqual({ sent: true });

@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { provisionDatabase } from "../src/database.js";
 import { createEngine } from "../src/deploy.js";
 import { previewTick, type OpenPr, type PreviewDeps } from "../src/previews.js";
