@@ -72,7 +72,7 @@ const PageLoading = () => <main className="page wide" aria-busy="true" />;
 type Items = Record<Bucket, Card[]>;
 export type Route =
   | { kind: "home"; /** One approval card (#/approvals/<id>), opened in Home's pane. */ card?: string }
-  | { kind: "tasks"; /** A saved board (#/tasks?view=<id>). */ saved?: string; /** Your world's "View all": #/tasks?show=waiting (the waiting-on label). */ show?: "waiting" }
+  | { kind: "tasks"; /** A saved board (#/tasks?view=<id>). */ saved?: string; /** You're waiting on's "View all": #/tasks?show=waiting (the waiting-on label). */ show?: "waiting" }
   | { kind: "sessions"; ref?: string; fresh?: boolean }
   | { kind: "apps"; name?: string }
   | { kind: "team" }

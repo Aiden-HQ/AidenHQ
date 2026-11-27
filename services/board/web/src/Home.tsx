@@ -60,6 +60,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   const q = useQuery(QUERIES.home, onSignIn);
   const data = q.data;
   const reload = q.reload;
+  const waitingOn = useWaitingOn(data?.world.waiting_on ?? null, reload);
   useLive(["home", "approvals"], reload, 15_000);
   // The visit's since window: the first answer's start, sent back by every refetch while Home is open.
   useEffect(() => () => void (homeFrom.value = undefined), []);
@@ -216,6 +217,8 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
   const paneOpen = !!pane && (pane.kind !== "row" || !!paneRow);
   const since = data.since && <SinceCard since={data.since} timezone={timezone} from={data.since_from} />;
   const sideShown = !!since;
+  const waitingCard = waitingOn.card;
+  const todayCard = data.world.today && data.world.today.events.length > 0 ? <TodayCard today={data.world.today} /> : null;
   // Needs you shows only while something is in it (or a receipt from this visit); empty, the box is left out.
   const needsShown = shown.length > 0;
   // The rows still open here: an answered row leaves the count at once, before the kernel catches up.
@@ -248,11 +251,10 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
       {data.start?.nextUp && <div className="home-nextup enter" style={{ "--i": 1 } as CSSProperties}><NextUp next={data.start.nextUp} reload={reload} /></div>}
       {data.start && <MoreTeam more={data.start.more} />}
       {day && onDone && <YourDay day={day} onDone={onDone} />}
-      <World world={data.world} reload={reload} />
-      {/* Needs you (left, the more important) and Since you last looked (right) share one row on Your world's columns; a lone one takes the row. */}
-      {(needsShown || sideShown) && (
+      {/* Two rows of two equal halves on one grid: Needs you | You're waiting on, then Today | Since you last looked. A lone card takes its row. */}
+      {(needsShown || waitingCard) && (
         <div className="home-pair">
-          {needsShown && <div className="home-needs home-pair-cell enter" style={{ "--i": 4 } as CSSProperties}>
+          {needsShown && <div className="home-needs home-pair-cell enter" style={{ "--i": 3 } as CSSProperties}>
             <SectionCard
               title="Needs you"
               count={everyLive.length || undefined}
@@ -277,7 +279,7 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
                 </>
               }
             >
-              <div role="listbox" aria-label="Needs you" aria-activedescendant={keys.at ? `need-${keys.at}` : undefined} tabIndex={-1}>
+              <div className="ui-digest" role="listbox" aria-label="Needs you" aria-activedescendant={keys.at ? `need-${keys.at}` : undefined} tabIndex={-1}>
                 {shown.map((r, i) => {
                   const person = r.kind === "open" ? r.reply?.person : null;
                   const who = person || r.teammate.name;
@@ -308,7 +310,13 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
               )}
             </SectionCard>
           </div>}
-          {sideShown && <div className="home-side home-pair-cell enter" style={{ "--i": 5 } as CSSProperties}>
+          {waitingCard && <div className="home-pair-cell enter" style={{ "--i": 4 } as CSSProperties}>{waitingCard}</div>}
+        </div>
+      )}
+      {(todayCard || sideShown) && (
+        <div className="home-pair">
+          {todayCard && <div className="home-pair-cell enter" style={{ "--i": 5 } as CSSProperties}>{todayCard}</div>}
+          {sideShown && <div className="home-side home-pair-cell enter" style={{ "--i": 6 } as CSSProperties}>
             {since && <div ref={setSinceEl}>{since}</div>}
           </div>}
         </div>
@@ -532,8 +540,8 @@ function SinceAll({ items, total }: { items: SinceItem[]; total: number }) {
   );
 }
 
-function World({ world, reload }: { world: Home["world"]; reload: () => Promise<void> }) {
-  const tz = world.today?.timezone;
+/** You're waiting on: the owner's open waiting-on tasks as a card (null when there are none), closed or snoozed in place. */
+function useWaitingOn(waitingOn: Home["world"]["waiting_on"], reload: () => Promise<void>) {
   // Rows the owner closed here: hidden at once, back with the error if the close is refused.
   const [closed, setClosed] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
@@ -557,46 +565,43 @@ function World({ world, reload }: { world: Home["world"]; reload: () => Promise<
       (e) => (forget(w.identifier), setError(`Couldn't hide ${w.identifier}: ${(e as Error).message}`)),
     );
   };
-  const waiting = (world.waiting_on?.filter((w) => !closed.has(w.identifier)) ?? []).sort((x, y) => x.age_days - y.age_days);
-  if (!waiting.length && !world.today?.events.length) return null;
+  const waiting = (waitingOn?.filter((w) => !closed.has(w.identifier)) ?? []).sort((x, y) => x.age_days - y.age_days);
+  const card = waiting.length > 0 && (
+    <SectionCard title="You're waiting on" meta={`${waiting.length} open`} action={waiting.length > HOME_ROWS ? <a className="home-all" href="#/tasks?show=waiting">View all {waiting.length} →</a> : undefined} flush>
+      {error && <Banner tone="danger">{error}</Banner>}
+      <DigestList
+        items={waiting.map((w) => ({
+          id: w.identifier,
+          face: <Monogram name={w.title} size={26} />,
+          text: w.title,
+          title: w.title,
+          persist: true,
+          meta: w.quiet_days >= 3 ? `${w.quiet_days}d quiet` : `${w.age_days}d`,
+          open: `#/t/${w.identifier}`,
+          actions: (
+            <>
+              <Button size="sm" variant="primary" title="It arrived: close it" onClick={() => close(w.identifier, "done")}>Done</Button>
+              <Button size="sm" variant="quiet" title="Hide it until tomorrow morning" onClick={() => later(w)}>Later</Button>
+              <Button size="sm" variant="quiet" title="No longer waiting on it: cancel the task" onClick={() => close(w.identifier, "cancelled")}>Dismiss</Button>
+            </>
+          ),
+        }))}
+        limit={HOME_ROWS}
+      />
+    </SectionCard>
+  );
+  return { card };
+}
+
+/** Today's calendar: each event opens its meeting (the video call, else the calendar page) in a new tab. */
+function TodayCard({ today }: { today: NonNullable<Home["world"]["today"]> }) {
   return (
-    <section className="home-world enter" style={{ "--i": 3 } as CSSProperties} aria-label="Your world">
-      <h2 className="home-h2">Your world</h2>
-      <div className="home-world-grid">
-        {waiting.length > 0 && (
-          <SectionCard title="You're waiting on" meta={`${waiting.length} open`} action={waiting.length > HOME_ROWS ? <a className="home-all" href="#/tasks?show=waiting">View all {waiting.length} →</a> : undefined} flush>
-            {error && <Banner tone="danger">{error}</Banner>}
-            <DigestList
-              items={waiting.map((w) => ({
-                id: w.identifier,
-                face: <Monogram name={w.title} size={26} />,
-                text: w.title,
-                title: w.title,
-                persist: true,
-                meta: w.quiet_days >= 3 ? `${w.quiet_days}d quiet` : `${w.age_days}d`,
-                open: `#/t/${w.identifier}`,
-                actions: (
-                  <>
-                    <Button size="sm" variant="primary" title="It arrived: close it" onClick={() => close(w.identifier, "done")}>Done</Button>
-                    <Button size="sm" variant="quiet" title="Hide it until tomorrow morning" onClick={() => later(w)}>Later</Button>
-                    <Button size="sm" variant="quiet" title="No longer waiting on it: cancel the task" onClick={() => close(w.identifier, "cancelled")}>Dismiss</Button>
-                  </>
-                ),
-              }))}
-              limit={HOME_ROWS}
-            />
-          </SectionCard>
-        )}
-        {world.today && world.today.events.length > 0 && (
-          <SectionCard title="Today" meta={`${world.today.events.length} event${world.today.events.length === 1 ? "" : "s"}`} flush>
-            <DigestList
-              items={world.today.events.map((e) => ({ id: e.id, face: <span className="home-time">{e.all_day ? "All day" : timeIn(tz!, new Date(e.start))}</span>, text: e.title, link: e.prep ? { label: "Prep ready", href: `#/t/${e.prep}` } : undefined }))}
-              limit={world.today.events.length}
-            />
-          </SectionCard>
-        )}
-      </div>
-    </section>
+    <SectionCard title="Today" meta={`${today.events.length} event${today.events.length === 1 ? "" : "s"}`} flush>
+      <DigestList
+        items={today.events.map((e) => ({ id: e.id, face: <span className="home-time">{e.all_day ? "All day" : timeIn(today.timezone, new Date(e.start))}</span>, text: e.title, external: e.url, link: e.prep ? { label: "Prep ready", href: `#/t/${e.prep}` } : undefined }))}
+        limit={today.events.length}
+      />
+    </SectionCard>
   );
 }
 

@@ -34,7 +34,7 @@ export type Home = {
   since: { groups: { teammate: FaceRef; latest: SinceItem; count: number }[]; items: SinceItem[]; total: number } | null;
   world: {
     waiting_on: { id: string; identifier: string; title: string; age_days: number; quiet_days: number }[] | null;
-    today: { timezone: string; events: { id: string; start: string; title: string; all_day: boolean; prep?: string }[] } | null;
+    today: { timezone: string; events: { id: string; start: string; title: string; all_day: boolean; url?: string; prep?: string }[] } | null;
   };
   team: { teammate: FaceRef; line: string }[];
 };
@@ -264,8 +264,8 @@ async function calendarToday(d: HomeDeps, nowMs: number): Promise<Home["world"][
   let value: Home["world"]["today"] = null;
   if (d.views) {
     try {
-      const r = (await d.views.read("calendar_today", {})) as { timezone: string; events: { id: string; start: string; title: string; all_day: boolean }[] };
-      value = r.events.length ? { timezone: r.timezone, events: r.events.map(({ id, start, title, all_day }) => ({ id, start, title, all_day })) } : null;
+      const r = (await d.views.read("calendar_today", {})) as { timezone: string; events: { id: string; start: string; title: string; all_day: boolean; url?: string }[] };
+      value = r.events.length ? { timezone: r.timezone, events: r.events.map(({ id, start, title, all_day, url }) => ({ id, start, title, all_day, ...(url && /^https?:\/\//i.test(url) ? { url } : {}) })) } : null;
     } catch (err) {
       if ((err as { status?: number }).status !== 404) d.log.warn({ err: String((err as Error).message ?? err).slice(0, 300) }, "home: today's calendar isn't readable");
     }

@@ -133,9 +133,13 @@ outside `tokens.css`, and no class the kit replaced (`web/legacy-classes.json`, 
 
 ## Home
 
-`Home.tsx`, one read (`GET /api/home`), top to bottom: the greeting (Day-one Next up under it), Your day, Your world (who the
-owner waits on; today's calendar), then **Needs you on the left and Since you last looked on the right in one row** on Your
-world's columns (1.45fr / 1fr, so the gutters line up), (a lone cell takes the whole row; stacked on a phone: Needs you, Since), then Your team (teammates with news, and Hire a teammate).
+`Home.tsx`, one read (`GET /api/home`), top to bottom: the greeting (Day-one Next up under it), Your day, then **two rows of two
+equal halves** (1fr / 1fr from 1100px, the same gutter on both so the middle edges line up; cards size to their content): **Needs
+you | You're waiting on**, then **Today | Since you last looked** (a lone card takes its row; stacked on a phone in that order).
+There is no "Your world" heading: Needs you is not part of anyone's world. Then Your team (teammates with news, and Hire a teammate).
+**Today's rows are links to the meeting**, opening in a new tab: the event's video-call URL, else its calendar page. google's
+`calendar_today` carries it as `url` (Meet link or conference entry, else a Zoom/Meet/Teams URL in the location, else the event's
+`htmlLink`; http(s) only), and Home passes it through; an event with none is a plain row. "Prep ready" still opens the prep task.
 **Needs you holds everything
 waiting on the owner**: the teammates' asks (answers, approval cards, handed-back tasks) and the people waiting on his
 reply (open tasks labelled `needs-response`, which Intake files from Slack and email), each ONE compact row. **One row

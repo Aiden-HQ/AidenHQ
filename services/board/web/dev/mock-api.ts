@@ -676,9 +676,9 @@ const homeData = () => {
         ...(homeMock.many ? Array.from({ length: 9 }, (_, i) => ({ id: `w-9${i}`, identifier: `WOR-95${i}`, title: `Vendor ${i + 1} · countersigned data processing agreement with the revised liability cap and the sub-processor list for the EU region`, age_days: 4 + i, quiet_days: i })) : []),
       ].filter((w) => !homeMock.snoozed.has(w.id)),
       today: homeMock.nocal ? null : { timezone: "Asia/Dubai", events: [
-        { id: "ev1", start: `${new Date().toISOString().slice(0, 10)}T06:00:00Z`, title: "Leadership sync", all_day: false, prep: "WOR-811" },
-        { id: "ev2", start: `${new Date().toISOString().slice(0, 10)}T10:00:00Z`, title: "1:1 Priya", all_day: false },
-        { id: "ev3", start: `${new Date().toISOString().slice(0, 10)}T12:30:00Z`, title: "Northwind call · Jonas", all_day: false, prep: "WOR-843" },
+        { id: "ev1", start: `${new Date().toISOString().slice(0, 10)}T06:00:00Z`, title: "Leadership sync", all_day: false, url: "https://meet.google.com/abc-defg-hij", prep: "WOR-811" },
+        { id: "ev2", start: `${new Date().toISOString().slice(0, 10)}T10:00:00Z`, title: "1:1 Priya", all_day: false, url: "https://www.google.com/calendar/event?eid=mock" },
+        { id: "ev3", start: `${new Date().toISOString().slice(0, 10)}T12:30:00Z`, title: "Northwind call · Jonas", all_day: false, url: "https://acme.zoom.us/j/123456789", prep: "WOR-843" },
       ] },
     },
     // The whole team, always: those with news first (home.ts teamRow).
