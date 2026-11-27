@@ -84,13 +84,16 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
     return [...needs, ...kept.values()];
   }, [data?.needs, receipts]);
   const everyLive = rows.filter((r) => !receipts.has(rkey(r)));
-  // The card lists the newest SHOWN of them; a row with a receipt stays for the visit. "View all" opens the rest in Tasks.
+  // "View all N" expands the card in place (as Since's "All N" does), so every row the count includes is on this page: the
+  // Tasks page filters tasks by lane or label, and an approval card has no task to filter to.
+  const [all, setAll] = useState(false);
+  // The card lists the newest SHOWN of them; a row with a receipt stays for the visit. Expanded, it lists every open row.
   const shown = useMemo(() => {
     const newest = [...rows].sort((a, b) => b.since.localeCompare(a.since));
     // The newest ten still open, plus the rows answered this visit (their receipts), so acting on a row brings the next up.
     const top = new Set(newest.filter((r) => !receipts.has(rkey(r))).slice(0, HOME_ROWS).map((r) => r.id));
-    return newest.filter((r) => top.has(r.id) || receipts.has(rkey(r)));
-  }, [rows, receipts]);
+    return newest.filter((r) => (all && !receipts.has(rkey(r))) || top.has(r.id) || receipts.has(rkey(r)));
+  }, [rows, receipts, all]);
   const live = shown.filter((r) => !receipts.has(rkey(r)));
 
   // The cursor moves to a snapshot's as_of once it has been on screen (never on leaving): the visit's first snapshot, then
@@ -266,7 +269,11 @@ export function HomeView({ card, session, onSignIn, toast, mobile, timezone, fro
                       {selecting ? "Done selecting" : "Select"}
                     </Button>
                   )}
-                  {everyLive.length > 0 && <a className="home-all" href="#/tasks?show=needs">View all {everyLive.length} →</a>}
+                  {everyLive.length > HOME_ROWS && (
+                    <button type="button" className="link-btn home-all" aria-expanded={all} onClick={() => setAll(!all)}>
+                      {all ? "Fewer" : `View all ${everyLive.length} →`}
+                    </button>
+                  )}
                 </>
               }
             >
@@ -409,8 +416,11 @@ function HomeDrawer({ rowId, onClose, children }: { rowId: string; onClose: () =
     const onKey = (e: KeyboardEvent) => {
       const mine = ref.current;
       if (!mine || e.defaultPrevented) return;
+      // Only the topmost layer takes the keyboard: a task drawer opened from this one covers it and owns Tab and Escape.
+      const layers = document.querySelectorAll(".drawer-backdrop, dialog[open], .palette-backdrop");
+      if (layers[layers.length - 1] !== mine.parentElement) return;
       if (e.key === "Tab") {
-        // Focus stays in the drawer while it is open.
+        // Focus stays in this drawer while it is the topmost one.
         const f = [...mine.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])")];
         const first = f[0], last = f[f.length - 1];
         if (!first || !last) return e.preventDefault();
@@ -421,8 +431,7 @@ function HomeDrawer({ rowId, onClose, children }: { rowId: string; onClose: () =
         return;
       }
       // Escape closes the topmost layer only: a task drawer opened from here is closed first.
-      const layers = document.querySelectorAll(".drawer-backdrop, dialog[open], .palette-backdrop");
-      if (e.key === "Escape" && layers[layers.length - 1] === mine.parentElement) (e.preventDefault(), close.current());
+      if (e.key === "Escape") (e.preventDefault(), close.current());
     };
     document.addEventListener("keydown", onKey);
     return () => {
@@ -555,7 +564,7 @@ function World({ world, reload }: { world: Home["world"]; reload: () => Promise<
       <h2 className="home-h2">Your world</h2>
       <div className="home-world-grid">
         {waiting.length > 0 && (
-          <SectionCard title="You're waiting on" meta={`${waiting.length} open`} action={<a className="home-all" href="#/tasks?show=waiting">View all {waiting.length} →</a>} flush>
+          <SectionCard title="You're waiting on" meta={`${waiting.length} open`} action={waiting.length > HOME_ROWS ? <a className="home-all" href="#/tasks?show=waiting">View all {waiting.length} →</a> : undefined} flush>
             {error && <Banner tone="danger">{error}</Banner>}
             <DigestList
               items={waiting.map((w) => ({

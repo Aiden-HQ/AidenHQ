@@ -70,6 +70,48 @@ describe("Home", () => {
     expect(el.querySelector(".home-drawer")).toBeNull();
   });
 
+  it("expands Needs you in place to every row counted, since an approval card has no Tasks page to open", async () => {
+    const face = (name: string) => ({ key: name.toLowerCase(), name, job: "Follow-ups", face: null, state: "needs" as const });
+    const rows = Array.from({ length: 12 }, (_, i) => ({ id: `open-${i}`, kind: "open" as const, teammate: face("Tess"), since: `2026-11-26T0${String(i % 10)}:00:00Z`, task: { identifier: `WOR-${900 + i}`, title: `Reply ${i}` }, question: `Reply to Sam ${i}` }));
+    const { el } = await mountApp("#/", (path) => (path.startsWith("/api/home") && !path.startsWith("/api/home/") ? answer({ ...home, needs: rows, greeting: { needs: rows.length } }) : undefined));
+    await settle();
+    // Ten newest listed; the header shows all twelve.
+    expect([...el.querySelectorAll("[id^='need-open-']")].length).toBe(10);
+    const viewAll = [...el.querySelectorAll<HTMLButtonElement>(".home-needs button")].find((b) => b.textContent?.startsWith("View all 12"))!;
+    expect(viewAll).toBeTruthy();
+    await act(async () => viewAll.click());
+    await settle();
+    expect([...el.querySelectorAll("[id^='need-open-']")].length).toBe(12);
+    expect([...el.querySelectorAll(".home-needs button")].some((b) => b.textContent === "Fewer")).toBe(true);
+  });
+
+  it("keeps the Home drawer's focus trap out of the way of a task drawer opened over it", async () => {
+    const { el } = await mountApp("#/");
+    await act(async () => (el.querySelector<HTMLElement>("#need-id-815 .ui-digest-open")!).click());
+    const homeDrawer = el.querySelector<HTMLElement>(".home-drawer")!;
+    expect(homeDrawer).not.toBeNull();
+    // A task drawer over it (the board's Drawer): the Home drawer must not pull Tab or Escape back into itself.
+    const over = document.createElement("div");
+    over.className = "drawer-backdrop";
+    const aside = document.createElement("aside");
+    aside.className = "drawer task-drawer";
+    over.append(aside);
+    document.body.append(over);
+    const first = homeDrawer.querySelector<HTMLElement>("button")!;
+    const typed = document.createElement("button");
+    over.querySelector("aside")!.append(typed);
+    typed.focus();
+    const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    await act(async () => void document.dispatchEvent(tab));
+    expect(tab.defaultPrevented).toBe(false);
+    const esc = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    await act(async () => void document.dispatchEvent(esc));
+    expect(esc.defaultPrevented).toBe(false);
+    expect(el.querySelector(".home-drawer")).not.toBeNull();
+    first.focus();
+    over.remove();
+  });
+
   it("opens a decided card that isn't in Needs you at #/approvals/<id>", async () => {
     const id = "k-00000000000000d1";
     const { el } = await mountApp(`#/approvals/${id}`, (path) => (path === `/api/approvals/${id}` ? answer({ approval: { ...card, id, state: "rejected", decidedBy: "account:u1" } }) : undefined));

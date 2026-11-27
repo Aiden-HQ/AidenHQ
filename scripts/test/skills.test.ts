@@ -40,6 +40,19 @@ test("an agent gets exactly its effective list", () => {
   assert.throws(() => compile(product, instance({ overrides: { agents: { "chief-of-staff": { skills: ["tasks.delegate-work"] } } } })), /overrides\.agents\.chief-of-staff\.skills: \{ add\?: \[ids\], remove\?: \[ids\] \}/);
 });
 
+test("a retired skill in a saved override is dropped with a warning, not an upgrade failure", () => {
+  // A release removed chief-of-staff.ideas: an owner who opted out of it (or added it) keeps compiling.
+  const removed = instance({ overrides: { agents: { "chief-of-staff": { skills: { remove: ["chief-of-staff.ideas"] } } } } });
+  assert.deepEqual(compile(product, removed).paperclip.agents["chief-of-staff"].skills, ["tasks.delegate-work"]);
+  assert.match(compile(product, removed).warnings.join("\n"), /overrides\.agents\.chief-of-staff\.skills\.remove: chief-of-staff\.ideas was retired/);
+  // Adding it is the same: a no-op now that it is gone.
+  const added = instance({ overrides: { agents: { "chief-of-staff": { skills: { add: ["chief-of-staff.ideas"] } } } } });
+  assert.deepEqual(compile(product, added).paperclip.agents["chief-of-staff"].skills, ["tasks.delegate-work"]);
+  assert.match(compile(product, added).warnings.join("\n"), /chief-of-staff\.ideas was retired/);
+  // A skill no release ever had is still an error, in the override and in the agent's own list.
+  assert.throws(() => compile(product, instance({ overrides: { agents: { "chief-of-staff": { skills: { remove: ["chief-of-staff.nope"] } } } } })), /unknown skill chief-of-staff\.nope/);
+});
+
 test("when on a skill fails compile", () => {
   assert.throws(() => compile(product, instance({ skillMeta: "when: { fields: { name: Review Chaser } }\n" })), /module acme: skill nudge: unknown frontmatter when/);
 });

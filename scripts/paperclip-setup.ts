@@ -17,7 +17,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { ensureBackupRetention, ensureChatTasks, ensureFleetIssues, ensureReviewLogs, holdFleetIssues, grantEntry, mapLimit } from "./modules.ts";
+import { ensureBackupRetention, ensureChatTasks, ensureFleetIssues, ensureReviewLogs, holdFleetIssues, grantEntry, mapLimit, retireIdeaTasks } from "./modules.ts";
 import { busyRemovedMembers, retireUnconfigured } from "./retire-agents.ts";
 import { routinePlan, syncAgents, syncRoutines } from "./paperclip-diff.ts";
 import { ensureAgentKeys, ensureEventsPlugin } from "./paperclip-events.ts";
@@ -526,6 +526,7 @@ await ensureBoardKey(health);
 await ensureBackupRetention({ api, dailyDays: 3, step });
 const company = await ensureCompany();
 await ensureLabels(company.id);
+await retireIdeaTasks({ api, companyId: company.id, step });
 // A team member removed from instance.yaml while it still has open tasks: nothing is changed until they are drained or handed off.
 const busy = await busyRemovedMembers({ api, companyId: company.id, cfg });
 if (busy.length) fail(`team members removed while they still have open tasks: ${busy.map((m) => `${m.name} (${m.tasks.join(", ")})`).join("; ")}. Finish or hand off their tasks first, or keep them in teams: until then.`);

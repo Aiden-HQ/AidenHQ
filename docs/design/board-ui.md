@@ -147,9 +147,11 @@ You're waiting on rows open the task (the row text is a real button or link, so 
 Reject… for a card) and **Later**; an ask with several questions or options has no inline answer, only Later, and its row
 click opens the drawer. A person waiting (`needs-response`) shows **Done** (closes the task as done), **Later** and **Dismiss** (closes it as
 cancelled; it stays in history); a task handed back to the owner shows Done only. You're waiting on rows have Done, Later and Dismiss with the same meanings (Later hides it
-until 08:00 tomorrow, mouse only: J/K/E/S belong to Needs you). Each card lists the **newest ten** (newest first) with
-"View all N →" in its header, which opens Tasks (`#/tasks?show=needs`: the Needs you lane; `?show=waiting`: the `waiting-on`
-label) on the Agent work layout; the greeting and the card's count are the full N. Since is a glance; its "All N" expands in place under the card.
+until 08:00 tomorrow, mouse only: J/K/E/S belong to Needs you). Each card lists the **newest ten** (newest first); the greeting and the card's count are the full N.
+**Needs you's "View all N →" expands the card in place**, showing every row the count includes (as Since's "All N" does),
+because the Tasks page filters tasks by lane or label and an approval card has no task to open there; "Fewer" folds it back.
+You're waiting on's "View all N →" (shown past ten) opens Tasks (`#/tasks?show=waiting`: the `waiting-on` label) on the Agent
+work layout, where every one of those tasks is a card. Since is a glance; its "All N" expands in place under the card.
 **A block with no source or no data is left out**, never shown empty: Needs you too, and the greeting then says only "Good morning,
 <name>." (the greeting counts every row of Needs you, so it never claims "nothing"). A fresh install sees the greeting,
 Next up and the team row.
