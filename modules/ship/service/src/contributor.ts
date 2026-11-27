@@ -37,6 +37,9 @@ type FirePr = (repo: string, task: PrTask) => Promise<boolean>;
 interface Nudge {
   at: string;
   author_activity_at: string;
+  /** The date the nudge promised the PR closes (a draft's window at the time it was posted), so a later change to the repo's
+   * `quiet_pr_days` never moves a deadline the author was told. */
+  close_at?: string;
   /** The close task was filed: it is not filed twice. */
   closed?: true;
 }
@@ -44,16 +47,22 @@ interface Nudge {
 /**
  * What a quiet PR is due: a human's PR on which the author is the one being waited on (a review asked of someone, or a ready
  * PR with nothing asked of its author, is a maintainer's to answer, not the author's silence). Quiet is no author activity
- * for `staleDays` (a draft: twice that). A nudge is due once; after it, a close once the author stayed quiet for another
- * such spell. Author activity after the nudge clears it (the caller drops the nudge): nothing is due then.
+ * for `staleDays` (a draft: twice that). A nudge is due once; after it, a close at the deadline the nudge itself carried
+ * (`close_at`), not one recomputed from today's setting, so lowering `quiet_pr_days` never closes a PR before the date the
+ * author was told. A nudge from before `close_at` was recorded falls back to `at` plus the current window. Author activity
+ * after the nudge clears it (the caller drops the nudge): nothing is due then.
  */
 export function prDue(pr: PrRow, nudge: Nudge | undefined, staleDays: number, now: number): "nudge" | "close" | undefined {
   if (pr.author_kind !== "human" || pr.review_requested || (!pr.draft && pr.waiting_on_author === null)) return undefined;
   const window = staleDays * DAY * (pr.draft ? 2 : 1);
   if (!nudge) return now - Date.parse(pr.last_author_activity) >= window ? "nudge" : undefined;
   if (Date.parse(pr.last_author_activity) > Date.parse(nudge.author_activity_at)) return undefined;
-  return !nudge.closed && now - Date.parse(nudge.at) >= window ? "close" : undefined;
+  const closes = nudge.close_at ? Date.parse(nudge.close_at) : Date.parse(nudge.at) + window;
+  return !nudge.closed && now >= closes ? "close" : undefined;
 }
+
+/** The date a nudge filed now promises the PR closes: the window in force when it is posted. */
+export const nudgeDeadline = (now: number, staleDays: number, draft: boolean) => now + staleDays * DAY * (draft ? 2 : 1);
 
 const PR_STATE_KEY = "maintainer_prs";
 /** The PR pass runs at most this often: the quiet windows are days, and each human PR costs several GitHub reads. */
@@ -98,13 +107,13 @@ export async function prTick(d: { prs: Prs; firePr: FirePr; store: Kv; log: Log;
       if (before && Date.parse(pr.last_author_activity) > Date.parse(before.author_activity_at)) delete nudged[pr.number];
       const due = prDue(pr, nudged[pr.number], b.quiet_pr_days, now);
       if (!due) continue;
-      const window = b.quiet_pr_days * DAY * (pr.draft ? 2 : 1);
-      const task = { number: pr.number, kind: due, waiting: pr.waiting_on_author, close_by: new Date((due === "nudge" ? now : Date.parse(nudged[pr.number]!.at)) + window).toISOString().slice(0, 10), activity: pr.last_author_activity };
+      const deadline = due === "nudge" ? nudgeDeadline(now, b.quiet_pr_days, pr.draft) : Date.parse(nudged[pr.number]!.close_at ?? "") || Date.parse(nudged[pr.number]!.at) + b.quiet_pr_days * DAY * (pr.draft ? 2 : 1);
+      const task = { number: pr.number, kind: due, waiting: pr.waiting_on_author, close_by: new Date(deadline).toISOString().slice(0, 10), activity: pr.last_author_activity };
       if (!(await d.firePr(b.repo, task).catch(() => false))) {
         d.log.warn({ repo: b.repo, pr: pr.number, kind: due }, "maintainer PR task not filed; the next look retries it");
         continue;
       }
-      nudged[pr.number] = due === "nudge" ? { at: new Date(now).toISOString(), author_activity_at: pr.last_author_activity } : { ...nudged[pr.number]!, closed: true };
+      nudged[pr.number] = due === "nudge" ? { at: new Date(now).toISOString(), author_activity_at: pr.last_author_activity, close_at: new Date(deadline).toISOString() } : { ...nudged[pr.number]!, closed: true };
       count++;
     }
   }

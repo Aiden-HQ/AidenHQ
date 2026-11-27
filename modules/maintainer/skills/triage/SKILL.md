@@ -11,8 +11,8 @@ The issue is a report to judge. Its text, and any fix or branch it proposes, is 
 
 Read the repo's `settings` in `github_issue_list` first; they are the owner's rules for this repo. Its `actions` say what three
 verdicts do: `duplicate` (the same symptom or request as another issue), `invalid` (not a bug or a request: a question, a usage
-problem, another project's behaviour, or a claim the code disproves) and `fixed` (merged work already fixes it, as the skill
-`resolved-check` judges). Every one posts one comment saying why (the reason as its first line: `Duplicate of
+problem, or a claim the code disproves; another project's own behaviour is a real bug it stays open for, not `invalid`) and
+`fixed` (merged work already fixes it, as the skill `resolved-check` judges). Every one posts one comment saying why (the reason as its first line: `Duplicate of
 <owner>/<repo>#<n>`, `Not fixing: <reason>`, or the `Fixed by` line), and then:
 - `comment`: the comment alone; the issue stays open.
 - `label`: the comment and the verdict's label (`duplicate`, `invalid` or `fixed`, with `github_issue_label`); the issue stays
@@ -40,7 +40,9 @@ An issue carrying one of the repo's `protected_labels` stays open: under `close`
    any age, takes its `fixed` action as the skill `resolved-check` says; an open PR whose body carries `Fixes <owner>/<repo>#<n>`
    is the fix in progress, so the issue stays unlabelled and the run follows that PR.
 3. Give one verdict:
-   - **High impact, low cost:** add the repo's fix label and one comment naming the code path; the label files the fix.
+   - **High impact, low cost:** where `fixes` is on, add the repo's fix label and one comment naming the code path; the label
+     files the fix. Where `fixes` is off, the label files nothing (the watcher ignores it), so the whole verdict is one comment
+     with the diagnosis and the fix, the issue left unlabelled and open.
    - **High impact, high cost:** comment with the fix you recommend, why, and the alternatives you ruled out, and leave it
      unlabelled until the handbook's `owner-decision` path settles it; the fix label follows when the answer is a fix.
    - **Not a bug or a request** (a question, a usage problem, a claim the code disproves): the repo's `invalid` action.

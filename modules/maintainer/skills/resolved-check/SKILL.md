@@ -30,5 +30,7 @@ happens, comment with a version and a reproduction and a maintainer will reopen 
 - `label`: that comment and the `fixed` label (`github_issue_label`); the issue stays open.
 - `close`: one `github_issue_state` call (`completed`) with that text as its `note`. An issue carrying one of the repo's
   `protected_labels` takes the label instead.
+An issue left open by `comment`, `label` or a protected label's `label`, and carrying the fix label, has that label removed
+(`github_issue_label`, remove): the fix is done, so the issue must leave the fix queue, and the open-verdict completion needs it off.
 
 End the run with each issue examined: its verdict and the evidence in one line.

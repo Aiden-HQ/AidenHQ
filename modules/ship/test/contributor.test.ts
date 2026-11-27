@@ -32,3 +32,22 @@ test("a quiet PR is nudged, then closed after another quiet spell; an active aut
   now += 2 * 3600_000;
   assert.equal(await look(), 0);
 });
+
+test("a nudge keeps the deadline it promised when the repo's quiet window is lowered afterwards", async () => {
+  const store = kv(), log = logs(), tasks = [];
+  let now = NOW, days = 14;
+  const rows = [pr({ number: 1, last_author_activity: ago(15) })];
+  const prs = async () => ({ repos: [{ repo: R, quiet_pr_days: days, prs: rows }] });
+  const firePr = async (_r, t) => (tasks.push(t), true);
+  assert.equal(await prTick({ prs, firePr, store, log, now }), 1);
+  assert.equal(tasks[0].close_by, new Date(NOW + 14 * DAY).toISOString().slice(0, 10));
+  // The owner lowers the window to 7: the 14 days the nudge promised still hold.
+  days = 7;
+  now = NOW + 8 * DAY;
+  assert.equal(await prTick({ prs, firePr, store, log, now }), 0);
+  now = NOW + 14 * DAY;
+  assert.equal(await prTick({ prs, firePr, store, log, now }), 1);
+  assert.deepEqual(tasks.map((t) => t.kind), ["nudge", "close"]);
+  assert.equal(tasks[1].close_by, new Date(NOW + 14 * DAY).toISOString().slice(0, 10));
+  // Had the close recomputed from the lowered window it would already have been filed at NOW + 8 days.
+});
