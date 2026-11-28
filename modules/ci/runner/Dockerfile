@@ -38,7 +38,7 @@ COPY --from=node /usr/local/lib/node_modules /opt/hostedtoolcache/node/24.22.3/x
 COPY --from=node /usr/local/include/node /opt/hostedtoolcache/node/24.22.3/x64/include/node
 # grype for the image-scan check, which scans each image's directory and base images without building (no Docker here):
 # the security module's pin (modules/security/scanner/Dockerfile), a static binary.
-COPY --from=anchore/grype:v0.121.3@sha256:13113eeceab017260370cf540e1d25442c59665fd07d1b09b66d63bb0c282887 /grype /usr/local/bin/grype
+COPY --from=anchore/grype:v0.122.1@sha256:661583704a253c0448ed63998b5ea2cd9d5a76ee71eedc4aed439b8ce3e93a1c /grype /usr/local/bin/grype
 RUN cd /opt/hostedtoolcache/node/24.22.3/x64/bin \
  && ln -s ../lib/node_modules/npm/bin/npm-cli.js npm \
  && ln -s ../lib/node_modules/npm/bin/npx-cli.js npx \

@@ -556,8 +556,8 @@ jobs:
           node-version: 24.x
       - name: Install grype
         env:
-          GRYPE_VERSION: 0.121.3 # released 2026-11-09
-          GRYPE_SHA256: e9da18cc1429e786722e32161288103600efffd8e483c90761f90485bd1bec85 # grype_0.121.3_linux_amd64.tar.gz
+          GRYPE_VERSION: 0.122.1 # released 2026-11-18
+          GRYPE_SHA256: f1ba7e2917ee1395618de20a98da0aa7c0fb1788927797651047c50502a37538 # grype_0.122.1_linux_amd64.tar.gz
         run: |
           curl -sSfL -o "$RUNNER_TEMP/grype.tgz" "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
           echo "${GRYPE_SHA256}  $RUNNER_TEMP/grype.tgz" | sha256sum -c -
