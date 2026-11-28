@@ -512,7 +512,7 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
           <div className="crew-banner failed">
             <div className="banner-text">
               <b>The last run on this task failed.</b>
-              <span className="muted small">{name} is fine and free for other work. Try again, or dismiss this if you no longer need it.</span>
+              <span className="muted small">{name} isn't stuck: only this task's run failed. Try again, or dismiss it if you no longer need it.</span>
             </div>
             <div className="banner-actions">
               <button className="btn" disabled={busy} onClick={() => void act(() => api.comment(part.id, "Try again."), `${name} is trying again`)}>
