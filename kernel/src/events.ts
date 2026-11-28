@@ -278,7 +278,7 @@ export function createEvents(o: {
           }
           if (r?.status !== "active" || r.assignee !== s.agent) { drop(b, r ? `the routine is ${r.status}` : "the routine is gone"); continue; }
           if (b.state === "sealed") {
-            db.prepare("UPDATE event_batches SET state = 'firing' WHERE id = ?").run(b.id);
+            db.prepare("UPDATE event_batches SET state = 'firing', sealed_at = ? WHERE id = ?").run(now(), b.id); // the retry window starts here: time queued (a busy drain, failed lookups) never spends it
           }
           db.prepare("UPDATE event_batches SET tries = tries + 1 WHERE id = ?").run(b.id);
           let res: { status: number; issue?: string };
