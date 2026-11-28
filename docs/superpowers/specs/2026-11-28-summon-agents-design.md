@@ -96,8 +96,8 @@ live ingest, outside this build.
 
 - Runs in `kernel/src/events.ts` on each incoming event, before routine batching.
 - It fires only when `from_owner` is true and the text has `cc <Name>`, `cc: <Name>`, `@<Name>` or any of those with
-  `@AidenHQ` appended (`cc Aria@AidenHQ`, owner 2026-11-28). Matching is case-insensitive and word-bounded, for a
-  summonable agent. A source's native mention markup that resolves to the name also counts.
+  `@AidenHQ` appended (`cc Aria@AidenHQ`). A bare `<Name>@AidenHQ` anywhere in the message also summons, with no
+  `cc` needed (`Aiden@aidenHQ`; owner 2026-11-28). Matching is case-insensitive and word-bounded, for a summonable agent. A source's native mention markup that resolves to the name also counts.
 - **Summonable = the user-facing teammates**, the same set board @-mentions use (`services/board/src/crew.ts`
   `mentionedAgents()`). Hidden agents are not summonable. This needs no new permission setting.
 - Several names in one message give one task per named agent.
