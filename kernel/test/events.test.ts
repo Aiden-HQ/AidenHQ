@@ -120,7 +120,7 @@ test("drain, caps, gates and binding", async () => {
   await events.drain();
   assert.equal(r.runs.length, 0);
 
-  // Caps count dispatch times: R1 has 4 runs this hour; 8 more reach 12, the 13th waits (never dropped); an hour on, it runs merged with the next event.
+  // Caps count dispatch times: R1 has 4 runs this hour; 8 more reach 12, the 13th waits (never dropped); an hour on, it runs.
   r.runs.length = 0;
   const drops = r.logs.filter(([m]) => m === "events: batch dropped").length;
   for (let i = 0; i < 9; i++) { events.ingest("slack", ev(`c${i}`)); r.tick(60_000); await events.drain(); }
@@ -130,7 +130,7 @@ test("drain, caps, gates and binding", async () => {
   events.ingest("slack", ev("c-late"));
   r.tick(60_000);
   await events.drain();
-  assert.equal(r.runs.length, 9);
+  assert.equal(r.runs.length, 10);
 });
 
 test("the global cap defers (no loss); the pending cap drops and counts, still a 2xx answer", async () => {
