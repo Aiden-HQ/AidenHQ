@@ -135,7 +135,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     d.state.put(a);
     d.log("stall cleared: the gate no longer says stall", { pr: pr.url });
   }
-  // Stopped: nothing moves while ship is paused, the PR is closed or a draft, on hold, stopped by label, or a person is assigned.
+  // Stopped: nothing moves while ship is paused, the PR is closed or a draft, on hold, or stopped by label.
   // Landed: a hand-off's task ends with it (a task's PR tells its task instead), whatever else holds the PR.
   if (pr.state === "merged" && v.do === "done") {
     if (a.counters?.lastRound !== `${pr.head}:done`) {
@@ -187,7 +187,8 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const save = async (f: Facts) => { d.state.put(a!); a = await report(d, a!, pr, f); };
   const hold = async (reason: string, plain: string, onChange = false) => {
     // Its owner is told: a task's PR wakes whoever asked for the task; a member's PR assigns its author (and the report says why).
-    const assign = a!.owner?.kind === "task" || pr.authorBot || !pr.author ? [] : [pr.author];
+    // Only an assignment ship adds is recorded as its own (a later resume removes exactly those): a self-assigned author stays.
+    const assign = a!.owner?.kind === "task" || pr.authorBot || !pr.author || pr.assignees.includes(pr.author) ? [] : [pr.author];
     if (assign.length) await d.assign(pr.repo, pr.number, assign).catch((e) => d.log("assign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
     if (a!.owner?.kind === "task") await tell(d, a!, pr, `**Ship stopped on ${pr.url}** at \`${pr.head.slice(0, 12)}\`: ${reason}. A new push resumes it. Decide its next step: re-scope the task, fix the cause another way, or tell the owner.`, `hold.${pr.head.slice(0, 12)}.${c.rounds}.${c.wakes}`, true);
     a = { ...a!, hold: { kind: "stalled", reason, at: new Date().toISOString(), ...(onChange ? { onChange: true as const } : {}) }, assigned: assign };

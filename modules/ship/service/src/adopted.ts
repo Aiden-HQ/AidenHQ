@@ -58,7 +58,7 @@ export function viewOf(repo: string, defaultBranch: string, pr: Json, extra: { b
 export const ended = (a: Pick<Kept, "counters" | "reportStale">) => a.counters?.lastRound === "closed" || (!!a.counters?.lastRound?.endsWith(":done") && !a.reportStale);
 
 export function adoptedPass(o: AdoptedOptions) {
-  /** A PR stopped by its own hand: a draft, the stop label, or a person assigned (not by ship). No hold is set for it. */
+  /** A PR stopped by its own hand: a draft or the stop label. No hold is set for it. */
   const isStopped = (repo: string, view: PrView, a: Kept | undefined) =>
     view.draft || view.labels.includes(o.settings(repo)?.stop_label ?? "ship:stop");
   /** Per repo, the PRs this scan runs a round on toward the default branch and nobody stopped (see(), kept current by open()): the only ones front() ranks. */
@@ -305,7 +305,7 @@ export function adoptedPass(o: AdoptedOptions) {
       // pass's decision is read below). Any other hold, or a pause, only retries a report that failed.
       const resumes = a.hold?.kind === "stalled" && !!a.counters && (a.counters.head !== view.head || a.hold.onChange === true);
       if ((a.hold && !resumes) || o.paused()) { await retryReport(rounds, a, view); return; }
-      // The PR's own stops hold a retarget too: a draft, the stop label, or a person assigned.
+      // The PR's own stops hold a retarget too: a draft or the stop label.
       const stopped = isStopped(repo, view, a);
       // Intake may have changed the adoption since see() (a hand-off clears `assigned`): its stop is read again here.
       if (stopped) eligible.get(repo.toLowerCase())?.delete(pr.number);

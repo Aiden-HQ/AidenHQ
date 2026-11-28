@@ -55,6 +55,7 @@ test("a timed-out create is posted again with the marker and no id, and the id i
 test("a handoff: all PR shows its status as it changes, waits included; a merge with no comment yet posts nothing", async () => {
   const w = world("all");
   await round(w.deps, w.pr(), { do: "wait", why: "checks are still running on its head" });
+  assert.match(w.sent[0]!.body, /Waiting for checks to finish\./);
   await round(w.deps, w.pr(), { do: "wait", why: "waiting for required review" });
   assert.equal(w.sent.length, 2);
   assert.match(w.sent[1]!.body, /Waiting for a required review\./);

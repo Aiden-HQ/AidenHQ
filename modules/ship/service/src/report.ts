@@ -14,6 +14,10 @@ const FIXED = {
   /** Code review's findings are open: Ship's task fixes or answers them. */
   findings: "Waiting for review findings to be fixed or answered.",
   review: "Waiting for a required review.",
+  checks_running: "Waiting for checks to finish.",
+  base: "Ship merges only into the default branch. A person merges this PR.",
+  stacked: "Waiting for the PR below it in the stack to merge.",
+  queued: "In the merge queue.",
   approval: "Waiting for an approval on the latest commit.",
   person_merge: "Ready to merge. Merge is off for this PR, so a person merges it.",
   checks: "A required check never reported on the latest commit. A person reruns it or fixes the workflow.",
@@ -22,7 +26,7 @@ const FIXED = {
   merged: "Merged.",
 };
 /** The kinds a person has to act on. */
-const ACT = new Set<Kind>(["review", "approval", "checks", "requeue", "owner_card", "person_merge", "owner", "hold"]);
+const ACT = new Set<Kind>(["base", "review", "approval", "checks", "requeue", "owner_card", "person_merge", "owner", "hold"]);
 
 export type Kind = keyof typeof FIXED | "owner" | "hold";
 /** What a round says about the PR: its kind, and the sentence for the kinds that carry one (owner, hold, a special merge). */
@@ -60,6 +64,11 @@ export function waitFacts(why = ""): Facts {
   if (/^required check\(s\) never reported/.test(why)) return { kind: "checks" };
   // Code review's own wait for findings (not its pending classification or an outage: those need no one).
   if (/^code review: \d+ important finding/.test(why)) return { kind: "findings" };
+  const stacked = /^waiting on #(\d+)/.exec(why)?.[1];
+  if (stacked) return { kind: "stacked", text: `Waiting for #${stacked}, the PR below it in the stack, to merge.` };
+  if (/^non-default base unsupported/.test(why)) return { kind: "base" };
+  if (/^in the merge queue/.test(why)) return { kind: "queued" };
+  if (/checks are still running|no checks on its head yet|title check the edit re-ran|^CI is running on/.test(why)) return { kind: "checks_running" };
   return { kind: "active" };
 }
 
