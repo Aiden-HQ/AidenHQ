@@ -15,6 +15,7 @@
 //   kernel/sdk/src/box-bundle.ts     a job's branch from its box's bundle, never its .git, in the code host (src/aidenhq-sdk/)
 //   kernel/sdk/src/pin-owner.ts      who moves the product pin, in the code host's release train (the kernel's updater imports it)
 //   kernel/sdk/src/instance-paths.ts what an apply may land, in the code host (src/aidenhq-sdk/; the kernel and codehost-local import it)
+//   kernel/sdk/src/model-text.ts     model-format sentinels and tool-call markup, in the task tools
 //   kernel/sdk/src/tiers.ts          risk tiers (facts, rules, classify), in code review's service and recipe, the engineer image and the CI template
 //   kernel/sdk/src/judge.ts          the judges' models, cross-family choice and model call, in the reviewer, grading and code-review services
 //   services/shared/review-files.ts  the changed files as the reviewer reads them, in the reviewer module's service
@@ -138,6 +139,9 @@ export function sharedCopies(root = repo) {
     "modules/server-manager/service/src/source-store.ts",
     "modules/warehouse/search/src/source-store.ts",
   ],
+  // Model-format text: the sentinel/edge policy a job's last message goes through, and the one tool-call markup definition the
+  // task tools refuse and the kernel's reply sanitizer strips (the task tools hold a synced copy).
+  "kernel/sdk/src/model-text.ts": ["modules/tasks/connections/tasks-mcp/src/aidenhq-sdk/model-text.ts"],
   // Who said it: a comment posted for someone else is never the owner's words (dispatch, task_comments, the board).
   "kernel/sdk/src/for-others.ts": ["modules/dispatch/service/src/aidenhq-sdk/for-others.ts", "modules/tasks/connections/tasks-mcp/src/aidenhq-sdk/for-others.ts", "services/board/src/aidenhq-sdk/for-others.ts"],
   // Whether an agent is paused (Paperclip's lifecycle holds, never its status): the board, the Telegram channel and the Fleet Steward.

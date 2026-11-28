@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createJobs, firstError, stripSentinels, writeLastMessage } from "../src/jobs.ts";
+import { hasToolMarkup, sanitizeReply } from "../sdk/src/model-text.ts";
 import { openFacts } from "../src/facts.ts";
 import { admitAndRun } from "./fixtures/admitted.ts";
 import { quietRun } from "../src/quiet.ts";
@@ -179,6 +180,39 @@ test("a final's sentinels are stripped from its edges only, in time linear in it
   assert.equal(stripSentinels("    <|im_end|>"), "", "an indented marker that is the whole reply is no reply");
   assert.equal(stripSentinels("Example:\n\n    echo hello<|im_end|>"), "Example:\n\n    echo hello", "a marker after reply text goes");
   assert.equal(stripSentinels("<|im_end|>\n    echo hi"), "echo hi", "the padding a stripped sentinel left goes too");
+
+  // A reply body: the same edges, plus a bare role tag and the trailing tool-call block a model writes instead of calling a tool.
+  const bar = "\uff5c", tag = (name: string, close = false) => `<${close ? "/" : ""}${bar}DSML${bar}${name}>`;
+  assert.equal(sanitizeReply(`<system>\nPublished. Now closing it.\n\n${tag("parameter", true)}\n${tag("invoke", true)}\n${tag("function_calls", true)}`), "Published. Now closing it.", "a role tag and the trailing block go, the prose stays");
+  assert.equal(sanitizeReply(`${tag("function_calls", true)}`), "", "a body of only markup is no reply");
+  assert.equal(sanitizeReply(`Progress.\n<${bar}DSML${bar}invoke name="x"`), "Progress.", "an opening tag cut mid-tag is not prose");
+  assert.equal(sanitizeReply(`Progress.\n<${bar}DSML${bar}invoke> name="x"`), `Progress.\n<${bar}DSML${bar}invoke> name="x"`, "text after a complete tag is the reply's own");
+  assert.equal(sanitizeReply(`Progress.\n<${bar}DSM`), "Progress.", "a name cut short at the very end is a dangling tag");
+  const long = `prose\n${`${tag("function_calls", true)}\n`.repeat(20_000)}`;
+  const closeRun = `prose\n${"</invoke>\n".repeat(20_000)}`;
+  const t0 = Date.now();
+  assert.equal(sanitizeReply(long), "prose", "a long run of trailing tags is walked once, not rescanned");
+  assert.equal(sanitizeReply(closeRun), "prose", "a long run of closing tags is walked once, not rescanned");
+  assert.ok(Date.now() - t0 < 2_000, "a long reply or a run of markup is linear");
+  assert.equal(sanitizeReply(`prose\n${"a".repeat(100_000)}\n<${bar}DSML`), "prose\n" + "a".repeat(100_000), "a dangling tag after a long line still goes");
+  assert.equal(sanitizeReply("Done.<|im_end|>\n</invoke>"), "Done.", "a sentinel behind a removed tag goes too");
+  assert.equal(sanitizeReply("The call is:\n```\n</invoke>\n```"), "The call is:\n```\n</invoke>\n```", "a fenced block keeps it");
+  assert.equal(sanitizeReply("The call is:\n> </invoke>"), "The call is:\n> </invoke>", "a blockquote line keeps it");
+  assert.equal(sanitizeReply("Use \\<system> in the template."), "Use \\<system> in the template.", "an escaped tag is literal text");
+  assert.equal(sanitizeReply("Compare a < b, and 3 < 4."), "Compare a < b, and 3 < 4.", "a bare < is prose");
+  assert.equal(sanitizeReply("Accept only when x<d"), "Accept only when x<d", "a short prefix after prose is a comparison, not a cut tag");
+  assert.equal(sanitizeReply("so 3 < 4."), "so 3 < 4.", "a comparison at the end is the reply's own");
+  assert.equal(sanitizeReply("Transcript:\n```\n<|im_end|>"), "Transcript:\n```\n<|im_end|>", "a fence to the end protects its last line");
+  assert.equal(sanitizeReply("Transcript:\n````\n```\n</invoke>\n````"), "Transcript:\n````\n```\n</invoke>\n````", "three backticks do not close a four-backtick block");
+  assert.ok(hasToolMarkup(`x </${bar}DSML${bar}invoke>`), "a closing DSML tag is markup too");
+  assert.equal(sanitizeReply(`Done.\n<invoke><parameter>London</parameter></invoke>`), "Done.", "a complete trailing call block goes with its payload");
+  assert.equal(sanitizeReply(`Done.\n${tag("function_calls")}${tag("invoke")}${tag("parameter")}London${tag("parameter", true)}${tag("invoke", true)}${tag("function_calls", true)}`), "Done.", "a nested DSML block goes whole");
+  assert.equal(sanitizeReply("Transcript:\n```\n```js\n</invoke>\n```"), "Transcript:\n```\n```js\n</invoke>\n```", "an info string does not close a fence");
+  const fencedCall = `Example:\n\`\`\`\n${tag("invoke")}${tag("parameter")}London${tag("parameter", true)}${tag("invoke", true)}\n\`\`\``;
+  assert.equal(sanitizeReply(fencedCall), fencedCall, "a whole call block inside a fence stays, its payload included");
+  assert.equal(sanitizeReply(`Example:\n\`\`\`\n<invoke><parameter>London</parameter></invoke>`), "Example:\n\`\`\`\n<invoke><parameter>London</parameter></invoke>", "a fence to the end protects the call block before it");
+  assert.ok(hasToolMarkup(`<${bar}DSML${bar}invoke name="y">`), "a DSML element tag is markup, and the task tools refuse it");
+  assert.ok(!hasToolMarkup("plain <b>bold</b> prose"), "ordinary HTML is prose");
 
   for (const long of [`${" ".repeat(100_000)}<|im_end|>`, `<|im_end|>${"a".repeat(50_000)}${" ".repeat(100_000)}b`,
     `<|im_end|>${"<|im_end|>".repeat(20_000)}`, `${"a".repeat(100_000)}<|im_end|>${"<|im_end|>".repeat(20_000)}`]) {

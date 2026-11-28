@@ -183,3 +183,69 @@ test("a reply is not posted when the task cannot be read, and one read that fail
   assert.equal((await gone.post(JOB, { kind: "reply", body: "Done." })).comment, null);
   assert.deepEqual(pc.comments, []);
 });
+
+/** A tool-call element's tag, assembled so the test file's prose is not itself a raw tool call. */
+const element = (name: string, close = false) => `<${close ? "/" : ""}${name}>`;
+
+test("a reply's opening role tag and trailing tool-call block never reach the comment", async (t) => {
+  const pc = await paperclip(t);
+  const relayed: string[] = [];
+  const o = kernelOf(pc.url, { relay: async (_j, body) => void relayed.push(body) });
+  const body = `<system>\nPublished. Now closing the Dependabot PR.\n\n${element("parameter", true)}\n${element("invoke", true)}\n${element("function_calls", true)}`;
+  assert.equal(pc.comments.length, 0);
+  const r = await o.post(JOB, { kind: "reply", body });
+  assert.ok(r.comment);
+  assert.equal(pc.comments[0].body, `Published. Now closing the Dependabot PR.\n\n${tag(JOB.id, "reply")}`, "the prose alone, and the kernel's tag");
+  assert.deepEqual(relayed, ["Published. Now closing the Dependabot PR."], "the owner's channel gets the same prose");
+});
+
+test("a reply that is only model-format markup is no reply", async (t) => {
+  const pc = await paperclip(t);
+  let relayed = 0;
+  const o = kernelOf(pc.url, { relay: async () => void relayed++ });
+  const body = `<system>\n${element("parameter", true)}\n${element("invoke", true)}\n${element("function_calls", true)}`;
+  const r = await o.post(JOB, { kind: "reply", body });
+  assert.equal(r.comment, null);
+  assert.deepEqual(pc.comments, [], "no comment body of only markup");
+  assert.equal(relayed, 0, "and nothing relayed");
+});
+
+test("a reply that shows such markup on purpose keeps it: a fenced block and a blockquote line", async (t) => {
+  const pc = await paperclip(t);
+  const o = kernelOf(pc.url);
+  const fenced = `The element is:\n\`\`\`\n${element("parameter", true)}\n\`\`\``;
+  const quoted = `The element is:\n> ${element("function_calls", true)}`;
+  const a = await o.post(JOB, { kind: "reply", body: fenced });
+  const b = await o.post({ ...JOB, id: "j-0123456789abcde2" }, { kind: "reply", body: quoted });
+  assert.ok(a.comment && b.comment);
+  assert.equal(pc.comments[0].body, `${fenced}\n\n${tag(JOB.id, "reply")}`, "a fenced block is the reply's own text");
+  assert.equal(pc.comments[1].body, `${quoted}\n\n${tag("j-0123456789abcde2", "reply")}`, "a blockquote line is the reply's own text");
+});
+
+test("a half-written tool-call tag at the very end goes with the block", async (t) => {
+  const pc = await paperclip(t);
+  const o = kernelOf(pc.url);
+  await o.post(JOB, { kind: "reply", body: `Published, closing it now.\n\n<${"parameter"} name="x"` });
+  assert.equal(pc.comments[0].body, `Published, closing it now.\n\n${tag(JOB.id, "reply")}`, "the cut tag is not prose");
+});
+
+test("a reply of only markup still carries its requested status; an empty reply posts nothing at all", async (t) => {
+  const pc = await paperclip(t);
+  const o = kernelOf(pc.url);
+  // Only markup, with `done`: the finish gate runs and the task closes, and no comment body reaches the board.
+  const r = await o.post(JOB, { kind: "reply", body: `${element("invoke", true)}`, status: "done" });
+  assert.equal(r.comment, null, "a wordless reply leaves no comment");
+  assert.equal(r.status, "done", "the status the caller asked for is still written");
+  assert.equal(pc.issues[TASK].status, "done", "the task closed through the finish gate");
+  assert.deepEqual(pc.comments, [], "no markup-only comment");
+  assert.equal(pc.seen().at(-1).body, undefined, "the plugin was asked for the status, not a body");
+  // Only markup and nothing else: no reply at all, and the plugin is never asked. (The task is open again, as a done reply
+  // closes it: a closed task takes no reply at all, which is its own path.)
+  pc.issues[TASK].status = "in_progress";
+  const before = pc.seen().length;
+  const none = await kernelOf(pc.url).post({ ...JOB, id: "j-0123456789abcde3" }, { kind: "reply", body: `${element("parameter", true)}` });
+  assert.equal(none.comment, null);
+  assert.equal(pc.seen().length, before, "no write for a reply with no words and nothing else to say");
+  // An empty reply body is still refused: that is not model markup, it is a caller mistake.
+  await assert.rejects(o.post({ ...JOB, id: "j-0123456789abcde4" }, { kind: "reply", body: "   " }), { status: 400, code: "bad-request" });
+});

@@ -9,6 +9,7 @@ import { recordedRequesterOf, requestedParentOf, withRequester } from "./request
 import { readFileSync } from "node:fs";
 import { modelTools } from "./models.ts";
 import { fence } from "./aidenhq-sdk/fence.ts";
+import { hasToolMarkup } from "./aidenhq-sdk/model-text.ts";
 import { forOthers } from "./aidenhq-sdk/for-others.ts";
 import { paperclipClient } from "./aidenhq-sdk/paperclip.ts";
 import type { Caller } from "./aidenhq-sdk/caller.ts";
@@ -107,7 +108,7 @@ function authHeaders() {
 /** A text argument carrying a model's tool-call syntax as text (DeepSeek's DSML tags, a stray <invoke>/<parameter> block): its name. */
 function toolMarkup(args: Json) {
   for (const [k, v] of Object.entries(args ?? {})) {
-    if (typeof v === "string" && (/｜DSML｜/.test(v) || /<\/?(?:invoke|parameter|function_calls)\b[^>]*>/.test(v))) return k;
+    if (typeof v === "string" && hasToolMarkup(v)) return k;
   }
   return undefined;
 }

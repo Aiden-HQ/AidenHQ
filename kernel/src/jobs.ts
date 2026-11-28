@@ -11,11 +11,15 @@ import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, 
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { appendLine, lines, readFrom } from "../sdk/src/engine-io.ts";
+import { stripSentinels } from "../sdk/src/model-text.ts";
 import { inTx, iso, strictFact } from "./factlog.ts";
 import { REFUSALS_DDL, busyError, refusalColumns, refusalOf, type Refusal } from "./refusals.ts";
 import type { Facts } from "./facts.ts";
 import { quietRun } from "./quiet.ts";
 import { SESSION, buildJob, ensureStateDirs, observes, readEngines, type Box, type Engine, type SandboxConfig } from "./sandbox.ts";
+
+/** A final message's sentinels are stripped by the shared model-text policy (sdk/src/model-text.ts), beside the reply body's. */
+export { stripSentinels };
 
 /** What the control plane says about a task. */
 export interface ControlPlane {
@@ -100,145 +104,6 @@ export function writeLastMessage(logPath: string, text: string, log: (msg: strin
   } catch (e) {
     log("couldn't write the job's last message", { log: logPath, err: (e as Error).message });
   }
-}
-/**
- * Model-format sentinels a tokenizer or chat template can leak into a reply as literal text: DeepSeek's begin/end of sentence
- * (its word separator is U+2581, and a model may echo it with underscores instead), the `<|...|>` chat templates, Gemma's
- * `<start_of_turn>` and OpenAI's `<|endoftext|>`. A run whose whole answer was sentinels is left with no message at all, which
- * its dispatcher reads as one that ended without a reply.
- */
-const SENTINELS = [
-  "<\uff5cbegin\u2581of\u2581sentence\uff5c>", "<\uff5cend\u2581of\u2581sentence\uff5c>",
-  "<\uff5cbegin_of_sentence\uff5c>", "<\uff5cend_of_sentence\uff5c>",
-  "<begin\u2581of\u2581sentence>", "<end\u2581of\u2581sentence>", "<begin_of_sentence>", "<end_of_sentence>",
-  "<|im_start|>", "<|im_end|>", "<\uff5cim_start\uff5c>", "<\uff5cim_end\uff5c>",
-  "<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>", "<|eom_id|>",
-  "<start_of_turn>", "<|end_of_turn|>", "<end_of_turn>",
-  "<|begin_of_text|>", "<|end_of_text|>", "<|endoftext|>",
-  "<\uff5cend\u2581of\u2581text\uff5c>", "<|end\u2581of\u2581text|>",
-  // DeepSeek's turn markers, which stand alone at an edge and name the role in the marker itself.
-  "<\uff5cUser\uff5c>", "<\uff5cAssistant\uff5c>", "<\uff5cSystem\uff5c>",
-];
-/**
- * A chat template's message header and the roles its own template gives a turn: `model` is Gemma's role, not ChatML's, so a
- * reply that opens with `<|im_start|>model` is a heading, and its text stays.
- */
-const HEADERS: { text: string; roles: string[] }[] = [
-  { text: "<|im_start|>", roles: ["system", "user", "assistant", "tool", "ipython"] },
-  { text: "<\uff5cim_start\uff5c>", roles: ["system", "user", "assistant", "tool", "ipython"] },
-  { text: "<|start_header_id|>", roles: ["system", "user", "assistant", "ipython", "tool"] },
-  { text: "<start_of_turn>", roles: ["user", "model", "system"] },
-];
-/** The padding beside a sentinel: whitespace and the invisible characters a tokenizer leaves around one. */
-const PAD = /[\s\u200b\ufeff\u2060]/;
-/** The first index at or after `from` that is not padding, and the last before `to` that is not. */
-const skipStart = (text: string, from: number, to: number) => {
-  let i = from;
-  while (i < to && PAD.test(text[i]!)) i++;
-  return i;
-};
-const skipEnd = (text: string, from: number, to: number) => {
-  let i = to;
-  while (i > from && PAD.test(text[i - 1]!)) i--;
-  return i;
-};
-/** The same as `skipEnd` inside a line: spaces and invisible characters, never a newline. */
-const skipSpace = (text: string, from: number, to: number) => {
-  let i = to;
-  while (i > from && /[ \t\u200b\ufeff\u2060]/.test(text[i - 1]!)) i--;
-  return i;
-};
-/** How long a role at `at` is, when one of `roles` starts there and a template delimiter follows it, else 0. */
-const roleAt = (text: string, at: number, to: number, roles: string[]) => {
-  const role = roles.find((r) => text.startsWith(r, at));
-  if (!role) return 0;
-  let i = at + role.length;
-  while (i < to && /[ \t\u200b\ufeff\u2060]/.test(text[i]!)) i++;
-  if (i >= to || text[i] === "\n" || text[i] === "\r") return role.length;
-  return HEADERS.some((h) => text.startsWith(h.text, i)) || SENTINELS.some((s) => text.startsWith(s, i)) ? role.length : 0;
-};
-/** How far a leading header and its role reach past `from`, or undefined when the text there opens with neither. */
-const afterHeader = (text: string, from: number, to: number) => {
-  const header = HEADERS.find((h) => text.startsWith(h.text, from) && text[from - 1] !== "\\");
-  if (!header) return undefined;
-  // Only padding, never a newline, may sit between a header and its role: a role on the next line is the reply's own word.
-  let at = from + header.text.length;
-  while (at < to && /[ \t\u200b\ufeff\u2060]/.test(text[at]!)) at++;
-  return at - from + roleAt(text, at, to, header.roles);
-};
-/** Where the reply's own text ends before a trailing header and its role ("Done.<|im_end|><|im_start|>user"), or undefined. */
-const beforeHeader = (text: string, from: number, to: number) => {
-  const end = skipEnd(text, from, to);
-  for (const header of HEADERS) {
-    const role = header.roles.find((r) => end - r.length >= from && text.startsWith(r, end - r.length));
-    if (!role) continue;
-    // As at the opening edge, a role on the next line is the reply's own word, never a template's role line.
-    const head = skipSpace(text, from, end - role.length);
-    const at = head - header.text.length;
-    if (at >= from && text.startsWith(header.text, at) && text[at - 1] !== "\\") return at;
-  }
-  return undefined;
-};
-/**
- * True when the sentinel from `from` to `to` is the whole of a Markdown blockquote line ("> <|im_end|>"): the reply shows the
- * marker on purpose, so it stays. A marker anywhere else is a leak, however it is indented.
- */
-const QUOTE_PREFIX = 64;
-const quoted = (text: string, from: number, to: number, lineStart: number, limit: number) => {
-  // A blockquote's own marks are a handful of characters: a longer prefix is reply text, and is not walked at all.
-  if (from - lineStart > QUOTE_PREFIX) return false;
-  // A blockquote's own marks, with an optional list marker in front of them ("- > <|im_end|>"): a handful of characters.
-  const prefix = text.slice(lineStart, from);
-  if (!/^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*>[ \t>]*$/.test(prefix)) return false;
-  let i = to;
-  while (i < limit && PAD.test(text[i]!)) i++;
-  return i === limit;
-};
-/** The index at which each line starts, so a line start costs a lookup rather than a scan. */
-const lineStarts = (text: string) => {
-  const starts = [0];
-  for (let nl = text.indexOf("\n"); nl !== -1; nl = text.indexOf("\n", nl + 1)) starts.push(nl + 1);
-  return starts;
-};
-/**
- * A final message without the model-format sentinels a tokenizer or chat template leaks as literal text. They leak at the edges
- * of a completion, so a sentinel at either end is removed, with the padding beside it and the role line its header carries: a
- * reply that was only sentinels is left empty, so its dispatcher reads it as one that ended without a reply, while a reply that
- * shows a marker in a blockquote keeps it. Every step reads only the characters it needs, so a long reply or a run of
- * sentinels costs its own length rather than its square.
- */
-export function stripSentinels(text: string): string {
-  let from = 0, to = text.length;
-  const starts = lineStarts(text);
-  let line = 0;
-  const leadLine = (at: number) => { while (line + 1 < starts.length && starts[line + 1]! <= at) line++; return starts[line]!; };
-  let back = starts.length - 1;
-  const tailLine = (at: number) => { while (back > 0 && starts[back]! > at) back--; return starts[back]!; };
-  // Each edge is settled once: a removal there shortens the text and never touches the other edge, so neither end is rescanned.
-  for (;;) {
-    const at = skipStart(text, from, to);
-    const after = afterHeader(text, at, to);
-    const hit = after !== undefined ? undefined : SENTINELS.find((s) => text.startsWith(s, at) && text[at - 1] !== "\\");
-    const reach = after ?? hit?.length;
-    // Only what the reply still has before the marker counts as its line's prefix: a sentinel just removed is not there.
-    if (reach === undefined || quoted(text, at, at + reach, Math.max(leadLine(at), from), to)) break;
-    from = at + reach;
-  }
-  // The trailing scan stays inside what the leading one left: a reply that is the word `model` after a header is its own text.
-  for (;;) {
-    const end = skipEnd(text, from, to);
-    const head = beforeHeader(text, from, end);
-    if (head !== undefined) {
-      if (quoted(text, head, end, Math.max(tailLine(head), from), to)) break;
-      to = head;
-      continue;
-    }
-    const hit = SENTINELS.find((s) => end - s.length >= from && text.startsWith(s, end - s.length) && text[end - s.length - 1] !== "\\");
-    if (!hit || quoted(text, end - hit.length, end, Math.max(tailLine(end - hit.length), from), to)) break;
-    to = end - hit.length;
-  }
-  // The padding a removed sentinel left beside the reply goes with it: the reply is stored as its own text.
-  return text.slice(skipStart(text, from, to), skipEnd(text, from, to));
 }
 /** A log line that says something went wrong (an engine's startup banner, such as "listening on …", is not one). */
 const WARNING = /^(\[[^\]]*\]\s*)?W:/;
