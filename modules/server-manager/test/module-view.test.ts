@@ -37,7 +37,7 @@ test("the page is the module's own view; every tool it lists is one of the conne
   assert.equal(page.order, 40);
   assert.deepEqual(page.tools, ["server_manager_config", "server_manager_status", "server_manager_check", "server_manager_patch", "server_manager_reboot", "server_manager_host_key_reset"]);
   // Each tool the page lists is a read or write tool of its own connection (what compile enforces), never a destructive one.
-  const conn = def.connections["server-manager"].tools;
+  const conn = def.connections.server_manager.tools;
   for (const t of page.tools) assert.ok(conn.read.includes(t) || conn.write.includes(t), `${t} is a read or write tool of the connection`);
   assert.deepEqual(conn.named, ["server_manager_check"]);
   // This slice's page reads the config and the status; its action buttons (check now, install now, reboot, re-pin) arrive with the

@@ -13,7 +13,7 @@ contributes:
       title: Servers
       icon: shield
       order: 40
-      connection: server-manager
+      connection: server_manager
       view: "ui://server-manager/page"
       tools: [ server_manager_config, server_manager_status, server_manager_check, server_manager_patch, server_manager_reboot, server_manager_host_key_reset ]
       settings: [ servers_machines ]
@@ -50,8 +50,10 @@ generated_secrets:
   - server_manager_service_key
   # src_servers' warehouse login (ops/warehouse-sources.sh gives the role this password).
   - warehouse_src_servers_password
+# The connection name is `server_manager` (underscore): the launcher routes a job's MCP calls only at /c/<name>/mcp for
+# names matching ^[a-z0-9_]+$, and compile refuses any other, so the agent's grant can start a run.
 connections:
-  server-manager:
+  server_manager:
     setup: "Built in: nothing to connect."
     url: http://server-manager-ssh:8103/mcp
     auth: server_manager_service_key
@@ -118,9 +120,9 @@ agents:
     model: ~deepseek/deepseek-flash-latest
     timeout_sec: 1200
     # kernel.tasks/kernel.wake: the service files a task here and wakes it (§13). The grant names server_manager_check, which
-    # `server-manager: read` would not hand out.
+    # `server_manager: read` would not hand out.
     connections:
-      server-manager: [ server_manager_config, server_manager_status, server_manager_check ]
+      server_manager: [ server_manager_config, server_manager_status, server_manager_check ]
       apps: [ web_view, app_view ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_comment, task_block, task_finish, task_list, task_approvals ]
     # The 4-hour heartbeat is the backstop for a missed wake (quiet start turns heartbeats off for a new install).

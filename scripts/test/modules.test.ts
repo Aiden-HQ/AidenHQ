@@ -49,6 +49,18 @@ test("an official module's setting without a comment above it fails compile; the
   const out = compile(add("  # Where it listens.\n  host: { default: x, pattern: '^[a-z]+$' }\n"), finst(["doc"]));
   assert.deepEqual(out.catalog.find((m) => m.name === "doc").settings.host, { default: "x", pattern: "^[a-z]+$", doc: "Where it listens." });
 });
+test("a connection name the launcher cannot route fails compile, naming it; an underscore name passes", () => {
+  const add = (name) => {
+    const dir = market((m) => ({ ...m, plugins: [...m.plugins, { name: "conn", source: "./conn" }] }));
+    mkdirSync(join(dir, "modules", "conn"));
+    writeFileSync(join(dir, "modules", "conn", "module.yaml"), `name: conn\ndescription: d\nconnections:\n  ${name}: { url: "http://conn-mcp:1/mcp", auth: conn_service_key, tools: { read: [conn_get], write: [] } }\n`);
+    return dir;
+  };
+  // emitsServer refuses a name outside ROUTABLE_CONNECTION (services/computer/lib.ts), so a hyphenated connection installs
+  // green and every run of an agent granted it is refused before its first step: compile refuses the manifest instead.
+  assert.throws(() => compile(add("conn-mcp"), finst(["conn"])), /connection conn-mcp: the name must be lowercase letters, digits and _ .*cannot route "conn-mcp"/);
+  assert.ok(compile(add("conn_mcp"), finst(["conn"])).connections.conn_mcp, "an underscore name compiles");
+});
 test("a list setting's entries are checked against its pattern: a map entry is refused unless the setting names its `entry` field", () => {
   const add = (settings) => {
     const dir = market((m) => ({ ...m, plugins: [...m.plugins, { name: "doc", source: "./doc" }] }));
@@ -257,6 +269,15 @@ test("upstream: off leaves every agent without an upstream tool; with issues onl
   for (const tool of ["github_product_issue", "github_product_issue_status"]) assert.deepEqual(granted(off, tool), [], tool);
 });
 
+test("a saved grant override under a renamed connection follows the rename, with a warning", () => {
+  // The board's grants editor writes overrides.agents.<key>.connections.<connection>; a connection renamed in a release must
+  // not turn that saved key into a grant to a connection that no longer exists (which fails the whole compile).
+  const saved = { overrides: { agents: { "server-manager": { connections: { "server-manager": ["server_manager_config"] } } } } };
+  const r = compile(product, pinst(["server-manager"], owner, saved));
+  assert.deepEqual(r.paperclip.agents["server-manager"].enabled_tools.server_manager, ["server_manager_config"], "the saved grant lands on server_manager");
+  assert.deepEqual(r.paperclip.agents["server-manager"].enabled_tools["server-manager"], undefined, "no grant to the old name");
+  assert.ok(r.warnings.some((w) => /overrides\.agents\.server-manager\.connections\.server-manager was renamed to server_manager/.test(w)), JSON.stringify(r.warnings));
+});
 test("optional secrets are created only where the secrets dir is really there (never into a locked vault's bare mountpoint)", () => {
   const dir = mkdtempSync(join(tmpdir(), "sec-"));
   assert.deepEqual(ensureOptionalSecrets(dir, ["telegram_notify_bot_token"], "slack_live_mcp_token"), [], "no known secret yet: looks like an unmounted vault");

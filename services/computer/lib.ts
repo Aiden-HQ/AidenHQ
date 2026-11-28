@@ -32,6 +32,12 @@ const MCP_BLOCK_ENV = "AIDENHQ_MCP_B64";
 const toml = (v: unknown): string => (Array.isArray(v) ? `[${v.map(toml).join(", ")}]` : JSON.stringify(String(v)));
 
 /**
+ * The names the launcher can route: a box's MCP calls go only to `/c/<name>/mcp` (launcher.ts), so a connection outside
+ * this set would install green and then be refused at every run of an agent granted it. The module compiler refuses one.
+ */
+export const ROUTABLE_CONNECTION = /^[a-z0-9_]+$/;
+
+/**
  * Whether a granted connection is one of the job's servers: it has granted tools (a non-empty list), a connection entry, and
  * a name Codex accepts. `jobServers` builds the job's one list with this rule, so a server is either listed or refused by name
  * (`unemittedServers`), never silently dropped.
@@ -42,7 +48,7 @@ export function emitsServer(name: string, tools: Record<string, unknown> | undef
   if (!tools || !Object.hasOwn(tools, name) || !Object.hasOwn(connections, name) || !connections[name]) return false;
   const list = tools[name];
   const hasTools = Array.isArray(list) ? list.length > 0 : list !== undefined && list !== null;
-  return hasTools && /^[a-z0-9_]+$/.test(name);
+  return hasTools && ROUTABLE_CONNECTION.test(name);
 }
 
 /** One connection a job reaches: the gateway's proxy route, the run token as X-Agent-Key, its granted tools and tool timeout. */

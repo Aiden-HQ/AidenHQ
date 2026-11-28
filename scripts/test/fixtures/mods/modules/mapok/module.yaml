@@ -6,7 +6,7 @@ secrets:
     - name: mapok_keys
       setup: { label: SSH keys, pattern: '^\{[\s\S]*\}$' }
 connections:
-  mapok-mcp: { url: "http://mapok-mcp:1/mcp", auth: mapok_service_key, tools: { read: [mapok_notes], write: [] } }
+  mapok_mcp: { url: "http://mapok-mcp:1/mcp", auth: mapok_service_key, tools: { read: [mapok_notes], write: [] } }
 settings:
   # The machines each key is for: a key's name is one of these.
   mapok_targets:
@@ -18,7 +18,7 @@ contributes:
       title: Machines
       icon: list
       order: 20
-      connection: mapok-mcp
+      connection: mapok_mcp
       view: "ui://mapok/page"
       tools: [mapok_notes]
       secret_maps:

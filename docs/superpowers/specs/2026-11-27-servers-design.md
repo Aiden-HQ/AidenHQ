@@ -66,7 +66,7 @@ only thing in the fleet that holds a server's private key or talks to a server.
 - `requires: [board, warehouse]` — the page point and the map secret come from board; the status row is warehouse's
   point. Requiring the warehouse does not put it in the execution path (§8).
 - `contributes.board.pages`: one entry, `{ id: server-manager, title: Servers, icon: shield, order: 40, connection:
-  server-manager, view: "ui://server-manager/page", tools: [ server_manager_config, server_manager_status,
+  server_manager, view: "ui://server-manager/page", tools: [ server_manager_config, server_manager_status,
   server_manager_check, server_manager_patch, server_manager_reboot, server_manager_host_key_reset ], settings:
   [ servers_machines ], secret_maps: [ { secret: servers_keys, keys_from: "servers_machines[].key", fields: [ { name:
   private_key, label: "Private key", kind: key, maxLength: 4096 } ] } ] }`. The page's settings list is what the page may
@@ -81,7 +81,7 @@ only thing in the fleet that holds a server's private key or talks to a server.
   (§7). The pattern accepts any JSON object: the map is multi-line from the first key on, so a single-line pattern would
   refuse every real key.
 - `generated_secrets: [ server_manager_token, server_manager_service_key ]`.
-- `connections.server-manager`: `url: http://server-manager-ssh:8103/mcp`, `auth: server_manager_service_key`,
+- `connections.server_manager`: `url: http://server-manager-ssh:8103/mcp`, `auth: server_manager_service_key`,
   `returns: untrusted`, `tool_timeout_sec: 1800`, `setup: "Built in: nothing to connect."`, with its tools tagged:
 
   | Tool | Tag | Who holds it |
@@ -118,7 +118,7 @@ only thing in the fleet that holds a server's private key or talks to a server.
 - `agents.server-manager`: `skills: [ server-manager.maintenance, tasks.delegate-work ]`, `department: platform`,
   `model: ~deepseek/deepseek-flash-latest`, `timeout_sec: 1200`,
   `paperclip_tasks: [ task_current, task_get, task_comments, task_comment, task_block, task_finish, task_list,
-  task_approvals ]`, `server-manager: [ server_manager_config, server_manager_status, server_manager_check ]`,
+  task_approvals ]`, `server_manager: [ server_manager_config, server_manager_status, server_manager_check ]`,
   `apps: [ web_view, app_view ]`, and `heartbeat: 4` as the backstop for a
   missed wake. Its `teammate:` block lives in its `AGENTS.md` frontmatter, not here: a product module's teammate is
   declared there (`modules/AGENTS.md` "Teammates").
@@ -207,7 +207,7 @@ a *write* is what needs an approval record, and a read needs none. Tagging it as
 the wrong trade: it would put a record in the path of an hourly read on every machine.
 
 The read is still held tightly, because it is not an ordinary read: it uses a key and opens a connection to a private
-host. It is tagged **`named`** on the connection, so `server-manager: read` does not hand it out — only a grant that
+host. It is tagged **`named`** on the connection, so `server_manager: read` does not hand it out — only a grant that
 names `server_manager_check` reaches it, which is the pattern the github module uses for its issue reads. The page's
 "check now" calls the same tool. Its answer carries the readout; the last readout is also what §8's status row
 publishes.
@@ -352,7 +352,7 @@ holds**, and nothing in a run waits on the warehouse.
 schedules nothing. No machine, no check, no run. A machine's first scheduled check is its first interval after the owner
 adds and enables it.
 
-The page is a module view (`docs/design/board-ui.md` "Modules"), served by the `server-manager` connection, laid out as
+The page is a module view (`docs/design/board-ui.md` "Modules"), served by the `server_manager` connection, laid out as
 `modules/AGENTS.md` "Settings pages" says: grouped by what the owner wants done, one row per setting, one control kind,
 plain-language summaries, Advanced collapsed.
 

@@ -6,7 +6,7 @@ secrets:
     - name: mapdup_keys
       setup: { label: SSH keys, pattern: '^\{[\s\S]*\}$' }
 connections:
-  mapdup-mcp: { url: "http://mapdup-mcp:1/mcp", auth: mapdup_service_key, tools: { read: [mapdup_notes, mapdup_more], write: [] } }
+  mapdup_mcp: { url: "http://mapdup-mcp:1/mcp", auth: mapdup_service_key, tools: { read: [mapdup_notes, mapdup_more], write: [] } }
 settings:
   # The machines each key is for.
   mapdup_targets:
@@ -17,7 +17,7 @@ contributes:
       title: Machines
       icon: list
       order: 30
-      connection: mapdup-mcp
+      connection: mapdup_mcp
       view: "ui://mapdup/page"
       tools: [mapdup_notes]
       secret_maps:
@@ -29,7 +29,7 @@ contributes:
       title: Machines other
       icon: list
       order: 31
-      connection: mapdup-mcp
+      connection: mapdup_mcp
       view: "ui://mapdup/page2"
       tools: [mapdup_more]
       secret_maps:
