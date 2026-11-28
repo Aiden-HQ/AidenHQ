@@ -238,8 +238,8 @@ reboot deferred to the quiet window's start.
 owner's own decision, never the AI reviewer's. The record names:
 
 - the machine, by name and by its pinned host-key fingerprint;
-- the *pending reboot id*: a hash of the boot ID it expects to leave, the kernel that needs the reboot, and the package
-  set that put it there.
+- the *pending reboot id*: a hash of the boot ID it expects to leave, the running kernel, the installed versions of the
+  packages that put it there, and the installed kernel awaiting the next boot.
 
 Approving it authorises exactly that reboot on exactly that machine. `execute` re-derives the pending reboot id at the
 moment it reboots and refuses if it no longer matches, so a second update, a manual reboot or a different machine can
@@ -479,6 +479,7 @@ Rules `execute.ts` enforces, in order, before it installs anything:
    turns a kernel update into a machine that does not come back.
 4. **A broken state is not patched over.** If `dpkg --audit` reports an interrupted run, `dpkg --configure -a` is itself
    a write: it happens inside this approved run, or the run stops and reports the broken state for the owner to decide.
+   The audit must have completed successfully; a denied or failed `dpkg --audit` is a refusal, never a clean database.
 5. **Respect pins.** `apt-mark showhold` entries are never upgraded, and are named in the report as held.
 6. **Never a release upgrade.** The `--only-upgrade` install above, never `dist-upgrade`, and no `do-release-upgrade`.
    If the set would move the release — a `libc6` or `base-files` jump across a codename — stop and report rather than
@@ -491,7 +492,7 @@ Rules `execute.ts` enforces, in order, before it installs anything:
    unattended-upgrades run is waited out rather than failed on.
 10. **Coexist with unattended-upgrades.** Detect (`systemctl is-enabled unattended-upgrades`,
     `/etc/apt/apt.conf.d/20auto-upgrades`). When it is on, stay out of its way and say so in the report; **never disable
-    it**. When it is off, this module does the work.
+    it**. When it is off, this module does the work. An absent unit is off; a probe that failed to answer is a refusal, not a skip.
 11. **Prove the reboot.** Read `/proc/sys/kernel/random/boot_id` before and after. SSH answering is not proof; a reboot
     is done only when the boot ID changed. If it did not change within 900 s, the run fails and reports it.
 12. **Recheck the window immediately before rebooting**, not when the run started.
@@ -500,7 +501,7 @@ Rules `execute.ts` enforces, in order, before it installs anything:
 
 - **The owner's timezone, DST defined.** Due times are computed in the instance's `timezone` setting. A run that would
   land in a skipped hour runs at the first real time after it; one that would land in a repeated hour runs once, on the
-  first occurrence.
+  first occurrence. Weekly slots walk local calendar dates, never elapsed 24-hour periods.
 - **Missed runs coalesce.** A run missed while the service or the board was down runs once when it is back, then the
   schedule resumes. Missed hours are never replayed one by one.
 - **Two due at once are one run.** A weekly pass and an hourly check in the same slot run once, as the larger (full

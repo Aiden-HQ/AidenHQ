@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { classify, detect, downloadEstimate, isSecuritySuite, parseAptConfig, parseOsRelease, parsePolicy, parseSecurityStatus, parseSimulatedUpgrade, parseUnits, readoutFrom, unattendedUpgradesOn } from "../service/src/apt.ts";
+import { classify, detect, downloadEstimate, isSecuritySuite, parseAptConfig, parseOsRelease, parsePolicy, parseSecurityStatus, parseSimulatedUpgrade, parseUnits, readoutFrom, unattendedUpgrades } from "../service/src/apt.ts";
 
 const dir = fileURLToPath(new URL("./fixtures/", import.meta.url));
 
@@ -34,7 +34,7 @@ function fixture(name: string) {
     freeBootGb: num("free") === null ? null : Number((parts.get("free") ?? "").split("\n")[1]!.split(" ")[1]),
     bootId: g("boot id"),
     // The effective APT setting decides; the unit's state is only the fallback when the key is absent.
-    unattendedUpgrades: unattendedUpgradesOn(parseAptConfig(parts.get("apt-config dump") ?? ""), g("unattended-upgrades")),
+    unattendedUpgrades: unattendedUpgrades(parseAptConfig(parts.get("apt-config dump") ?? ""), { code: 0, stdout: g("unattended-upgrades") }) === "on",
   };
 }
 
@@ -71,10 +71,14 @@ test("Debian stable: the same suite test, a normal-archive candidate is not secu
 });
 
 test("the effective unattended-upgrades setting wins over the unit's state; the unit is only the fallback", () => {
-  assert.equal(unattendedUpgradesOn(new Map([["APT::Periodic::Unattended-Upgrade", "0"]]), "enabled"), false);
-  assert.equal(unattendedUpgradesOn(new Map([["APT::Periodic::Unattended-Upgrade", "1"]]), "disabled"), true);
-  assert.equal(unattendedUpgradesOn(new Map(), "enabled"), true);
-  assert.equal(unattendedUpgradesOn(new Map(), "masked"), false);
+  assert.equal(unattendedUpgrades(new Map([["APT::Periodic::Unattended-Upgrade", "0"]]), { code: 0, stdout: "enabled" }), "off");
+  assert.equal(unattendedUpgrades(new Map([["APT::Periodic::Unattended-Upgrade", "1"]]), { code: 1, stdout: "disabled" }), "on");
+  assert.equal(unattendedUpgrades(new Map(), { code: 0, stdout: "enabled" }), "on");
+  assert.equal(unattendedUpgrades(new Map(), { code: 1, stdout: "masked" }), "off");
+  // A unit that is not installed exits non-zero with empty stdout and a not-found diagnostic: off, not on.
+  assert.equal(unattendedUpgrades(new Map(), { code: 1, stdout: "", stderr: "Failed to get unit file state for unattended-upgrades.service: No such file or directory" }), "off");
+  // A probe that failed for another reason is not an answer: unknown, never a silent skip.
+  assert.equal(unattendedUpgrades(new Map(), { code: 1, stdout: "", stderr: "Failed to connect to bus: No medium found" }), "unknown");
   // An `apt-config dump` line is `KEY "value";`, nested and repeated keys included; the first listing wins.
   const dump = parseAptConfig('APT "";\nAPT::Periodic "";\nAPT::Periodic::Unattended-Upgrade "0";\nAPT::Periodic::Unattended-Upgrade "1";\n');
   assert.equal(dump.get("APT::Periodic::Unattended-Upgrade"), "0");

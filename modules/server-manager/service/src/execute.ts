@@ -5,7 +5,7 @@
 // The rules the caller must be able to see are pure functions (the ones the fixtures test); `runPatch` is the one that opens a
 // connection and does the work. Nothing here ever returns, logs or records key material.
 import {
-  classify, detect, parseAptConfig, parseHolds, parseOsRelease, parsePolicy, parseSecurityStatus, parseSimulatedUpgrade, parseUnits, unattendedUpgradesOn,
+  classify, detect, parseAptConfig, parseHolds, parseOsRelease, parsePolicy, parseSecurityStatus, parseSimulatedUpgrade, parseUnits, unattendedUpgrades,
   type Family, type Readout,
 } from "./apt.ts";
 import {
@@ -157,10 +157,13 @@ export function revalidate(i: { os: string; policy: string; simulated: string; h
  * Every §11 gate a patch passes, in order, as one verdict the executor and its tests both read: the record's hash, the simulated
  * plan, the release guard, the disk, the broken state. `list` is the freshly recomputed set, so a caller records or reports it.
  */
-export function verifyPatch(rec: PatchArgs, fresh: { list: Planned[]; hash: string; downloaded_bytes: number | null; disk: { root_free_gb: number | null; boot_free_gb: number | null }; simulation: string; installed: Map<string, string | undefined>; audit: string; holds: string[]; unattended_upgrades: boolean; reboot_needed: boolean }): { ok: true } | { ok: false; code: string; reason: string } | { stale: true } {
+export function verifyPatch(rec: PatchArgs, fresh: { list: Planned[]; hash: string; downloaded_bytes: number | null; disk: { root_free_gb: number | null; boot_free_gb: number | null }; simulation: string; installed: Map<string, string | undefined>; audit: { code: number; stdout: string; stderr?: string }; holds: string[]; unattended_upgrades: boolean | null; reboot_needed: boolean }): { ok: true } | { ok: false; code: string; reason: string } | { stale: true } {
   // §11.1: what gets installed is what this last read showed. A different set is not the approved one.
   if (fresh.hash !== rec.hash) return { stale: true };
   if (fresh.list.length !== rec.packages.length || fresh.list.some((p, i) => word(p) !== rec.packages[i])) return { stale: true };
+  // §11.4: the audit must have completed before its silence can mean a clean package database. A sudo policy that denies
+  // `dpkg --audit` exits non-zero with nothing on stdout; reading that as clean would patch over an interrupted state.
+  if (fresh.audit.code !== 0) return { ok: false, code: "dpkg_audit_failed", reason: `dpkg --audit did not complete (exit ${fresh.audit.code}${fresh.audit.stderr?.trim() ? `: ${fresh.audit.stderr.trim().split("\n").slice(0, 3).join("; ")}` : ""}), so the package database's state is unknown: nothing was installed. Fix the sudo policy or the host's dpkg state, then run again.` };
   // The simulation must show no package outside the list installed, removed or downgraded (§11.1).
   const outside = simulationProblems(parseSimulation(fresh.simulation), rec.packages);
   if (outside.length) return { ok: false, code: "plan_mismatch", reason: `the plan is not what the record said: ${outside.slice(0, 5).join("; ")}${outside.length > 5 ? ` (and ${outside.length - 5} more)` : ""}. Nothing was installed.` };
@@ -171,7 +174,7 @@ export function verifyPatch(rec: PatchArgs, fresh: { list: Planned[]; hash: stri
   const disk = diskVerdict(fresh.disk, fresh.downloaded_bytes);
   if (!disk.ok) return { ok: false, code: "low_disk", reason: disk.reason };
   // §11.4: a broken state is not patched over. `dpkg --audit` prints nothing on a clean host.
-  if (fresh.audit.trim()) return { ok: false, code: "dpkg_broken", reason: `dpkg reports an interrupted run (${fresh.audit.trim().split("\n").slice(0, 8).join("; ")}), which this run would patch over. Nothing was installed, and the run does not repair it: finish or roll back that state on the host, then run again.` };
+  if (fresh.audit.stdout.trim()) return { ok: false, code: "dpkg_broken", reason: `dpkg reports an interrupted run (${fresh.audit.stdout.trim().split("\n").slice(0, 8).join("; ")}), which this run would patch over. Nothing was installed, and the run does not repair it: finish or roll back that state on the host, then run again.` };
   // §11.6: never a release upgrade.
   const jump = releaseJumps(fresh.list, fresh.installed);
   if (jump.length) return { ok: false, code: "release_jump", reason: `this would move the release, not patch it: ${jump.join(", ")}. Nothing was installed; a release upgrade is not this module's to do.` };
@@ -179,7 +182,7 @@ export function verifyPatch(rec: PatchArgs, fresh: { list: Planned[]; hash: stri
 }
 
 /** A readout's text, for a report: the numbers a person checks, never a shell's page of output. */
-export function describe(o: { installed: Planned[]; held: string[]; stopped: string[]; restarted: string[]; unattended_upgrades: boolean; disk: { root_free_gb: number | null; boot_free_gb: number | null } }): string {
+export function describe(o: { installed: Planned[]; held: string[]; stopped: string[]; restarted: string[]; unattended_upgrades: boolean | null; disk: { root_free_gb: number | null; boot_free_gb: number | null } }): string {
   const parts = [`${o.installed.length} package${o.installed.length === 1 ? "" : "s"} installed`];
   if (o.stopped.length) parts.push(`STOPPED and not restarted: ${o.stopped.join(", ")}`);
   if (o.restarted.length) parts.push(`restarted by its maintainer script: ${o.restarted.join(", ")}`);
@@ -208,6 +211,9 @@ export async function runPatch(c: Connection, machine: Machine, rec: PatchArgs):
     const bootBefore = (await c.exec([...READ.bootId])).stdout.trim();
     const aptConfig = await c.exec([...READ.aptConfig]);
     const ua = await c.probe(["systemctl", "is-enabled", "unattended-upgrades"]);
+    // The probe's exit status and words together decide; an unexpected failure is a refusal, never an "on" skip.
+    const uaState = unattendedUpgrades(parseAptConfig(aptConfig.stdout), ua);
+    if (uaState === "unknown") return { ...base, detail: `systemctl could not say whether unattended-upgrades is on (exit ${ua.code}${ua.stderr.trim() ? `: ${ua.stderr.trim().split("\n")[0]}` : ""}), so this run did not patch and did not skip: fix the host's systemd state, then run again.`, refused: "unattended_upgrades_unknown" };
     const rebootBefore = await c.probe(["test", "-f", "/var/run/reboot-required"]);
     const audit = await c.probe(["sudo", "-n", ...DPKG_AUDIT]);
     const secStatus = await c.probe([...READ.securityStatus]);
@@ -215,7 +221,7 @@ export async function runPatch(c: Connection, machine: Machine, rec: PatchArgs):
       os: os.stdout, policy: policy.stdout, simulated: simulated.stdout, holds: holds.code === 0 ? holds.stdout : "",
       units: unitsBefore.stdout, bootId: bootBefore, rebootRequired: rebootBefore.code === 0,
       freeRootGb: parseDf(dfRoot.stdout).root_free_gb, freeBootGb: parseDf(dfBoot.stdout).boot_free_gb,
-      unattendedUpgrades: unattendedUpgradesOn(parseAptConfig(aptConfig.stdout), ua.stdout),
+      unattendedUpgrades: uaState === "on",
       securityStatus: secStatus.code === 0 ? secStatus.stdout : undefined,
     }, rec.mode);
     if ("unsupported" in fresh) return { ...base, detail: fresh.unsupported, refused: "unsupported" };
@@ -238,7 +244,7 @@ export async function runPatch(c: Connection, machine: Machine, rec: PatchArgs):
     const verdict = verifyPatch(rec, {
       // One estimate for the verdict and the reported need: the exact list's own `Need to get`, from `--print-uris`.
       list: fresh.list, hash: fresh.hash, downloaded_bytes: downloaded, disk: fresh.readout.disk, simulation: exact.stdout,
-      installed: installedFrom(parsePolicy(policy.stdout)), audit: audit.code === 0 ? audit.stdout : "", holds: fresh.readout.holds,
+      installed: installedFrom(parsePolicy(policy.stdout)), audit, holds: fresh.readout.holds,
       unattended_upgrades: fresh.readout.unattended_upgrades, reboot_needed: fresh.readout.reboot_needed,
     });
     Object.assign(base, { held: fresh.readout.holds, before: fresh.readout.services, boot_id_before: bootBefore, unattended_upgrades: fresh.readout.unattended_upgrades, disk: fresh.readout.disk, needed_gb: diskNeeded(downloaded ?? 0) });

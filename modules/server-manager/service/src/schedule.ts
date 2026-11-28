@@ -24,6 +24,18 @@ export function localParts(at: Date, timeZone: string): { date: string; weekday:
   return { date: `${get("year")}-${get("month")}-${get("day")}`, weekday: weekday < 0 ? 0 : weekday, minutes: Number(get("hour")) * 60 + Number(get("minute")) };
 }
 
+/**
+ * The local calendar date `back` days before `date`, and its weekday. This is calendar arithmetic, never `at - back * 86_400_000`:
+ * on a 25-hour fall-back day the instant 24 hours earlier is still the same local date, and walking elapsed periods would accept
+ * that date's later slot early.
+ */
+function localDay(date: string, back: number): { date: string; weekday: number } {
+  const [y, m, d] = date.split("-").map(Number);
+  const at = new Date(Date.UTC(y!, m! - 1, d! - back, 12));
+  const two = (n: number) => String(n).padStart(2, "0");
+  return { date: `${at.getUTCFullYear()}-${two(at.getUTCMonth() + 1)}-${two(at.getUTCDate())}`, weekday: at.getUTCDay() };
+}
+
 /** `mon`…`sun` as the index `localParts` uses. */
 export const DAY_INDEX: Record<string, number> = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
 
@@ -49,9 +61,11 @@ function dueSince(m: Machine, at: Date, timeZone: string, firstSeen?: Date): { s
   if (listedBeforeThisSlot) out.security = `${now.date}@${hm(lastCheck)}`;
   const want = hhmm(m.weekly_time), day = DAY_INDEX[m.weekly_day] ?? 1;
   for (let back = 0; back < 8; back += 1) {
-    const p = localParts(new Date(at.getTime() - back * 86_400_000), timeZone);
+    const p = localDay(now.date, back);
     if (p.weekday !== day) continue;
-    if (back === 0 && p.minutes < want) continue;
+    // Today's slot is due only once the local clock has reached it; an earlier date's is a missed pass. The date is walked, so
+    // "earlier" means a real calendar day, not an elapsed 24 hours on a DST day.
+    if (back === 0 && now.minutes < want) continue;
     // The weekly pass is due only for a day the machine was already listed on: a machine added on Wednesday is not overdue for
     // Monday's pass (quiet start, §9).
     if (seen) {

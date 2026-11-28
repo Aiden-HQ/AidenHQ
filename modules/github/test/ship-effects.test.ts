@@ -331,14 +331,30 @@ test("a push that merges the base after a conflict lands as one merge commit Git
   assert.equal(pr.head, head);
 });
 
-test("a base merge whose commit GitHub didn't sign (the owner's sign-in) is refused, and the branch stays", async (t) => {
+test("a base merge made with the owner's sign-in lands unsigned where the branch accepts it", async (t) => {
   const { ws, origin, c1, run, calls } = await setup(t);
   const { done } = conflictedMerge(ws, origin);
   const args = { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: done }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 };
-  // The owner's sign-in: GitHub makes the commit but doesn't sign it, so it is never written.
+  // The owner's sign-in: GitHub makes the REST commit but doesn't sign it. `contrib` has no required_signatures rule, so it is
+  // accepted; before this, the App-only signature check refused every owner-token merge.
   const unsigned = await run("k-00000000000000ac", "github.push", args);
-  assert.equal(unsigned.ok, false);
-  assert.match(unsigned.text, /^ship-refused: .*GitHub didn't sign the merge commit \(unsigned\).*Nothing was pushed/, unsigned.text);
+  assert.equal(unsigned.ok, true, unsigned.text);
+  const head = sh(origin, "rev-parse", "refs/heads/contrib");
+  assert.notEqual(head, c1, "the merge is written");
+  assert.equal(sh(origin, "rev-list", "--parents", "-n", "1", head).split(" ").length, 3, "one merge commit of the head and the base");
+  // The REST commit is the owner's (no `as` mark), and the fake GitHub reports it unsigned — exactly the path that used to refuse.
+  const commits = calls.filter((c) => c.method === "POST" && c.path === `/repos/${REPO}/git/commits`);
+  assert.deepEqual(commits.map((c) => [c.as, c.body.parents]), [[undefined, [c1, sh(origin, "rev-parse", "main")]]]);
+  assert.equal(calls.filter((c) => c.path === "/graphql" && String(c.body?.query).includes("updateRefs")).length, 1, "the branch moves to the merge");
+});
+
+test("a base merge whose commit GitHub didn't sign is still refused where the branch requires signed commits", async (t) => {
+  const { ws, origin, c1, run, calls } = await setup(t, { signedBranches: () => true });
+  const { done } = conflictedMerge(ws, origin);
+  const args = { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: done }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 };
+  const refused = await run("k-00000000000000ae", "github.push", args);
+  assert.equal(refused.ok, false);
+  assert.match(refused.text, /^ship-refused: .*requires signed commits.*Nothing was pushed/, refused.text);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "the branch is unchanged");
   assert.equal(calls.filter((c) => c.path === "/graphql" && String(c.body?.query).includes("updateRefs")).length, 0, "no ref write");
 });

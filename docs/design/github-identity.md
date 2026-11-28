@@ -85,8 +85,10 @@ execution is never read as another.
 Commits the code host makes locally (clones in its cache) are the owner's, with the `Co-authored-by: AidenHQ` trailer. The
 registry commit op is a `createCommitOnBranch` bound to the parent (`expectedHeadOid`) with no custom author, so GitHub makes
 the commit as whoever the actor is: the App's, signed by GitHub. A push that merges the base is one merge commit made through REST git data
-(`git/trees` on the head's tree, `git/commits` with parents head and base tip, no author or committer), which GitHub signs for
-the App, then the branch moved bound to the head exactly (`updateRefs` with `beforeOid`); a commit GitHub didn't sign is never written.
+(`git/trees` on the head's tree, `git/commits` with parents head and base tip, no author or committer), then the branch moved bound to
+the head exactly (`updateRefs` with `beforeOid`). GitHub signs that commit for the App; when the actor is the owner's OAuth token the
+commit is unsigned, so it is accepted only where the branch has no `required_signatures` rule, and a signature-required branch still
+refuses it.
 
 ## Session boxes and the host
 

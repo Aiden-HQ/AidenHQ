@@ -46,7 +46,8 @@
     "zod": "4.6.7"
   },
   "scripts": {
-    "test": "NODE_PATH=../node_modules bun test --parallel --timeout=30000 ./test/ ../../modules/engine-codex/test/ ../../modules/engine-opencode/test/",
+    "test": "NODE_PATH=../node_modules bun test --parallel --timeout=30000 --path-ignore-patterns='**/*.e2e.test.ts' ./test/ ../../modules/engine-codex/test/ ../../modules/engine-opencode/test/",
+    "test:e2e": "NODE_PATH=../node_modules bun test --timeout=150000 ../../modules/engine-opencode/test/fresh-session.e2e.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepack": "node ../../scripts/sdk-pack.ts"
   }

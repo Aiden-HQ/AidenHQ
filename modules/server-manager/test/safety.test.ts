@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   classify, diskVerdict, downloadEstimate, estimateArgv, estimateCommand, exactList, installArgv, installCommand, listHash, LOCKED, neededGb, parseAptConfig, parseHolds,
-  parseOsRelease, parsePolicy, parseSimulatedUpgrade, parseSimulation, releaseJumps, simulationProblems, unattendedUpgradesOn, word, UPDATE_ARGV,
+  parseOsRelease, parsePolicy, parseSimulatedUpgrade, parseSimulation, releaseJumps, simulationProblems, unattendedUpgrades, word, UPDATE_ARGV,
 } from "../service/src/apt.ts";
 import { hashOf, planFrom, revalidate, serviceChange, startSeconds, verifyPatch, installedFrom, DPKG_AUDIT } from "../service/src/execute.ts";
 import { inWindow, pendingId, ConsentStore, CONSENT_MS, rebootDue, rebootAndProve } from "../service/src/reboot.ts";
@@ -163,14 +163,14 @@ test("§11.3 the disk guard uses the exact list's estimate and refuses when apt 
   const exactSim = "The following packages will be upgraded:\n  libc6 openssl\nNeed to get 900,000 kB of archives.\n";
   const outside = verifyPatch(rec, {
     ...f, downloaded_bytes: downloadEstimate(exactSim), disk: { root_free_gb: 1.2, boot_free_gb: 1.2 }, simulation: exactSim,
-    installed: installedFrom(f.policy), audit: "", holds: [], unattended_upgrades: false, reboot_needed: false,
+    installed: installedFrom(f.policy), audit: { code: 0, stdout: "" }, holds: [], unattended_upgrades: false, reboot_needed: false,
   });
   assert.equal(outside.ok, false);
   assert.equal(outside.ok === false ? outside.code : "", "low_disk", "1.2 GB free is short of twice the exact list's 900 MB");
   // No `Need to get` line at all: the guard refuses instead of falling back to the 1 GB floor it could not justify.
   const none = verifyPatch(rec, {
     ...f, downloaded_bytes: downloadEstimate("The following packages will be upgraded:\n  libc6 openssl\n"), disk: { root_free_gb: 18.4, boot_free_gb: 2.2 }, simulation: exactSim,
-    installed: installedFrom(f.policy), audit: "", holds: [], unattended_upgrades: false, reboot_needed: false,
+    installed: installedFrom(f.policy), audit: { code: 0, stdout: "" }, holds: [], unattended_upgrades: false, reboot_needed: false,
   });
   assert.equal(none.ok, false);
   assert.equal(none.ok === false ? none.code : "", "disk_unknown");
@@ -195,13 +195,13 @@ test("§11.3 a cached archive's `0 B/total` estimate reads the total, so a cache
   const f = fixture("security");
   const rec = { machine: "vm-one", mode: "security" as const, reboot_policy: "auto" as const, fingerprint: "SHA256:" + "A".repeat(43), packages: f.words, hash: f.hash };
   const sim = u("apt-get -s install --only-upgrade libc6=2.39-0ubuntu8.5 openssl=3.0.13-0ubuntu3.4");
-  const passed = verifyPatch(rec, { ...f, downloaded_bytes: downloadEstimate(cached), disk: { root_free_gb: 1.2, boot_free_gb: 1.2 }, simulation: sim, installed: installedFrom(f.policy), audit: "", holds: [], unattended_upgrades: false, reboot_needed: false });
+  const passed = verifyPatch(rec, { ...f, downloaded_bytes: downloadEstimate(cached), disk: { root_free_gb: 1.2, boot_free_gb: 1.2 }, simulation: sim, installed: installedFrom(f.policy), audit: { code: 0, stdout: "" }, holds: [], unattended_upgrades: false, reboot_needed: false });
   assert.deepEqual(passed, { ok: true }, "twice 2 MB is under the 1 GB floor, and 1.2 GB free clears the floor");
   // A cached 900 MB upgrade needs twice that, which 1.2 GB free is short of, so the guard refuses it and quotes the cached total: a
   // 0 B reading would have passed the same host.
   const cachedBig = "Need to get 0 B/900,000 kB of archives.";
   assert.equal(downloadEstimate(cachedBig), 900_000 * 1024, "a cached 900 MB reads as 900 MB, not 0");
-  const short = verifyPatch(rec, { ...f, downloaded_bytes: downloadEstimate(cachedBig), disk: { root_free_gb: 1.2, boot_free_gb: 1.2 }, simulation: sim, installed: installedFrom(f.policy), audit: "", holds: [], unattended_upgrades: false, reboot_needed: false });
+  const short = verifyPatch(rec, { ...f, downloaded_bytes: downloadEstimate(cachedBig), disk: { root_free_gb: 1.2, boot_free_gb: 1.2 }, simulation: sim, installed: installedFrom(f.policy), audit: { code: 0, stdout: "" }, holds: [], unattended_upgrades: false, reboot_needed: false });
   assert.equal(short.ok === false ? short.code : "", "low_disk", "the guard refuses 1.2 GB free against a cached 900 MB, which a 0 reading would have passed");
   assert.match(short.ok === false ? short.reason : "", /878\.9 MB download/);
 });
@@ -234,7 +234,7 @@ test("§11.4 a broken dpkg state stops the run and names it, and the run never r
   const f = fixture("security");
   const broken = verifyPatch(
     { machine: "vm-one", mode: "security", reboot_policy: "auto", fingerprint: "SHA256:" + "A".repeat(43), packages: f.words, hash: f.hash },
-    { ...f, downloaded_bytes: 0, disk: { root_free_gb: 18.4, boot_free_gb: 2.2 }, simulation: u("apt-get -s install --only-upgrade libc6=2.39-0ubuntu8.5 openssl=3.0.13-0ubuntu3.4"), installed: installedFrom(f.policy), audit: "The following packages have been unpacked but not yet configured:\n  libc6\n", holds: ["vim"], unattended_upgrades: false, reboot_needed: true },
+    { ...f, downloaded_bytes: 0, disk: { root_free_gb: 18.4, boot_free_gb: 2.2 }, simulation: u("apt-get -s install --only-upgrade libc6=2.39-0ubuntu8.5 openssl=3.0.13-0ubuntu3.4"), installed: installedFrom(f.policy), audit: { code: 0, stdout: "The following packages have been unpacked but not yet configured:\n  libc6\n" }, holds: ["vim"], unattended_upgrades: false, reboot_needed: true },
   );
   assert.equal(broken.ok, false);
   assert.equal(broken.ok === false ? broken.code : "", "dpkg_broken");
@@ -263,9 +263,9 @@ test("§11.9 the lock is waited out by apt's own 600 s timeout and held by flock
 
 // 7. §11.10 — coexist with unattended-upgrades, never disable it.
 test("§11.10 unattended-upgrades is detected from the effective setting and never disabled", () => {
-  assert.equal(unattendedUpgradesOn(parseAptConfig(u("apt-config dump")), u("unattended-upgrades")), true);
+  assert.equal(unattendedUpgrades(parseAptConfig(u("apt-config dump")), { code: 0, stdout: u("unattended-upgrades") }), "on");
   // A host whose APT setting is off, though the unit says enabled: the effective setting wins.
-  assert.equal(unattendedUpgradesOn(parseAptConfig('APT::Periodic::Unattended-Upgrade "0";'), "enabled"), false);
+  assert.equal(unattendedUpgrades(parseAptConfig('APT::Periodic::Unattended-Upgrade "0";'), { code: 0, stdout: "enabled" }), "off");
   // Nothing the module runs turns it off: no argument list names it.
   for (const argv of [UPDATE_ARGV, installArgv(["libc6=x"]), installCommand(["libc6=x"])]) assert.ok(!argv.join(" ").match(/unattended|mask|disable/i));
 });
@@ -283,12 +283,16 @@ test("§11.7 a service that stopped is flagged and not restarted, and one whose 
 
 // 9. §11.11 — prove the reboot.
 test("§11.11 a reboot with no changed boot ID fails: SSH answering again is not proof", () => {
-  const id = pendingId({ boot_id: "a", kernel: "6.8.0-48-generic", reboot_pkgs: ["libc6"] });
+  const id = pendingId({ boot_id: "a", kernel: "6.8.0-48-generic", kernel_awaiting: "", reboot_pkgs: [{ name: "libc6", version: "2.39-0ubuntu8.5" }] });
   assert.match(id, /^[0-9a-f]{64}$/);
-  // Any of the three inputs changes the id, so an approval can never ride another update.
-  assert.notEqual(pendingId({ boot_id: "b", kernel: "6.8.0-48-generic", reboot_pkgs: ["libc6"] }), id);
-  assert.notEqual(pendingId({ boot_id: "a", kernel: "6.8.0-49-generic", reboot_pkgs: ["libc6"] }), id);
-  assert.notEqual(pendingId({ boot_id: "a", kernel: "6.8.0-48-generic", reboot_pkgs: ["libc6", "openssl"] }), id);
+  // Any of the inputs changes the id, so an approval can never ride another update.
+  assert.notEqual(pendingId({ boot_id: "b", kernel: "6.8.0-48-generic", kernel_awaiting: "", reboot_pkgs: [{ name: "libc6", version: "2.39-0ubuntu8.5" }] }), id);
+  assert.notEqual(pendingId({ boot_id: "a", kernel: "6.8.0-49-generic", kernel_awaiting: "", reboot_pkgs: [{ name: "libc6", version: "2.39-0ubuntu8.5" }] }), id);
+  assert.notEqual(pendingId({ boot_id: "a", kernel: "6.8.0-48-generic", kernel_awaiting: "", reboot_pkgs: [{ name: "libc6", version: "2.39-0ubuntu8.5" }, { name: "openssl", version: "3.0.13-0ubuntu3.4" }] }), id);
+  // The same names, boot ID and running kernel with a different installed version (or a different kernel awaiting boot) is a
+  // different reboot: the second update must not ride the first one's approval.
+  assert.notEqual(pendingId({ boot_id: "a", kernel: "6.8.0-48-generic", kernel_awaiting: "", reboot_pkgs: [{ name: "libc6", version: "2.39-0ubuntu8.6" }] }), id);
+  assert.notEqual(pendingId({ boot_id: "a", kernel: "6.8.0-48-generic", kernel_awaiting: "linux-image-6.8.0-49-generic=6.8.0-49.50", reboot_pkgs: [{ name: "libc6", version: "2.39-0ubuntu8.5" }] }), id);
   // A proof that never sees a new ID within 900 s is a failure, which reboot.ts returns (the polling loop is its own unit test).
   assert.ok(1_500_000 >= 900_000, "the install's bound is above the reboot's");
 });
@@ -327,7 +331,7 @@ test("§11.12 the quiet window is read on the owner's wall clock, and a window t
 test("§6 a reboot deferred to the window is due once the window opens, once per pending id, and never without a consent", () => {
   const d = mkdtempSync(join(tmpdir(), "sm-consent-"));
   const store = new ConsentStore(d);
-  const id = pendingId({ boot_id: "boot-1", kernel: "6.8.0", reboot_pkgs: ["libc6"] });
+  const id = pendingId({ boot_id: "boot-1", kernel: "6.8.0", kernel_awaiting: "", reboot_pkgs: [{ name: "libc6", version: "2.39-0ubuntu8.5" }] });
   const window = { quiet_start: "03:00", quiet_end: "05:00" };
   assert.equal(rebootDue(window, undefined, new Date("2026-11-27T03:30:00Z"), "UTC"), undefined, "no consent, nothing to file");
   store.note("vm-one", id, new Date("2026-11-26T20:00:00Z"));
@@ -348,7 +352,7 @@ test("§6 a reboot deferred to the window is due once the window opens, once per
 test("§6 a plan alone records no consent, and a decision carries its own 12 hours and its pin", () => {
   const d = mkdtempSync(join(tmpdir(), "sm-consent-"));
   const store = new ConsentStore(d);
-  const id = pendingId({ boot_id: "boot-1", kernel: "6.8.0", reboot_pkgs: ["libc6"] });
+  const id = pendingId({ boot_id: "boot-1", kernel: "6.8.0", kernel_awaiting: "", reboot_pkgs: [{ name: "libc6", version: "2.39-0ubuntu8.5" }] });
   assert.equal(store.get("vm-one"), undefined, "planning leaves no consent: `decide` is the only writer of a live one");
   const decided = new Date("2026-11-27T21:00:00Z");
   const pin = "SHA256:" + "A".repeat(43);
@@ -362,7 +366,7 @@ test("§6 a plan alone records no consent, and a decision carries its own 12 hou
 test("§6 an expired or mismatched reboot consent is refused at revalidate, and a matching one within 12 h passes", () => {
   const dir = mkdtempSync(join(tmpdir(), "sm-consent-"));
   const store = new ConsentStore(dir);
-  const id = pendingId({ boot_id: "boot-1", kernel: "6.8.0-48-generic", reboot_pkgs: ["libc6"] });
+  const id = pendingId({ boot_id: "boot-1", kernel: "6.8.0-48-generic", kernel_awaiting: "", reboot_pkgs: [{ name: "libc6", version: "2.39-0ubuntu8.5" }] });
   const granted = new Date("2026-11-27T00:00:00Z");
   store.note("vm-one", id, granted);
   assert.equal(store.check("vm-one", id, new Date(granted.getTime() + 3600_000)).ok, true);
@@ -370,7 +374,7 @@ test("§6 an expired or mismatched reboot consent is refused at revalidate, and 
   assert.equal(expired.ok, false);
   assert.match(expired.ok === false ? expired.reason : "", /expired/);
   // A different pending id: what the host needs has changed, so the approval is for another reboot.
-  const other = pendingId({ boot_id: "boot-2", kernel: "6.8.0-48-generic", reboot_pkgs: ["libc6"] });
+  const other = pendingId({ boot_id: "boot-2", kernel: "6.8.0-48-generic", kernel_awaiting: "", reboot_pkgs: [{ name: "libc6", version: "2.39-0ubuntu8.5" }] });
   const mismatched = store.check("vm-one", other, granted);
   assert.match(mismatched.ok === false ? mismatched.reason : "", /another reboot/);
   assert.equal(CONSENT_MS, 12 * 3600_000, "consent lasts 12 hours");
@@ -379,7 +383,7 @@ test("§6 an expired or mismatched reboot consent is refused at revalidate, and 
 // §6 — a new approval made after the old one lapsed starts its own 12 hours, and one store sees another's drop.
 test("§6 a re-filed approval after an expiry is not refused for the old consent's age, and a drop is seen across stores", () => {
   const d = mkdtempSync(join(tmpdir(), "sm-consent-"));
-  const id = pendingId({ boot_id: "boot-1", kernel: "6.8.0-48-generic", reboot_pkgs: ["libc6"] });
+  const id = pendingId({ boot_id: "boot-1", kernel: "6.8.0-48-generic", kernel_awaiting: "", reboot_pkgs: [{ name: "libc6", version: "2.39-0ubuntu8.5" }] });
   const old = new Date("2026-11-27T00:00:00Z");
   new ConsentStore(d).note("vm-one", id, old);
   // Another store (the scheduler's, in production) is the one that files again after the lapse, at a much later time.
@@ -398,10 +402,10 @@ test("§11.1 a stale plan (the host's set changed since filing) stops the run be
   const rec = { machine: "vm-one", mode: "security" as const, reboot_policy: "auto" as const, fingerprint: "SHA256:" + "A".repeat(43), packages: f.words, hash: f.hash };
   // A host whose set moved on (a new version since the record was filed) hashes differently.
   const moved = { ...f, hash: listHash([...f.words, "zlib1g=1:1.3.dfsg-3.1ubuntu2.1"]) };
-  const v = verifyPatch(rec, { ...moved, downloaded_bytes: 0, disk: { root_free_gb: 18.4, boot_free_gb: 2.2 }, simulation: "", installed: installedFrom(f.policy), audit: "", holds: ["vim"], unattended_upgrades: false, reboot_needed: false });
+  const v = verifyPatch(rec, { ...moved, downloaded_bytes: 0, disk: { root_free_gb: 18.4, boot_free_gb: 2.2 }, simulation: "", installed: installedFrom(f.policy), audit: { code: 0, stdout: "" }, holds: ["vim"], unattended_upgrades: false, reboot_needed: false });
   assert.deepEqual(v, { stale: true }, "a different hash is a different set: never the approved one");
   // A hash that happens to match but a list that does not is stale too.
-  assert.deepEqual(verifyPatch({ ...rec, packages: ["libc6=9.9"] }, { ...f, downloaded_bytes: 0, disk: { root_free_gb: 18.4, boot_free_gb: 2.2 }, simulation: "", installed: installedFrom(f.policy), audit: "", holds: ["vim"], unattended_upgrades: false, reboot_needed: false }), { stale: true });
+  assert.deepEqual(verifyPatch({ ...rec, packages: ["libc6=9.9"] }, { ...f, downloaded_bytes: 0, disk: { root_free_gb: 18.4, boot_free_gb: 2.2 }, simulation: "", installed: installedFrom(f.policy), audit: { code: 0, stdout: "" }, holds: ["vim"], unattended_upgrades: false, reboot_needed: false }), { stale: true });
 });
 
 // 13. §5, §11 — an unsupported host is refused before any action.

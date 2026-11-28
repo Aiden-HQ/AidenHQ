@@ -132,7 +132,7 @@ export function createExecutor(d: ExecutorDeps): Executor {
         const m = machineOf(d.machines(), a.machine);
         // §6: consent is bound to what the host needs now, and the id is what an approval authorises.
         const st = await withConnection(d.transport(), target(m), d.keys(), (c, pin) => readRebootState(c).then((s) => ({ s, pin })));
-        const id = pendingId({ boot_id: st.s.boot_id, kernel: st.s.kernel, reboot_pkgs: st.s.reboot_pkgs });
+        const id = pendingId(st.s);
         // Consent is *not* written here (§6): planning reads the host and cards what it found, but only the kernel's decision that a
         // record runs — `execute`, below — is a consent the scheduler may act on. A card nobody answers, or one rejected, leaves none.
         const args = { machine: m.name, fingerprint: st.pin.fingerprint, pending_id: id, quiet_window: { start: m.quiet_start, end: m.quiet_end }, reboot_policy: m.reboot_policy };
@@ -140,7 +140,7 @@ export function createExecutor(d: ExecutorDeps): Executor {
           target: m.name,
           sentence: `Reboots ${m.name} inside its quiet window ${m.quiet_start}–${m.quiet_end}.`,
           changes: `Restarts ${m.name}. A reboot is done only when its boot ID changes, checked within 900 s.`,
-          details: `Kind server-manager.reboot. Machine ${m.name}, pinned host key ${st.pin.fingerprint}. Pending reboot ${id.slice(0, 12)}… over boot ID ${st.s.boot_id.slice(0, 8)}…, kernel ${st.s.kernel}. ${st.s.reboot_pkgs.length ? `Packages that asked: ${st.s.reboot_pkgs.slice(0, 8).join(", ")}.` : ""}`,
+          details: `Kind server-manager.reboot. Machine ${m.name}, pinned host key ${st.pin.fingerprint}. Pending reboot ${id.slice(0, 12)}… over boot ID ${st.s.boot_id.slice(0, 8)}…, running kernel ${st.s.kernel}${st.s.kernel_awaiting ? `, awaiting boot ${st.s.kernel_awaiting}` : ""}. ${st.s.reboot_pkgs.length ? `Packages that asked: ${st.s.reboot_pkgs.slice(0, 8).map((p) => `${p.name}=${p.version}`).join(", ")}.` : ""}`,
         };
         // "Ask me first": the owner decides, never the AI reviewer (§6). A window that is not open yet still raises: the record is
         // the owner's yes for that reboot, and execute rechecks the window at the moment it reboots (§11.12). A decision already on
@@ -263,7 +263,7 @@ export function createExecutor(d: ExecutorDeps): Executor {
           // by a time taken once the reads are done — never by the instant the run started.
           const st = await readRebootState(c);
           const now = new Date();
-          const id = pendingId({ boot_id: st.boot_id, kernel: st.kernel, reboot_pkgs: st.reboot_pkgs });
+          const id = pendingId(st);
           if (id !== args.pending_id) {
             await d.wake({ machine: m.name, title: `Server Manager: a reboot approval no longer matches on ${m.name}`, body: `${m.name}: this approval was for another reboot (what the host needs now hashes to ${id.slice(0, 12)}…, the record to ${args.pending_id.slice(0, 12)}…), so nothing was rebooted.`, source: `server-manager:consent-mismatch:${m.name}:${args.pending_id.slice(0, 12)}` }).catch(() => undefined);
             return { ok: false, text: `${m.name}: this approval was for another reboot (what the host needs now hashes to ${id.slice(0, 12)}…, the record to ${args.pending_id.slice(0, 12)}…): nothing was rebooted.` };

@@ -1386,7 +1386,14 @@ export function createService(o: Options) {
     const sha = String(c.body?.sha ?? "");
     const parents = ((c.body?.parents ?? []) as { sha?: unknown }[]).map((p) => String(p?.sha));
     if (!/^[0-9a-f]{40}$/.test(sha) || c.body?.tree?.sha !== wantTree || parents.length !== 2 || parents[0] !== m.head || parents[1] !== m.baseSha) return { text: refusedPush(at, `GitHub's commit \`${sha.slice(0, 12)}\` isn't the planned merge of \`${m.baseSha.slice(0, 12)}\` into \`${m.head.slice(0, 12)}\` with tree \`${wantTree.slice(0, 12)}\``) };
-    if (c.body?.verification?.verified !== true) return { text: refusedPush(at, `GitHub didn't sign the merge commit (${String(c.body?.verification?.reason ?? "no verification")}), so it isn't written`) };
+    if (c.body?.verification?.verified !== true) {
+      const why = String(c.body?.verification?.reason ?? "no verification");
+      // GitHub signs a REST commit only for the App. The owner's own sign-in (the actor chosen when the App isn't installed)
+      // gets an unsigned commit: that is acceptable where the branch doesn't require signatures, and still refused where it does.
+      // The App path keeps the strict check, because nobody else is expected to make its commits unsigned.
+      if (at.actor.kind !== "owner") return { text: refusedPush(at, `GitHub didn't sign the merge commit (${why}), so it isn't written`) };
+      if (await signedOnly(at.s.slug, at.ref)) return { text: refusedPush(at, `GitHub didn't sign the merge commit (${why}), and \`${at.ref}\` requires signed commits, so it isn't written`) };
+    }
     const repo = await gh("GET", `/repos/${at.into}`);
     if (repo.status >= 300 || !repo.body?.node_id) throw fail(502, `GitHub GET ${at.into}: ${repo.status}`);
     // The write's authority and the base it records, read once the commit is ready, right before the one write that moves the branch.

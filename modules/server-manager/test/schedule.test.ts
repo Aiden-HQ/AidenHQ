@@ -132,6 +132,27 @@ test("DST repeat: a run whose wall time happens twice runs once, on the first oc
   assert.equal(dueFor(m({ weekly_day: "sun", weekly_time: "01:00" }), new Date("2026-11-01T06:30:00Z"), "America/New_York", store), undefined, "the second pass is the same slot");
 });
 
+test("DST fall-back: a weekly pass is not accepted early because 24 hours earlier is still the same local date", () => {
+  // America/New_York's fall-back Sunday 2026-11-01 is 25 hours long. At 23:30 local (04:30Z EST) a weekly 23:45 pass has not
+  // arrived; subtracting 86_400_000 would land on Sunday 00:30 and accept it as an overdue pass, consuming the 23:45 slot at 23:30.
+  const store = new SlotStore(dir());
+  store.markSeen("vm-one", new Date("2026-10-20T00:00:00Z"));
+  // Last week's pass ran, so this test measures this Sunday's slot rather than an unfiled one from 10-25.
+  const prior = dueFor(m({ weekly_day: "sun", weekly_time: "23:45" }), new Date("2026-10-26T03:50:00Z"), "America/New_York", store)!;
+  assert.deepEqual(prior, { machine: "vm-one", kind: "full", slot: "2026-10-25@23:45" });
+  store.start(prior, new Date("2026-10-26T03:50:00Z"));
+  store.finish(prior, true, "done");
+  const at = new Date("2026-11-02T04:30:00Z");
+  assert.deepEqual(localParts(at, "America/New_York"), { date: "2026-11-01", weekday: 0, minutes: 23 * 60 + 30 });
+  const early = dueFor(m({ weekly_day: "sun", weekly_time: "23:45", security_minutes: 60 }), at, "America/New_York", store)!;
+  assert.deepEqual(early, { machine: "vm-one", kind: "security", slot: "2026-11-01@23:00" }, "only the hourly check is due; the 23:45 weekly pass is not");
+  // The same instant is past a 23:00 pass: it is due once, as the larger full run of the shared slot.
+  const weekly = dueFor(m({ weekly_day: "sun", weekly_time: "23:00", security_minutes: 60 }), at, "America/New_York", store)!;
+  assert.deepEqual(weekly, { machine: "vm-one", kind: "full", slot: "2026-11-01@23:00" });
+  store.start(weekly, at);
+  assert.equal(dueFor(m({ weekly_day: "sun", weekly_time: "23:00", security_minutes: 60 }), at, "America/New_York", store), undefined, "the 23:00 slot runs once");
+});
+
 test("a due time is the owner's wall clock: the same instant is a different slot in another zone", () => {
   const at = new Date("2026-11-27T22:30:00Z");
   const utc = new SlotStore(dir()), dubai = new SlotStore(dir());

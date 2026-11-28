@@ -106,12 +106,12 @@ test("each transport failure maps to its own plain state", () => {
  * A stand-in ssh answering a recorded fixture's sections, so the check tool runs end to end without a host. The answers are a
  * table of `command -> { out } | { code }`, handed to the script as JSON: no interpolation inside a template.
  */
-function fakeHost(fixture: string) {
+function fakeHost(fixture: string, over: { ua?: { out?: string; code?: number; err?: string }; aptConfig?: string } = {}) {
   const root = mkdtempSync(join(tmpdir(), "sm-check-"));
   mkdirSync(join(root, "tmp"));
   const g = sections(fixture);
   const ssh = join(root, "ssh"), keygen = join(root, "ssh-keygen");
-  const exact: Record<string, { out?: string; code?: number }> = {
+  const exact: Record<string, { out?: string; code?: number; err?: string }> = {
     true: { code: 0 },
     "cat /etc/os-release": { out: g("os-release") },
     "apt-get -s upgrade": fixture === "unsupported" ? { code: 100 } : { out: g("apt-get -s upgrade") },
@@ -119,8 +119,8 @@ function fakeHost(fixture: string) {
     "cat /proc/sys/kernel/random/boot_id": { out: g("boot id") },
     "test -f /var/run/reboot-required": { code: g("reboot") === "yes" ? 0 : 1 },
     "cat /var/run/reboot-required.pkgs": { code: 1 },
-    "apt-config dump": { out: g("apt-config dump") },
-    "systemctl is-enabled unattended-upgrades": { out: g("unattended-upgrades") },
+    "apt-config dump": { out: over.aptConfig ?? g("apt-config dump") },
+    "systemctl is-enabled unattended-upgrades": over.ua ?? { out: g("unattended-upgrades") },
     "test -f /etc/apt/apt.conf.d/20auto-upgrades": { code: 1 },
   };
   // A prefix answer for the commands that carry an argument this test does not fix (the package names in `apt-cache policy`).
@@ -143,6 +143,7 @@ function fakeHost(fixture: string) {
     `const prefixes = ${JSON.stringify(prefixes)};`,
     "const answer = exact[cmd] ?? (prefixes.find((p) => cmd.startsWith(p[0])) ?? [])[1];",
     "if (!answer) process.exit(127);",
+    "if (answer.err) process.stderr.write(answer.err);",
     "if (answer.code !== undefined) process.exit(answer.code);",
     'const text = answer.out.endsWith(String.fromCharCode(10)) ? answer.out : answer.out + String.fromCharCode(10);',
     "process.stdout.write(text);",
@@ -196,6 +197,24 @@ test("checking an unsupported host records it as unsupported and never runs an a
   assert.match(out.checked[0].detail, /only Ubuntu LTS and Debian stable/);
   assert.equal(status.get("vm-one")!.state, "unsupported");
   assert.equal(status.get("vm-one")!.pending, null);
+});
+
+test("an absent unattended-upgrades unit reads as off, and a failed probe as unknown, never as on", async () => {
+  const read = async (over: { ua: { out?: string; code?: number; err?: string }; aptConfig: string }) => {
+    const { root, transport } = fakeHost("ubuntu-lts", over);
+    const status = new StatusStore(join(root, "data"));
+    const tools = configTools({ machines: () => JSON.stringify([{ name: "vm-one", address: "vm-one", user: "user", key: "vm-one-key" }]), status, transport, keys: () => ({ "vm-one-key": { private_key: KEY } }) as Keys, log: () => undefined });
+    const r = (await createMcp("server-manager", tools)({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "server_manager_check", arguments: { name: "vm-one" } } } as never, owner as never)) as any;
+    return JSON.parse(r.result.content[0].text).checked[0];
+  };
+  // Neither the APT key nor the unit: systemctl exits non-zero with empty stdout and a not-found diagnostic. That is off.
+  const absent = await read({ aptConfig: "", ua: { out: "", code: 1, err: "Failed to get unit file state for unattended-upgrades.service: No such file or directory" } });
+  assert.equal(absent.state, "ok");
+  assert.equal(absent.unattended_upgrades, false, "an absent unit is not an enabled skip");
+  // A probe that failed for another reason has no answer: null, not a false claim that the host patches itself.
+  const unknown = await read({ aptConfig: "", ua: { out: "", code: 1, err: "Failed to connect to bus: No medium found" } });
+  assert.equal(unknown.state, "ok");
+  assert.equal(unknown.unattended_upgrades, null);
 });
 
 test("a machine whose key is missing is recorded as failed, not crashed on, and an unknown name says so", async () => {

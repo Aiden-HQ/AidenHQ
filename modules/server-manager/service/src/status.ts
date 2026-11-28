@@ -4,7 +4,7 @@
 //
 // The read half also lives here: the fixed argument lists this module runs on a host to answer §5's four questions, and the pure
 // function that turns one read pass into a row. Every command is a constant of this file; nothing a caller sends becomes argv.
-import { classify, detect, parseAptConfig, parseHolds, parseOsRelease, parsePolicy, parseSimulatedUpgrade, readoutFrom, unattendedUpgradesOn, type Readout } from "./apt.ts";
+import { classify, detect, parseAptConfig, parseHolds, parseOsRelease, parsePolicy, parseSimulatedUpgrade, readoutFrom, unattendedUpgrades, type Readout } from "./apt.ts";
 import type { Machine } from "./config.ts";
 import type { StatusRow } from "./status-store.ts";
 import { TIMEOUTS, type Connection } from "./ssh.ts";
@@ -92,11 +92,12 @@ export async function readHost(c: Connection, pin?: { fingerprint: string; first
     const reboot = await c.probe(["test", "-f", "/var/run/reboot-required"]);
     const rebootPkgs = await c.probe(["cat", "/var/run/reboot-required.pkgs"]);
     // The effective setting decides, not the unit's state: `apt-config dump` shows what APT will do after every drop-in and
-    // override. `systemctl is-enabled` is only the fallback when the key is absent, and it answers "enabled" with exit 0,
-    // "disabled"/"masked" with a non-zero code: both are answers.
+    // override. `systemctl is-enabled` is only the fallback when the key is absent, and its exit status is read with its words:
+    // enabled is exit 0, disabled/masked/not-found are non-zero answers, and an absent unit (empty stdout plus a "not found"
+    // diagnostic) is off. A probe that failed for another reason stays unknown, never a false "on".
     const aptConfig = await c.exec([...READ.aptConfig], TIMEOUTS.read);
     const ua = await c.probe(["systemctl", "is-enabled", "unattended-upgrades"]);
-    const uaOn = unattendedUpgradesOn(parseAptConfig(aptConfig.stdout), ua.stdout);
+    const uaState = unattendedUpgrades(parseAptConfig(aptConfig.stdout), ua);
     const securityStatus = await c.probe([...READ.securityStatus]);
     const disk = { root_free_gb: parseDf(dfRoot.stdout).root_free_gb, boot_free_gb: parseDf(dfBoot.stdout).boot_free_gb };
     const r = readoutFromChecked({
@@ -110,7 +111,7 @@ export async function readHost(c: Connection, pin?: { fingerprint: string; first
       bootId,
       rebootRequired: reboot.code === 0,
       rebootPkgs: rebootPkgs.code === 0 ? rebootPkgs.stdout : "",
-      unattendedUpgrades: uaOn,
+      unattendedUpgrades: uaState === "unknown" ? null : uaState === "on",
       securityStatus: securityStatus.code === 0 ? securityStatus.stdout : undefined,
     });
     // §4: every run reports the fingerprint it used, so a pin that is not the one the owner expected is visible in the report.
@@ -124,7 +125,7 @@ export async function readHost(c: Connection, pin?: { fingerprint: string; first
 /** The adapter's readout from the raw text of a read pass (the same inputs the fixtures record). */
 function readoutFromChecked(i: {
   os: string; policy: string; simulated: string; holds: string; units: string; freeRootGb: number | null; freeBootGb: number | null;
-  bootId: string; rebootRequired: boolean; rebootPkgs: string; unattendedUpgrades: boolean; securityStatus?: string;
+  bootId: string; rebootRequired: boolean; rebootPkgs: string; unattendedUpgrades: boolean | null; securityStatus?: string;
 }): Checked {
   const r = readoutFrom({
     os: parseOsRelease(i.os),
