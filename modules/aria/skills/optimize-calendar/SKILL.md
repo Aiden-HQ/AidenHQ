@@ -1,7 +1,7 @@
 ---
 name: optimize-calendar
 description: "The nightly tidy-up of the owner's next working days: move a meeting the owner organises to a better window or to close a gap, as the owner's own prompt says. Use only in the run of the routine 'Aria nightly calendar tidy-up', which exists only while the owner has resumed it."
-tools: [ google_workspace.calendar_list_events, google_workspace.calendar_get_event, google_workspace.calendar_update_event, aria.aria_config ]
+tools: [ google_workspace.calendar_list_events, google_workspace.calendar_get_event, google_workspace.calendar_update_event, google_workspace.calendar_find_times, aria.aria_config ]
 ---
 
 # The nightly tidy-up

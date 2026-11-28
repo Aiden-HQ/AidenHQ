@@ -1,7 +1,7 @@
 ---
 name: scheduling
 description: "How to arrange the owner's meetings: find a free time with calendar_find_times (never by hand), book first instead of offering a menu, handle the other person's replies in a summoned conversation, follow up, and treat important people, the team and strangers by the owner's words. Use before any booking, move, cancel or invite answer, and when the owner asks Aria to set up their hours."
-tools: [ google_workspace.calendar_list_events, google_workspace.calendar_search_events, google_workspace.calendar_get_event, aria.aria_config, aria.aria_suggest, chat_lane.wake_at ]
+tools: [ google_workspace.calendar_list_events, google_workspace.calendar_search_events, google_workspace.calendar_get_event, google_workspace.calendar_find_times, google_workspace.calendar_free_busy, google_workspace.calendar_check_times, aria.aria_config, aria.aria_suggest, chat_lane.wake_at ]
 ---
 
 # Scheduling
@@ -24,26 +24,28 @@ Code does the date math, the model does the judgement: use the tool that gives t
   `stretch` or `any`: `any` for an urgent "even outside my hours"), `movable_event_ids` (meetings you may move to make room),
   `weeks` for a recurring meeting, `days`, and `preferred` ranges. Each slot says, per person, `{ status, tier }`, and
   `optional_free` for the optional ones. Take the top slot unless the ask points elsewhere.
-- **`calendar_free_busy`: the raw material, for unusual asks you plan yourself.** It returns each person's busy time, hours,
+- **`calendar_free_busy`: the raw material, for unusual asks you plan yourself.** It takes `people` and a window (`people_local` is `attendees_local` by another name) and returns each person's busy time, hours,
   zone and working location. Use it for rotating inconvenience across zones, back-to-back interview loops, "when Marc is in
   the office", or a quorum ("7 of 10 is enough"). You compose the slot; the tool does not.
 - **`calendar_check_times`: verification. It MUST be called before booking a slot that did not come from `calendar_find_times`.**
-  A composed slot is only a candidate until it has passed.
+  It takes `candidates` ([{ start, end }]), `people` and `people_local`, and says for each the owner's conflicting events and each
+  person's status and tier. A composed slot is only a candidate until it has passed.
 - `calendar_create_event` and `calendar_update_event` take attendees as `{ email, optional: true }` for the optional ones.
 
 ## Finding a time
 
 - **Free times come from `calendar_find_times`, never from your own reading of the calendar.** Pass it the duration, the window
-  (from now, or from the earliest the ask allows), the attendees' emails, the owner's `aria_working_hours` and `stretch_hours`
-  (`aria_stretch_hours`) and their time zone. It returns ranked slots with their offsets. Use its times exactly as returned.
+  (from now, or from the earliest the ask allows), the people (`required`, and `optional` for the nice-to-haves), the owner's
+  `aria_working_hours` as `working_hours` (per weekday, a list of [start, end] pairs, `[]` for a day off), `stretch_hours`
+  (`aria_stretch_hours`) and `timezone` (the owner's zone from `aria_config`). It returns ranked slots with their offsets. Use its times exactly as returned.
 - **Length:** 30 minutes unless the ask or the owner's preferences say otherwise (a longer first call, a quick check-in).
 - **No limits unless asked.** Pass a buffer, a minimum notice, a cap per day or call windows (`preferred` ranges) only when the
   owner's words or preferences ask for one ("never back to back", "mornings for external calls").
 - **Hours and zones.** Google does not share anyone's working hours. Your own are `aria_working_hours`; others' are what you
   know, else fixed defaults. Before calling `calendar_find_times` with attendees, build `attendees_local`, `{ email: { timezone?,
   hours? } }`: the IANA zone from their Slack profile `tz` (`slack_read_user_profile`, when Slack is connected) or from what
-  your memory knows about them, and their hours when you know them. Pass `default_hours: "09:00-18:00"` and
-  `default_stretch: "06:00-22:00"`, and `stretch_hours` from `aria_stretch_hours`. The tool ranks slots with
+  your memory knows about them, and their hours when you know them. Pass `default_hours: ["09:00", "18:00"]` and
+  `default_stretch: ["06:00", "22:00"]`, and `stretch_hours` from `aria_stretch_hours`. The tool ranks slots with
   everyone in core hours first, then the fewest people in their stretch window, then the fewest outside. It never offers a time
   outside your own working hours plus your stretch, and never excludes anyone else for their hours. A zone you cannot find is
   left out, never guessed, and never holds the booking up.
@@ -51,8 +53,8 @@ Code does the date math, the model does the judgement: use the tool that gives t
   `memory_note`, one line about that person.
 - Book the top slot. If it falls in someone's stretch window, the confirmation may say so politely ("early for you, I know;
   happy to move it"). Show each person the time in their own zone.
-- Colleagues' free/busy is visible once Google is connected with the free/busy scope. If the answer says
-  `attendee_freebusy: "not_granted"`, tell the owner once at most, in one line, that colleagues' calendars are not visible yet (the free/busy permission is missing), then carry on.
+- Colleagues' free/busy is visible once Google is connected with the free/busy scope. If the answer's
+  `attendee_freebusy` or a person's freebusy state is `not_granted`, tell the owner once at most, in one line, that colleagues' calendars are not visible yet (the free/busy permission is missing), then carry on.
 - `window_start` and `window_end` carry an explicit UTC offset (`2026-12-01T09:00:00+01:00`) and span at most 62 days; the tool
   throws otherwise. `attendee_freebusy` is `used` when there are no attendees.
 - Never do date arithmetic in your head or in text ("next Thursday plus two"). Work out dates with the tool's timestamps, or
