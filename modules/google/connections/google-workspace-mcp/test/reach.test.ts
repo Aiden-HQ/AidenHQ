@@ -129,6 +129,7 @@ describe("agent address details", () => {
     await t.poller.scan();
     expect(t.events[0]).toMatchObject({ from_owner: true, text: "Please confirm noon.", data: { subject: "Re: cc Aria about lunch" } });
     expect(mailboxesIn('"old@example.com" <new@example.com>, Pat (pat2@x.com) <pat@x.com>, bare@x.com')).toEqual(["new@example.com", "pat@x.com", "bare@x.com"]);
+    expect(mailboxesIn('"Dana \\"DJ\\" Smith \\"Jr." <dana@example.com>, lee@example.com')).toEqual(["dana@example.com", "lee@example.com"]);
   });
 });
 

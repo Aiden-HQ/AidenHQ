@@ -94,10 +94,15 @@ export class Identities {
   }
   /** The first account (the primary first) that may send as `address`. */
   async owner(accounts: string[], address: string): Promise<{ account: string; name?: string } | undefined> {
+    let failed: unknown;
     for (const account of accounts) {
-      const c = await this.check(account, address).catch(() => ({ ok: false as const }));
-      if (c.ok) return { account, ...("name" in c && c.name ? { name: c.name } : {}) };
+      try {
+        const c = await this.check(account, address);
+        if (c.ok) return { account, ...(c.name ? { name: c.name } : {}) };
+      } catch (err) { failed ??= err; }
     }
+    // A lookup that failed proves nothing about who owns the address: it fails, it is never "nobody".
+    if (failed) throw failed;
     return undefined;
   }
 }
@@ -183,7 +188,10 @@ export function parseEntry(entry: string): { account: string; address: string } 
 export function mailboxesIn(h: string | undefined): string[] {
   const parts: string[] = [];
   let cur = "", quoted = false, depth = 0;
-  for (const ch of h ?? "") {
+  const text = h ?? "";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (ch === "\\" && (quoted || depth) && i + 1 < text.length) { cur += ch + text[++i]!; continue; } // a quoted pair
     if (ch === '"') quoted = !quoted;
     else if (!quoted && ch === "(") depth++;
     else if (!quoted && ch === ")" && depth) depth--;
@@ -291,8 +299,8 @@ export class Poller {
     const start = Math.max(cursor, now - MAX_LOOKBACK_MS);
     // The whole window (Gmail lists newest first; a partial list would let the cursor pass mail never listed): past the cap, nothing is done.
     const listed = await ws.gmailIds(`${agentQuery([a.address])} after:${Math.floor(start / 1000) - OVERLAP_S}`, LIST_MAX, LIST_MAX / 500, 500);
-    if (listed.length >= LIST_MAX) { this.o.log.warn({ address: a.address }, "too much mail to this agent address to list in one go; skipped until the window shrinks"); return; }
-    const ids = listed.reverse();
+    if (!listed.complete) { this.o.log.warn({ address: a.address }, "too much mail to this agent address to list in one go; skipped until the window shrinks"); return; }
+    const ids = listed.ids.reverse();
     let done = 0;
     for (const id of ids) {
       const key = eventId(own.account, id, a.address);

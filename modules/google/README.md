@@ -47,7 +47,9 @@ An address that lands in your Gmail and that you can send as can be an agent's o
   send-as check (a verified "Send mail as" entry, or a plus-address of your own). The kernel's `prepare` call freezes
   the anchor message, the account, the address and the exact recipients before review, and `reply` sends only that.
 - **One consumer.** Mail to an agent's address is the poller's: `gmail_inbox_new` leaves it out (`dropped`
-  `agent-address`), so Intake never triages it.
+  `agent-address`), so Intake never triages it. An address belongs to the first connected account (the primary first)
+  that can send as it; while none can (its "Send mail as" entry is unverified, or Gmail's answer is unavailable), its mail
+  stays in the feed, and a failed lookup fails that account's feed call instead.
 - **Provenance.** Every agent send, `gmail_send` included, is recorded durably and stamped with an `X-AidenHQ-Token`
   header. An unclear failure is reconciled against the account's sent mail before any retry, and a stamped message that
   comes back through the poller is dropped, so an agent's own send is never read as your words.

@@ -492,7 +492,7 @@ export class Workspace {
     // query, so the feed never shows it whichever scan comes first.
     // An address nobody is assigned to (its send-as not verified, another mailbox's) leaves its mail here.
     const claimed = new Set<string>();
-    const mine = await this.agentAddresses().catch(() => []);
+    const mine = await this.agentAddresses(); // a failed lookup fails the account's call (it keeps its cursor): never read as "no address is assigned"
     if (mine.length) {
       let next: string | undefined;
       do {
@@ -695,17 +695,17 @@ export class Workspace {
 
   // -------------------------------------------------------------- Agent addresses (reach.ts)
 
-  /** Message ids matching a Gmail query, newest first, at most `max` over up to `pages` pages. */
-  async gmailIds(q: string, max = 500, pages = 5, pageSize = 100): Promise<string[]> {
+  /** Message ids matching a Gmail query, newest first, at most `max` over up to `pages` pages; `complete` only when Gmail said there was no more. */
+  async gmailIds(q: string, max = 500, pages = 5, pageSize = 100): Promise<{ ids: string[]; complete: boolean }> {
     const ids: string[] = [];
     let pageToken: string | undefined;
     for (let i = 0; i < pages && ids.length < max; i++) {
       const page = await this.g.get<{ messages?: { id: string }[]; nextPageToken?: string }>(`${GMAIL}/messages`, { q, maxResults: Math.min(pageSize, max - ids.length), pageToken });
       ids.push(...(page.messages ?? []).map((m) => m.id));
       pageToken = page.nextPageToken;
-      if (!pageToken) break;
+      if (!pageToken) return { ids, complete: true };
     }
-    return ids;
+    return { ids, complete: false };
   }
 
   /** One message, headers and body (`full`), or just headers (`metadata`); undefined when it is gone. */
@@ -733,13 +733,13 @@ export class Workspace {
 
   /** The agent sends of this mailbox since `sinceMs` carrying `token` (an ambiguous send is reconciled against this before a retry). */
   async findSent(token: string, sinceMs: number): Promise<{ message_id: string; thread_id: string } | undefined> {
-    const ids = await this.gmailIds(`in:sent after:${Math.max(0, Math.floor(sinceMs / 1000) - 5)}`, FIND_MAX, FIND_MAX / 100);
+    const { ids, complete } = await this.gmailIds(`in:sent after:${Math.max(0, Math.floor(sinceMs / 1000) - 5)}`, FIND_MAX, FIND_MAX / 100);
     for (const id of ids) {
       const m = await this.gmailMessage(id, "metadata");
       if (m && header(m, SEND_HEADER) === token) return { message_id: m.id, thread_id: m.threadId };
     }
     // A window too full to read whole proves nothing: the send stays pending and this fails, rather than sending twice.
-    if (ids.length >= FIND_MAX) throw new Error("too much sent mail since the unsure send to check it; look in Sent and retry");
+    if (!complete) throw new Error("too much sent mail since the unsure send to check it; look in Sent and retry");
     return undefined;
   }
 
