@@ -1,21 +1,20 @@
 import { explainGoogle } from "./google-errors.js";
 
 /**
- * The scopes requested at consent time: calendar events and Gmail read and write (each write a reviewed tool), Drive read.
- * `gmail.modify` covers reading, drafts, sending and labels. src/auth.ts keeps a copy (a test checks they match).
+ * The scopes requested at consent time: calendar events and Gmail read and write (each write a reviewed tool), Drive read, and
+ * calendar free/busy (calendar_find_times reads colleagues' availability; Workspace shows it by default). `gmail.modify`
+ * covers reading, drafts, sending and labels. src/auth.ts keeps a copy (a test checks they match). An account signed in before
+ * free/busy was asked for keeps working: find_times answers `attendee_freebusy: "not_granted"` and the board asks for one
+ * reconnect (MultiWorkspace.authStatus `missing`).
  */
 export const SCOPES = [
   "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/drive.readonly",
   "https://www.googleapis.com/auth/gmail.modify",
+  "https://www.googleapis.com/auth/calendar.events.freebusy",
 ];
-/**
- * Asked for at consent, never required: the owner may untick it. It lets calendar_find_times read other people's free/busy,
- * so an account signed in without it keeps working (no reconnect); find_times answers `attendee_freebusy: "not_granted"`.
- */
-export const FREEBUSY_SCOPE = "https://www.googleapis.com/auth/calendar.events.freebusy";
-/** SCOPES plus the optional one: what the sign-in asks for. */
-export const REQUEST_SCOPES = [...SCOPES, FREEBUSY_SCOPE];
+/** Its short name (what the stored scope list is matched on). */
+export const FREEBUSY = "calendar.events.freebusy";
 /** The scope each write needs, by its short name (the needs_owner `scope`). */
 export const WRITE_SCOPE = { calendar: "calendar.events", gmail: "gmail.modify" } as const;
 

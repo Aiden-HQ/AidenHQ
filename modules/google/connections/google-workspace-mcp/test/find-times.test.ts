@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
 import { MultiWorkspace } from "../src/accounts.js";
 import { findTimes, type FindTimesArgs } from "../src/find-times.js";
-import { FREEBUSY_SCOPE, SCOPES } from "../src/google.js";
+import { SCOPES } from "../src/google.js";
+
+// An account signed in before free/busy was asked for.
+const OLD_SCOPES = SCOPES.filter((x) => !x.includes("freebusy"));
 import { EventChanged, EventConflict, eventIdFor, type GEvent } from "../src/workspace.js";
 
 const week = (w: [string, string][]) => ({ mon: w, tue: w, wed: w, thu: w, fri: w, sat: w, sun: w });
@@ -48,6 +51,37 @@ describe("findTimes", () => {
       meeting("Hotel Aria", "2026-12-02T09:00:00+04:00", "2026-12-02T17:00:00+04:00", { eventType: "fromGmail" }),
     ];
     expect(findTimes(base(), events, [], NOW)[0]!.start).toContain("T09:00");
+  });
+
+  it("with no buffer, notice or daily cap given there are none", () => {
+    const { buffer_min: _b, min_notice_hours: _n, ...bare } = base();
+    const events = [meeting("a", "2026-12-02T10:00:00+04:00", "2026-12-02T11:00:00+04:00"), meeting("b", "2026-12-02T11:00:00+04:00", "2026-12-02T12:00:00+04:00")];
+    // Back-to-back with a meeting, right now-ish: nothing is padded, nothing is too soon, a third meeting is allowed.
+    const slots = findTimes(bare as FindTimesArgs, events, [], Date.parse("2026-12-02T05:00:00Z"));
+    expect(slots).toEqual(findTimes({ ...bare, buffer_min: 0, min_notice_hours: 0, max_per_day: 99 } as FindTimesArgs, events, [], Date.parse("2026-12-02T05:00:00Z")));
+    expect(slots.some((x) => hm(x.start) === "12:00")).toBe(true);
+    expect(slots.some((x) => hm(x.start) === "09:30")).toBe(true);
+  });
+
+  it("ranks slots inside every known attendee zone's hours first, never excluding the rest", () => {
+    // New York is 9 hours behind Dubai in December: 09:00-18:00 there is 18:00-03:00 Dubai.
+    const wide = base({ working_hours: week([["09:00", "21:00"]]), attendee_timezones: { "dana@example.com": "America/New_York" } });
+    const slots = findTimes(wide, [], [], NOW);
+    expect(hm(slots[0]!.start)).toBe("18:00");
+    expect(slots.some((x) => hm(x.start) === "09:00")).toBe(true);
+    const inHours = (iso: string) => hm(iso) >= "18:00";
+    const flags = slots.map((x) => inHours(x.start));
+    expect(flags).toEqual([...flags].sort((a, b) => Number(b) - Number(a)));
+    // Two zones: only slots inside both rank first (Dubai and New York share no common 9-18 hours, so none is).
+    const both = findTimes(base({ working_hours: week([["09:00", "21:00"]]), attendee_timezones: { a: "America/New_York", b: "Asia/Dubai" }, attendee_hours: ["09:00", "18:00"] }), [], [], NOW);
+    expect(hm(both[0]!.start)).toBe("09:00");
+  });
+
+  it("a missing or invalid attendee zone changes nothing: the ranking is the owner's alone", () => {
+    const calls = { best: [["14:00", "16:00"]] } as FindTimesArgs["call_windows"];
+    const plain = findTimes(base({ call_windows: calls }), [], [], NOW);
+    expect(findTimes(base({ call_windows: calls, attendee_timezones: {} }), [], [], NOW)).toEqual(plain);
+    expect(findTimes(base({ call_windows: calls, attendee_timezones: { "x@example.com": "Not/AZone", "y@example.com": "" } }), [], [], NOW)).toEqual(plain);
   });
 
   it("needs a window with explicit offsets, not longer than 62 days", () => {
@@ -128,20 +162,44 @@ const args = (over: Partial<FindTimesArgs> = {}) => base({ window_start: "2026-1
 describe("calendar_find_times attendees", () => {
   it("without the free/busy scope it answers from the owner's calendar and says not_granted", async () => {
     const g = google({ [`GET ${EV}`]: { items: [] } });
-    const r = await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(args({ attendees: ["dana@example.com"] }), NOW);
+    const r = await new MultiWorkspace(creds(OLD_SCOPES), "primary", g.impl).findTimes(args({ attendees: ["dana@example.com"] }), NOW);
     expect(r.attendee_freebusy).toBe("not_granted");
+    expect(r.attendees).toEqual([{ email: "dana@example.com", freebusy: "not_granted", timezone_known: false }]);
     expect(r.slots.length).toBeGreaterThan(0);
     expect(g.calls.some((c) => c.url.pathname.endsWith("/freeBusy"))).toBe(false);
   });
 
   it("with it, their busy time shapes the slots; a calendar Google hides is not_visible", async () => {
     const free = google({ [`GET ${EV}`]: { items: [] }, "POST /calendar/v3/freeBusy": { calendars: { "dana@example.com": { busy: [{ start: "2026-12-09T05:00:00Z", end: "2026-12-09T05:30:00Z" }] } } } });
-    const ws = new MultiWorkspace(creds([...SCOPES, FREEBUSY_SCOPE]), "primary", free.impl);
+    const ws = new MultiWorkspace(creds(SCOPES), "primary", free.impl);
     const used = await ws.findTimes(args({ attendees: ["dana@example.com"], duration_min: 30 }), NOW);
     expect(used.attendee_freebusy).toBe("used");
     expect(used.slots.map((s) => hm(s.start))).toEqual(["09:30"]);
     const hidden = google({ [`GET ${EV}`]: { items: [] }, "POST /calendar/v3/freeBusy": { calendars: { "eve@example.com": { errors: [{ reason: "notFound" }] } } } });
-    expect((await new MultiWorkspace(creds([...SCOPES, FREEBUSY_SCOPE]), "primary", hidden.impl).findTimes(args({ attendees: ["eve@example.com"] }), NOW)).attendee_freebusy).toBe("not_visible");
+    expect((await new MultiWorkspace(creds(SCOPES), "primary", hidden.impl).findTimes(args({ attendees: ["eve@example.com"] }), NOW)).attendee_freebusy).toBe("not_visible");
+  });
+});
+
+describe("people we cannot see never block the answer", () => {
+  const FB = "POST /calendar/v3/freeBusy";
+  const at = (over = {}) => args({ duration_min: 30, working_hours: week([["09:00", "10:00"]]), ...over });
+
+  it("a colleague's busy time counts and an external calendar (notFound) is skipped", async () => {
+    const g = google({ [`GET ${EV}`]: { items: [] }, [FB]: { calendars: { "col@work.com": { busy: [{ start: "2026-12-09T05:00:00Z", end: "2026-12-09T05:30:00Z" }] }, "ext@other.org": { errors: [{ domain: "global", reason: "notFound" }] } } } });
+    const r = await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(at({ attendees: ["col@work.com", "ext@other.org"], attendee_timezones: { "col@work.com": "Asia/Dubai" } }), NOW);
+    expect(r.slots.map((x) => hm(x.start))).toEqual(["09:30"]);
+    expect(r.attendees).toEqual([{ email: "col@work.com", freebusy: "used", timezone_known: true }, { email: "ext@other.org", freebusy: "not_visible", timezone_known: false }]);
+    expect(r.attendee_freebusy).toBe("not_visible");
+  });
+
+  it("a free/busy request that fails outright still returns slots, every attendee not_visible", async () => {
+    const g = google({ [`GET ${EV}`]: { items: [] }, [FB]: new Response("boom", { status: 500 }) });
+    const r = await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(at({ attendees: ["a@x.org", "b@y.org"] }), NOW);
+    expect(r.slots.length).toBeGreaterThan(0);
+    expect(r.attendees.map((x) => x.freebusy)).toEqual(["not_visible", "not_visible"]);
+    // A 403 on the call is the same: skipped, not the owner's sign-in failing.
+    const g2 = google({ [`GET ${EV}`]: { items: [] }, [FB]: new Response("forbidden", { status: 403 }) });
+    expect((await new MultiWorkspace(creds(SCOPES), "primary", g2.impl).findTimes(at({ attendees: ["a@x.org"] }), NOW)).attendee_freebusy).toBe("not_visible");
   });
 });
 

@@ -27,8 +27,10 @@ AI reviewer decides first; and `gmail_label` (your own existing labels only, nev
 you are in each day (flights, stays and working locations you organised or accepted move it, when they carry their own time zone). Creates refuse a time another
 event holds and make one event per `request_key` on a retry; moves are refused when the event changed since it was read.
 Agents that hold them list the skills `google.calendar-changes` and `google.gmail-writes`. Scopes: `calendar.events`,
-`drive.readonly`, `gmail.modify`, and the optional `calendar.events.freebusy`, which lets `calendar_find_times` read other
-people's free/busy (without it the tool answers from your own calendar and says `not_granted`). An account connected before the optional scope keeps working and is never asked to reconnect for it. An account connected before writes existed keeps reading; Settings, Connections asks you
+`drive.readonly`, `gmail.modify`, and `calendar.events.freebusy`, which lets `calendar_find_times` read colleagues'
+free/busy (Workspace shows it by default). An account connected before it keeps working: the tool answers from your own
+calendar (`not_granted`) and Settings, Connections offers "Reconnect to see colleagues' calendars". Anyone whose calendar
+the tool cannot see (an external person) is skipped, never an error; `attendee_timezones` ranks slots into their local hours. An account connected before writes existed keeps reading; Settings, Connections asks you
 to reconnect it once, and a write on it asks for that reconnect too.
 
 ## New installs

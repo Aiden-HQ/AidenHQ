@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { needsOwner } from "./aidenhq-sdk/needs.js";
-import { type AuthStatus, GoogleAuthError, GoogleClient, type StoredCredentials, WRITE_SCOPE } from "./google.js";
-import { type AttendeeFreebusy, findTimes, type FindTimesArgs, type FoundTimes, LOOKBACK_MS, windowOf } from "./find-times.js";
+import { type AuthStatus, FREEBUSY, GoogleAuthError, GoogleClient, type StoredCredentials, WRITE_SCOPE } from "./google.js";
+import { type AttendeeFreebusy, type AttendeeStatus, findTimes, type FindTimesArgs, type FoundTimes, LOOKBACK_MS, windowOf } from "./find-times.js";
 import { type DriveFile, type EventInput, type MailInput, type NormalizedEvent, type SendUpdates, Workspace } from "./workspace.js";
+import { validZone } from "./zones.js";
 import { type Cursor, INBOX_BUDGET_MS, startOf } from "./inbox.js";
 
 /**
@@ -168,12 +169,12 @@ export class MultiWorkspace {
   }
 
   /**
-   * Each account's sign-in, as of its last token refresh. `missing`: the write scopes its sign-in lacks (connected before Google
-   * writes): reads work, and the board asks for one reconnect.
+   * Each account's sign-in, as of its last token refresh. `missing`: the scopes its sign-in lacks (connected before Google writes or
+   * free/busy): reads work, and the board asks for one reconnect.
    */
   authStatus(): (AuthStatus & { email: string; primary: boolean; missing?: string[] })[] {
     return [...this.clients].map(([email, c]) => {
-      const missing = Object.values(WRITE_SCOPE).filter((s) => !this.granted(email, s));
+      const missing = [...Object.values(WRITE_SCOPE), FREEBUSY].filter((s) => !this.granted(email, s) && !(s === FREEBUSY && this.granted(email, "calendar.freebusy")));
       return { email, primary: email === this.primary, ...c.authStatus(), ...(missing.length ? { missing } : {}) };
     });
   }
@@ -240,16 +241,26 @@ export class MultiWorkspace {
     const [name] = this.one(args.account);
     const [from, to] = windowOf(args);
     const { events, timeZone } = (await this.in(name, (w) => w.rawEvents(new Date(from - LOOKBACK_MS).toISOString(), new Date(to + 86_400_000).toISOString()))) as Awaited<ReturnType<Workspace["rawEvents"]>>;
-    const others = (args.attendees ?? []).filter((a) => a.toLowerCase() !== name.toLowerCase());
-    let used: AttendeeFreebusy = "used";
+    // An attendee whose busy time we can't get is skipped, never an error: external people are the common case.
+    const listed = args.attendees ?? [];
+    const others = listed.filter((a) => a.toLowerCase() !== name.toLowerCase());
+    const state = new Map<string, AttendeeFreebusy>(listed.map((a) => [a, "used"]));
     let busy: { start: string; end: string }[] = [];
-    if (others.length && !this.granted(name, "calendar.events.freebusy") && !this.granted(name, "calendar.freebusy")) used = "not_granted";
+    if (others.length && !this.granted(name, FREEBUSY) && !this.granted(name, "calendar.freebusy")) for (const a of others) state.set(a, "not_granted");
     else if (others.length) {
-      const r = (await this.in(name, (w) => w.freeBusy(others, args.window_start, args.window_end))) as Awaited<ReturnType<Workspace["freeBusy"]>>;
-      busy = r.busy;
-      if (r.hidden.length) used = "not_visible";
+      try {
+        const r = (await this.in(name, (w) => w.freeBusy(others, args.window_start, args.window_end))) as Awaited<ReturnType<Workspace["freeBusy"]>>;
+        busy = r.busy;
+        for (const a of r.hidden) state.set(a, "not_visible");
+      } catch {
+        for (const a of others) state.set(a, "not_visible");
+      }
     }
-    return { slots: findTimes(args, events, busy, now, timeZone), attendee_freebusy: used };
+    const zones = new Map(Object.entries(args.attendee_timezones ?? {}).map(([e, z]) => [e.toLowerCase(), z]));
+    const attendees: AttendeeStatus[] = listed.map((email) => ({ email, freebusy: state.get(email)!, timezone_known: validZone(zones.get(email.toLowerCase())) }));
+    const all = attendees.map((x) => x.freebusy);
+    const summary: AttendeeFreebusy = all.every((x) => x === "used") ? "used" : all.includes("not_granted") ? "not_granted" : "not_visible";
+    return { slots: findTimes(args, events, busy, now, timeZone), attendee_freebusy: summary, attendees };
   }
 
   async meetingDocuments(since: string, hints: string[], max = 50, account?: string) {

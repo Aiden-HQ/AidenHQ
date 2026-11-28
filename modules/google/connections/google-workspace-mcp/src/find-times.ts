@@ -14,9 +14,14 @@ export interface FindTimesArgs {
   attendees?: string[];
   working_hours: Record<Day, Windows>;
   call_windows?: { best?: Windows; ok?: Windows };
-  buffer_min: number;
-  min_notice_hours: number;
+  /** Each omitted constraint is none: no buffer, no notice, no daily cap. */
+  buffer_min?: number;
+  min_notice_hours?: number;
   max_per_day?: number;
+  /** Attendees' IANA zones, resolved by the caller. One missing or invalid is ignored, never guessed. */
+  attendee_timezones?: Record<string, string>;
+  /** The attendees' local hours slots are ranked into first; default 09:00-18:00. Never excludes a slot. */
+  attendee_hours?: [string, string];
   timezone: string;
   account?: string;
 }
@@ -24,7 +29,9 @@ export interface FindTimesArgs {
 export type Tier = "best" | "ok" | "last_resort";
 export interface FoundSlot { start: string; end: string; tier: Tier; timezone: string }
 export type AttendeeFreebusy = "used" | "not_granted" | "not_visible";
-export interface FoundTimes { slots: FoundSlot[]; attendee_freebusy: AttendeeFreebusy }
+export interface AttendeeStatus { email: string; freebusy: AttendeeFreebusy; timezone_known: boolean }
+export interface FoundTimes { slots: FoundSlot[]; attendee_freebusy: AttendeeFreebusy; attendees: AttendeeStatus[] }
+const DEFAULT_ATTENDEE_HOURS: [string, string] = ["09:00", "18:00"];
 
 /** Candidate starts fall on this many minutes of the local wall clock. */
 const GRANULARITY_MIN = 15;
@@ -120,13 +127,13 @@ const minutes = (hhmm: string) => {
 };
 const weekday = (date: string): Day => DAYS[(new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7]!;
 
-interface Candidate { start: number; end: number; tier: Tier; zone: string; sides: number }
+interface Candidate { start: number; end: number; tier: Tier; zone: string; sides: number; /** Inside every known attendee zone's local hours. */ theirs: boolean }
 const TIER_RANK: Record<Tier, number> = { best: 0, ok: 1, last_resort: 2 };
 
 /**
  * Slots of `duration_min` inside `working_hours` (the owner's wall clock on each day, in the zone the owner is in that day),
  * clear of busy time plus `buffer_min` either side and of the attendees' busy time, at least `min_notice_hours` away, on days
- * with fewer than `max_per_day` meetings. Ranked: tier (inside a best call window, an ok one, else last resort), then
+ * with fewer than `max_per_day` meetings (each constraint optional, none when omitted). Ranked: inside every attendee's local hours (only attendees with a known zone; never excludes a slot), then tier (inside a best call window, an ok one, else last resort), then
  * back-to-back with a meeting of the owner's (both sides before one side), then earliest. Overlapping slots are thinned to the
  * best of each, so the list is distinct choices rather than every quarter-hour of one gap.
  */
@@ -136,14 +143,23 @@ export function findTimes(args: FindTimesArgs, events: GEvent[], attendeeBusy: {
   if (!(args.duration_min > 0)) throw new Error("duration_min must be positive");
   const home = args.timezone;
   const durMs = args.duration_min * 60_000;
-  const buf = args.buffer_min * 60_000;
+  const buf = (args.buffer_min ?? 0) * 60_000;
   const busy = blocksOf(events, calendarZone);
   const theirs = attendeeBusy.map((b) => ({ start: Date.parse(b.start), end: Date.parse(b.end) })).filter((b) => b.end > b.start);
-  const earliest = now + args.min_notice_hours * 3_600_000;
+  const earliest = now + (args.min_notice_hours ?? 0) * 3_600_000;
   const calls = args.call_windows;
   const windowsOf = (w?: Windows) => (w ?? []).map(([a, b]) => [minutes(a), minutes(b)] as const);
   const [best, ok] = [windowsOf(calls?.best), windowsOf(calls?.ok)];
   const tiered = best.length + ok.length > 0;
+
+  // Only attendees with a valid zone count: one without is ignored, and with none the ranking is the owner's alone.
+  const attendeeZones = [...new Set(Object.values(args.attendee_timezones ?? {}).filter(validZone))];
+  const [theirOpen, theirClose] = (args.attendee_hours ?? DEFAULT_ATTENDEE_HOURS).map(minutes) as [number, number];
+  const inTheirHours = (start: number, end: number) =>
+    attendeeZones.every((z) => {
+      const [s, e] = [renderInZone(new Date(start).toISOString(), z), renderInZone(new Date(end).toISOString(), z)];
+      return s.slice(0, 10) === e.slice(0, 10) && minutes(s.slice(11, 16)) >= theirOpen && minutes(e.slice(11, 16)) <= theirClose;
+    });
 
   const found = new Map<number, Candidate>();
   // One day either side: a day's hours in another zone can reach into the window from a neighbouring date.
@@ -165,12 +181,12 @@ export function findTimes(args: FindTimesArgs, events: GEvent[], attendeeBusy: {
         const tier: Tier = !tiered || inside(best) ? "best" : inside(ok) ? "ok" : "last_resort";
         const slack = buf + ADJACENT_SLACK_MS;
         const sides = (busy.some((m) => m.meeting && start >= m.end && start - m.end <= slack) ? 1 : 0) + (busy.some((m) => m.meeting && m.start >= end && m.start - end <= slack) ? 1 : 0);
-        found.set(start, { start, end, tier, zone, sides });
+        found.set(start, { start, end, tier, zone, sides, theirs: inTheirHours(start, end) });
       }
     }
   }
 
-  const ranked = [...found.values()].sort((x, y) => TIER_RANK[x.tier] - TIER_RANK[y.tier] || y.sides - x.sides || x.start - y.start);
+  const ranked = [...found.values()].sort((x, y) => Number(y.theirs) - Number(x.theirs) || TIER_RANK[x.tier] - TIER_RANK[y.tier] || y.sides - x.sides || x.start - y.start);
   const picked: Candidate[] = [];
   for (const c of ranked) {
     if (picked.length >= MAX_SLOTS) break;

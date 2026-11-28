@@ -123,7 +123,7 @@ export function connectionStatus(row: ConnectionRow, canConnect: { signIn: boole
     if (expired.length) return { status: "signed_out", reason: `${expired.map((a) => a.email).join(", ")} stopped working (since ${day(expired[0]!.since)}).`, ...connect("Reconnect", `/google/connect?account=${encodeURIComponent(expired[0]!.email)}`) };
     // Connected before Google writes: reads work; one reconnect grants calendar changes and Gmail drafts, sends and labels.
     const short = g.accounts.filter((a) => a.missing?.length);
-    if (short.length) return { status: "signed_out", reason: `${short.map((a) => a.email).join(", ")} needs new access: reconnect once so agents can change your calendar and send email (each change reviewed first).`, ...connect("Reconnect", `/google/connect?account=${encodeURIComponent(short[0]!.email)}`) };
+    if (short.length) return { status: "signed_out", reason: short.every((a) => a.missing!.every((m) => m === "calendar.events.freebusy")) ? `${short.map((a) => a.email).join(", ")}: reconnect to see colleagues' calendars (scheduling uses their free/busy).` : `${short.map((a) => a.email).join(", ")} needs new access: reconnect once so agents can change your calendar and send email (each change reviewed first).`, ...connect("Reconnect", `/google/connect?account=${encodeURIComponent(short[0]!.email)}`) };
   }
 
   // A sign-in through an MCP proxy (Glean, Jira, Grafana, ClickHouse): its Connect asks for any per-install value first (its

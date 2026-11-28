@@ -88,7 +88,7 @@ describe("calendar writes", () => {
     const err = await ws.createEvent({ title: "x", start: "2026-11-25", end: "2026-11-26", request_key: "k" }, "all", "me@side.io").catch((e) => e);
     expect(readNeed(toolFailure(err))).toMatchObject({ cause: "scope", scope: "calendar.events", account: "me@side.io" });
     expect(g.calls).toEqual([]);
-    expect(ws.authStatus().find((a) => a.email === "me@side.io")!.missing).toEqual(["calendar.events", "gmail.modify"]);
+    expect(ws.authStatus().find((a) => a.email === "me@side.io")!.missing).toEqual(["calendar.events", "gmail.modify", "calendar.events.freebusy"]);
     expect(ws.authStatus().find((a) => a.email === "me@work.com")!.missing).toBeUndefined();
   });
 });
