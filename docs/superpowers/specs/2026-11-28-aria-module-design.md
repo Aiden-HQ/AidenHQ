@@ -1,6 +1,6 @@
 # Aria as an official module
 
-Status: draft for owner approval (2026-11-28). Depends on `2026-11-28-summon-agents-design.md` for talking to other
+Status: approved by the owner (2026-11-28). Depends on `2026-11-28-summon-agents-design.md` for talking to other
 people. Earlier design: instance repo `docs/product-history/docs/superpowers/specs/2026-11-14-aria-in-aidenhq-design.md`.
 
 ## Intent and why

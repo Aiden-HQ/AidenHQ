@@ -1,6 +1,6 @@
 # Summon an agent from your own chats
 
-Status: draft for owner approval (2026-11-28). Companion spec: `2026-11-28-aria-module-design.md`.
+Status: approved by the owner (2026-11-28). Companion spec: `2026-11-28-aria-module-design.md`.
 
 ## Intent and why
 
@@ -195,6 +195,16 @@ Read-only from `kernel.db`. Figures are p50 / p90.
   3. If review time still dominates, review the reply and the calendar write in one record. Builder measures first.
 - Seen in passing: 54% of slack-triage batches are dropped, and some worker jobs hit the 120-minute timeout. Both are
   out of scope here and noted for a separate look.
+
+## Review weight (owner, 2026-11-28, fixed)
+
+- The AI review of `conversation.reply`, and of the calendar writes a summoned task makes, is **very light**.
+  - It blocks only explicit malice, such as an injected exfiltration or abuse.
+  - It fails open, and never blocks for "not clearly authorised" or style.
+- The owner: "I am fine even if something not authorized slips, we trust our agents." A false catch that stalls a
+  booking is worse than a rare slip.
+- The reviewer prompt for these kinds says this. The "pinned original ask" stays as context for the reviewer, not as
+  a reason to block.
 
 ## Slack tiers (owner, 2026-11-28)
 
