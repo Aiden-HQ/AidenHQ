@@ -1,8 +1,13 @@
 // Summoning (the kernel's summon path, POST /summon/context|reply|react with the connection's key): the three calls a source
 // implements so an agent can read the conversation a summons came from, answer in it as the owner, and acknowledge it.
-// Everything is done AS THE OWNER through slack-mcp's relay (the same user token slack_send_message uses; slack-live never holds
+// The owner's own chats (no `entry`) are done AS THE OWNER through slack-mcp's relay (the same user token slack_send_message uses; slack-live never holds
 // it): reads over the relay's GET, the reply and the reaction over its two fixed-shape POSTs. Ids are the event ids slack-live
 // emits (`<channel>:<ts>`, map.ts), so the kernel's echo guard compares like with like; the bare ts is accepted on input too.
+// A conversation that came in through a bot (the agent-reach entries: `slack:bot`, the instance's, or `slack:app:<id>`, an agent's
+// own app) names its `entry`: its context and 👀 are read and made with that bot's token, and its reply (`reply_as: "agent"`) is
+// posted by that bot, under the agent's name for the instance bot (`username`, bot scope chat:write.customize) and as itself for an
+// agent's own app. No signature: the kernel adds one only for a reply as the owner.
+import { BOT_ENTRY } from "./map.js";
 import { escape } from "./mrkdwn.js";
 import type { Api } from "./sources.js";
 import type { Store } from "./store.js";
@@ -11,6 +16,24 @@ export class SummonError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 type Json = Record<string, unknown>;
+/** The agent a reply speaks for (the kernel's `agent`): its key and the name it is known by, and an emoji for its avatar if it has one. */
+type Agent = { key?: string; name?: string; emoji?: string };
+const BOT_HINT = "Add the bot scopes chat:write.customize and users:read to the Slack app (Update your bot app) and reinstall it.";
+const EMOJI = /^:[a-z0-9_+'-]{1,50}:$/;
+/** The bot's reads and writes for one entry (its own token): reads throw Slack's error code, writes answer Slack's JSON as the relay's do. */
+const botCalls = (token: string, fetchFn: typeof fetch) => {
+  const call = async (method: string, body: Json) => {
+    const res = await fetchFn(`https://slack.com/api/${method}`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json; charset=utf-8" }, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) });
+    return (await res.json().catch(() => ({ ok: false, error: `slack ${res.status}` }))) as Json;
+  };
+  const read: Api = async (method, params) => {
+    const r = await call(method, params);
+    if (r.ok !== true) throw new Error(String(r.error ?? `slack ${method}`));
+    return r;
+  };
+  return { read, write: call };
+};
+
 export interface Relay {
   /** A Slack Web API read as the owner (sources.ts slackApi). */
   read: Api;
@@ -30,32 +53,47 @@ export function toSlackLinks(text: string): string {
 
 /** Slack's refusals as the kernel should read them: a missing scope or a gone channel is a failure to report, never a 403
  * (that one means "an excluded conversation": the kernel cancels the summons on it). */
-function slackError(method: string, err: unknown): never {
+function slackError(method: string, err: unknown, hint = "Add the User Token Scopes chat:write and reactions:write to the Slack app and Connect again."): never {
   const e = String((err as Error)?.message ?? err);
-  if (/missing_scope|not_allowed_token_type/.test(e)) throw new SummonError(502, `${method}: ${e}. Add the User Token Scopes chat:write and reactions:write to the Slack app and Connect again.`);
+  if (/missing_scope|not_allowed_token_type/.test(e)) throw new SummonError(502, `${method}: ${e}. ${hint}`);
   throw new SummonError(502, e);
 }
 
-export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv" | "delKv">; owner: () => string | undefined;
+export function summon(o: { relay?: Relay; store: Pick<Store, "getKv" | "setKv" | "delKv">; owner: () => string | undefined;
   /** Whose sign-in the relay holds (slack-mcp); null while Slack isn't connected. */
-  signedIn: () => Promise<string | null> }) {
+  signedIn?: () => Promise<string | null>;
+  /** The bot token an entry's calls use (the instance bot's, or a running agent app's): an entry with none is refused. */
+  bot?: (entry: string) => string | undefined; fetchFn?: typeof fetch }) {
+  const fetchFn = o.fetchFn ?? fetch;
+  /** The reads for a conversation: its entry bot's, or (an owner chat) the owner's own through the relay, after the one-account check. */
+  const readerFor = async (entry: string | undefined): Promise<Api> => {
+    if (entry) return botCalls(botOf(entry), fetchFn).read;
+    await same();
+    return o.relay!.read;
+  };
+  const botOf = (entry: string): string => {
+    const token = o.bot?.(entry);
+    if (!token) throw new SummonError(409, `${entry} isn't connected: its bot token isn't available`);
+    return token;
+  };
   // Attestation is the paired owner's, the calls are made with the sign-in's token: one account, or nothing is done.
   const same = async () => {
+    if (!o.relay || !o.signedIn) throw new SummonError(503, "owner summoning needs the relay key (RELAY_KEY)");
     const me = await o.signedIn().catch(() => null);
     if (!me || !o.owner() || me !== o.owner()) throw new SummonError(409, "the Slack sign-in is not the paired owner's account: Connect Slack as the account that paired the bot");
   };
   const names = new Map<string, string>();
-  const author = async (m: Json): Promise<string> => {
+  const author = async (m: Json, read: Api): Promise<string> => {
     const user = str(m.user);
     if (!user) return str(m.username) ?? str(m.bot_id) ?? "unknown";
     if (!names.has(user)) {
-      const info = await o.relay.read("users.info", { user }).then((r) => r.user as { name?: string; real_name?: string; profile?: { display_name?: string } } | undefined, () => undefined);
+      const info = await read("users.info", { user }).then((r) => r.user as { name?: string; real_name?: string; profile?: { display_name?: string } } | undefined, () => undefined);
       names.set(user, info?.profile?.display_name || info?.real_name || info?.name || user);
     }
     return names.get(user)!;
   };
-  const shape = async (channel: string, ms: Json[]) => Promise.all(ms.map(async (m) => ({
-    id: `${channel}:${String(m.ts)}`, author: await author(m), is_owner: Boolean(o.owner()) && m.user === o.owner(), text: str(m.text) ?? "", ts: String(m.ts),
+  const shape = async (channel: string, ms: Json[], read: Api) => Promise.all(ms.map(async (m) => ({
+    id: `${channel}:${String(m.ts)}`, author: await author(m, read), is_owner: Boolean(o.owner()) && m.user === o.owner(), text: str(m.text) ?? "", ts: String(m.ts),
   })));
 
   /** The last `n` messages of the conversation, oldest first, strictly before `before` when given. A thread reads its replies;
@@ -64,7 +102,7 @@ export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv" |
     const channel = str(b.resource), thread = str(b.thread), before = str(b.before) ? tsOf(str(b.before)!) : undefined;
     const n = Math.min(Math.max(Number(b.n) || 10, 1), 50);
     if (!channel) throw new SummonError(400, "resource is required");
-    await same();
+    const read = await readerFor(str(b.entry));
     if (before && !TS.test(before)) throw new SummonError(400, "before is a message id");
     const upTo: Record<string, string> = before ? { latest: before, inclusive: "false" } : {};
     let found: Json[] = [];
@@ -72,32 +110,43 @@ export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv" |
       if (thread) {
         // Replies come oldest first, a page at a time: read to the cutoff, then keep the last n.
         for (let cursor = "", pages = 0; pages < 10; pages++) {
-          const r = await o.relay.read("conversations.replies", { channel, ts: thread, limit: "200", ...upTo, ...(cursor ? { cursor } : {}) });
+          const r = await read("conversations.replies", { channel, ts: thread, limit: "200", ...upTo, ...(cursor ? { cursor } : {}) });
           // Slack repeats the thread's parent on every page: one message per ts.
           for (const m of (r.messages as Json[] | undefined) ?? []) if ((!before || Number(m.ts) < Number(before)) && !found.some((f) => f.ts === m.ts)) found.push(m);
           cursor = (r.response_metadata as { next_cursor?: string } | undefined)?.next_cursor ?? "";
           if (!cursor) break;
         }
       }
-      if (found.length === 0) found = ((await o.relay.read("conversations.history", { channel, limit: String(n), ...upTo })).messages as Json[] | undefined ?? []).slice().reverse();
+      if (found.length === 0) found = ((await read("conversations.history", { channel, limit: String(n), ...upTo })).messages as Json[] | undefined ?? []).slice().reverse();
     } catch (err) { slackError("context", err); }
-    return { messages: await shape(channel, found.slice(-n)) };
+    return { messages: await shape(channel, found.slice(-n), read) };
   }
 
-  /** Posts as the owner, threaded under the summons' thread in a channel and top-level in a DM. A repeated `key` returns the
+  /** Posts the reply, threaded under the summons' thread in a channel and top-level in a DM. As the owner (an owner chat) it goes
+   * through the relay; as the agent (`reply_as: "agent"`, with the conversation's `entry`) the entry's bot posts it. A repeated `key` returns the
    * first id and posts nothing. `in_reply_to` needs no use: the thread root is the anchor, and a DM has no thread.
    * The attempt is recorded before the post; one whose outcome is unknown (the answer lost, a restart) is reconciled on the
-   * retry by looking for the owner's message with that exact text since the attempt began, and only then posted again. */
+   * retry by looking for the sender's message with that exact text since the attempt began, and only then posted again. */
   const inflight = new Map<string, Promise<{ id: string }>>();
   async function reply(b: Json) {
-    const channel = str(b.resource), thread = str(b.thread), text = str(b.text), key = str(b.key);
+    const channel = str(b.resource), thread = str(b.thread), text = str(b.text), key = str(b.key), entry = str(b.entry);
+    const asAgent = b.reply_as === "agent";
     if (!channel || !text || !key) throw new SummonError(400, "resource, text and key are required");
-    await same(); // before the lookups: nothing may await between the stored-id and in-flight checks and the post
+    if (asAgent && !entry) throw new SummonError(400, "a reply as the agent names its entry");
+    const agent = (b.agent && typeof b.agent === "object" ? b.agent : {}) as Agent;
+    // Before the lookups: nothing may await between the stored-id and in-flight checks and the post.
+    if (!asAgent) await same();
+    const bot = asAgent ? botCalls(botOf(entry!), fetchFn) : undefined;
     const done = o.store.getKv(`summon_reply:${key}`);
     if (done) return { id: done };
     const running = inflight.get(key);
     if (running) return running;
     const rendered = toSlackLinks(text);
+    // The instance bot speaks under the agent's name; an agent's own app is the agent already.
+    const persona = entry === BOT_ENTRY && asAgent ? { username: (agent.name ?? agent.key ?? "").slice(0, 80), ...(agent.emoji && EMOJI.test(agent.emoji) ? { icon_emoji: agent.emoji } : {}) } : {};
+    const read: Api = bot ? bot.read : o.relay!.read;
+    const mine = (m: Json) => (bot ? Boolean(str(m.bot_id)) && (!("username" in persona) || !persona.username || m.username === persona.username) : m.user === o.owner()) && m.text === rendered;
+    const post = (): Promise<Json> => (bot ? bot.write("chat.postMessage", { channel, text: rendered, unfurl_links: false, unfurl_media: false, ...(thread ? { thread_ts: thread } : {}), ...persona }) : o.relay!.write("post-message", { channel, text: rendered, ...(thread ? { thread_ts: thread } : {}) }));
     const p = (async () => {
       try {
         const pending = o.store.getKv(`summon_pending:${key}`);
@@ -107,9 +156,9 @@ export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv" |
           // Every page of the window, or the attempt stays pending (a throw): a scan that couldn't finish proves nothing.
           for (let cursor = "", pages = 0; !seen; pages++) {
             if (pages >= 10) throw new Error("too many messages since the unsure post to check it");
-            const r = thread ? await o.relay.read("conversations.replies", { channel, ts: thread, oldest: String(since), limit: "200", ...(cursor ? { cursor } : {}) })
-              : await o.relay.read("conversations.history", { channel, oldest: String(since), limit: "200", ...(cursor ? { cursor } : {}) });
-            seen = ((r.messages as Json[] | undefined) ?? []).find((m) => m.user === o.owner() && m.text === rendered && Number(m.ts) >= since);
+            const r = thread ? await read("conversations.replies", { channel, ts: thread, oldest: String(since), limit: "200", ...(cursor ? { cursor } : {}) })
+              : await read("conversations.history", { channel, oldest: String(since), limit: "200", ...(cursor ? { cursor } : {}) });
+            seen = ((r.messages as Json[] | undefined) ?? []).find((m) => mine(m) && Number(m.ts) >= since);
             cursor = (r.response_metadata as { next_cursor?: string } | undefined)?.next_cursor ?? "";
             if (!cursor) break;
           }
@@ -121,7 +170,7 @@ export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv" |
           }
         }
         o.store.setKv(`summon_pending:${key}`, JSON.stringify({ at: Date.now() }));
-        const r = await o.relay.write("post-message", { channel, text: rendered, ...(thread ? { thread_ts: thread } : {}) });
+        const r = await post();
         if (r.ok !== true || !str(r.ts)) {
           // Slack answered with a refusal that proves nothing was posted: nothing was posted, so nothing is pending. Any other error (internal_error, a
           // transport or unreadable answer) and a throw are the uncertain cases: they stay pending.
@@ -132,20 +181,21 @@ export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv" |
         o.store.setKv(`summon_reply:${key}`, id);
         o.store.delKv(`summon_pending:${key}`);
         return { id };
-      } catch (err) { return slackError("reply", err); }
+      } catch (err) { return slackError("reply", err, bot ? BOT_HINT : undefined); }
     })().finally(() => void inflight.delete(key));
     inflight.set(key, p);
     return p;
   }
 
   async function react(b: Json) {
-    const channel = str(b.resource), message = str(b.message), emoji = str(b.emoji);
+    const channel = str(b.resource), message = str(b.message), emoji = str(b.emoji), entry = str(b.entry);
     if (!channel || !message || emoji !== "eyes" || !TS.test(tsOf(message))) throw new SummonError(400, "resource, message and emoji \"eyes\" are required");
-    await same();
+    const bot = entry ? botCalls(botOf(entry), fetchFn) : undefined;
+    if (!bot) await same();
     try {
-      const r = await o.relay.write("add-reaction", { channel, timestamp: tsOf(message), name: "eyes" });
+      const r = bot ? await bot.write("reactions.add", { channel, timestamp: tsOf(message), name: "eyes" }) : await o.relay!.write("add-reaction", { channel, timestamp: tsOf(message), name: "eyes" });
       if (r.ok !== true && r.error !== "already_reacted") throw new Error(String(r.error ?? "reactions.add failed"));
-    } catch (err) { slackError("react", err); }
+    } catch (err) { slackError("react", err, bot ? "Add the bot scope reactions:write to the Slack app and reinstall it." : undefined); }
     return {};
   }
   return { context, reply, react };

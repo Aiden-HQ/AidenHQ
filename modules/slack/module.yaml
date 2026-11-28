@@ -145,6 +145,15 @@ writes:
 prompts:
   - { id: slack-threads, file: prompts/slack-threads.md, when: { tools: [ slack_live.slack_channel_context ] } }
 settings:
+  # The agents that have a Slack app of their own (agent reach): one entry each, `{ agent: <key> }`. The app's two tokens are the
+  # secret of the same name, a map by agent key. Everyone else reaches an agent through the instance's bot.
+  slack_agent_apps:
+    title: Agents with their own Slack app
+    type: array
+    default: []
+    entry: agent
+    pattern: '^[a-z][a-z0-9-]{0,63}$'
+    writers: [ owner ]
   # Slack channel ids agents may post to at the AI reviewer's word (an agent still needs slack_post granted); any other
   # channel needs the owner's approval too.
   slack_post_channels:
@@ -174,10 +183,18 @@ secrets:
         label: Slack bot token
         pattern: '^xoxb-[A-Za-z0-9-]{20,300}$'
         help: "OAuth & Permissions, Bot User OAuth Token (starts xoxb-)."
+    # An agent's own app: a JSON map of agent key -> { app_token (xapp-), bot_token (xoxb-) }, read by slack-live on each pass (so a
+    # pasted pair starts its worker, a changed pair replaces it). The setting slack_agent_apps lists the agents.
+    - name: slack_agent_apps
+      setup:
+        label: Agents' own Slack apps
+        pattern: '^\{[\s\S]*\}$'
+        help: 'One entry per agent: {"aria": {"app_token": "xapp-…", "bot_token": "xoxb-…"}}. The agent must also be listed in the setting slack_agent_apps.'
 optional_secrets:
   - slack_client_id
   - slack_live_app_token
   - slack_live_bot_token
+  - slack_agent_apps
 services:
   data: true
   run:
@@ -225,6 +242,9 @@ services:
         PAIR_TOKEN_FILE: ${secrets.slack_pair_token}
         SLACK_APP_TOKEN_FILE: ${secrets.slack_live_app_token}
         SLACK_BOT_TOKEN_FILE: ${secrets.slack_live_bot_token}
+        # Agents with a Slack app of their own (reach.ts): the agents, and their token pairs by agent key.
+        SLACK_AGENT_APPS: "${settings.slack_agent_apps}"
+        SLACK_AGENT_APPS_FILE: ${secrets.slack_agent_apps}
         # Shared sources (src_slack): its warehouse login; the gap sync reads as the owner through slack-mcp's relay.
         WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_slack_password}
         RELAY_KEY_FILE: ${secrets.slack_relay_key}

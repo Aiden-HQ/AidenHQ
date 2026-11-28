@@ -3,7 +3,7 @@
 // the revision), deletes become tombstones, thread replies kept. A gap sync, read as the owner through slack-mcp's sign-in (its relay), fills disconnects:
 // conversations.history per channel the owner is in, plus conversations.replies for recently active threads; once a week it
 // re-reads the last week in full and tombstones what Slack no longer returns (Events have no replay). No LLM.
-import { toSourceEvent, type SourceEvent } from "./map.js";
+import { toSourceEvent, type Route, type SourceEvent } from "./map.js";
 import { carriesCode } from "./pair.js";
 import type { Logger } from "pino";
 import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";
@@ -230,7 +230,7 @@ export function replayQueue(kv: Pick<Store, "getKv" | "setKv" | "delKv" | "listK
  * recorded done only when every conversation was covered since the cycle began. People (users.list) are refreshed
  * daily. Returns rows written with a difference.
  */
-export async function gapSync(store: SourceStore, api: Api, now = Date.now(), log?: Pick<Logger, "warn" | "info">, budgetMs = PASS_BUDGET_MS, forward?: (e: SourceEvent) => Promise<void>, ownerId?: string, retry?: ReplayQueue): Promise<number> {
+export async function gapSync(store: SourceStore, api: Api, now = Date.now(), log?: Pick<Logger, "warn" | "info">, budgetMs = PASS_BUDGET_MS, forward?: (e: SourceEvent) => Promise<void>, ownerId?: string, retry?: ReplayQueue, route?: Route): Promise<number> {
   await store.migrate(DDL);
   const started = Date.now();
   // Events an earlier pass couldn't hand on (the kernel was down) go first, for at most a tenth of the pass: the scan still runs.
@@ -296,7 +296,7 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
     // A pairing code is a live credential: the warehouse row is blanked, and the router must not see its raw text either. An
     // unknown type may be a DM, so it is skipped too; a public or private channel keeps and replays its ordinary text.
     if ((type === "im" || type === "mpim" || type === undefined) && carriesCode(m)) return;
-    const e = toSourceEvent({ event: { ...m, type: "message", channel: id, channel_type: type }, authorizations: [{ is_bot: false }] }, ownerId);
+    const e = toSourceEvent({ event: { ...m, type: "message", channel: id, channel_type: type }, authorizations: [{ is_bot: false }] }, ownerId, route);
     if (e) await forward(e).catch((err: unknown) => { retry?.keep(e); log?.warn({ err: String(err) }, "gap replay failed; kept for the next pass"); });
   };
 
@@ -405,7 +405,7 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
  * Runs the gap sync every `everyMs` (15 minutes), one pass at a time, each recorded in src_meta.ingest_run, read as the owner
  * through slack-mcp (`api`). While Slack isn't connected (`owner` answers null) a pass is skipped.
  */
-export function startGapSync(store: SourceStore, api: Api, owner: () => Promise<unknown>, log: Logger, forward?: (e: SourceEvent) => Promise<void>, everyMs = 15 * 60_000, ownerId?: () => string | undefined, retry?: ReplayQueue): void {
+export function startGapSync(store: SourceStore, api: Api, owner: () => Promise<unknown>, log: Logger, forward?: (e: SourceEvent) => Promise<void>, everyMs = 15 * 60_000, ownerId?: () => string | undefined, retry?: ReplayQueue, route?: () => Route): void {
   let warned = false;
   const tick = async () => {
     try {
@@ -414,7 +414,7 @@ export function startGapSync(store: SourceStore, api: Api, owner: () => Promise<
         warned = true;
       } else {
         warned = false;
-        const rows = await store.run("slack", "gap-sync", () => gapSync(store, api, Date.now(), log, PASS_BUDGET_MS, forward, ownerId?.(), retry));
+        const rows = await store.run("slack", "gap-sync", () => gapSync(store, api, Date.now(), log, PASS_BUDGET_MS, forward, ownerId?.(), retry, route?.()));
         log.info({ rows }, "src_slack gap sync done");
       }
     } catch (err) {

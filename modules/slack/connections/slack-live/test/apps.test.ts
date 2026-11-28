@@ -131,3 +131,27 @@ it("names the bot when an app first gains one, and never renames a bot the app a
   expect(sent.display_information.name).toBe("My Slack helper");
   expect(sent.features.bot_user).toEqual({ display_name: "aidenhq-other", always_online: true });
 });
+
+it("makes an agent's own app named after the agent, without the owner's user token, events or command, and keeps it apart from the instance's app", async () => {
+  const calls: Record<string, string>[] = [];
+  const slack = (async (url: string, init: RequestInit) => {
+    const method = url.split("/api/")[1]!;
+    calls.push(JSON.parse(String(init.body)));
+    return new Response(JSON.stringify(method === "apps.manifest.create" ? { ok: true, app_id: "A0ARIA00", credentials: { client_id: "1.2" } } : { ok: true }));
+  }) as typeof fetch;
+  const a = apps(openStore(":memory:"), slack);
+  const made = await a.apply({ token: TOKEN, part: "advanced", agent: { key: "aria", name: "Aria Botley" } });
+  expect(made).toEqual({ app_id: "A0ARIA00", part: "advanced", current: true, url: "https://api.slack.com/apps/A0ARIA00" });
+  const m = JSON.parse(calls[0]!.manifest!);
+  expect(m.display_information.name).toBe("Aria Botley · AidenHQ");
+  expect(m.features.bot_user.display_name).toBe("Aria Botley");
+  expect(m.features.slash_commands).toBeUndefined();
+  expect(m.oauth_config.scopes.user).toBeUndefined();
+  expect(m.oauth_config.scopes.bot).not.toContain("commands");
+  expect(m.oauth_config.scopes.bot).toContain("im:history");
+  expect(m.settings.event_subscriptions.user_events).toBeUndefined();
+  expect(m.settings.event_subscriptions.bot_events).toContain("app_mention");
+  // Its record is its own: the instance's status is untouched.
+  expect(a.status("aria").app_id).toBe("A0ARIA00");
+  expect(a.status().app_id).toBeNull();
+});

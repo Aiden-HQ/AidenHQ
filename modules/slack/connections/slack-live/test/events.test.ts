@@ -17,16 +17,19 @@ it("a kept Slack event is forwarded once, after owner routing, with its bot flag
     appToken: "xapp-test", store: openStore(":memory:"), forward, log,
     chat: { owner: () => ({ user: "UOWNER", channel: "DOWNER" }), deliver: async (t) => void delivered.push(t) },
     pair: async () => false,
-    bind: { command: async () => "", mention: async (ev: { channel?: string }) => ev?.channel === "CBOUND" },
+    bind: { command: async () => "" },
+    route: () => ({ receiver: { to: "*", entry: "slack:bot" }, bots: { UBOT: { to: "*", entry: "slack:bot" } }, bound: (c) => (c === "CBOUND" ? "aria" : undefined) }),
   });
   const handle = handlers.at(-1)!;
   const send = async (event: Record<string, string>, id: string) => { const ack = vi.fn(async () => {}); await handle({ type: "events_api", body: { event_id: id, event }, ack }); return ack; };
 
-  // The owner's own message in their command channel is chat; a bound channel's @mention is that agent's task: neither is forwarded.
+  // The owner's own message in their command channel is chat: not forwarded. A bound channel's @mention goes to the bound agent.
   await send({ type: "message", user: "UOWNER", channel: "DOWNER", ts: "1.1", text: "hi Aiden" }, "Ev1");
-  await send({ type: "app_mention", user: "U2", channel: "CBOUND", ts: "1.2", text: "<@B1> look" }, "Ev2");
   expect(delivered).toEqual(["hi Aiden"]);
   expect(forward).not.toHaveBeenCalled();
+  await send({ type: "app_mention", user: "U0COLLEAG", channel: "CBOUND", ts: "1.2", text: "<@UBOT> look" }, "Ev2");
+  expect(forwarded).toMatchObject([{ id: "CBOUND:1.2", to_agent: "aria", entry: "slack:bot", from_owner: false }]);
+  forwarded.length = 0;
 
   // A person's message and a bot's post are forwarded, the bot's flagged; a join is not an event.
   const ack = await send({ type: "message", user: "U2", channel: "C1", ts: "1.3", text: "deploy is red" }, "Ev3");
