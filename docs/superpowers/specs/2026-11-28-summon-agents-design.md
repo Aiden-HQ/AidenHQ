@@ -153,6 +153,8 @@ live ingest, outside this build.
 ### Loop guard
 
 - The kernel records each message id `reply()` returns, and drops events with those ids before matching.
+- Connectors never attest a message an agent posted as the owner (any send tool, not only summon replies): they record
+  each agent-sent id and set `from_owner: false` for it, so an agent writing "cc Aria" can never summon with owner authority.
 - It also drops any owner-authored event whose text ends with the rendered signature (from the current setting). That
   catches echoes that arrive before the id is known.
 - Telegram's existing `agentSent` suppression stays as is.
