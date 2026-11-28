@@ -189,20 +189,23 @@ export class Workspace {
   }
 
   /** Other people's busy time (Calendar's freeBusy; needs the optional calendar.events.freebusy scope). `hidden`: a calendar Google would not show. */
-  async freeBusy(emails: string[], start: string, end: string): Promise<{ busy: { start: string; end: string }[]; hidden: string[] }> {
+  async freeBusy(emails: string[], start: string, end: string): Promise<{ busy: { start: string; end: string }[]; byEmail: Record<string, { start: string; end: string }[]>; hidden: string[] }> {
     const r = await this.g.request<{ calendars?: Record<string, { busy?: { start: string; end: string }[]; errors?: unknown[] }> }>(
       "POST",
       `${CAL}/freeBusy`,
       {},
       { timeMin: new Date(start).toISOString(), timeMax: new Date(end).toISOString(), items: emails.map((id) => ({ id })) },
     );
-    const busy: { start: string; end: string }[] = [], hidden: string[] = [];
+    const busy: { start: string; end: string }[] = [], hidden: string[] = [], byEmail: Record<string, { start: string; end: string }[]> = {};
     for (const email of emails) {
       const c = r.calendars?.[email];
       if (!c || c.errors?.length) hidden.push(email);
-      else busy.push(...(c.busy ?? []));
+      else {
+        byEmail[email] = c.busy ?? [];
+        busy.push(...byEmail[email]);
+      }
     }
-    return { busy, hidden };
+    return { busy, byEmail, hidden };
   }
 
   /**

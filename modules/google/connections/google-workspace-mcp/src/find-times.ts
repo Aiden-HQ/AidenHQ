@@ -33,9 +33,13 @@ export interface FindTimesArgs {
 export type Tier = "best" | "ok" | "last_resort";
 export interface FoundSlot { start: string; end: string; tier: Tier; timezone: string }
 export type AttendeeFreebusy = "used" | "not_granted" | "not_visible";
-export interface AttendeeStatus { email: string; freebusy: AttendeeFreebusy; timezone_known: boolean }
+/** `hours`: the core hours used for an attendee with a known zone: given by the caller, inferred from their busy history, or the default. */
+export interface AttendeeStatus { email: string; freebusy: AttendeeFreebusy; timezone_known: boolean; hours?: { core: [string, string]; source: "given" | "inferred" | "default" } }
 export interface FoundTimes { slots: FoundSlot[]; attendee_freebusy: AttendeeFreebusy; attendees: AttendeeStatus[] }
-const DEFAULT_HOURS: [string, string] = ["09:00", "18:00"];
+export const DEFAULT_HOURS: [string, string] = ["09:00", "18:00"];
+/** Hours are inferred from this many past days of busy time, needing at least MIN_BUSY_DAYS days with a block and a span of 4 to 14 hours. */
+export const HISTORY_DAYS = 28;
+const MIN_BUSY_DAYS = 8;
 const DEFAULT_STRETCH: [string, string] = ["06:00", "22:00"];
 const DEFAULT_STRETCH_HOURS = 2;
 
@@ -214,4 +218,29 @@ export function findTimes(args: FindTimesArgs, events: GEvent[], attendeeBusy: {
     if (!picked.some((p) => c.start < p.end && c.end > p.start)) picked.push(c);
   }
   return picked.map((c) => ({ start: renderInZone(new Date(c.start).toISOString(), c.zone), end: renderInZone(new Date(c.end).toISOString(), c.zone), tier: c.tier, timezone: c.zone }));
+}
+
+const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+const percentile = (sorted: number[], p: number) => sorted[Math.floor(p * (sorted.length - 1))]!;
+
+/**
+ * Typical working hours from past busy blocks, in `zone`: the 10th percentile of each busy day's first start and the 90th of its
+ * last end, rounded to 15 minutes. Null (use the defaults) with fewer than 8 busy days or a span outside 4 to 14 hours.
+ */
+export function inferHours(busy: { start: string; end: string }[], zone: string): [string, string] | null {
+  const days = new Map<string, { first: number; last: number }>();
+  for (const b of busy) {
+    const [s, e] = [Date.parse(b.start), Date.parse(b.end)];
+    if (!(e > s)) continue;
+    const date = dateIn(s, zone);
+    const local = (t: number) => minutes(renderInZone(new Date(t).toISOString(), zone).slice(11, 16));
+    const [first, last] = [local(s), dateIn(e - 1, zone) === date ? local(e - 1) + 1 : 1440];
+    const d = days.get(date);
+    days.set(date, d ? { first: Math.min(d.first, first), last: Math.max(d.last, last) } : { first, last });
+  }
+  if (days.size < MIN_BUSY_DAYS) return null;
+  const starts = [...days.values()].map((d) => d.first).sort((a, b) => a - b);
+  const ends = [...days.values()].map((d) => d.last).sort((a, b) => a - b);
+  const [open, close] = [Math.round(percentile(starts, 0.1) / 15) * 15, Math.round(percentile(ends, 0.9) / 15) * 15];
+  return close - open >= 4 * 60 && close - open <= 14 * 60 ? [hhmm(open), hhmm(Math.min(close, 1440))] : null;
 }

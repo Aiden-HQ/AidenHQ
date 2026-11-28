@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { needsOwner } from "./aidenhq-sdk/needs.js";
 import { type AuthStatus, FREEBUSY, GoogleAuthError, GoogleClient, type StoredCredentials, WRITE_SCOPE } from "./google.js";
-import { type AttendeeFreebusy, type AttendeeStatus, findTimes, type FindTimesArgs, type FoundTimes, LOOKBACK_MS, windowOf } from "./find-times.js";
+import { DEFAULT_HOURS, HISTORY_DAYS, inferHours, type AttendeeFreebusy, type AttendeeStatus, findTimes, type FindTimesArgs, type FoundTimes, LOOKBACK_MS, windowOf } from "./find-times.js";
 import { type DriveFile, type EventInput, type MailInput, type NormalizedEvent, type SendUpdates, Workspace } from "./workspace.js";
 import { validZone } from "./zones.js";
 import { type Cursor, INBOX_BUDGET_MS, startOf } from "./inbox.js";
@@ -164,6 +164,9 @@ export class MultiWorkspace {
     }
   }
 
+  /** Hours inferred from an attendee's past busy time (find-times.ts inferHours), kept 7 days in memory; null: use the defaults. */
+  private readonly inferred = new Map<string, { at: number; hours: [string, string] | null }>();
+
   accounts(): string[] {
     return [...this.ws.keys()];
   }
@@ -256,11 +259,33 @@ export class MultiWorkspace {
         for (const a of others) state.set(a, "not_visible");
       }
     }
-    const zones = new Map(Object.entries(args.attendees_local ?? {}).map(([e, v]) => [e.toLowerCase(), v.timezone]));
-    const attendees: AttendeeStatus[] = listed.map((email) => ({ email, freebusy: state.get(email)!, timezone_known: validZone(zones.get(email.toLowerCase())) }));
+    const local = new Map(Object.entries(args.attendees_local ?? {}).map(([e, v]) => [e.toLowerCase(), v]));
+    // Hours of a visible attendee with a zone and none given: from their last 28 days of busy time, one call for all of them.
+    // Any failure leaves the defaults; it never fails the call.
+    const used = (a: string) => state.get(a) === "used" && a.toLowerCase() !== name.toLowerCase();
+    const needing = [...new Set(listed.filter((a) => used(a) && validZone(local.get(a.toLowerCase())?.timezone) && !local.get(a.toLowerCase())!.hours).map((a) => a.toLowerCase()))];
+    const stale = needing.filter((e) => (this.inferred.get(e)?.at ?? 0) < now - 7 * 86_400_000);
+    if (stale.length) {
+      try {
+        const r = (await this.in(name, (w) => w.freeBusy(stale, new Date(now - HISTORY_DAYS * 86_400_000).toISOString(), new Date(now).toISOString()))) as Awaited<ReturnType<Workspace["freeBusy"]>>;
+        for (const e of stale) if (r.byEmail[e]) this.inferred.set(e, { at: now, hours: inferHours(r.byEmail[e]!, local.get(e)!.timezone!) });
+      } catch {
+        // defaults
+      }
+    }
+    const enriched: NonNullable<FindTimesArgs["attendees_local"]> = { ...(args.attendees_local ?? {}) };
+    const attendees: AttendeeStatus[] = listed.map((email) => {
+      const l = local.get(email.toLowerCase());
+      const known = validZone(l?.timezone);
+      if (!known) return { email, freebusy: state.get(email)!, timezone_known: false };
+      const inferred = !l!.hours ? this.inferred.get(email.toLowerCase())?.hours ?? undefined : undefined;
+      if (inferred) enriched[email] = { ...l!, hours: inferred };
+      const dflt = args.default_hours ?? DEFAULT_HOURS;
+      return { email, freebusy: state.get(email)!, timezone_known: true, hours: { core: l!.hours ?? inferred ?? dflt, source: l!.hours ? "given" : inferred ? "inferred" : "default" } };
+    });
     const all = attendees.map((x) => x.freebusy);
     const summary: AttendeeFreebusy = all.every((x) => x === "used") ? "used" : all.includes("not_granted") ? "not_granted" : "not_visible";
-    return { slots: findTimes(args, events, busy, now, timeZone), attendee_freebusy: summary, attendees };
+    return { slots: findTimes({ ...args, attendees_local: enriched }, events, busy, now, timeZone), attendee_freebusy: summary, attendees };
   }
 
   async meetingDocuments(since: string, hints: string[], max = 50, account?: string) {

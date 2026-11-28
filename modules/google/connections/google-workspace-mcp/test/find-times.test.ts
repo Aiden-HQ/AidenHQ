@@ -179,7 +179,7 @@ function google(routes: Record<string, unknown>) {
     calls.push({ method, url, ...(typeof init?.body === "string" ? { body: JSON.parse(init.body) } : {}), ...(ifMatch ? { ifMatch } : {}) });
     const r = routes[`${method} ${url.pathname}`];
     if (r === undefined) return new Response("no route", { status: 404 });
-    const v = typeof r === "function" ? (r as () => unknown)() : r;
+    const v = typeof r === "function" ? (r as (body?: Record<string, unknown>) => unknown)(calls.at(-1)!.body) : r;
     return v instanceof Response ? v : v === null ? new Response(null, { status: 204 }) : Response.json(v);
   }) as typeof fetch;
   return { impl, calls };
@@ -216,7 +216,7 @@ describe("people we cannot see never block the answer", () => {
     const g = google({ [`GET ${EV}`]: { items: [] }, [FB]: { calendars: { "col@work.com": { busy: [{ start: "2026-12-09T05:00:00Z", end: "2026-12-09T05:30:00Z" }] }, "ext@other.org": { errors: [{ domain: "global", reason: "notFound" }] } } } });
     const r = await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(at({ attendees: ["col@work.com", "ext@other.org"], attendees_local: { "col@work.com": { timezone: "Asia/Dubai" } } }), NOW);
     expect(r.slots.map((x) => hm(x.start))).toEqual(["09:30"]);
-    expect(r.attendees).toEqual([{ email: "col@work.com", freebusy: "used", timezone_known: true }, { email: "ext@other.org", freebusy: "not_visible", timezone_known: false }]);
+    expect(r.attendees).toEqual([{ email: "col@work.com", freebusy: "used", timezone_known: true, hours: { core: ["09:00", "18:00"], source: "default" } }, { email: "ext@other.org", freebusy: "not_visible", timezone_known: false }]);
     expect(r.attendee_freebusy).toBe("not_visible");
   });
 
@@ -228,6 +228,45 @@ describe("people we cannot see never block the answer", () => {
     // A 403 on the call is the same: skipped, not the owner's sign-in failing.
     const g2 = google({ [`GET ${EV}`]: { items: [] }, [FB]: new Response("forbidden", { status: 403 }) });
     expect((await new MultiWorkspace(creds(SCOPES), "primary", g2.impl).findTimes(at({ attendees: ["a@x.org"] }), NOW)).attendee_freebusy).toBe("not_visible");
+  });
+});
+
+describe("attendee hours inferred from busy history", () => {
+  const FB = "POST /calendar/v3/freeBusy";
+  const at = () => args({ duration_min: 30, attendees: ["col@work.com"], attendees_local: { "col@work.com": { timezone: "Asia/Dubai" } } });
+  /** 10:00-17:00 Dubai (06:00Z-13:00Z) on `n` days from 3 November. */
+  const days = (n: number) => Array.from({ length: n }, (_x, i) => { const d = String(3 + i).padStart(2, "0"); return { start: `2026-11-${d}T06:00:00Z`, end: `2026-11-${d}T13:00:00Z` }; });
+  const history = (b: Record<string, unknown> | undefined) => Date.parse(String(b?.timeMin)) < NOW;
+  const route = (busy: { start: string; end: string }[] | "fail") => (b?: Record<string, unknown>) => history(b) && busy === "fail" ? new Response("boom", { status: 500 }) : { calendars: { "col@work.com": { busy: history(b) && busy !== "fail" ? busy : [] } } };
+
+  it("a colleague busy 10:00-17:00 on 15 days is taken to work about 10-17", async () => {
+    const g = google({ [`GET ${EV}`]: { items: [] }, [FB]: route(days(15)) });
+    const ws = new MultiWorkspace(creds(SCOPES), "primary", g.impl);
+    const r = await ws.findTimes(at(), NOW);
+    expect(r.attendees[0]!.hours).toEqual({ core: ["10:00", "17:00"], source: "inferred" });
+    // One history call, separate from the slot window's; the next call within a week reuses it.
+    expect(g.calls.filter((c) => c.url.pathname.endsWith("/freeBusy"))).toHaveLength(2);
+    await ws.findTimes(at(), NOW + 86_400_000);
+    expect(g.calls.filter((c) => c.url.pathname.endsWith("/freeBusy"))).toHaveLength(3);
+  });
+
+  it("three busy days is too thin: the default hours are used", async () => {
+    const g = google({ [`GET ${EV}`]: { items: [] }, [FB]: route(days(3)) });
+    expect((await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(at(), NOW)).attendees[0]!.hours).toEqual({ core: ["09:00", "18:00"], source: "default" });
+  });
+
+  it("a failed history call falls back to the default and the call still answers", async () => {
+    const g = google({ [`GET ${EV}`]: { items: [] }, [FB]: route("fail") });
+    const r = await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(at(), NOW);
+    expect(r.attendees[0]).toMatchObject({ freebusy: "used", hours: { source: "default" } });
+    expect(r.slots.length).toBeGreaterThan(0);
+  });
+
+  it("hours the caller gave are used as given, with no history call", async () => {
+    const g = google({ [`GET ${EV}`]: { items: [] }, [FB]: route(days(15)) });
+    const a = { ...at(), attendees_local: { "col@work.com": { timezone: "Asia/Dubai", hours: ["08:00", "16:00"] as [string, string] } } };
+    expect((await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(a, NOW)).attendees[0]!.hours).toEqual({ core: ["08:00", "16:00"], source: "given" });
+    expect(g.calls.filter((c) => c.url.pathname.endsWith("/freeBusy"))).toHaveLength(1);
   });
 });
 
