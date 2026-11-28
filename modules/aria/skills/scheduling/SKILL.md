@@ -1,7 +1,7 @@
 ---
 name: scheduling
 description: "How to arrange the owner's meetings: find a free time with calendar_find_times (never by hand), book first instead of offering a menu, handle the other person's replies in a summoned conversation, follow up, and treat VIPs, the team and strangers by the owner's settings. Use before any booking, move, cancel or invite answer, and when the owner asks Aria to set up their hours."
-tools: [ google_workspace.calendar_list_events, google_workspace.calendar_search_events, google_workspace.calendar_get_event, google_workspace.calendar_find_times, aria.aria_config, aria.aria_suggest, chat_lane.wake_at ]
+tools: [ google_workspace.calendar_list_events, google_workspace.calendar_search_events, google_workspace.calendar_get_event, google_workspace.calendar_find_times, google_workspace.calendar_free_busy, google_workspace.calendar_check_times, aria.aria_config, aria.aria_suggest, chat_lane.wake_at ]
 ---
 
 # Scheduling
@@ -9,6 +9,27 @@ tools: [ google_workspace.calendar_list_events, google_workspace.calendar_search
 The owner's settings are in `aria_config`: working hours, call windows, default meeting lengths, buffers, minimum notice, the
 meeting cap, blocking calendars, VIPs and team domains, plain-English preferences, and follow-up timing. Read it at the start
 of every scheduling task; do not carry values over from an earlier task.
+
+## Understand the ask first
+
+Work out what the owner actually wants before you pick a tool: who must be there, who is a nice-to-have, how soon, whether it
+repeats, and what they are willing to trade. **Every setting and every ranking below is a soft signal you may override when the
+owner's words call for it** ("earliest possible, even outside my hours"; "Marc and Sandeep are must-haves, squeeze in John if
+possible, otherwise invite him as optional"). Follow the owner's words over a default, and say any trade-off you made in the
+confirmation ("John couldn't make any slot with Marc and Sandeep, so I've added him as optional").
+
+Code does the date math, the model does the judgement: use the tool that gives the answer with the least guessing.
+
+- **`calendar_find_times`: the default for the common asks.** It takes `required` and `optional` people, `owner_hours` (`strict`,
+  `stretch` or `any`: `any` for an urgent "even outside my hours"), `movable_event_ids` (meetings you may move to make room),
+  `weeks` for a recurring meeting, `days`, and `preferred` ranges. Each slot says, per person, `{ status, tier }`, and
+  `optional_free` for the optional ones. Take the top slot unless the ask points elsewhere.
+- **`calendar_free_busy`: the raw material, for unusual asks you plan yourself.** It returns each person's busy time, hours,
+  zone and working location. Use it for rotating inconvenience across zones, back-to-back interview loops, "when Marc is in
+  the office", or a quorum ("7 of 10 is enough"). You compose the slot; the tool does not.
+- **`calendar_check_times`: verification. It MUST be called before booking a slot that did not come from `calendar_find_times`.**
+  A composed slot is only a candidate until it has passed.
+- `calendar_create_event` and `calendar_update_event` take attendees as `{ email, optional: true }` for the optional ones.
 
 ## Finding a time
 

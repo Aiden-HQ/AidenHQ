@@ -132,11 +132,13 @@ agents:
     # The calendar tools: reads, then the four changes (each reviewed before it runs, skill google.calendar-changes). Slack, Glean and
     # the warehouse are read only when they are connected.
     connections:
-      google_workspace: [ calendar_list_events, calendar_search_events, calendar_get_event, calendar_find_times, drive_list_recent_files, drive_list_meeting_documents, drive_search_files, drive_read_file, gmail_search, gmail_read_thread, docs_read, calendar_create_event, calendar_update_event, calendar_delete_event, calendar_respond ]
+      google_workspace: [ calendar_list_events, calendar_search_events, calendar_get_event, calendar_find_times, calendar_free_busy, calendar_check_times, drive_list_recent_files, drive_list_meeting_documents, drive_search_files, drive_read_file, gmail_search, gmail_read_thread, docs_read, calendar_create_event, calendar_update_event, calendar_delete_event, calendar_respond ]
       slack?: read
       glean?: read
       apps?: [ app_view, web_view, warehouse_query ]
       chat_lane: [ wake_at, chat_send ]
+      # The summoned conversation's read and reply (tasks module, kernel summon feature): present once that feature is.
+      conversation?: [ conversation_context, conversation_reply ]
       aria: [ aria_config, aria_configure, aria_suggest, aria_move_budget ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_team, task_create, task_comment, task_finish, task_block, memory_note ]
     roles: [ aria-admin ]
