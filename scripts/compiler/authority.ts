@@ -40,7 +40,7 @@ const added = (b: unknown, h: unknown) => list(h).map((x) => (isMap(x) ? x.name 
 /** Top-level keys that never hand out authority by themselves (their contents are checked where they can). */
 const PLAIN = new Set(["stages", "journeys", "name", "version", "description", "license", "publisher", "homepage", "kernel", "requires", "provides", "conflicts", "replaces", "data_version", "labels", "company", "departments", "setup", "apps", "events", "checks", "points", "contributes", "prompts", "skills", "jobcaps"]);
 /** Checked below, field by field. */
-const CHECKED = new Set(["facts", "writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces", "codehost", "check_jobs", "settings", "validate", "subscribes"]);
+const CHECKED = new Set(["facts", "writes", "privileged", "secrets", "generated_secrets", "optional_secrets", "roles", "default_grants", "connections", "services", "agents", "providers", "isolation", "routines", "board_env", "workspaces", "codehost", "check_jobs", "settings", "validate", "subscribes", "summon"]);
 /** Every top-level module.yaml key the kernel knows: any other is a compile error (module.yaml is strict, spec §3.1). */
 export const MANIFEST_KEYS = new Set([...PLAIN, ...CHECKED]);
 /** Agent fields that hand out nothing (model and engine choice, scheduling, presentation, the module text it reads: skills, like
@@ -51,6 +51,7 @@ const SERVICE_PLAIN = new Set(["image", "build", "command", "entrypoint", "env",
 /** What each kernel role a module requests opens (kinds.ts KERNEL_ROLES, backplane.ts), as its line on the card says. */
 const KERNEL_ROLE_GRANTS: Record<string, string> = {
   "kernel.apply": "files instance applies",
+  "kernel.attest-owner": "says which of its connection's messages the owner wrote: the owner's `cc <teammate>` there summons that teammate, and the teammate replies in that chat as the owner",
   "kernel.checks": "runs check jobs",
   "kernel.cp-read": "reads the control plane as the owner",
   "kernel.events": "sends the events of its connections to subscribed routines, and reads their batches for their runs",
@@ -234,6 +235,9 @@ export function authorityDiff(name: string, base: ModuleDef | undefined, head: M
   // What it reads of the kernel's event log (subscribes:, kernel/src/events.ts): outside text from those resources. A new or
   // widened subscription is the reviewer's; dropping one hands out nothing.
   if (head.subscribes != null && !eq(b.subscribes, head.subscribes)) review("changes what it reads of the event log (subscribes: kinds and resources)");
+  // Its summon contract (summon:, kernel/src/summon.ts): where the kernel reads a summoned conversation and posts teammates'
+  // replies as the owner. The authority is the kernel.attest-owner role; a new or changed contract is the reviewer's.
+  if (head.summon != null && !eq(b.summon, head.summon)) review("changes its summon contract (summon: where summoned teammates read and reply as the owner)");
 
   // Secrets: every name it may mount (generated, optional, provided, connection service keys, jobcap read secrets).
   for (const s of ownSecrets(head).filter((x) => !ownSecrets(b).includes(x))) owner(`adds secret ${id(s)}`);

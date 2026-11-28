@@ -23,8 +23,10 @@ import type { Connection, Grant } from "./identity.ts";
 
 /** `thread`: the conversation an event replies in (a Slack reply's thread root ts), when it is a reply. */
 /** `data`: a small flat object of what a consumer keys on (head, number, state…); never a stranger's words (those are `text`). */
+/** `from_owner`: the owner wrote it, as the source module decided in code from the authenticated identity (summon.ts); kept only
+ * from a module the summon path says attests its connection (role kernel.attest-owner), silently dropped from any other. */
 export type EventData = Record<string, string | number | boolean | null | (string | number)[]>;
-export type SourceEvent = { connection: string; resource: string; id: string; kind: string; author?: string; text?: string; labels?: string[]; bot?: boolean; url?: string; thread?: string; truncated?: boolean; data?: EventData };
+export type SourceEvent = { connection: string; resource: string; id: string; kind: string; author?: string; text?: string; labels?: string[]; bot?: boolean; url?: string; thread?: string; truncated?: boolean; data?: EventData; from_owner?: boolean };
 /** A module's subscription to one connection's events (compiled): the kinds it reads and its resources ("*": all). */
 export type ModuleSubscription = { kinds: string[]; resources: string[] | "*" };
 export type LoggedEvent = Omit<SourceEvent, "connection"> & { seq: number; at: string };
@@ -33,7 +35,7 @@ export type Subscription = { key: string; agent: string; connection: string; res
 export type GrantsTable = { agents?: Record<string, Grant>; routine_events?: Record<string, Subscription> };
 export type EventsConnection = Connection & { events?: { reads?: string[] } };
 /** Accepted (new, or an id the log already holds): what routines got of it. A refusal throws (EventsError 403 or 422). */
-export type IngestResult = { accepted: true; seq?: number; duplicate?: true; queued: number; dropped?: { n: number; reason: "overflow" } };
+export type IngestResult = { accepted: true; seq?: number; duplicate?: true; queued: number; dropped?: { n: number; reason: "overflow" }; summoned?: true };
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 
 export const WINDOW_MS = 60_000, BATCH_MAX = 20, TEXT_MAX = 2000, LABELS_MAX = 10, DATA_KEYS = 20, DATA_BYTES = 2048, LOG_KEEP_MS = 3 * 24 * 3600_000, LOG_PAGE = 200;
@@ -69,14 +71,14 @@ function envelope(e: unknown): SourceEvent | string {
   const o = (e && typeof e === "object" && !Array.isArray(e) ? e : {}) as Record<string, unknown>;
   if (!str(o.connection, 100) || !str(o.resource, 200) || !str(o.id, 200) || !str(o.kind, 100)) return "connection, resource, id and kind are short strings";
   if (!opt(o.author, 200) || !opt(o.url, 500) || !opt(o.thread, 200) || (o.text !== undefined && typeof o.text !== "string")) return "author, url, thread and text are strings";
-  if ((o.bot !== undefined && typeof o.bot !== "boolean") || (o.truncated !== undefined && typeof o.truncated !== "boolean")) return "bot and truncated are true or false";
+  if ((o.bot !== undefined && typeof o.bot !== "boolean") || (o.truncated !== undefined && typeof o.truncated !== "boolean") || (o.from_owner !== undefined && typeof o.from_owner !== "boolean")) return "bot, truncated and from_owner are true or false";
   if (o.labels !== undefined && (!Array.isArray(o.labels) || o.labels.length > LABELS_MAX || o.labels.some((l) => !str(l, 100)))) return `labels are at most ${LABELS_MAX} short strings`;
   if (!dataOk(o.data)) return `data is a flat object of at most ${DATA_KEYS} short values (${DATA_BYTES} bytes)`;
   return {
     connection: o.connection as string, resource: o.resource as string, id: o.id as string, kind: o.kind as string,
     ...(o.author !== undefined ? { author: o.author as string } : {}), ...(o.text !== undefined ? { text: (o.text as string).slice(0, TEXT_MAX) } : {}),
     ...(o.labels !== undefined ? { labels: o.labels as string[] } : {}), ...(o.bot !== undefined ? { bot: o.bot as boolean } : {}), ...(o.url !== undefined ? { url: o.url as string } : {}), ...(o.thread !== undefined ? { thread: o.thread as string } : {}), ...(o.text !== undefined && (o.truncated === true || (o.text as string).length > TEXT_MAX) ? { truncated: true } : {}),
-    ...(o.data !== undefined ? { data: o.data as EventData } : {}),
+    ...(o.data !== undefined ? { data: o.data as EventData } : {}), ...(o.from_owner !== undefined ? { from_owner: o.from_owner as boolean } : {}),
   };
 }
 
@@ -100,6 +102,11 @@ export function createEvents(o: {
   run: (routineId: string, key: string, vars: { batch: string; count: string }) => Promise<{ status: number; issue?: string }>;
   /** The routine as Paperclip has it now; undefined when it is gone. Throws when it can't be read now (a timeout). */
   routine: (id: string) => Promise<{ status: string; assignee: string } | undefined>;
+  /**
+   * The summon path (summon.ts): whether `module` attests who wrote its connection's events, and, inside ingest's transaction,
+   * whether it takes an event (then no routine gets it; the log still does). `claimed` runs after a commit that took one.
+   */
+  summon?: { attests: (module: string, connection: string) => boolean; claim: (ev: SourceEvent, t: number) => boolean; claimed: () => void };
   now?: () => number; log?: Log;
 }) {
   const { db } = o, now = o.now ?? Date.now, log = o.log ?? (() => {});
@@ -171,6 +178,7 @@ export function createEvents(o: {
       ownerOf(module, String((e as { connection?: unknown } | null)?.connection ?? ""));
       const ev = envelope(e);
       if (typeof ev === "string") { log("events: refused an invalid event", { module, why: ev }); throw new EventsError(422, ev); }
+      if (ev.from_owner !== undefined && !o.summon?.attests(module, ev.connection)) delete ev.from_owner;
       const { connection: _c, ...body } = ev;
       const t = now();
       db.exec("BEGIN IMMEDIATE");
@@ -180,10 +188,18 @@ export function createEvents(o: {
           if (db.prepare("SELECT 1 FROM event_log WHERE connection = ? AND id = ?").get(ev.connection, ev.id)) { db.exec("COMMIT"); return { accepted: true, duplicate: true, queued: 0 }; }
           seq = Number(db.prepare("INSERT INTO event_log (connection, resource, id, kind, body, at) VALUES (?, ?, ?, ?, ?, ?)").run(ev.connection, ev.resource.toLowerCase(), ev.id, ev.kind, JSON.stringify(body), t).lastInsertRowid);
         }
-        const out = { accepted: true as const, ...(seq !== undefined ? { seq } : {}), ...route(ev, body, t) };
+        const summoned = o.summon?.claim(ev, t) ?? false;
+        const out = { accepted: true as const, ...(seq !== undefined ? { seq } : {}), ...(summoned ? { queued: 0, summoned: true as const } : route(ev, body, t)) };
         db.exec("COMMIT");
+        if (summoned) o.summon!.claimed();
         return out;
       } catch (err) { db.exec("ROLLBACK"); throw err; }
+    },
+    /** An event the summon path held, handed back to the routines (its summoned task closed): queued as ingest would have. */
+    deliver(ev: SourceEvent): void {
+      const { connection: _c, ...body } = ev;
+      db.exec("BEGIN IMMEDIATE");
+      try { route(ev, body, now()); db.exec("COMMIT"); } catch (err) { db.exec("ROLLBACK"); throw err; }
     },
     /**
      * A module's page of the log after `after` (its last committed seq), only the kinds and resources it subscribes to. With no

@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS dispatch_since (agent TEXT PRIMARY KEY, at INTEGER NO
 CREATE TABLE IF NOT EXISTS team_routes (task TEXT PRIMARY KEY, team TEXT NOT NULL, member TEXT, repos TEXT NOT NULL, at INTEGER NOT NULL,
   state TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0, record TEXT NOT NULL DEFAULT '', snapshot TEXT);
 CREATE TABLE IF NOT EXISTS chat_reopen (task TEXT PRIMARY KEY, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS wake_first (task TEXT PRIMARY KEY, at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS wake_cursor (company TEXT PRIMARY KEY, since TEXT NOT NULL, floor INTEGER NOT NULL, full_at INTEGER NOT NULL DEFAULT 0, after TEXT, after_at INTEGER);`;
 /** What a decision was made from (team_routes.snapshot): the learning loop replays it with other weights or repos (routing-tune.ts). */
 export type RouteSnapshot = { weights: Weights; candidates: Candidate[] };
@@ -1102,7 +1103,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       db.exec("BEGIN IMMEDIATE");
       try {
         q("INSERT OR IGNORE INTO wake_dispatchers (module, since) VALUES (?, ?)").run(module, t);
-        const rows = (q("SELECT * FROM wakes WHERE ((state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND claimed_by = ? AND until <= ?)) ORDER BY state = 'claimed', at, key").all(t, module, t) as unknown as Wake[]).filter((w) => dispatches.may(module, w.agent));
+        const rows = (q("SELECT * FROM wakes WHERE ((state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND claimed_by = ? AND until <= ?)) ORDER BY state = 'claimed', EXISTS (SELECT 1 FROM wake_first f WHERE f.task = wakes.task) DESC, at, key").all(t, module, t) as unknown as Wake[]).filter((w) => dispatches.may(module, w.agent));
         // Every end has its fact (else task state reads the wake as still pending or held): dropped, or done by the job that consumed it.
         const set = (w: Wake, end: { dropped: string } | { done: string; job: string }) => {
           const state = "job" in end ? "done" : "dropped";
@@ -1212,6 +1213,11 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
         }
         return true;
       });
+    },
+    /** The owner is waiting on this task (a summons, summon.ts): its wakes are claimed ahead of background work for a day. */
+    first(task: string) {
+      q("INSERT INTO wake_first (task, at) VALUES (?, ?) ON CONFLICT (task) DO UPDATE SET at = excluded.at").run(task, now());
+      q("DELETE FROM wake_first WHERE at < ?").run(now() - 86_400_000);
     },
     get: (key: string) => q("SELECT * FROM wakes WHERE key = ?").get(key) as unknown as Wake | undefined,
     /** Whether a dispatcher that has joined runs this agent's wakes. */

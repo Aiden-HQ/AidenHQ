@@ -62,8 +62,14 @@ contributes:
 # the kernel sends it owner-channel's messages one at a time (transport: below), with this module's own token.
 privileged: [ speaks-as-owner ]
 # kernel.events: slack-live sends each kept Slack event to the kernel's event router (POST /v1/events) with this module's own token.
+# kernel.attest-owner: it marks which of those messages the owner wrote (from_owner), so the owner's `cc <teammate>` summons one.
 roles:
-  requests: [ kernel.events ]
+  requests: [ kernel.events, kernel.attest-owner ]
+# The kernel's calls for a summoned conversation (kernel/src/summon.ts): its recent messages, a reply as the owner, the 👀 reaction.
+summon:
+  connection: slack
+  url: http://slack-live:8089/summon
+  auth: slack_live_service_key
 providers:
   channel:
     transport: http://slack-live:8089/transport/send
