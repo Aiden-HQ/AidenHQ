@@ -12,6 +12,7 @@ const DRIVE = "https://www.googleapis.com/drive/v3";
 export interface GEvent {
   id: string;
   eventType?: string;
+  recurrence?: string[];
   workingLocationProperties?: { type?: string; customLocation?: { label?: string }; officeLocation?: { label?: string } };
   transparency?: string;
   recurringEventId?: string;
@@ -246,6 +247,26 @@ export class Workspace {
     if (taken) throw new EventConflict(`${taken.title ? `"${taken.title}"` : "Another event"} already holds ${renderInZone(new Date(taken.start).toISOString(), e.timezone ?? timeZone)} to ${renderInZone(new Date(taken.end).toISOString(), e.timezone ?? timeZone)} on this calendar. Nothing was changed: tell the owner, and offer other times (calendar_find_times) or a deliberate double-booking (allow_conflict)`);
   }
 
+  /**
+   * Moving a whole series moves every occurrence by the same shift: the next 12 weeks of occurrences are checked at their
+   * shifted times, so a clash later in the series is reported before anything changes.
+   */
+  private async assertSeriesFree(held: GEvent, e: { start: string; end: string; timezone?: string }, allowConflict?: boolean) {
+    const range = conflictRange(e);
+    if (!range || allowConflict || !held.start?.dateTime || !held.end?.dateTime) return;
+    const [ds, de] = [range[0] - Date.parse(held.start.dateTime), range[1] - Date.parse(held.end.dateTime)];
+    if (!ds && !de) return;
+    const from = Math.max(Date.now(), Date.parse(held.start.dateTime));
+    const { events, timeZone } = await this.rawEvents(new Date(from).toISOString(), new Date(from + 84 * 86_400_000 + Math.max(ds, de, 0)).toISOString());
+    const blocks = blocksOf(events, timeZone, held.id);
+    for (const o of events) {
+      if (o.recurringEventId !== held.id || !o.start?.dateTime || !o.end?.dateTime) continue;
+      const [s, en] = [Date.parse(o.start.dateTime) + ds, Date.parse(o.end.dateTime) + de];
+      const taken = conflictWith(blocks, s, en);
+      if (taken) throw new EventConflict(`Moving the whole series would put its ${renderInZone(new Date(s).toISOString(), e.timezone ?? timeZone).slice(0, 10)} occurrence on ${taken.title ? `"${taken.title}"` : "another event"}. Nothing was changed: tell the owner, move that one occurrence instead, or allow_conflict`);
+    }
+  }
+
   private eventUrl(id?: string) {
     return `${CAL}/calendars/${encodeURIComponent(this.calendarId)}/events${id ? `/${encodeURIComponent(id)}` : ""}`;
   }
@@ -265,7 +286,8 @@ export class Workspace {
     const id = eventIdFor(this.calendarId, e.request_key);
     // A retry finds its own event first: it must not fail as a conflict with itself, nor create a second one.
     const done = await this.rawEvent(id).catch((err) => (err instanceof GoogleApiError && err.status === 404 ? undefined : Promise.reject(err)));
-    if (done && done.status !== "cancelled") return normalizeEvent(done);
+    if (done?.status === "cancelled") throw new Error("A booking made under this request_key was cancelled, so Google keeps its id: nothing was created. Use a new request_key for a new booking");
+    if (done) return normalizeEvent(done);
     if (e.start && e.end) await this.assertFree({ start: e.start, end: e.end, timezone: e.timezone }, id, e.allow_conflict);
     const body = {
       id,
@@ -298,7 +320,10 @@ export class Workspace {
     if (e.etag && held.etag && e.etag !== held.etag) throw new EventChanged();
     // A partial time change is checked as the whole interval it makes with the event's other boundary.
     const [start, end] = [e.start ?? held.start?.dateTime, e.end ?? held.end?.dateTime];
-    if ((e.start || e.end) && start && end) await this.assertFree({ start, end, timezone: e.timezone }, held.id, e.allow_conflict);
+    if ((e.start || e.end) && start && end) {
+      await this.assertFree({ start, end, timezone: e.timezone }, held.id, e.allow_conflict);
+      if (held.recurrence?.length) await this.assertSeriesFree(held, { start, end, timezone: e.timezone }, e.allow_conflict);
+    }
     if (e.add_attendees?.length || e.remove_attendees?.length) {
       const gone = new Set((e.remove_attendees ?? []).map((a) => a.toLowerCase()));
       // Google left some attendees out of the event it returned (a large event): a PATCH of the list would drop them.

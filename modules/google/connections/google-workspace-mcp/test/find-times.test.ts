@@ -125,6 +125,15 @@ describe("findTimes", () => {
     expect(slots.every((s) => Date.parse(s.end) <= Date.parse("2026-12-03T00:00:00+04:00"))).toBe(true);
   });
 
+  it("an out-of-office all-day 'Business trip' still blocks, and focus time is busy but not a meeting", () => {
+    const ooo: GEvent = { id: "o", summary: "Business trip", eventType: "outOfOffice", start: { date: "2026-12-02" }, end: { date: "2026-12-03" } };
+    expect(findTimes(base(), [ooo], [], NOW)).toEqual([]);
+    const focus = meeting("f", "2026-12-02T09:00:00+04:00", "2026-12-02T10:00:00+04:00", { eventType: "focusTime" });
+    const slots = findTimes(base({ max_per_day: 1 }), [focus], [], NOW);
+    expect(slots.length).toBeGreaterThan(0);
+    expect(slots.some((x) => overlap(x, "2026-12-02T09:00:00+04:00", "2026-12-02T10:00:00+04:00"))).toBe(false);
+  });
+
   it("keeps local wall time over a DST boundary", () => {
     // New York falls back on Sunday 2026-11-01: 09:00 is -04:00 before and -05:00 after.
     const args = base({ duration_min: 60, timezone: "America/New_York", window_start: "2026-10-30T00:00:00-04:00", window_end: "2026-11-03T00:00:00-05:00", working_hours: week([["09:00", "10:00"]]) });
@@ -427,6 +436,29 @@ describe("safer calendar writes", () => {
     expect(await ws.updateEvent("daily_20261209", { end: "2026-12-09T08:45:00+04:00" }, "none").catch((e) => e)).toBeInstanceOf(EventConflict);
     // Onto the sibling occurrence: refused.
     expect(await ws.updateEvent("daily_20261209", { start: "2026-12-10T08:00:00+04:00", end: "2026-12-10T08:30:00+04:00" }, "none").catch((e) => e)).toBeInstanceOf(EventConflict);
+  });
+
+  it("a cancelled booking is reported as such even when another event took its old slot", async () => {
+    const dead = { id, status: "cancelled", summary: "Plan", start: { dateTime: input.start }, end: { dateTime: input.end } };
+    const taken = { id: "other", summary: "Board prep", start: { dateTime: input.start }, end: { dateTime: input.end } };
+    const g = google({ [`GET ${EV}`]: { items: [taken] }, [`GET ${EV}/${id}`]: dead });
+    await expect(new MultiWorkspace(creds(SCOPES), "primary", g.impl).createEvent(input, "none")).rejects.toThrow(/cancelled/);
+  });
+
+  it("moving a whole series checks its later occurrences", async () => {
+    // Dates relative to the real clock: the check looks at the series from now on.
+    const day = (n: number) => new Date(Date.now() + (7 + n) * 86_400_000).toISOString().slice(0, 10);
+    const at = (n: number, hm: string) => `${day(n)}T${hm}:00+04:00`;
+    const master = { id: "weekly", etag: '"e1"', recurrence: ["RRULE:FREQ=WEEKLY"], summary: "1:1", start: { dateTime: at(0, "10:00") }, end: { dateTime: at(0, "10:30") } };
+    const occ = (n: number) => ({ id: `weekly_${n}`, recurringEventId: "weekly", summary: "1:1", start: { dateTime: at(n, "10:00") }, end: { dateTime: at(n, "10:30") } });
+    // Moved one hour later, the next week's occurrence would land on a meeting.
+    const clash = { id: "c", summary: "Budget", start: { dateTime: at(7, "11:00") }, end: { dateTime: at(7, "11:30") } };
+    const g = google({ [`GET ${EV}`]: { items: [occ(0), occ(7), clash], timeZone: "Asia/Dubai" }, [`GET ${EV}/weekly`]: master, [`PATCH ${EV}/weekly`]: master });
+    const ws = new MultiWorkspace(creds(SCOPES), "primary", g.impl);
+    const err = await ws.updateEvent("weekly", { start: at(0, "11:00"), end: at(0, "11:30") }, "none").catch((e) => e);
+    expect(err).toBeInstanceOf(EventConflict);
+    expect(String(err.message)).toContain(day(7));
+    expect(g.calls.some((c) => c.method === "PATCH")).toBe(false);
   });
 
   it("a key whose booking was cancelled does not answer success", async () => {

@@ -79,11 +79,11 @@ export const LOOKBACK_MS = FLIGHT_LAPSE_MS + DAY_MS;
 const FLIGHT = /\bflight\b/i;
 const STAY = /hotel|airbnb|\bstay\b|accommodation|\btrip\b/i;
 
-export interface Block { id: string; start: number; end: number; title: string; /** A meeting of the owner's (not a flight, an absence or someone else's busy time). */ meeting: boolean }
+export interface Block { id: string; start: number; end: number; title: string; /** A meeting of the owner's (not a flight, an absence, focus time or someone else's busy time). */ meeting: boolean }
 
 const isFlight = (e: GEvent) => FLIGHT.test(e.summary ?? "");
-/** Working-location entries, Gmail's travel reservations and all-day "Hotel"/"Trip" markers say where the owner is; they do not block time. A timed meeting with such a word in its title is still a meeting. */
-const isStay = (e: GEvent) => !isFlight(e) && (e.eventType === "workingLocation" || e.eventType === "fromGmail" || (!e.start?.dateTime && STAY.test(e.summary ?? "")));
+/** Working-location entries, Gmail's travel reservations and free-marked all-day "Hotel"/"Trip" entries say where the owner is; they do not block time. A timed meeting with such a word in its title is still a meeting. */
+const isStay = (e: GEvent) => !isFlight(e) && e.eventType !== "outOfOffice" && (e.eventType === "workingLocation" || e.eventType === "fromGmail" || (!e.start?.dateTime && e.transparency === "transparent" && STAY.test(e.summary ?? "")));
 const declined = (e: GEvent) => e.attendees?.some((a) => a.self && a.responseStatus === "declined") ?? false;
 /** Only the owner's own travel moves the owner: entries they organised or accepted. Someone else's invitation is just text. */
 const ownTravel = (e: GEvent) => e.status !== "cancelled" && !declined(e) && (e.organizer?.self === true || e.attendees?.some((a) => a.self && a.responseStatus === "accepted") === true);
@@ -106,7 +106,7 @@ export function blocksOf(events: GEvent[], zone: string, except?: string): Block
     if (except && (e.id === except || e.recurringEventId === except)) continue;
     const s = span(e, zone);
     if (!s || !(s[1] > s[0])) continue;
-    out.push({ id: e.id, start: s[0], end: s[1], title: e.summary ?? "", meeting: !!e.start?.dateTime && !isFlight(e) && e.eventType !== "outOfOffice" });
+    out.push({ id: e.id, start: s[0], end: s[1], title: e.summary ?? "", meeting: !!e.start?.dateTime && !isFlight(e) && e.eventType !== "outOfOffice" && e.eventType !== "focusTime" });
   }
   return out;
 }
