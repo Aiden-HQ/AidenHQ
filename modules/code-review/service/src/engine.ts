@@ -1778,11 +1778,9 @@ export function createEngine(d: EngineDeps) {
     // A review says its own risk in its header, so the comment is for a PR no review will speak on (tier skip), or one that has it already
     // (kept current, edited in place): a reviewed PR gets no comment of its own.
     if (backlog(p) || !row?.tier || row.head !== p.head || row.noted === key || acking_(p.repo, p.number) || (row.tier !== "skip" && !ackOf(p.repo, p.number))) return;
-    // Once a run has spoken, its notice stands (its phase, counts and review link; past the push review cap, "Review skipped"): a newer
-    // head re-says it with that head's tier, which writes nothing on GitHub while the words are the same (the poster compares them).
-    // "Not started yet" is only for a PR no run has spoken on.
-    const last = lastRunAck(p.repo, p.number);
-    if (last?.head === p.head || await ack(last ? { ...last, head: p.head } : { repo: p.repo, number: p.number, head: p.head, state: "classified" })) run("UPDATE prs SET noted = ? WHERE repo = ? AND number = ? AND head = ?", key, p.repo, p.number, p.head);
+    // Once a run has spoken, its notice stands until the next run's (its phase, counts and review link; past the push review cap,
+    // "Review skipped"), whose own notice carries the tier: "Not started yet" is only for a PR no run has spoken on.
+    if (lastRunAck(p.repo, p.number) || await ack({ repo: p.repo, number: p.number, head: p.head, state: "classified" })) run("UPDATE prs SET noted = ? WHERE repo = ? AND number = ? AND head = ?", key, p.repo, p.number, p.head);
   }
 
   /**

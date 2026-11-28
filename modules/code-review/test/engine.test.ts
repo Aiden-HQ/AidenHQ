@@ -1459,7 +1459,7 @@ test("a PR no review will speak on (tier skip) gets the tier notice once: nothin
   assert.equal(w.classifieds.length, 2);
 });
 
-test("past the push review cap a push re-says the cap notice (never \"not started yet\")", async () => {
+test("past the push review cap the cap notice stands: a push writes no notice (never \"not started yet\")", async () => {
   const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH], push_rounds: 1 }] });
   w.ackId = 77; // the comment exists, as on GitHub
   await opened(w, 2, sha("2"));
@@ -1468,8 +1468,9 @@ test("past the push review cap a push re-says the cap notice (never \"not starte
   w.finish(1, NONE); await w.tick();
   w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
   assert.equal(reasonOf(w.acks.at(-1).why), "push_cap");
-  w.pr(2, sha("5")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
-  assert.deepEqual([w.acks.at(-1).head, w.acks.at(-1).state, reasonOf(w.acks.at(-1).why)], [sha("5"), "skipped", "push_cap"]);
+  const n = w.acks.length;
+  for (const h of ["5", "6"]) { w.pr(2, sha(h)); await w.tick(); w.later(DEBOUNCE + 1); await w.tick(); }
+  assert.equal(w.acks.length, n);
   assert.equal(w.classifieds.length, 0);
 });
 
