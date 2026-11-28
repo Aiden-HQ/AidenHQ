@@ -188,9 +188,8 @@ Engineering calls made with these (simplest to maintain):
   - One non-overlapping drain. Intake always answers the source: overflow drops are acknowledged and counted,
     and permanently invalid items are skipped. Transport errors, 429 and 5xx are retried with the same key. A job that
     starts before its batch binding is stored gets a bounded "pending, retry" answer.
-  - Caps: 12 runs per routine per hour and 120 in total, counted from dispatch times; a batch over a cap waits sealed (merged with its
-    routine's other waiting batches, up to a batch's size) and fires when the hour allows. Pending events are capped
-    separately from retained payloads, and only those overflow.
+  - No run-rate caps: the 60 s window already bounds a routine to 60 runs an hour and the gateway's spend limit is the money
+    guard. Only the pending queue is capped (a memory guard), and only its overflow drops events.
   - Slack and GitHub only in this release. GitHub is polled on the code host's existing loop (an instance has no
     ingress), best-effort, since GitHub can delay its event feed. Only `issues.opened`, `issue_comment.created`,
     `pull_request.opened` and `push` are offered for now.

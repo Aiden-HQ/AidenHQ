@@ -37,7 +37,7 @@ export type IngestResult = { accepted: true; seq?: number; duplicate?: true; que
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 
 export const WINDOW_MS = 60_000, BATCH_MAX = 20, TEXT_MAX = 2000, LABELS_MAX = 10, DATA_KEYS = 20, DATA_BYTES = 2048, LOG_KEEP_MS = 3 * 24 * 3600_000, LOG_PAGE = 200;
-export const ROUTINE_HOURLY = 12, TOTAL_HOURLY = 120, PENDING_MAX = 2000;
+export const PENDING_MAX = 2000;
 const DRAIN_MS = 30_000, FIRING_MS = 10 * 60_000, PENDING_RETRY_S = 10, BODY_MS = 24 * 3600_000, KEEP_MS = 7 * 24 * 3600_000, HOUR = 3600_000;
 
 export class EventsError extends Error {
@@ -265,7 +265,6 @@ export function createEvents(o: {
         // In turn order (sealed first; a failed routine lookup moves its batch's turn to the back), never the firing deadline.
         for (const b of db.prepare("SELECT * FROM event_batches WHERE state IN ('sealed', 'firing') ORDER BY max(turn, sealed_at)").all() as Batch[]) {
           if (Date.now() > until) break;
-          if (!get(b.id)) continue; // merged into an earlier batch this pass
           if (b.state === "firing" && now() - b.sealed_at! > FIRING_MS) { drop(b, "Paperclip didn't take the run in 10 minutes"); continue; }
           const s = subs()[b.routine];
           if (!s || !reads(s.agent, s.connection)) { drop(b, "the subscription or its read grant is gone"); continue; }
@@ -279,28 +278,7 @@ export function createEvents(o: {
           }
           if (r?.status !== "active" || r.assignee !== s.agent) { drop(b, r ? `the routine is ${r.status}` : "the routine is gone"); continue; }
           if (b.state === "sealed") {
-            const since = now() - HOUR;
-            // A batch firing holds its place in the caps until it lands (its retries keep the same key and place).
-            const mine = (db.prepare("SELECT count(*) AS n FROM event_batches WHERE routine = ? AND (dispatched_at > ? OR state = 'firing')").get(b.routine, since) as { n: number }).n;
-            const all = (db.prepare("SELECT count(*) AS n FROM event_batches WHERE dispatched_at > ? OR state = 'firing'").get(since) as { n: number }).n;
-            if (mine >= ROUTINE_HOURLY || all >= TOTAL_HOURLY) {
-              // Over a cap the batch waits sealed for a later pass: events are triaged late, never lost (intake's PENDING_MAX bounds
-              // the wait). Waiting batches of the same subscription merge, up to a batch's size, so a backlog drains in few runs.
-              db.exec("BEGIN IMMEDIATE");
-              try {
-                for (const m of db.prepare("SELECT * FROM event_batches WHERE routine = ? AND sub = ? AND state = 'sealed' AND id != ? ORDER BY sealed_at").all(b.routine, b.sub, b.id) as Batch[]) {
-                  if (b.count + m.count > BATCH_MAX) break;
-                  db.prepare("UPDATE event_queue SET batch = ? WHERE batch = ?").run(b.id, m.id);
-                  db.prepare("DELETE FROM event_batches WHERE id = ?").run(m.id);
-                  b.count += m.count;
-                }
-                // To the back of the line: a capped routine's batches never hold up the batches behind them.
-                db.prepare("UPDATE event_batches SET count = ?, turn = ? WHERE id = ?").run(b.count, now(), b.id);
-                db.exec("COMMIT");
-              } catch (e) { db.exec("ROLLBACK"); throw e; }
-              continue;
-            }
-            db.prepare("UPDATE event_batches SET state = 'firing', sealed_at = ? WHERE id = ?").run(now(), b.id); // the retry window starts here, not when it was sealed
+            db.prepare("UPDATE event_batches SET state = 'firing' WHERE id = ?").run(b.id);
           }
           db.prepare("UPDATE event_batches SET tries = tries + 1 WHERE id = ?").run(b.id);
           let res: { status: number; issue?: string };
