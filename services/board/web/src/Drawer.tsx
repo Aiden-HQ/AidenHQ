@@ -514,17 +514,19 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
               <b>The last run on this task failed.</b>
               <span className="muted small">{name} is fine and free for other work. Try again, or dismiss this if you no longer need it.</span>
             </div>
-            <button className="btn" disabled={busy} onClick={() => void act(() => api.comment(part.id, "Try again."), `${name} is trying again`)}>
-              Try again
-            </button>
-            {next && task.assignee === "me" && !self && (
-              <button className="btn primary" disabled={busy} onClick={() => void act(() => api.handOver(task.id, part.id, next.key), `${shortName(next)} picked it up`)}>
-                Hand to {shortName(next)}
+            <div className="banner-actions">
+              <button className="btn" disabled={busy} onClick={() => void act(() => api.comment(part.id, "Try again."), `${name} is trying again`)}>
+                Try again
               </button>
-            )}
-            <button className="btn" disabled={busy || part.identifier !== selected} onClick={() => void dismiss(part)}>
-              Dismiss
-            </button>
+              {next && task.assignee === "me" && !self && (
+                <button className="btn primary" disabled={busy} onClick={() => void act(() => api.handOver(task.id, part.id, next.key), `${shortName(next)} picked it up`)}>
+                  Hand to {shortName(next)}
+                </button>
+              )}
+              <button className="btn" disabled={busy || part.identifier !== selected} onClick={() => void dismiss(part)}>
+                Dismiss
+              </button>
+            </div>
           </div>
         )}
         {part && <DoneMeans grade={part.grade} />}

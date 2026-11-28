@@ -515,6 +515,7 @@ kbd {
 .crew-banner .btn { color: var(--text); }
 .crew-banner .banner-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 240px; }
 .crew-banner .banner-text .muted { color: var(--muted); }
+.crew-banner .banner-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 
 .agent-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
 .agent-name { font-size: var(--text-lg); font-weight: 650; display: flex; align-items: center; gap: 8px; }
