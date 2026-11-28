@@ -209,3 +209,14 @@ asked, through the tiered settings path. The defaults are old Aria's `templates/
 - An attendee with no known or valid time zone is left out of the local-hours ranking. No zone is guessed.
 - Aria books the best slot anyway. When the other person's zone is unknown, she states the time with its zone, so they
   can push back in the chat.
+
+**Working hours: core and stretch (owner, 2026-11-28).**
+- Google's API exposes nobody's working hours: Settings has no working-hours id, only working-location events.
+- The owner's hours are set on Aria's page, prefilled from the calendar.
+- Other people's hours default to 09:00–18:00 local, or to real hours Aria has learned and remembers.
+- Stretch windows, used at lower priority:
+  - known hours ± `aria_stretch_hours` (default 2);
+  - otherwise `aria_default_stretch` (default 06:00–22:00).
+- Ranking: everyone in core; then the fewest people in stretch; then the fewest outside.
+- Attendees are never excluded for hours. Times outside the owner's own hours plus stretch are excluded, so the owner
+  never gets a 3 am booking (engineering call).
