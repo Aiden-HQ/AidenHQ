@@ -1,14 +1,20 @@
 import { explainGoogle } from "./google-errors.js";
 
 /**
- * The scopes requested at consent time: calendar events and Gmail read and write (each write a reviewed tool), Drive read.
- * `gmail.modify` covers reading, drafts, sending and labels. src/auth.ts keeps a copy (a test checks they match).
+ * The scopes requested at consent time: calendar events and Gmail read and write (each write a reviewed tool), Drive read, and
+ * calendar free/busy (calendar_find_times reads colleagues' availability; Workspace shows it by default). `gmail.modify`
+ * covers reading, drafts, sending and labels. src/auth.ts keeps a copy (a test checks they match). An account signed in before
+ * free/busy was asked for keeps working: find_times answers `attendee_freebusy: "not_granted"` and the board asks for one
+ * reconnect (MultiWorkspace.authStatus `missing`).
  */
 export const SCOPES = [
   "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/drive.readonly",
   "https://www.googleapis.com/auth/gmail.modify",
+  "https://www.googleapis.com/auth/calendar.events.freebusy",
 ];
+/** Its short name (what the stored scope list is matched on). */
+export const FREEBUSY = "calendar.events.freebusy";
 /** The scope each write needs, by its short name (the needs_owner `scope`). */
 export const WRITE_SCOPE = { calendar: "calendar.events", gmail: "gmail.modify" } as const;
 
@@ -17,6 +23,13 @@ export interface StoredCredentials {
   client_secret?: string;
   refresh_token: string;
   scopes?: string[];
+}
+
+/** A Google API answer that was not a success, with its HTTP status (409 on an id already taken, 412 on a changed ETag). */
+export class GoogleApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
 }
 
 /** A sign-in failure. `expired`: Google refused the sign-in itself (a dead refresh token, a rejected access token), which only
@@ -113,7 +126,7 @@ export class GoogleClient {
       const text = await res.text();
       throw new GoogleAuthError(`Google API ${res.status}: ${text.slice(0, 300)}`, res.status === 401);
     }
-    if (!res.ok) throw new Error(`Google API ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    if (!res.ok) throw new GoogleApiError(`Google API ${res.status}: ${(await res.text()).slice(0, 300)}`, res.status);
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
   }
