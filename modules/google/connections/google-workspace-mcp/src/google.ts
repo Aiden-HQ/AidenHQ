@@ -9,6 +9,13 @@ export const SCOPES = [
   "https://www.googleapis.com/auth/drive.readonly",
   "https://www.googleapis.com/auth/gmail.modify",
 ];
+/**
+ * Asked for at consent, never required: the owner may untick it. It lets calendar_find_times read other people's free/busy,
+ * so an account signed in without it keeps working (no reconnect); find_times answers `attendee_freebusy: "not_granted"`.
+ */
+export const FREEBUSY_SCOPE = "https://www.googleapis.com/auth/calendar.freebusy";
+/** SCOPES plus the optional one: what the sign-in asks for. */
+export const REQUEST_SCOPES = [...SCOPES, FREEBUSY_SCOPE];
 /** The scope each write needs, by its short name (the needs_owner `scope`). */
 export const WRITE_SCOPE = { calendar: "calendar.events", gmail: "gmail.modify" } as const;
 
@@ -17,6 +24,13 @@ export interface StoredCredentials {
   client_secret?: string;
   refresh_token: string;
   scopes?: string[];
+}
+
+/** A Google API answer that was not a success, with its HTTP status (409 on an id already taken, 412 on a changed ETag). */
+export class GoogleApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
 }
 
 /** A sign-in failure. `expired`: Google refused the sign-in itself (a dead refresh token, a rejected access token), which only
@@ -113,7 +127,7 @@ export class GoogleClient {
       const text = await res.text();
       throw new GoogleAuthError(`Google API ${res.status}: ${text.slice(0, 300)}`, res.status === 401);
     }
-    if (!res.ok) throw new Error(`Google API ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    if (!res.ok) throw new GoogleApiError(`Google API ${res.status}: ${(await res.text()).slice(0, 300)}`, res.status);
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
   }

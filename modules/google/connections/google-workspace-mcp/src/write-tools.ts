@@ -24,6 +24,7 @@ export function registerWrites<W extends Writer>(server: McpServer, run: Run<W>)
   // Required, so every record the reviewer reads says who Google emails.
   const sendUpdates = z.enum(["all", "externalOnly", "none"]).describe("Who Google emails about the change: all (the guests, as when you do it by hand), externalOnly, or none");
   const time = z.string().min(10).max(40).describe("ISO-8601 date-time with offset (2026-11-24T15:00:00+04:00), or a date (2026-11-24) for an all-day event");
+  const allowConflict = z.boolean().optional().describe("Book the time although another event holds it. Only when the owner said to double-book; otherwise a taken time is refused and reported");
   const eventFields = {
     description: z.string().max(8000).optional(),
     location: z.string().max(500).optional(),
@@ -33,23 +34,24 @@ export function registerWrites<W extends Writer>(server: McpServer, run: Run<W>)
   server.registerTool(
     "calendar_create_event",
     {
-      description: "Create an event on your calendar and invite attendees (Google emails them per send_updates). meet: add a Google Meet link. Reviewed before it runs.",
-      inputSchema: { title: z.string().min(1).max(500), start: time, end: time, attendees: emails.optional(), meet: z.boolean().optional(), ...eventFields, send_updates: sendUpdates, account: writeAccount },
+      description:
+        "Create an event on your calendar and invite attendees (Google emails them per send_updates). meet: add a Google Meet link. A time another event holds is refused (nothing is created) unless allow_conflict. request_key makes a retried call create one event: the same key answers the event it made. Reviewed before it runs.",
+      inputSchema: { title: z.string().min(1).max(500), start: time, end: time, attendees: emails.optional(), meet: z.boolean().optional(), ...eventFields, request_key: z.string().min(1).max(200).describe("One fixed string per booking you intend (e.g. the task id and the slot); reuse it when retrying"), allow_conflict: allowConflict, send_updates: sendUpdates, account: writeAccount },
       annotations: rw,
     },
-    run("calendar_create_event", (ws, a: { title: string; start: string; end: string; attendees?: string[]; meet?: boolean; description?: string; location?: string; timezone?: string; send_updates: "all" | "externalOnly" | "none"; account?: string }) =>
-      method(ws, "createEvent", "calendar_create_event")({ title: a.title, start: a.start, end: a.end, attendees: a.attendees, meet: a.meet, description: a.description, location: a.location, timezone: a.timezone }, a.send_updates, a.account)),
+    run("calendar_create_event", (ws, a: { title: string; start: string; end: string; attendees?: string[]; meet?: boolean; description?: string; location?: string; timezone?: string; request_key: string; allow_conflict?: boolean; send_updates: "all" | "externalOnly" | "none"; account?: string }) =>
+      method(ws, "createEvent", "calendar_create_event")({ title: a.title, start: a.start, end: a.end, attendees: a.attendees, meet: a.meet, description: a.description, location: a.location, timezone: a.timezone, request_key: a.request_key, allow_conflict: a.allow_conflict }, a.send_updates, a.account)),
   );
   server.registerTool(
     "calendar_update_event",
     {
       description:
-        "Change an event: move it (start and end), rename it, change its description or location, add or remove attendees. An id from calendar_list_events (one occurrence) changes only that occurrence. Reviewed before it runs.",
-      inputSchema: { id: z.string().min(1).max(1024), title: z.string().min(1).max(500).optional(), start: time.optional(), end: time.optional(), add_attendees: emails.optional(), remove_attendees: emails.optional(), ...eventFields, send_updates: sendUpdates, account: writeAccount },
+        "Change an event: move it (start and end), rename it, change its description or location, add or remove attendees. An id from calendar_list_events (one occurrence) changes only that occurrence. A new time another event holds is refused unless allow_conflict. Pass the `etag` you read the event with and the change is refused if the event changed since. Reviewed before it runs.",
+      inputSchema: { id: z.string().min(1).max(1024), etag: z.string().max(200).optional().describe("The event's etag as calendar_list_events or calendar_get_event returned it"), allow_conflict: allowConflict, title: z.string().min(1).max(500).optional(), start: time.optional(), end: time.optional(), add_attendees: emails.optional(), remove_attendees: emails.optional(), ...eventFields, send_updates: sendUpdates, account: writeAccount },
       annotations: rw,
     },
-    run("calendar_update_event", (ws, a: { id: string; title?: string; start?: string; end?: string; add_attendees?: string[]; remove_attendees?: string[]; description?: string; location?: string; timezone?: string; send_updates: "all" | "externalOnly" | "none"; account?: string }) =>
-      method(ws, "updateEvent", "calendar_update_event")(a.id, { title: a.title, start: a.start, end: a.end, add_attendees: a.add_attendees, remove_attendees: a.remove_attendees, description: a.description, location: a.location, timezone: a.timezone }, a.send_updates, a.account)),
+    run("calendar_update_event", (ws, a: { id: string; etag?: string; allow_conflict?: boolean; title?: string; start?: string; end?: string; add_attendees?: string[]; remove_attendees?: string[]; description?: string; location?: string; timezone?: string; send_updates: "all" | "externalOnly" | "none"; account?: string }) =>
+      method(ws, "updateEvent", "calendar_update_event")(a.id, { title: a.title, start: a.start, end: a.end, add_attendees: a.add_attendees, remove_attendees: a.remove_attendees, description: a.description, location: a.location, timezone: a.timezone, etag: a.etag, allow_conflict: a.allow_conflict }, a.send_updates, a.account)),
   );
   server.registerTool(
     "calendar_delete_event",

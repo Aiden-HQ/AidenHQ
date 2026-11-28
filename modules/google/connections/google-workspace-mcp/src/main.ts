@@ -6,6 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
 import { z } from "zod";
+import type { FindTimesArgs } from "./find-times.js";
 import { checkGoogle, healthBody, MultiWorkspace, servedBy, toolFailure } from "./accounts.js";
 import { FixtureWorkspace } from "./fixtures.js";
 import { registerWrites } from "./write-tools.js";
@@ -41,7 +42,7 @@ const meetingNameHints = (process.env.MEETING_DOC_NAME_HINTS ?? "Transcript,Note
 
 // MultiWorkspace (real Google, one or more accounts) or FixtureWorkspace (tests).
 type WorkspaceLike = Pick<MultiWorkspace, "listEvents" | "getEvent" | "recentFiles" | "meetingDocuments" | "searchFiles" | "readFile"> &
-  Partial<Pick<MultiWorkspace, "readDoc" | "gmailSearch" | "gmailInbox" | "gmailThread" | "accounts" | "createEvent" | "updateEvent" | "deleteEvent" | "respondToEvent" | "gmailDraft" | "gmailSend" | "gmailLabel">> & { primary?: string };
+  Partial<Pick<MultiWorkspace, "readDoc" | "gmailSearch" | "gmailInbox" | "gmailThread" | "accounts" | "findTimes" | "createEvent" | "updateEvent" | "deleteEvent" | "respondToEvent" | "gmailDraft" | "gmailSend" | "gmailLabel">> & { primary?: string };
 let workspace: WorkspaceLike | undefined;
 let multi: MultiWorkspace | undefined;
 let authError: unknown;
@@ -149,9 +150,36 @@ function buildServer(caller?: Caller): McpServer {
     },
     run("calendar_search_events", (ws, a: { query: string; start: string; end: string; account?: string }) => ws.listEvents(a.start, a.end, a.query, 50, a.account)),
   );
+  const hhmm = z.string().regex(/^\d{1,2}:\d{2}$/).describe("HH:MM on the owner's wall clock");
+  const windows = z.array(z.tuple([hhmm, hhmm])).max(8);
+  server.registerTool(
+    "calendar_find_times",
+    {
+      description:
+        "Meeting times that fit the owner's calendar: inside working_hours (the owner's wall clock on each day, in the zone the owner is in that day: flights, stays and working locations they organised or accepted move it), clear of busy time plus buffer_min either side and of the attendees' busy time, at least min_notice_hours away, on days under max_per_day meetings. Returns ranked, distinct slots: tier first (best, ok, then last_resort: working hours but outside the call windows), then back-to-back with an existing meeting, then earliest; each slot's own timezone. attendee_freebusy says whether the attendees' calendars were used (used), the owner has not allowed that yet (not_granted) or Google hid some (not_visible); the answer is still the owner's own availability.",
+      inputSchema: {
+        duration_min: z.number().int().min(5).max(480),
+        window_start: z.string().describe("ISO-8601 date-time with offset"),
+        window_end: z.string().describe("ISO-8601 date-time with offset"),
+        attendees: z.array(z.string().email().max(320)).max(20).optional(),
+        working_hours: z.object({ mon: windows, tue: windows, wed: windows, thu: windows, fri: windows, sat: windows, sun: windows }),
+        call_windows: z.object({ best: windows.optional(), ok: windows.optional() }).optional(),
+        buffer_min: z.number().int().min(0).max(240),
+        min_notice_hours: z.number().min(0).max(24 * 60),
+        max_per_day: z.number().int().min(1).max(50).optional(),
+        timezone: z.string().max(64).describe("The owner's home IANA zone, e.g. Asia/Dubai"),
+        account,
+      },
+      annotations: ro,
+    },
+    run("calendar_find_times", (ws, a: FindTimesArgs) => {
+      if (!ws.findTimes) throw new Error("calendar_find_times is not available in fixture mode");
+      return ws.findTimes(a);
+    }),
+  );
   server.registerTool(
     "calendar_get_event",
-    { description: "Get one calendar event by ID.", inputSchema: { id: z.string().min(1).max(1024), account }, annotations: ro },
+    { description: "Get one calendar event by ID (its `etag` is what calendar_update_event takes to refuse a change if the event moved on).", inputSchema: { id: z.string().min(1).max(1024), account }, annotations: ro },
     run("calendar_get_event", (ws, a: { id: string; account?: string }) => ws.getEvent(a.id, a.account)),
   );
   server.registerTool(

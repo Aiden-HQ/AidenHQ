@@ -12,11 +12,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 
-// A copy of google.ts SCOPES (test/reconnect.test.ts checks they match).
+// A copy of google.ts REQUEST_SCOPES (test/reconnect.test.ts checks they match).
 const SCOPES = [
   "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/drive.readonly",
   "https://www.googleapis.com/auth/gmail.modify",
+  "https://www.googleapis.com/auth/calendar.freebusy",
 ];
 
 const args = process.argv.slice(2);

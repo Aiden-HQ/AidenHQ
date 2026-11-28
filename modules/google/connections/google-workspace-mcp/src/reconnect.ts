@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { type CredentialsFile, readCredentials } from "./accounts.js";
-import { SCOPES } from "./google.js";
+import { REQUEST_SCOPES } from "./google.js";
 import { explainApi, explainGoogle } from "./google-errors.js";
 
 /**
@@ -48,7 +48,7 @@ export class Reconnect {
       client_id: creds.client_id,
       redirect_uri: redirectUri,
       response_type: "code",
-      scope: SCOPES.join(" "),
+      scope: REQUEST_SCOPES.join(" "),
       access_type: "offline",
       prompt: "consent",
       code_challenge: createHash("sha256").update(verifier).digest("base64url"),

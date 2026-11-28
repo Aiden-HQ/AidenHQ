@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
 import { loadAccounts } from "../src/accounts.js";
-import { SCOPES } from "../src/google.js";
+import { REQUEST_SCOPES, SCOPES } from "../src/google.js";
 import { Reconnect } from "../src/reconnect.js";
 
 const credsFile = () => {
@@ -33,12 +33,12 @@ const stateOf = (url: string) => new URL(url).searchParams.get("state")!;
 describe("reconnect from the board", () => {
   const redirect = "http://127.0.0.1:3120/google/callback";
 
-  it("asks Google for SCOPES, for that account, with PKCE", () => {
+  it("asks Google for the scopes (the optional free/busy one too), for that account, with PKCE", () => {
     const { url } = new Reconnect(credsFile()).start("me@work.com", redirect);
     const q = new URL(url).searchParams;
     expect(q.get("client_id")).toBe("cid");
     expect(q.get("redirect_uri")).toBe(redirect);
-    expect(q.get("scope")).toBe(SCOPES.join(" "));
+    expect(q.get("scope")).toBe(REQUEST_SCOPES.join(" "));
     expect(q.get("login_hint")).toBe("me@work.com");
     expect(q.get("code_challenge_method")).toBe("S256");
     expect(q.get("access_type")).toBe("offline");
@@ -84,13 +84,13 @@ describe("reconnect from the board", () => {
 
   it("the host fallback (src/auth.ts) asks for the same scopes", () => {
     const copy = /const SCOPES = \[([^\]]*)\]/.exec(readFileSync(join(import.meta.dirname, "../src/auth.ts"), "utf8"))![1]!;
-    expect([...copy.matchAll(/"([^"]+)"/g)].map((m) => m[1])).toEqual(SCOPES);
+    expect([...copy.matchAll(/"([^"]+)"/g)].map((m) => m[1])).toEqual(REQUEST_SCOPES);
   });
 
   it("the setup page's console_scopes (module.yaml) list the same scopes", () => {
     const yaml = readFileSync(join(import.meta.dirname, "../../../module.yaml"), "utf8");
     const listed = /console_scopes:\n((?:\s+- \S+\n)+)/.exec(yaml)![1]!;
-    expect([...listed.matchAll(/- (\S+)/g)].map((m) => m[1])).toEqual(SCOPES);
+    expect([...listed.matchAll(/- (\S+)/g)].map((m) => m[1])).toEqual(REQUEST_SCOPES);
   });
 
   it("spends each state once, and expires it", async () => {

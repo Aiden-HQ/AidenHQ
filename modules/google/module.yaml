@@ -24,6 +24,7 @@ contributes:
         - https://www.googleapis.com/auth/calendar.events
         - https://www.googleapis.com/auth/drive.readonly
         - https://www.googleapis.com/auth/gmail.modify
+        - https://www.googleapis.com/auth/calendar.freebusy
       steps: |
         AidenHQ needs **one Google app per Workspace**: the app is what Google shows when you approve access. Pick the way that fits you; only its steps show.
       ways:
@@ -84,7 +85,7 @@ connections:
     url: http://google-workspace-mcp:8081/mcp
     auth: google_service_key
     tools:
-      read: [ calendar_list_events, calendar_today, calendar_search_events, calendar_get_event, drive_list_recent_files, drive_list_meeting_documents, drive_search_files, drive_read_file, gmail_search, gmail_inbox_new, gmail_read_thread, docs_read ]
+      read: [ calendar_list_events, calendar_today, calendar_search_events, calendar_get_event, calendar_find_times, drive_list_recent_files, drive_list_meeting_documents, drive_search_files, drive_read_file, gmail_search, gmail_inbox_new, gmail_read_thread, docs_read ]
       # gmail_inbox_ack moves only the caller's own inbox cursor (like source_ack).
       write: [ gmail_inbox_ack ]
       # Writes act as the owner on one account (`account`, default the primary): destructive, so only a grant naming one reaches

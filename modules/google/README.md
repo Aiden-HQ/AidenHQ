@@ -15,7 +15,7 @@ sign-in. By hand: `scripts/google-auth.sh <client.json>`.
 
 ## What agents get
 
-The `google_workspace` connection. Read: `calendar_list_events`, `calendar_search_events`, `calendar_get_event`, `calendar_today`,
+The `google_workspace` connection. Read: `calendar_list_events`, `calendar_search_events`, `calendar_get_event`, `calendar_today`, `calendar_find_times`,
 `drive_list_recent_files`, `drive_list_meeting_documents`, `drive_search_files`, `drive_read_file`, `gmail_search`,
 `gmail_read_thread`, `docs_read`, and `gmail_inbox_new` (the inbox since the caller's cursor, automated mail set aside in
 code) with `gmail_inbox_ack` (moves that cursor). Glean finds Drive documents faster; read them here for the exact current text.
@@ -23,8 +23,12 @@ code) with `gmail_inbox_ack` (moves that cursor). Glean finds Drive documents fa
 Write, as you on one account (`account`, default the primary), granted only by name: `calendar_create_event`,
 `calendar_update_event`, `calendar_delete_event`, `calendar_respond`, `gmail_draft` and `gmail_send`, each a record the
 AI reviewer decides first; and `gmail_label` (your own existing labels only, never system ones), which runs at once.
+`calendar_find_times` proposes ranked meeting slots from your working hours, buffers, notice and call windows, in the zone
+you are in each day (flights, stays and working locations you organised or accepted move it). Creates refuse a time another
+event holds and make one event per `request_key` on a retry; moves are refused when the event changed since it was read.
 Agents that hold them list the skills `google.calendar-changes` and `google.gmail-writes`. Scopes: `calendar.events`,
-`drive.readonly`, `gmail.modify`. An account connected before writes existed keeps reading; Settings, Connections asks you
+`drive.readonly`, `gmail.modify`, and the optional `calendar.freebusy`, which lets `calendar_find_times` read other
+people's free/busy (without it the tool answers from your own calendar and says `not_granted`). An account connected before the optional scope keeps working and is never asked to reconnect for it. An account connected before writes existed keeps reading; Settings, Connections asks you
 to reconnect it once, and a write on it asks for that reconnect too.
 
 ## New installs
