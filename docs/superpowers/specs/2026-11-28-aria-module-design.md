@@ -202,3 +202,10 @@ asked, through the tiered settings path. The defaults are old Aria's `templates/
   every attendee's local hours rank first; slots outside those hours rank lower and are never excluded.
 - Aria resolves time zones from Slack profiles (`tz`) or memory. A new setting `aria_others_hours` controls the assumed
   local day.
+
+**Missing data never blocks (owner, 2026-11-28).**
+- An attendee without visible free/busy (external, not shared, scope missing, or a failed call) is skipped in the
+  free/busy check. They're reported per attendee, and slots are still returned.
+- An attendee with no known or valid time zone is left out of the local-hours ranking. No zone is guessed.
+- Aria books the best slot anyway. When the other person's zone is unknown, she states the time with its zone, so they
+  can push back in the chat.
