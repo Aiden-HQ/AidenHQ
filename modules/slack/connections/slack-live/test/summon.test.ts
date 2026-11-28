@@ -4,7 +4,7 @@ import { describe, expect, it } from "bun:test";
 import { toSourceEvent } from "../src/map.js";
 import { gapSync, replayQueue, type Api } from "../src/sources.js";
 import type { SourceStore } from "../src/source-store.js";
-import { summon, SummonError, toSlackLinks, type Relay } from "../src/summon.js";
+import { attest, summon, SummonError, toSlackLinks, type Relay } from "../src/summon.js";
 import { openStore } from "../src/store.js";
 
 const OWNER = "UOWNER";
@@ -28,6 +28,20 @@ describe("owner attestation", () => {
     expect(msg({ user: OWNER, subtype: "bot_message" })).toMatchObject({ from_owner: false });
     expect(msg({ user: OWNER, subtype: "file_share" })).toMatchObject({ from_owner: true });
     expect(toSourceEvent({ event: { type: "message", channel_type: "channel", channel: "C1", ts: "1.1", user: OWNER, text: "cc Aria" } })).toMatchObject({ from_owner: false });
+  });
+});
+
+describe("agent posts as the owner", () => {
+  it("an agent-posted owner message containing cc Aria is not attested; the owner's own is; an unanswerable lookup fails closed", async () => {
+    const e = msg({ user: OWNER, ts: "40.1", text: "Booked. cc Aria" })!;
+    expect(e.from_owner).toBe(true); // by author alone it looks like the owner's
+    const now = 41_000;
+    const posted = async (channel: string, ts: string) => channel === "C1" && ts === "40.1";
+    expect((await attest(e, posted, now)).from_owner).toBe(false);
+    expect((await attest(msg({ user: OWNER, ts: "40.2", text: "cc Aria" })!, posted, now)).from_owner).toBe(true);
+    expect((await attest(msg({ user: OWNER, ts: "40.3", text: "cc Aria" })!, async (_c, _t, text) => text === "cc Aria", now)).from_owner).toBe(false); // known by its words
+    expect((await attest(msg({ user: OWNER, ts: "40.4", text: "cc Aria" })!, posted, 40_000 + 7 * 86_400_000)).from_owner).toBe(false); // older than what is remembered
+    await expect(attest(e, async () => { throw new Error("down"); }, now)).rejects.toThrow("down"); // retried, never attested blind
   });
 });
 

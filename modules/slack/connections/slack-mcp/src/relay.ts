@@ -3,12 +3,14 @@
 //   GET /internal/owner          whose sign-in it is: { user_id, team_id } (slack_owner); 409 while Slack isn't connected
 //   GET /internal/slack/<method> one read the src_slack gap sync and summoning make, sent to Slack as the owner; Slack's answer as given
 //   POST /internal/post-message  one message posted as the owner (chat.postMessage): {channel, text, thread_ts?}   (summoning's reply)
+//   GET /internal/posted?channel=&ts=  whether this service posted that message for an agent (by ts, or by its words): { posted: boolean }
 //   POST /internal/add-reaction  one reaction added as the owner (reactions.add): {channel, timestamp, name}      (summoning's 👀)
 // All need slack-live's own key (slack_relay_key). Only those read methods pass, and the two writes have a fixed shape: the
 // token stays here, and slack-live can't send anything else as the owner.
 import { timingSafeEqual } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Posted } from "./posted.js";
 
 /** What the gap sync reads (slack-live src/sources.ts): nothing that writes, nothing else. */
 export const RELAYED = new Set(["users.list", "users.info", "users.conversations", "conversations.history", "conversations.replies", "conversations.info"]);
@@ -31,6 +33,8 @@ export interface RelayDeps {
   headers: () => Promise<Record<string, string>>;
   signedIn: () => boolean;
   fetchImpl?: typeof fetch;
+  /** Messages posted for an agent as the owner (posted.ts): the relay's own post-message is recorded, and `GET /internal/posted` answers. */
+  posted?: Posted;
 }
 
 /** Answers the relay's paths; false for every other path. */
@@ -60,10 +64,14 @@ export function relay(o: RelayDeps) {
       const body = (() => { try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as Record<string, unknown>; } catch { return undefined; } })();
       const call = body && typeof body === "object" && !Array.isArray(body) ? writeCall(url.pathname, body) : "a JSON object is required";
       if (typeof call === "string") return (send(400, { error: call }), true);
+      if (call.method === "chat.postMessage") o.posted?.recordText(String(call.body.channel), String(call.body.text)); // before: Slack may deliver it first
       const up = await doFetch(`https://slack.com/api/${call.method}`, { method: "POST", headers: { ...(await o.headers()), "content-type": "application/json; charset=utf-8" }, body: JSON.stringify(call.body), signal: AbortSignal.timeout(30_000) });
       const retry = up.headers.get("retry-after");
-      return (send(up.status, await up.text(), retry ? { "retry-after": retry } : {}), true);
+      const answer = await up.text();
+      if (call.method === "chat.postMessage") { try { const r = JSON.parse(answer) as { ok?: boolean; channel?: string; ts?: string }; if (r.ok && r.channel && r.ts) o.posted?.record(r.channel, r.ts); } catch { /* not JSON: nothing to record */ } }
+      return (send(up.status, answer, retry ? { "retry-after": retry } : {}), true);
     }
+    if (url.pathname === "/internal/posted") return (send(200, { posted: Boolean(o.posted?.has(url.searchParams.get("channel") ?? "", url.searchParams.get("ts") ?? "", url.searchParams.get("text") ?? undefined)) }), true);
     if (url.pathname === "/internal/owner") {
       const t = JSON.parse(readFileSync(o.tokenFile, "utf8")) as { user_id?: unknown; team_id?: unknown };
       if (typeof t.user_id === "string") return (send(200, { user_id: t.user_id, team_id: typeof t.team_id === "string" ? t.team_id : null }), true);

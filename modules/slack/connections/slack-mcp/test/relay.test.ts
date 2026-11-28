@@ -4,6 +4,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "bun:test";
 import { relay } from "../src/relay.js";
+import { postedMessage, postedStore } from "../src/posted.js";
+
+it("remembers what it posted for an agent (7 days) and finds a message from a tool answer", () => {
+  const dir = mkdtempSync(join(tmpdir(), "posted-"));
+  let t = 0;
+  const p = postedStore(join(dir, "p.json"), () => t);
+  p.record("C1", "5.5");
+  p.recordText("C1", "Booked! cc [Aria](https://x)");
+  expect(p.has("C1", "9.9", "booked cc Aria https x")).toBe(true); // by its words, whatever Slack's markup did to it
+  expect(p.has("C2", "9.9", "booked cc Aria https x")).toBe(false);
+  expect(p.has("C1", "5.5")).toBe(true);
+  expect(p.has("C1", "6.6")).toBe(false);
+  expect(postedStore(join(dir, "p.json"), () => t).has("C1", "5.5")).toBe(true);
+  t = 8 * 86_400_000;
+  expect(p.has("C1", "5.5")).toBe(false);
+  expect(postedMessage({ content: [{ type: "text", text: '{"channel":"C3","ts":"2.2","text":"see https://x.slack.com/archives/C1/p1700000000123456"}' }] })).toEqual({ channel: "C3", ts: "2.2" }); // echoed text is not the answer
+  expect(postedMessage({ content: [{ type: "text", text: "Sent https://x.slack.com/archives/C1/p1700000000123456" }] })).toEqual({ channel: "C1", ts: "1700000000.123456" });
+  expect(postedMessage({ content: [{ type: "text", text: '{"channel":"C2","ts":"1.2"}' }] })).toEqual({ channel: "C2", ts: "1.2" });
+});
 
 it("lends slack-live the sign-in's reads and whose it is, never the token, and only with its key", async () => {
   const dir = mkdtempSync(join(tmpdir(), "relay-"));

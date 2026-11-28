@@ -165,3 +165,22 @@ export function relayWrites(base: string, key: string, fetchFn: typeof fetch = f
     }
   };
 }
+
+/** Whether slack-mcp posted that message for an agent (its record, posted.ts): by channel and ts, or by its words. */
+export const postedByAgent = (base: string, key: string, fetchFn: typeof fetch = fetch) => async (channel: string, ts: string, text: string): Promise<boolean> => {
+  const res = await fetchFn(`${base}/internal/posted?${new URLSearchParams({ channel, ts, text })}`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(5_000) });
+  if (!res.ok) throw new Error(`slack-mcp posted: ${res.status}`);
+  return ((await res.json()) as { posted?: boolean }).posted === true;
+};
+
+/** What slack-mcp remembers (posted.ts), less a day: an older message can't be told from an agent's, so it is never attested. */
+const PROVENANCE_MS = 6 * 86_400_000;
+/** An owner-authored event is the owner's own only if no agent posted it as the owner: an agent's text ("cc Aria") must never
+ * summon. A lookup that can't be answered throws, so the event is retried (an unacked socket event is redelivered, a replay is
+ * kept), never attested without the answer. */
+export async function attest<E extends { id: string; resource: string; text?: string; from_owner?: boolean }>(e: E, posted: (channel: string, ts: string, text: string) => Promise<boolean>, now = Date.now()): Promise<E> {
+  if (!e.from_owner) return e;
+  const ts = tsOf(e.id);
+  if (now - Number(ts) * 1000 > PROVENANCE_MS || (await posted(e.resource, ts, e.text ?? ""))) return { ...e, from_owner: false };
+  return e;
+}

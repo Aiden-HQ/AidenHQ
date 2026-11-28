@@ -20,7 +20,7 @@ import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { serveExecutor } from "./aidenhq-sdk/executor.js";
 import { SourceStore } from "./source-store.js";
 import { replayQueue, slackApi as relayApi, slackTee, startGapSync } from "./sources.js";
-import { relayWrites, summon, SummonError } from "./summon.js";
+import { attest, postedByAgent, relayWrites, summon, SummonError } from "./summon.js";
 import { AppError, apps as appsOf, type Part } from "./apps.js";
 import { ownerReader } from "./signin.js";
 
@@ -244,7 +244,9 @@ const binding = cfg.botToken ? {
 
 // Routines' events: each kept event to the kernel's event router with this module's own token (role kernel.events). Any 2xx is
 // taken (queued, skipped or dropped); a 429 or 5xx throws so Slack redelivers; any other refusal is logged and passed.
-const forward = async (e: unknown) => {
+const agentPosted = postedByAgent(slackMcp, relayKey);
+const forward = async (event: { id: string; resource: string; text?: string; from_owner?: boolean }) => {
+  const e = await attest(event, agentPosted);
   const res = await fetch(`${kernelUrl}/v1/events`, { method: "POST", headers: { authorization: `Bearer ${channelToken}`, "content-type": "application/json" }, body: JSON.stringify(e), signal: AbortSignal.timeout(15_000) });
   if (res.status === 429 || res.status >= 500) throw new Error(`POST /v1/events -> ${res.status}`);
   if (!res.ok) log.warn({ status: res.status }, "the kernel refused an event; passed");
