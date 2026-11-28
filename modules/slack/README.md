@@ -29,12 +29,15 @@ Writing `cc <Agent>`, `@<Agent>` or `<Agent>@AidenHQ` in your own Slack message 
 summon path). slack-live is the Slack side of the contract:
 
 - It marks each event `from_owner` (the author is the paired owner's user id, no bot or app marker, decided in code) and
-  gives it its conversation: `thread` is `thread_ts`, or the message's own ts for a top-level channel message; a DM has none.
+  gives it its conversation: `thread` is `thread_ts`, or the message's own ts for a top-level channel message. A DM has one
+  only for a reply inside a thread (so that thread is its own conversation, and the reply goes into it).
 - It answers the kernel's `POST /summon/context|reply|react` (`src/summon.ts`) as you: reads and the 👀 reaction and the
   reply are Slack calls made with your sign-in's user token, through slack-mcp's relay (`/internal/post-message`,
   `/internal/add-reaction`: two fixed shapes, so the token never leaves slack-mcp). `reply` threads under the conversation's
   root in a channel, renders `[label](url)` as `<url|label>`, and a repeated `key` posts once. Ids are the event ids
   (`<channel>:<ts>`).
+- Every call refuses (409) unless slack-mcp's sign-in is the account that paired the bot: attestation is the paired owner's,
+  the token is the sign-in's, and they must be one person. Connect Slack as the paired account.
 - The sign-in needs the user scopes `chat:write` and `reactions:write`: the advanced manifest adds them; an app connected
   before needs Connect again (a refused call says so).
 - Messages the gap sync replays that the kernel didn't take are kept and retried on the next pass for six hours.

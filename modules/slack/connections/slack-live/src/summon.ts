@@ -73,7 +73,8 @@ export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv">;
         // Replies come oldest first, a page at a time: read to the cutoff, then keep the last n.
         for (let cursor = "", pages = 0; pages < 10; pages++) {
           const r = await o.relay.read("conversations.replies", { channel, ts: thread, limit: "200", ...upTo, ...(cursor ? { cursor } : {}) });
-          found.push(...((r.messages as Json[] | undefined) ?? []).filter((m) => !before || Number(m.ts) < Number(before)));
+          // Slack repeats the thread's parent on every page: one message per ts.
+          for (const m of (r.messages as Json[] | undefined) ?? []) if ((!before || Number(m.ts) < Number(before)) && !found.some((f) => f.ts === m.ts)) found.push(m);
           cursor = (r.response_metadata as { next_cursor?: string } | undefined)?.next_cursor ?? "";
           if (!cursor) break;
         }
@@ -89,9 +90,9 @@ export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv">;
   async function reply(b: Json) {
     const channel = str(b.resource), thread = str(b.thread), text = str(b.text), key = str(b.key);
     if (!channel || !text || !key) throw new SummonError(400, "resource, text and key are required");
+    await same(); // before the lookups: nothing may await between the stored-id and in-flight checks and the post
     const done = o.store.getKv(`summon_reply:${key}`);
     if (done) return { id: done };
-    await same();
     const running = inflight.get(key);
     if (running) return running;
     const p = (async () => {
