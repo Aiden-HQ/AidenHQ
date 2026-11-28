@@ -95,6 +95,9 @@ const norm = (login: string) => login.toLowerCase().replace(/\[bot\]$/, "");
 const split = (repo: string): Ref => { const [owner, name] = repo.split("/"); return { owner: owner!, repo: name!, number: 0 }; };
 const api = (r: Ref) => `/repos/${r.owner}/${r.repo}`;
 
+/** Two notice texts that differ at most in the head their footer names (`<sub>abc1234 · …`). */
+const sameWords = (a: string | undefined, b: string) => a !== undefined && a.replace(/<sub>[0-9a-f]{7,40}/, "<sub>") === b.replace(/<sub>[0-9a-f]{7,40}/, "<sub>");
+
 export class ReviewPoster {
   /** Each pull request's acknowledgement writes, one after another. */
   private readonly ackTail = new Map<string, Promise<unknown>>();
@@ -236,10 +239,11 @@ export class ReviewPoster {
     // acknowledgement comment per pull request per writer, edited in place, never a second one.
     id ??= await this.ackComment(ref, w);
     if (id) {
-      // Read it first: a notice whose words are already there writes nothing.
+      // Read it first: a notice whose words are already there writes nothing, the head in its footer aside (a push that leaves the
+      // status as it was, e.g. past the push review cap, edits nothing).
       const have = await this.gh.request<{ html_url: string; body?: string; user?: Author }>("GET", `${api(ref)}/issues/comments/${id}`, {}).catch((e: Error) => { if (/\b404\b/.test(e.message)) return undefined; throw e; });
       if (have && isWho(w.who, have.user)) {
-        const ok = have.body === signed ? have : await w.gh.request<{ html_url: string }>("PATCH", `${api(ref)}/issues/comments/${id}`, { body: { body: signed } }).catch((e: Error) => { if (/\b404\b/.test(e.message)) return undefined; throw e; });
+        const ok = sameWords(have.body, signed) ? have : await w.gh.request<{ html_url: string }>("PATCH", `${api(ref)}/issues/comments/${id}`, { body: { body: signed } }).catch((e: Error) => { if (/\b404\b/.test(e.message)) return undefined; throw e; });
         if (ok) return { id, url: ok.html_url, object: `${objectRef(ref)}/comment/${id}` };
       }
     }
