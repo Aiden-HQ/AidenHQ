@@ -16,9 +16,10 @@ describe("owner attestation", () => {
     expect(msg({ user: OWNER, thread_ts: "9.1" })).toMatchObject({ from_owner: true, thread: "9.1" });
     expect(msg({ user: "U2" })).toMatchObject({ from_owner: false });
   });
-  it("a DM has no thread; an app_mention (no channel_type) in a C channel does", () => {
+  it("a DM has a thread only as a reply (as triage reads it); an app_mention (no channel_type) in a C channel has one", () => {
     expect(msg({ user: OWNER, channel_type: "im", channel: "D1" })).toMatchObject({ from_owner: true });
-    expect(msg({ user: OWNER, channel_type: "mpim", channel: "G1", thread_ts: "9.1" })).not.toHaveProperty("thread");
+    expect(msg({ user: OWNER, channel_type: "im", channel: "D1" })).not.toHaveProperty("thread");
+    expect(msg({ user: OWNER, channel_type: "mpim", channel: "G1", thread_ts: "9.1" })).toMatchObject({ thread: "9.1" });
     expect(msg({ user: OWNER, channel_type: undefined, type: "app_mention" })).toMatchObject({ thread: "10.5" });
   });
   it("never from a bot, an app or a non-plain subtype posing as the owner, and never without a paired owner", () => {
@@ -81,7 +82,7 @@ describe("the summon calls", () => {
       },
       write: async (path, body) => (posts.push({ path, ...body }), { ok: true, ts: `20.${posts.length}` }),
     };
-    const api = summon({ relay, store: openStore(":memory:"), owner: () => OWNER });
+    const api = summon({ relay, store: openStore(":memory:"), owner: () => OWNER, signedIn: async () => OWNER });
     return { api, posts, reads };
   }
 
@@ -119,10 +120,25 @@ describe("the summon calls", () => {
     const { api, posts } = fake();
     expect(await api.react({ resource: "C1", message: "C1:10.5", emoji: "eyes" })).toEqual({});
     expect(posts[0]).toEqual({ path: "add-reaction", channel: "C1", timestamp: "10.5", name: "eyes" });
-    const scopeless = summon({ relay: { read: async () => ({}), write: async () => { throw new Error("missing_scope"); } }, store: openStore(":memory:"), owner: () => OWNER });
+    const scopeless = summon({ relay: { read: async () => ({}), write: async () => { throw new Error("missing_scope"); } }, store: openStore(":memory:"), owner: () => OWNER, signedIn: async () => OWNER });
     const err = await scopeless.react({ resource: "C1", message: "C1:10.5", emoji: "eyes" }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(SummonError);
     expect((err as SummonError).status).toBe(502);
     expect((err as SummonError).message).toMatch(/chat:write and reactions:write/);
+  });
+
+  it("refuses every call when the relay's sign-in is not the paired owner's account", async () => {
+    const posted: unknown[] = [];
+    const other = summon({ relay: { read: async () => ({}), write: async (_, b) => (posted.push(b), { ok: true, ts: "1.1" }) }, store: openStore(":memory:"), owner: () => OWNER, signedIn: async () => "UOTHER" });
+    for (const call of [() => other.reply({ resource: "C1", text: "hi", key: "k" }), () => other.react({ resource: "C1", message: "C1:1.1", emoji: "eyes" }), () => other.context({ resource: "C1" })])
+      expect(await call().catch((e: SummonError) => e.status)).toBe(409);
+    expect(posted).toEqual([]);
+  });
+
+  it("context follows Slack's pages: the last n replies before the summons, not the first page's", async () => {
+    const page = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => ({ ts: `${from + i}.0`, user: OWNER, text: `m${from + i}` }));
+    const relay: Relay = { read: async (_, p) => (p.cursor ? { ok: true, messages: page(201, 205) } : { ok: true, messages: page(1, 201), response_metadata: { next_cursor: "c2" } }), write: async () => ({}) };
+    const api = summon({ relay, store: openStore(":memory:"), owner: () => OWNER, signedIn: async () => OWNER });
+    expect((await api.context({ resource: "C1", thread: "1.0", before: "C1:204.0", n: 3 })).messages.map((m) => m.ts)).toEqual(["201.0", "202.0", "203.0"]);
   });
 });

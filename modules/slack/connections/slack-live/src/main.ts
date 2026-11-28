@@ -74,7 +74,7 @@ const slackMcp = (process.env.SLACK_MCP_URL ?? "http://slack-mcp:8082").replace(
 const relayKey = env("RELAY_KEY");
 const owner = ownerReader(slackMcp, relayKey);
 // Summoning (summon.ts): reads and writes as the owner through slack-mcp's relay; off without the relay key.
-const summoning = relayKey ? summon({ relay: { read: relayApi(slackMcp, relayKey), write: relayWrites(slackMcp, relayKey) }, store, owner: () => cfg.ownerId || undefined }) : undefined;
+const summoning = relayKey ? summon({ relay: { read: relayApi(slackMcp, relayKey), write: relayWrites(slackMcp, relayKey) }, store, owner: () => cfg.ownerId || undefined, signedIn: async () => (await owner())?.user_id ?? null }) : undefined;
 // The Slack app made or updated from a pasted App Configuration Token (the board's setup page, with the pair token).
 const slackApps = appsOf(store);
 // Whether the bot is set up (the board's Connections shows it): booleans only, never a token. Once the owner uses Slack (signed

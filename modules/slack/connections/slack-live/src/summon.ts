@@ -36,7 +36,14 @@ function slackError(method: string, err: unknown): never {
   throw new SummonError(502, e);
 }
 
-export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv">; owner: () => string | undefined }) {
+export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv">; owner: () => string | undefined;
+  /** Whose sign-in the relay holds (slack-mcp); null while Slack isn't connected. */
+  signedIn: () => Promise<string | null> }) {
+  // Attestation is the paired owner's, the calls are made with the sign-in's token: one account, or nothing is done.
+  const same = async () => {
+    const me = await o.signedIn().catch(() => null);
+    if (!me || !o.owner() || me !== o.owner()) throw new SummonError(409, "the Slack sign-in is not the paired owner's account: Connect Slack as the account that paired the bot");
+  };
   const names = new Map<string, string>();
   const author = async (m: Json): Promise<string> => {
     const user = str(m.user);
@@ -57,11 +64,20 @@ export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv">;
     const channel = str(b.resource), thread = str(b.thread), before = str(b.before) ? tsOf(str(b.before)!) : undefined;
     const n = Math.min(Math.max(Number(b.n) || 10, 1), 50);
     if (!channel) throw new SummonError(400, "resource is required");
+    await same();
     if (before && !TS.test(before)) throw new SummonError(400, "before is a message id");
     const upTo: Record<string, string> = before ? { latest: before, inclusive: "false" } : {};
     let found: Json[] = [];
     try {
-      if (thread) found = ((await o.relay.read("conversations.replies", { channel, ts: thread, limit: "200", ...upTo })).messages as Json[] | undefined ?? []).filter((m) => !before || Number(m.ts) < Number(before));
+      if (thread) {
+        // Replies come oldest first, a page at a time: read to the cutoff, then keep the last n.
+        for (let cursor = "", pages = 0; pages < 10; pages++) {
+          const r = await o.relay.read("conversations.replies", { channel, ts: thread, limit: "200", ...upTo, ...(cursor ? { cursor } : {}) });
+          found.push(...((r.messages as Json[] | undefined) ?? []).filter((m) => !before || Number(m.ts) < Number(before)));
+          cursor = (r.response_metadata as { next_cursor?: string } | undefined)?.next_cursor ?? "";
+          if (!cursor) break;
+        }
+      }
       if (found.length === 0) found = ((await o.relay.read("conversations.history", { channel, limit: String(n), ...upTo })).messages as Json[] | undefined ?? []).slice().reverse();
     } catch (err) { slackError("context", err); }
     return { messages: await shape(channel, found.slice(-n)) };
@@ -75,6 +91,7 @@ export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv">;
     if (!channel || !text || !key) throw new SummonError(400, "resource, text and key are required");
     const done = o.store.getKv(`summon_reply:${key}`);
     if (done) return { id: done };
+    await same();
     const running = inflight.get(key);
     if (running) return running;
     const p = (async () => {
@@ -93,6 +110,7 @@ export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv">;
   async function react(b: Json) {
     const channel = str(b.resource), message = str(b.message), emoji = str(b.emoji);
     if (!channel || !message || emoji !== "eyes" || !TS.test(tsOf(message))) throw new SummonError(400, "resource, message and emoji \"eyes\" are required");
+    await same();
     try {
       const r = await o.relay.write("add-reaction", { channel, timestamp: tsOf(message), name: "eyes" });
       if (r.ok !== true && r.error !== "already_reacted") throw new Error(String(r.error ?? "reactions.add failed"));

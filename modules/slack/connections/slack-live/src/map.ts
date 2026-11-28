@@ -16,7 +16,8 @@ export type SourceEvent = { connection: "slack"; resource: string; id: string; k
 // subtypes dropped. Its id is the message (channel and ts): one message delivered as a bot and a user event is one event.
 // `from_owner` (the kernel's summon path, role kernel.attest-owner) is decided here, in code, from the author alone: the paired
 // owner's own user id, no bot or app marker, a plain message (a thread broadcast or file share is still the owner's). It is never
-// derived from text. `thread` is the conversation's root in a channel (a top-level message is its own root) and absent in a DM.
+// derived from text. `thread` is the conversation's root: in a channel a top-level message is its own root; in a DM only a reply
+// has one (its thread's root, as triage has always read it).
 const OWN_SUBTYPES = new Set(["thread_broadcast", "file_share"]);
 const CHANNEL_TYPES = new Set(["channel", "group", "public", "private"]);
 export function toSourceEvent(body: unknown, owner?: string): SourceEvent | null {
@@ -38,7 +39,8 @@ export function toSourceEvent(body: unknown, owner?: string): SourceEvent | null
   // channel_type: a channel id starting C is a channel.
   const type = str(ev.channel_type);
   const inChannel = type ? CHANNEL_TYPES.has(type) : channel.startsWith("C");
-  const thread = inChannel ? (str(ev.thread_ts) ?? ts) : undefined;
+  const root = str(ev.thread_ts);
+  const thread = inChannel ? (root ?? ts) : root && root !== ts ? root : undefined;
   const fromOwner = Boolean(owner) && author === owner && !bot && (!subtype || OWN_SUBTYPES.has(subtype));
   return { connection: "slack", resource: channel, id: `${channel}:${ts}`, kind, ...(author ? { author } : {}), text: text.slice(0, 2000), bot, url: permalink(channel, ts), ...(thread ? { thread } : {}), from_owner: fromOwner, ...(text.length > 2000 ? { truncated: true as const } : {}) };
 }

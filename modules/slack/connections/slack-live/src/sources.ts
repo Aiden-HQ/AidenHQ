@@ -233,8 +233,11 @@ export function replayQueue(kv: Pick<Store, "getKv" | "setKv" | "delKv" | "listK
 export async function gapSync(store: SourceStore, api: Api, now = Date.now(), log?: Pick<Logger, "warn" | "info">, budgetMs = PASS_BUDGET_MS, forward?: (e: SourceEvent) => Promise<void>, ownerId?: string, retry?: ReplayQueue): Promise<number> {
   await store.migrate(DDL);
   const started = Date.now();
-  // Events an earlier pass couldn't hand on (the kernel was down) go first.
-  if (forward && retry) for (const e of retry.pending()) if (await forward(e).then(() => true, () => false)) retry.done(e.id);
+  // Events an earlier pass couldn't hand on (the kernel was down) go first, for at most a tenth of the pass: the scan still runs.
+  if (forward && retry) for (const e of retry.pending()) {
+    if (Date.now() - started >= budgetMs / 10) break;
+    if (await forward(e).then(() => true, () => false)) retry.done(e.id);
+  }
   let written = 0;
   const skipped: string[] = [];
   const skippedThreads: string[] = [];
