@@ -438,6 +438,24 @@ export interface Advisory {
 }
 
 /** A module's Fleet page (board.pages): its view is the module's, shown in a sandboxed frame (ModuleView.tsx). */
+/** A teammate's "How to reach" card (src/reach.ts): each way a channel module declares, with its real state. */
+export interface ReachRow {
+  id: string;
+  label: string;
+  kind: "app" | "address";
+  state: "on" | "needs" | "off";
+  detail: string;
+  address?: string[];
+  manage: { module: string; page?: string };
+}
+export interface TeammateReach {
+  rows: ReachRow[];
+  /** The owner has an address to cc for this teammate. */
+  address: boolean;
+  /** The instance's Slack bot is connected: people can DM it and name the teammate. */
+  bot: boolean;
+}
+
 export interface PageRow {
   id: string;
   title: string;

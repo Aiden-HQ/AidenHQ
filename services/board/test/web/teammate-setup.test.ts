@@ -56,6 +56,7 @@ const mount = async () => {
     if (path === "/api/lane") return json({ agents: [] });
     if (path.startsWith("/api/chats")) return json({ chats: [], agents: [], more: false });
     if (path.startsWith("/api/agents/by-key/")) return json({ entries: [] });
+    if (/^\/api\/teammates\/[^/]+\/reach$/.test(path)) return json({ rows: [], address: false, bot: false });
     return json({ error: `no route ${path}` });
   }));
   const el = document.createElement("div");

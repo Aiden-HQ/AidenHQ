@@ -38,3 +38,18 @@
 .mate-val.open { display: block; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; white-space: pre-wrap; }
 .mate-val-wrap { display: grid; gap: 2px; min-width: 0; }
 .mate-more { justify-self: start; }
+
+/* How to reach (TeammateReach.tsx): an icon chip in the row's tone, its name and state, what it does, one link. */
+.reach { display: grid; gap: 2px; margin: -4px -6px; padding: 0; list-style: none; }
+.reach-row { display: grid; grid-template-columns: 30px minmax(0, 1fr) 4.5rem; align-items: center; gap: 12px; padding: 9px 6px; border-radius: var(--radius-md); }
+.reach-row:hover { background: var(--hover); }
+.reach-ico { display: grid; place-items: center; width: 30px; height: 30px; border-radius: var(--radius-md); background: var(--tone-bg); color: var(--tone-fg); }
+.reach-body { display: grid; gap: 2px; min-width: 0; }
+.reach-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.reach-top b { font-size: var(--text-base); font-weight: 600; }
+.reach-top .ui-status { font-size: var(--text-sm); }
+.reach-detail { font-size: var(--text-sm); line-height: 1.4; color: var(--muted); overflow-wrap: anywhere; }
+.reach-detail.off { color: var(--faint); }
+/* The link column is reserved on every row, so each state sits at the same x. */
+.reach-row > .btn { grid-column: 3; justify-content: center; }
+@media (max-width: 420px) { .reach-row { grid-template-columns: 30px minmax(0, 1fr); } .reach-row > .btn { grid-column: 2; justify-self: start; padding-inline: 14px; } }

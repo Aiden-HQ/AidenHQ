@@ -12,6 +12,7 @@ import type { Logger } from "pino";
 import { z } from "zod";
 import { handbook, history } from "./agent-handbook.js";
 import { PauseSchema, RoutinePauseSchema, setAgentPaused } from "./agent-pause.js";
+import { teammateReach, type ReachPoint } from "./reach.js";
 import { HISTORY_PAGE, agentByKey, agentProfile, historyPage, splitTasks, tasksOf } from "./agent-page.js";
 import { timelineOf } from "./timeline.js";
 import { liveActivity, type SessionSources } from "./live-activity.js";
@@ -121,6 +122,8 @@ export interface AppOptions {
   grading?: Grading;
   /** The modules' Fleet pages (board.pages) and their views' calls through the kernel (module-views.ts). Without it, Fleet lists only its own pages. */
   views?: ViewHost;
+  /** board.reach: how people reach a teammate (reach.ts); read on every use, like the pages. */
+  reach?: () => ReachPoint[];
   /**
    * "internal" mode: the kernel's key (secret gateway_board_key, x-gateway-key; held only by the kernel and the board): the model
    * gateway reads its settings, and channels reach the owner's cards, decisions and notices only through the kernel (lean-core 2f).
@@ -2774,6 +2777,21 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         const { secret, value } = parse(z.object({ secret: z.string().max(64), value: z.string().min(1).max(1000) }).strict(), body);
         if (!s?.fields.some((f) => f.secret === secret)) throw new HttpError(400, "not one of this sign-in's values");
         return opts.accounts!.call("save_secret", who, { module: s.id, secret, value });
+      },
+    },
+    // A teammate's "How to reach" card (reach.ts): each declared way's real state, and whether its channel bot is connected. Only the
+    // signed-in session's own reads; a read that fails leaves its part out rather than guessing.
+    {
+      method: "GET",
+      path: /^\/api\/teammates\/([a-z0-9][a-z0-9_-]{0,62})\/reach$/,
+      handle: async (m, _b, who) => {
+        if (!teammates().keys.has(m[1]!)) throw new HttpError(404, `no teammate called ${m[1]}`);
+        const stored = (module: string, secret: string) => opts.accounts!.call<{ keys: string[] }>("secret_keys", who, { module, secret }).then((r) => r.keys, () => null);
+        // The instance's one Slack bot: the advanced Slack setup's secrets are all stored (the setup page's own rule for it).
+        const advanced = opts.setupFlows?.flows.find((f) => f.module === "slack")?.advanced?.secrets ?? [];
+        const present = advanced.length ? await opts.accounts!.call<{ secrets: Record<string, boolean> }>("setup_status", who, { module: "slack" }).then((r) => r.secrets, () => ({}) as Record<string, boolean>) : {};
+        const reach = await teammateReach({ agent: m[1]!, points: opts.reach?.() ?? [], pages: opts.views?.pages() ?? [], settings: appliedSettings(), stored });
+        return { ...reach, bot: advanced.length > 0 && advanced.every((s) => present[s]) };
       },
     },
     // A page's Sign-ins panel (board.pages secret_maps): which keys are set, never a value, and the owner's own Set / Replace / Clear

@@ -9,6 +9,7 @@ import { useLive } from "./events";
 import { LaneChat } from "./LaneChat";
 import { QUERIES, agentChatsQuery, agentTimelineQuery, useQuery } from "./queries";
 import { RenameButton, statusLine } from "./Team";
+import { TeammateReach } from "./TeammateReach";
 import { SkeletonLines } from "./Skeleton";
 import type { Assignee, ChatRow, RosterAgent, SettingRow } from "./types";
 import { Banner, Button, Card, Disclosure, EmptyState, Face, Facts, LinkButton, Menu, Page, SectionCard, Segmented, StatusDot, Tag, faceProps, faceStateOf, type TagTone } from "./ui";
@@ -90,6 +91,7 @@ function Mate({ a, roster, chat, text, crew, faces, prefix, go, onSignIn, toast,
           <SectionCard title={`What ${a.name} does`}>
             <p className="mate-p">{a.title ?? t.sample}</p>
           </SectionCard>
+          <TeammateReach agentKey={key} name={a.name} onSignIn={onSignIn} />
           <RecentWork a={a} onSignIn={onSignIn} />
           <SetUp a={a} onSignIn={onSignIn} />
           {t.staff.length > 0 && (

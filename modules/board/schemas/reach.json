@@ -1,0 +1,13 @@
+{
+  "title": "board.reach: a way people reach a teammate that a channel module offers, shown on the teammate's \"How to reach\" card. Compile adds `module`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "label", "kind", "setting"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,40}$", "description": "its address within the module; unique across modules"},
+    "label": {"type": "string", "minLength": 1, "maxLength": 40, "description": "its row's name on the card (Own Slack app, Email)"},
+    "kind": {"enum": ["app", "address"], "description": "app: the agent's own app or bot (its entry reads Connected once the secret map holds its tokens); address: an email address people write to (each entry's `address` is shown)"},
+    "setting": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$", "description": "this module's list setting, one entry per agent: [{ agent: <key>, … }]; the card shows a row's state from it"},
+    "secret_map": {"type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$", "description": "kind app: this module's named-secret map, keyed by agent key, whose stored keys say which agents' tokens are in"}
+  }
+}

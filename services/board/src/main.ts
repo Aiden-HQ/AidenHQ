@@ -7,6 +7,7 @@ import { appsApi } from "./fleet.js";
 import { appWatchTick, type Alert, type AppStatus } from "./app-watch.js";
 import { ownerAlert, startNotify } from "./notify.js";
 import { createGrading } from "./grading.js";
+import { reachPoints } from "./reach.js";
 import { createViewHost, pagePoints, readPoints } from "./module-views.js";
 import { loadConfig } from "./config.js";
 import { McpAuth } from "./mcpauth.js";
@@ -91,7 +92,8 @@ const notifyTest = async (to: string) => {
   if (!r.ok) throw new Error(`the kernel answered ${r.status} to the push test`);
   return (await r.json()) as { sent: boolean; off?: true; reason?: string };
 };
-const common = { terminals, grading, views, adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, sessions: cfg.sessions, google, signIns, setupFlows: cfg.setupFlows, organisations: cfg.organisations, welcomeMarker: join(dirname(cfg.dbPath), "welcome-sent"), ...(cfg.gateway ? {  notifyTest } : {}), accounts, gateway: cfg.gateway, records, work, taskStates, flow, search, lane: process.env.AIDENHQ_GRANTS_FILE ? { grantsFile: process.env.AIDENHQ_GRANTS_FILE } : undefined };
+const reach = () => reachPoints(pointsFile);
+const common = { terminals, reach, grading, views, adminUrl: cfg.accounts.adminUrl, paperclip, store, log, staticDir: cfg.staticDir, timezone: cfg.timezone, workdays: cfg.workdays, slackTeams: cfg.slackTeams, lan: cfg.lan, sessions: cfg.sessions, google, signIns, setupFlows: cfg.setupFlows, organisations: cfg.organisations, welcomeMarker: join(dirname(cfg.dbPath), "welcome-sent"), ...(cfg.gateway ? {  notifyTest } : {}), accounts, gateway: cfg.gateway, records, work, taskStates, flow, search, lane: process.env.AIDENHQ_GRANTS_FILE ? { grantsFile: process.env.AIDENHQ_GRANTS_FILE } : undefined };
 // The board's https address (the front door) and phones on the home network; 3120 is the kernel's admin listener.
 const lan = createApp({ ...common, allowedHosts: cfg.lan.hosts, mode: "lan" });
 lan.listen(cfg.lan.port, "0.0.0.0", () => log.info({ port: cfg.lan.port, hosts: cfg.lan.hosts }, "LAN board listening"));
