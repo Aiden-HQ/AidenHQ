@@ -250,6 +250,17 @@ describe("attendee hours inferred from busy history", () => {
     expect(g.calls.filter((c) => c.url.pathname.endsWith("/freeBusy"))).toHaveLength(3);
   });
 
+  it("a corrected zone is inferred again, and a colleague no longer visible keeps no stale hours", async () => {
+    const g = google({ [`GET ${EV}`]: { items: [] }, [FB]: route(days(15)) });
+    const ws = new MultiWorkspace(creds(SCOPES), "primary", g.impl);
+    await ws.findTimes(at(), NOW);
+    const london = { ...at(), attendees_local: { "col@work.com": { timezone: "Europe/London" } } };
+    const r = await ws.findTimes(london, NOW);
+    expect(r.attendees[0]!.hours).toEqual({ core: ["06:00", "13:00"], source: "inferred" });
+    const hidden = google({ [`GET ${EV}`]: { items: [] }, [FB]: () => ({ calendars: { "col@work.com": { errors: [{ reason: "notFound" }] } } }) });
+    expect((await new MultiWorkspace(creds(SCOPES), "primary", hidden.impl).findTimes(at(), NOW)).attendees[0]).toMatchObject({ freebusy: "not_visible", hours: { source: "default" } });
+  });
+
   it("three busy days is too thin: the default hours are used", async () => {
     const g = google({ [`GET ${EV}`]: { items: [] }, [FB]: route(days(3)) });
     expect((await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(at(), NOW)).attendees[0]!.hours).toEqual({ core: ["09:00", "18:00"], source: "default" });

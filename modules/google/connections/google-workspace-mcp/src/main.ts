@@ -167,7 +167,7 @@ function buildServer(caller?: Caller): McpServer {
         buffer_min: z.number().int().min(0).max(240).optional(),
         min_notice_hours: z.number().min(0).max(24 * 60).optional(),
         max_per_day: z.number().int().min(1).max(50).optional(),
-        attendees_local: z.record(z.string().email().max(320), z.object({ timezone: z.string().max(64).optional(), hours: z.tuple([hhmm, hhmm]).optional() })).optional().describe("What you know of each attendee (Slack profile, memory): IANA timezone and, if known, their own working hours. Leave out what you don't know: nothing is guessed"),
+        attendees_local: z.record(z.string().email().max(320), z.object({ timezone: z.string().max(64).optional(), hours: z.tuple([hhmm, hhmm]).optional() })).optional().describe("What you know of each attendee (Slack profile, memory): IANA timezone and, if known, their own working hours. Leave out what you don't know: no zone or hours are guessed. An attendee with a zone and no hours whose calendar is visible has hours inferred from their last 28 days of busy time (8+ busy days, a 4-14 h span), else the defaults; `attendees[].hours.source` says which"),
         default_hours: z.tuple([hhmm, hhmm]).optional().describe("Core hours of an attendee with a timezone but no hours; default 09:00-18:00"),
         default_stretch: z.tuple([hhmm, hhmm]).optional().describe("Stretch hours of such an attendee; default 06:00-22:00"),
         stretch_hours: z.number().min(0).max(12).optional().describe("How far beyond their hours a person with known hours stretches, and the owner beyond working_hours; default 2"),

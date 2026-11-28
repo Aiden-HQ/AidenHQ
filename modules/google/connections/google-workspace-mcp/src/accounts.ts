@@ -264,11 +264,14 @@ export class MultiWorkspace {
     // Any failure leaves the defaults; it never fails the call.
     const used = (a: string) => state.get(a) === "used" && a.toLowerCase() !== name.toLowerCase();
     const needing = [...new Set(listed.filter((a) => used(a) && validZone(local.get(a.toLowerCase())?.timezone) && !local.get(a.toLowerCase())!.hours).map((a) => a.toLowerCase()))];
-    const stale = needing.filter((e) => (this.inferred.get(e)?.at ?? 0) < now - 7 * 86_400_000);
+    // Per account (it is that account's view of the attendee) and zone (the wall-clock hours depend on it); only fresh entries count.
+    const key = (e: string) => `${name}|${e}|${local.get(e)!.timezone}`;
+    const fresh = (e: string) => (this.inferred.get(key(e))?.at ?? 0) >= now - 7 * 86_400_000;
+    const stale = needing.filter((e) => !fresh(e));
     if (stale.length) {
       try {
         const r = (await this.in(name, (w) => w.freeBusy(stale, new Date(now - HISTORY_DAYS * 86_400_000).toISOString(), new Date(now).toISOString()))) as Awaited<ReturnType<Workspace["freeBusy"]>>;
-        for (const e of stale) if (r.byEmail[e]) this.inferred.set(e, { at: now, hours: inferHours(r.byEmail[e]!, local.get(e)!.timezone!) });
+        for (const e of stale) if (r.byEmail[e]) this.inferred.set(key(e), { at: now, hours: inferHours(r.byEmail[e]!, local.get(e)!.timezone!) });
       } catch {
         // defaults
       }
@@ -278,7 +281,8 @@ export class MultiWorkspace {
       const l = local.get(email.toLowerCase());
       const known = validZone(l?.timezone);
       if (!known) return { email, freebusy: state.get(email)!, timezone_known: false };
-      const inferred = !l!.hours ? this.inferred.get(email.toLowerCase())?.hours ?? undefined : undefined;
+      const e = email.toLowerCase();
+      const inferred = !l!.hours && used(email) && fresh(e) ? this.inferred.get(key(e))?.hours ?? undefined : undefined;
       if (inferred) enriched[email] = { ...l!, hours: inferred };
       const dflt = args.default_hours ?? DEFAULT_HOURS;
       return { email, freebusy: state.get(email)!, timezone_known: true, hours: { core: l!.hours ?? inferred ?? dflt, source: l!.hours ? "given" : inferred ? "inferred" : "default" } };
