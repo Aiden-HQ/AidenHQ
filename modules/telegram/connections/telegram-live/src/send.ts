@@ -75,8 +75,8 @@ function infer(a: any, agent: string): SendArgs {
   throw new Error("not a telegram send: expected text, a reply, a reaction, a forward, an edit or a delete");
 }
 
-/** Runs a write record's execute with optional text entities. */
-export type Run = (rec: ExecuteRequest, entities?: unknown[]) => Promise<{ ok: boolean; text: string }>;
+/** Runs a write record's execute; `o` is the summon path's own (links as entities, the forum topic of the replied-to message), never part of a record's args. */
+export type Run = (rec: ExecuteRequest, o?: { entities?: unknown[]; topic?: unknown }) => Promise<{ ok: boolean; text: string }>;
 const fmt = (t: number) => new Date(t).toISOString();
 const content = (text: string, entities: unknown[] = []) => ({ _: "inputMessageText", text: { _: "formattedText", text, entities } });
 
@@ -99,7 +99,7 @@ export function sender(d: {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   return {
-    run: (rec, entities) => execute(rec, entities),
+    run: (rec, o) => execute(rec, o),
     async plan(req) {
       const td = d.td();
       if (!td) throw new Error("Telegram isn't connected: set it up on the board (#/setup/telegram)");
@@ -131,7 +131,7 @@ export function sender(d: {
     execute: (rec) => execute(rec),
   };
 
-  async function execute(rec: ExecuteRequest, entities?: unknown[]): Promise<{ ok: boolean; text: string }> {
+  async function execute(rec: ExecuteRequest, o?: { entities?: unknown[]; topic?: unknown }): Promise<{ ok: boolean; text: string }> {
       // Everything up to the TDLib call is synchronous: no other execute can interleave with the guard, the cap and the row.
       const prev = getWrite.get(rec.id) as { state: string; text: string | null } | undefined;
       if (prev) {
@@ -179,8 +179,9 @@ export function sender(d: {
           temp = await td.invoke<any>({
             _: "sendMessage",
             chat_id: chatId,
+            ...(o?.topic ? { topic_id: o.topic } : {}),
             ...(a.action === "reply" ? { reply_to: { _: "inputMessageReplyToMessage", message_id: Number(a.reply_to_message_id) } } : {}),
-            input_message_content: content(a.text!, entities),
+            input_message_content: content(a.text!, o?.entities),
           });
         }
         if (typeof temp?.id !== "number") throw new TdError(500, "Telegram returned no message for the send");

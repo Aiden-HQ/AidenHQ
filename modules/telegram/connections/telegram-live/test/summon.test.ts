@@ -119,3 +119,22 @@ test("react puts 👀 on the message; context reads the chat oldest first and ma
 test("renderLinks leaves text without links alone", () => {
   expect(renderLinks("plain [x] (y)")).toEqual({ text: "plain [x] (y)", entities: [] });
 });
+
+test("a reply into a forum topic carries the topic; balanced parentheses stay in a link", async () => {
+  const { summon, fake } = setup();
+  fake.on("getMessage", { id: 5, topic_id: { _: "messageTopicForum", forum_topic_id: 77 } });
+  await summon.handle("reply", { ...body, text: "See [Mercury](https://en.wikipedia.org/wiki/Mercury_(planet))." });
+  const sent = fake.calls.find((c) => c._ === "sendMessage") as any;
+  expect(sent.topic_id).toEqual({ _: "messageTopicForum", forum_topic_id: 77 });
+  expect(sent.input_message_content.text.text).toBe("See Mercury.");
+  expect(sent.input_message_content.text.entities[0].type.url).toBe("https://en.wikipedia.org/wiki/Mercury_(planet)");
+});
+
+test("context keeps reading short pages until n", async () => {
+  const { summon, fake } = setup();
+  const m = (id: number) => ({ id, sender_id: { _: "messageSenderUser", user_id: 7 }, is_outgoing: false, date: id, content: { _: "messageText", text: { text: `m${id}` } } });
+  const pages = [[m(9)], [m(8), m(7)], [m(6), m(5)], []];
+  fake.on("getChatHistory", () => ({ messages: pages.shift() }));
+  const r = await summon.handle("context", { resource: "-10", n: 5 });
+  expect((r.body as any).messages.map((x: any) => x.text)).toEqual(["m5", "m6", "m7", "m8", "m9"]);
+});

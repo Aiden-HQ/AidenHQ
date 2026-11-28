@@ -95,7 +95,7 @@ let send: ReturnType<typeof sender> | undefined;
 const senderOnce = () => (send ??= sender({ td: () => auth.td(), store, onAgentSend: (c, t, w) => markAgentSend(store, c, t, w) }));
 const executorFor = () => (executor ??= serveExecutor(senderOnce(), { key: serviceKey, kernelUrl, log: (msg, f) => log.warn(f ?? {}, msg) }));
 // The summon contract's three calls (module.yaml summon:), made by the kernel with the same service key.
-const summon = createSummon({ td: () => auth.td(), store, settings, run: (rec, entities) => senderOnce().run(rec, entities) });
+const summon = createSummon({ td: () => auth.td(), store, settings, run: (rec, o) => senderOnce().run(rec, o) });
 const jwks = kernelJwks();
 
 const bearer = (req: IncomingMessage, token: string) => {

@@ -11,8 +11,10 @@ import { TdError, type TdClient } from "./td.js";
 
 /** How long a chat stays forwarded while muted after the kernel last touched it (the connector never learns a task closed). */
 export const WATCH_MS = 48 * 3_600_000;
+const CONTEXT_BUDGET_MS = 8_000;
 export const EMOJI: Record<string, string> = { eyes: "👀" };
-const LINK = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g;
+// A link's url may hold one level of balanced parentheses (Wikipedia's `Mercury_(planet)`).
+const LINK = /\[([^\]\n]+)\]\((https?:\/\/(?:[^\s()]|\([^\s()]*\))+)\)/g;
 
 export type Reply = { status: number; body: unknown };
 const reply = (status: number, body: unknown): Reply => ({ status, body });
@@ -44,7 +46,9 @@ export function createSummon(d: { td: () => TdClient | undefined; store: Store; 
   const now = d.now ?? Date.now;
   const db = d.store.db;
   const watch = db.prepare(`INSERT OR REPLACE INTO summoned_chats (chat_id, until) VALUES (?, ?)`);
-  const written = db.prepare(`SELECT state, message_id, text FROM writes WHERE id = ?`);
+  const written = db.prepare(`SELECT state, message_id FROM writes WHERE id = ?`);
+  const lateId = db.prepare(`SELECT final_message_id FROM agent_pending WHERE write_id = ? AND final_message_id IS NOT NULL`);
+  const settle = db.prepare(`UPDATE writes SET state = 'done', message_id = ?, text = 'Sent (confirmed late).' WHERE id = ?`);
 
   /** The chat of a call, or the refusal: bad id 400, an excluded or secret chat 403, Telegram not connected 503. */
   async function chatOf(b: any): Promise<{ id: number; td: TdClient } | Reply> {
@@ -70,9 +74,10 @@ export function createSummon(d: { td: () => TdClient | undefined; store: Store; 
       if (before === undefined) return reply(400, { error: "before must be a message id" });
       from = before;
     }
-    // TDLib may answer a page short of the limit: ask again from the oldest until n or the history ends.
+    // TDLib may answer a page short of the limit: ask again from the oldest until n, the history ends or the budget runs out.
     const got: any[] = [];
-    for (let i = 0; i < 5 && got.length < n; i++) {
+    const until = now() + CONTEXT_BUDGET_MS;
+    while (got.length < n && now() < until) {
       const page = await c.td.invoke<{ messages?: (any | null)[] }>({ _: "getChatHistory", chat_id: c.id, from_message_id: got.length ? got[got.length - 1].id : from, offset: 0, limit: n - got.length, only_local: false });
       const ms = (page.messages ?? []).filter(Boolean);
       if (!ms.length) break;
@@ -107,9 +112,18 @@ export function createSummon(d: { td: () => TdClient | undefined; store: Store; 
     // The writes row's id is the idempotency key's hash: the same key reaches the same row, which sends at most once.
     const id = `summon-${createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
     const { text: plain, entities } = renderLinks(text);
-    const r = await d.run({ id, kind: "telegram.reply", digest: "", idempotency_key: key, args: { action: "reply", chat_id: String(c.id), reply_to_message_id: String(to), text: plain, agent: "summon" } }, entities);
-    const w = written.get(id) as { state: string; message_id: number | null; text: string | null } | undefined;
-    if (r.ok && w?.state === "done" && w.message_id) return reply(200, { id: `${c.id}:${w.message_id}` });
+    // The topic of the message replied to: in a forum, the reply must go to that topic's thread too.
+    const target = await c.td.invoke<any>({ _: "getMessage", chat_id: c.id, message_id: to }).catch(() => undefined);
+    const topic = target?.topic_id?._ === "messageTopicForum" ? { _: "messageTopicForum", forum_topic_id: target.topic_id.forum_topic_id } : undefined;
+    const r = await d.run({ id, kind: "telegram.reply", digest: "", idempotency_key: key, args: { action: "reply", chat_id: String(c.id), reply_to_message_id: String(to), text: plain, agent: "summon" } }, { entities, topic });
+    let w = written.get(id) as { state: string; message_id: number | null } | undefined;
+    // TDLib confirmed a send after the executor gave up waiting: the final id is in agent_pending, so the reply is done, never retried.
+    const late = w?.state === "unknown" ? (lateId.get(id) as { final_message_id: number } | undefined)?.final_message_id : undefined;
+    if (late) {
+      settle.run(late, id);
+      w = { state: "done", message_id: late };
+    }
+    if (w?.state === "done" && w.message_id) return reply(200, { id: `${c.id}:${w.message_id}` });
     return reply(r.text.startsWith("Send cap") ? 429 : 502, { error: r.text });
   }
 
