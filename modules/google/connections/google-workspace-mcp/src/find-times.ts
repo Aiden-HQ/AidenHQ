@@ -18,10 +18,14 @@ export interface FindTimesArgs {
   buffer_min?: number;
   min_notice_hours?: number;
   max_per_day?: number;
-  /** Attendees' IANA zones, resolved by the caller. One missing or invalid is ignored, never guessed. */
-  attendee_timezones?: Record<string, string>;
-  /** The attendees' local hours slots are ranked into first; default 09:00-18:00. Never excludes a slot. */
-  attendee_hours?: [string, string];
+  /** What the caller knows of each attendee (Slack profile, memory): zone and, if known, their own hours. Missing or invalid data is ignored, never guessed. */
+  attendees_local?: Record<string, { timezone?: string; hours?: [string, string] }>;
+  /** Core hours of an attendee with a zone but no hours of their own (default 09:00-18:00). */
+  default_hours?: [string, string];
+  /** Stretch hours of such an attendee (default 06:00-22:00). */
+  default_stretch?: [string, string];
+  /** How far beyond core a person with known hours stretches, and the owner beyond working_hours (default 2). */
+  stretch_hours?: number;
   timezone: string;
   account?: string;
 }
@@ -31,7 +35,9 @@ export interface FoundSlot { start: string; end: string; tier: Tier; timezone: s
 export type AttendeeFreebusy = "used" | "not_granted" | "not_visible";
 export interface AttendeeStatus { email: string; freebusy: AttendeeFreebusy; timezone_known: boolean }
 export interface FoundTimes { slots: FoundSlot[]; attendee_freebusy: AttendeeFreebusy; attendees: AttendeeStatus[] }
-const DEFAULT_ATTENDEE_HOURS: [string, string] = ["09:00", "18:00"];
+const DEFAULT_HOURS: [string, string] = ["09:00", "18:00"];
+const DEFAULT_STRETCH: [string, string] = ["06:00", "22:00"];
+const DEFAULT_STRETCH_HOURS = 2;
 
 /** Candidate starts fall on this many minutes of the local wall clock. */
 const GRANULARITY_MIN = 15;
@@ -127,13 +133,13 @@ const minutes = (hhmm: string) => {
 };
 const weekday = (date: string): Day => DAYS[(new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7]!;
 
-interface Candidate { start: number; end: number; tier: Tier; zone: string; sides: number; /** Inside every known attendee zone's local hours. */ theirs: boolean }
+interface Candidate { start: number; end: number; tier: Tier; zone: string; sides: number; /** People (the owner and attendees with a known zone) in their stretch hours, and outside their hours. */ stretch: number; outside: number }
 const TIER_RANK: Record<Tier, number> = { best: 0, ok: 1, last_resort: 2 };
 
 /**
  * Slots of `duration_min` inside `working_hours` (the owner's wall clock on each day, in the zone the owner is in that day),
  * clear of busy time plus `buffer_min` either side and of the attendees' busy time, at least `min_notice_hours` away, on days
- * with fewer than `max_per_day` meetings (each constraint optional, none when omitted). Ranked: inside every attendee's local hours (only attendees with a known zone; never excludes a slot), then tier (inside a best call window, an ok one, else last resort), then
+ * with fewer than `max_per_day` meetings (each constraint optional, none when omitted). The owner may be offered `stretch_hours` beyond working_hours, never further. Ranked: everyone in core hours, then fewer people outside their hours, then fewer in stretch (attendees with a known zone only; never excluded for hours), then tier (inside a best call window, an ok one, else last resort), then
  * back-to-back with a meeting of the owner's (both sides before one side), then earliest. Overlapping slots are thinned to the
  * best of each, so the list is distinct choices rather than every quarter-hour of one gap.
  */
@@ -152,15 +158,25 @@ export function findTimes(args: FindTimesArgs, events: GEvent[], attendeeBusy: {
   const [best, ok] = [windowsOf(calls?.best), windowsOf(calls?.ok)];
   const tiered = best.length + ok.length > 0;
 
-  // Only attendees with a valid zone count: one without is ignored, and with none the ranking is the owner's alone.
-  const known = new Map(Object.entries(args.attendee_timezones ?? {}).map(([e, z]) => [e.toLowerCase(), z]));
-  const attendeeZones = [...new Set((args.attendees ?? []).map((a) => known.get(a.toLowerCase())).filter(validZone))];
-  const [theirOpen, theirClose] = (args.attendee_hours ?? DEFAULT_ATTENDEE_HOURS).map(minutes) as [number, number];
-  const inTheirHours = (start: number, end: number) =>
-    attendeeZones.every((z) => {
-      const [s, e] = [renderInZone(new Date(start).toISOString(), z), renderInZone(new Date(end).toISOString(), z)];
-      return s.slice(0, 10) === e.slice(0, 10) && minutes(s.slice(11, 16)) >= theirOpen && minutes(e.slice(11, 16)) <= theirClose;
-    });
+  // Each person with a known zone has core hours and wider stretch hours; an attendee without a valid zone is ignored.
+  const stretchMin = (args.stretch_hours ?? DEFAULT_STRETCH_HOURS) * 60;
+  const span2 = (w: readonly [string, string]) => [minutes(w[0]), minutes(w[1])] as const;
+  const known = new Map(Object.entries(args.attendees_local ?? {}).map(([e, v]) => [e.toLowerCase(), v]));
+  const people = (args.attendees ?? []).flatMap((a) => {
+    const v = known.get(a.toLowerCase());
+    if (!validZone(v?.timezone)) return [];
+    const core = span2(v!.hours ?? args.default_hours ?? DEFAULT_HOURS);
+    const stretch = v!.hours ? ([Math.max(0, core[0] - stretchMin), Math.min(1440, core[1] + stretchMin)] as const) : span2(args.default_stretch ?? DEFAULT_STRETCH);
+    return [{ zone: v!.timezone!, core, stretch }];
+  });
+  /** 0: inside `core`, 1: inside `stretch`, 2: outside, for a slot on `zone`'s wall clock. */
+  const band = (start: number, end: number, zone: string, core: readonly [number, number], stretch: readonly [number, number]) => {
+    const [s, e] = [renderInZone(new Date(start).toISOString(), zone), renderInZone(new Date(end).toISOString(), zone)];
+    const endMin = s.slice(0, 10) === e.slice(0, 10) ? minutes(e.slice(11, 16)) : e.slice(0, 10) === nextDate(s.slice(0, 10)) && e.slice(11, 16) === "00:00" ? 1440 : Infinity;
+    const sm = minutes(s.slice(11, 16));
+    return sm >= core[0] && endMin <= core[1] ? 0 : sm >= stretch[0] && endMin <= stretch[1] ? 1 : 2;
+  };
+  const workings = (day: Day) => (args.working_hours[day] ?? []).map((w) => span2(w));
 
   const found = new Map<number, Candidate>();
   // One day either side: a day's hours in another zone can reach into the window from a neighbouring date.
@@ -168,8 +184,10 @@ export function findTimes(args: FindTimesArgs, events: GEvent[], attendeeBusy: {
     const zone = zoneOn(date, home, events, calendarZone);
     const todays = busy.filter((b) => b.meeting && dateIn(b.start, zone) === date).length;
     if (args.max_per_day !== undefined && todays >= args.max_per_day) continue;
-    for (const [a, b] of args.working_hours[weekday(date)] ?? []) {
-      const [open, close] = [minutes(a), minutes(b)];
+    const ownerCore = workings(weekday(date));
+    for (const [coreOpen, coreClose] of ownerCore) {
+      // The owner's stretch: slots beyond working hours by stretch_hours are offered (ranked lower), never further.
+      const [open, close] = [Math.max(0, coreOpen - stretchMin), Math.min(1440, coreClose + stretchMin)];
       const closeAt = wallOn(date, close, zone);
       if (closeAt === undefined) continue;
       for (let t = Math.ceil(open / GRANULARITY_MIN) * GRANULARITY_MIN; t < close; t += GRANULARITY_MIN) {
@@ -182,12 +200,14 @@ export function findTimes(args: FindTimesArgs, events: GEvent[], attendeeBusy: {
         const tier: Tier = !tiered || inside(best) ? "best" : inside(ok) ? "ok" : "last_resort";
         const slack = buf + ADJACENT_SLACK_MS;
         const sides = (busy.some((m) => m.meeting && start >= m.end && start - m.end <= slack) ? 1 : 0) + (busy.some((m) => m.meeting && m.start >= end && m.start - end <= slack) ? 1 : 0);
-        found.set(start, { start, end, tier, zone, sides, theirs: inTheirHours(start, end) });
+        // Generated only within the owner's stretch, so the owner is in core or in stretch.
+        const bands = [ownerCore.some(([x, y]) => x <= t && t + args.duration_min <= y) ? 0 : 1, ...people.map((p) => band(start, end, p.zone, p.core, p.stretch))];
+        found.set(start, { start, end, tier, zone, sides, stretch: bands.filter((x) => x === 1).length, outside: bands.filter((x) => x === 2).length });
       }
     }
   }
 
-  const ranked = [...found.values()].sort((x, y) => Number(y.theirs) - Number(x.theirs) || TIER_RANK[x.tier] - TIER_RANK[y.tier] || y.sides - x.sides || x.start - y.start);
+  const ranked = [...found.values()].sort((x, y) => Number(!!(x.stretch + x.outside)) - Number(!!(y.stretch + y.outside)) || x.outside - y.outside || x.stretch - y.stretch || TIER_RANK[x.tier] - TIER_RANK[y.tier] || y.sides - x.sides || x.start - y.start);
   const picked: Candidate[] = [];
   for (const c of ranked) {
     if (picked.length >= MAX_SLOTS) break;

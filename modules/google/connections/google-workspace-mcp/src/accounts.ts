@@ -256,7 +256,7 @@ export class MultiWorkspace {
         for (const a of others) state.set(a, "not_visible");
       }
     }
-    const zones = new Map(Object.entries(args.attendee_timezones ?? {}).map(([e, z]) => [e.toLowerCase(), z]));
+    const zones = new Map(Object.entries(args.attendees_local ?? {}).map(([e, v]) => [e.toLowerCase(), v.timezone]));
     const attendees: AttendeeStatus[] = listed.map((email) => ({ email, freebusy: state.get(email)!, timezone_known: validZone(zones.get(email.toLowerCase())) }));
     const all = attendees.map((x) => x.freebusy);
     const summary: AttendeeFreebusy = all.every((x) => x === "used") ? "used" : all.includes("not_granted") ? "not_granted" : "not_visible";

@@ -30,7 +30,7 @@ Agents that hold them list the skills `google.calendar-changes` and `google.gmai
 `drive.readonly`, `gmail.modify`, and `calendar.events.freebusy`, which lets `calendar_find_times` read colleagues'
 free/busy (Workspace shows it by default). An account connected before it keeps working: the tool answers from your own
 calendar (`not_granted`) and Settings, Connections offers "Reconnect to see colleagues' calendars". Anyone whose calendar
-the tool cannot see (an external person) is skipped, never an error; `attendee_timezones` ranks slots into their local hours. An account connected before writes existed keeps reading; Settings, Connections asks you
+the tool cannot see (an external person) is skipped, never an error; `attendees_local` (zone and hours, as the caller knows them) ranks slots into core hours, then stretch hours; you may be offered `stretch_hours` beyond your working hours, never further. An account connected before writes existed keeps reading; Settings, Connections asks you
 to reconnect it once, and a write on it asks for that reconnect too.
 
 ## New installs

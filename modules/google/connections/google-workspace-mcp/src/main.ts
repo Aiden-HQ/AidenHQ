@@ -156,7 +156,7 @@ function buildServer(caller?: Caller): McpServer {
     "calendar_find_times",
     {
       description:
-        "Meeting times that fit the owner's calendar: inside working_hours (the owner's wall clock on each day, in the zone the owner is in that day: flights, stays and working locations that carry their own time zone, organised or accepted by the owner, move it), clear of busy time plus buffer_min either side and of the attendees' busy time, at least min_notice_hours away, on days under max_per_day meetings (buffer_min, min_notice_hours and max_per_day are optional: none when omitted). Returns ranked, distinct slots: inside every attendee's local attendee_hours first (only attendees whose zone you gave; never excludes a slot), then tier (best, ok, then last_resort: working hours but outside the call windows), then back-to-back with an existing meeting, then earliest; each slot's own timezone. `attendees` says per attendee whether their calendar was used (used), the owner has not allowed that yet (not_granted) or Google hid it (not_visible: external people usually), and whether their zone was known; attendee_freebusy is the summary (used only if every attendee was used). An attendee we can't see is skipped, never an error.",
+        "Meeting times that fit the owner's calendar: inside working_hours (the owner's wall clock on each day, in the zone the owner is in that day: flights, stays and working locations that carry their own time zone, organised or accepted by the owner, move it), clear of busy time plus buffer_min either side and of the attendees' busy time, at least min_notice_hours away, on days under max_per_day meetings (buffer_min, min_notice_hours and max_per_day are optional: none when omitted). Returns ranked, distinct slots: everyone in core hours first, then fewer people outside their hours, then fewer in stretch hours (the owner's core is working_hours and the owner may stretch stretch_hours beyond, never further; attendees count only when attendees_local gives a zone, and are never excluded for hours), then tier (best, ok, then last_resort: working hours but outside the call windows), then back-to-back with an existing meeting, then earliest; each slot's own timezone. `attendees` says per attendee whether their calendar was used (used), the owner has not allowed that yet (not_granted) or Google hid it (not_visible: external people usually), and whether their zone was known; attendee_freebusy is the summary (used only if every attendee was used). An attendee we can't see is skipped, never an error.",
       inputSchema: {
         duration_min: z.number().int().min(5).max(480),
         window_start: z.string().describe("ISO-8601 date-time with offset, e.g. 2026-12-02T00:00:00+04:00"),
@@ -167,8 +167,10 @@ function buildServer(caller?: Caller): McpServer {
         buffer_min: z.number().int().min(0).max(240).optional(),
         min_notice_hours: z.number().min(0).max(24 * 60).optional(),
         max_per_day: z.number().int().min(1).max(50).optional(),
-        attendee_timezones: z.record(z.string().email().max(320), z.string().max(64)).optional().describe("Attendee email to IANA zone, as you know it (Slack profile, memory). Leave out whoever you don't know: no zone is guessed"),
-        attendee_hours: z.tuple([hhmm, hhmm]).optional().describe("The attendees' local hours slots are ranked into first; default 09:00-18:00"),
+        attendees_local: z.record(z.string().email().max(320), z.object({ timezone: z.string().max(64).optional(), hours: z.tuple([hhmm, hhmm]).optional() })).optional().describe("What you know of each attendee (Slack profile, memory): IANA timezone and, if known, their own working hours. Leave out what you don't know: nothing is guessed"),
+        default_hours: z.tuple([hhmm, hhmm]).optional().describe("Core hours of an attendee with a timezone but no hours; default 09:00-18:00"),
+        default_stretch: z.tuple([hhmm, hhmm]).optional().describe("Stretch hours of such an attendee; default 06:00-22:00"),
+        stretch_hours: z.number().min(0).max(12).optional().describe("How far beyond their hours a person with known hours stretches, and the owner beyond working_hours; default 2"),
         timezone: z.string().max(64).describe("The owner's home IANA zone, e.g. Asia/Dubai"),
         account,
       },

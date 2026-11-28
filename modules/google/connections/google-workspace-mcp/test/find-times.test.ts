@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
 import { MultiWorkspace } from "../src/accounts.js";
 import { findTimes, type FindTimesArgs } from "../src/find-times.js";
+import { renderInZone } from "../src/zones.js";
 import { SCOPES } from "../src/google.js";
 
 // An account signed in before free/busy was asked for.
@@ -19,6 +20,7 @@ const base = (over: Partial<FindTimesArgs> = {}): FindTimesArgs => ({
   working_hours: week([["09:00", "17:00"]]),
   buffer_min: 0,
   min_notice_hours: 0,
+  stretch_hours: 0,
   timezone: "Asia/Dubai",
   ...over,
 });
@@ -63,28 +65,46 @@ describe("findTimes", () => {
     expect(slots.some((x) => hm(x.start) === "09:30")).toBe(true);
   });
 
-  it("ranks slots inside every known attendee zone's hours first, never excluding the rest", () => {
-    // New York is 9 hours behind Dubai in December: 09:00-18:00 there is 18:00-03:00 Dubai.
-    const wide = base({ working_hours: week([["09:00", "21:00"]]), attendees: ["dana@example.com"], attendee_timezones: { "dana@example.com": "America/New_York" } });
-    const slots = findTimes(wide, [], [], NOW);
-    expect(hm(slots[0]!.start)).toBe("18:00");
-    expect(slots.some((x) => hm(x.start) === "09:00")).toBe(true);
-    const inHours = (iso: string) => hm(iso) >= "18:00";
-    const flags = slots.map((x) => inHours(x.start));
-    expect(flags).toEqual([...flags].sort((a, b) => Number(b) - Number(a)));
-    // A zone for someone not in the meeting does not count.
-    expect(findTimes({ ...wide, attendees: ["other@example.com"] }, [], [], NOW)[0]!.start).toContain("T09:00");
-    expect(findTimes({ ...wide, attendees: ["DANA@example.com"] }, [], [], NOW)[0]!.start).toContain("T18:00");
-    // Two zones: only slots inside both rank first (Dubai and New York share no common 9-18 hours, so none is).
-    const both = findTimes(base({ working_hours: week([["09:00", "21:00"]]), attendees: ["a", "b"], attendee_timezones: { a: "America/New_York", b: "Asia/Dubai" }, attendee_hours: ["09:00", "18:00"] }), [], [], NOW);
-    expect(hm(both[0]!.start)).toBe("09:00");
+  // The band a slot sits in for someone in `zone`: 0 core, 1 stretch, 2 outside, from the wall clock of its start.
+  const bandOf = (iso: string, zone: string, core: [string, string], stretch: [string, string]) => {
+    const l = renderInZone(Date.parse(iso) ? new Date(Date.parse(iso)).toISOString() : iso, zone).slice(11, 16);
+    return l >= core[0] && l < core[1] ? 0 : l >= stretch[0] && l < stretch[1] ? 1 : 2;
+  };
+
+  it("an unset attendee in Dubai while the owner is in London: 06:00-09:00 their time ranks below core and above outside", () => {
+    // London is 4 hours behind Dubai in December. Owner 00:00-10:00 London = 04:00-14:00 Dubai.
+    const args = base({ timezone: "Europe/London", window_start: "2026-12-02T00:00:00+00:00", window_end: "2026-12-03T00:00:00+00:00", working_hours: week([["00:00", "10:00"]]), attendees: ["dana@example.com"], attendees_local: { "dana@example.com": { timezone: "Asia/Dubai" } } });
+    const slots = findTimes(args, [], [], NOW);
+    const bands = slots.map((x) => bandOf(x.start, "Asia/Dubai", ["09:00", "18:00"], ["06:00", "22:00"]));
+    expect(bands).toEqual([...bands].sort());
+    expect(new Set(bands)).toEqual(new Set([0, 1, 2]));
+    // Unknown or invalid zones are ignored: the ranking is the owner's alone (earliest first here).
+    const plain = findTimes({ ...args, attendees_local: undefined }, [], [], NOW);
+    expect(findTimes({ ...args, attendees_local: { "dana@example.com": { timezone: "Not/AZone" } } }, [], [], NOW)).toEqual(plain);
+    expect(plain[0]!.start).toContain("T00:00");
   });
 
-  it("a missing or invalid attendee zone changes nothing: the ranking is the owner's alone", () => {
-    const calls = { best: [["14:00", "16:00"]] } as FindTimesArgs["call_windows"];
-    const plain = findTimes(base({ call_windows: calls }), [], [], NOW);
-    expect(findTimes(base({ call_windows: calls, attendee_timezones: {} }), [], [], NOW)).toEqual(plain);
-    expect(findTimes(base({ call_windows: calls, attendees: ["x@example.com", "y@example.com"], attendee_timezones: { "x@example.com": "Not/AZone", "y@example.com": "" } }), [], [], NOW)).toEqual(plain);
+  it("an attendee with hours 10-16 and stretch_hours 2 stretches over 08-10 and 16-18", () => {
+    const args = base({ stretch_hours: 2, working_hours: week([["06:00", "20:00"]]), attendees: ["dana@example.com"], attendees_local: { "DANA@example.com": { timezone: "Asia/Dubai", hours: ["10:00", "16:00"] } } });
+    const slots = findTimes({ ...args, stretch_hours: 2, working_hours: week([["08:00", "18:00"]]) }, [], [], NOW);
+    const hours = (xs: typeof slots) => xs.map((x) => hm(x.start));
+    const bands = slots.map((x) => bandOf(x.start, "Asia/Dubai", ["10:00", "16:00"], ["08:00", "18:00"]));
+    // Owner 08-18 with a 2 h stretch also offers 06-08 and 18-20, which are outside for the attendee.
+    expect(bands).toEqual([...bands].sort());
+    expect(hours(slots.slice(0, 12))).toEqual(["10:00", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00", "15:30"]);
+    expect(new Set(hours(slots.filter((_x, i) => bands[i] === 1)))).toEqual(new Set(["08:00", "08:30", "09:00", "09:30", "16:00", "16:30", "17:00", "17:30"]));
+  });
+
+  it("an owner slot outside the owner's stretch is never returned", () => {
+    const wide = { window_start: "2026-12-02T00:00:00+04:00", window_end: "2026-12-03T00:00:00+04:00" };
+    const stretched = findTimes(base({ ...wide, stretch_hours: 2 }), [], [], NOW);
+    expect(stretched.every((x) => hm(x.start) >= "07:00" && hm(x.end) <= "19:00")).toBe(true);
+    expect(stretched.some((x) => hm(x.start) === "07:00")).toBe(true);
+    // 07-09 ranks after the owner's core.
+    expect(hm(stretched[0]!.start)).toBe("09:00");
+    expect(stretched.findIndex((x) => hm(x.start) === "07:00")).toBeGreaterThan(stretched.findIndex((x) => hm(x.start) === "16:30"));
+    const exact = findTimes(base({ ...wide }), [], [], NOW);
+    expect(exact.every((x) => hm(x.start) >= "09:00" && hm(x.end) <= "17:00")).toBe(true);
   });
 
   it("needs a window with explicit offsets, not longer than 62 days", () => {
@@ -189,7 +209,7 @@ describe("people we cannot see never block the answer", () => {
 
   it("a colleague's busy time counts and an external calendar (notFound) is skipped", async () => {
     const g = google({ [`GET ${EV}`]: { items: [] }, [FB]: { calendars: { "col@work.com": { busy: [{ start: "2026-12-09T05:00:00Z", end: "2026-12-09T05:30:00Z" }] }, "ext@other.org": { errors: [{ domain: "global", reason: "notFound" }] } } } });
-    const r = await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(at({ attendees: ["col@work.com", "ext@other.org"], attendee_timezones: { "col@work.com": "Asia/Dubai" } }), NOW);
+    const r = await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(at({ attendees: ["col@work.com", "ext@other.org"], attendees_local: { "col@work.com": { timezone: "Asia/Dubai" } } }), NOW);
     expect(r.slots.map((x) => hm(x.start))).toEqual(["09:30"]);
     expect(r.attendees).toEqual([{ email: "col@work.com", freebusy: "used", timezone_known: true }, { email: "ext@other.org", freebusy: "not_visible", timezone_known: false }]);
     expect(r.attendee_freebusy).toBe("not_visible");
