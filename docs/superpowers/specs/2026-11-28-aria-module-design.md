@@ -186,3 +186,19 @@ asked, through the tiered settings path. The defaults are old Aria's `templates/
 - The eval format for the ported `ru-*` / `adv-*` cases. Use whatever the learning loop's correction cases use.
 - Whether `calendar_find_times` needs free/busy scopes beyond what Google already asks for. If so, they're added to the
   user-picked scopes.
+
+## Owner changes (2026-11-28, later)
+
+**No constraints by default.**
+- The defaults are no buffer, no travel buffer, no minimum notice and no daily meeting cap. All four stay configurable
+  on the page; empty means no limit.
+- In `calendar_find_times`, `buffer_min`, `min_notice_hours` and `max_per_day` are optional and mean "none" when
+  omitted.
+
+**Other people's calendars and time zones.**
+- `calendar.events.freebusy` is requested by default at Google consent, so colleagues' free/busy in the same Workspace
+  org works out of the box. Existing accounts reconnect once.
+- `calendar_find_times` takes optional `attendee_timezones` and `attendee_hours` (default 09:00–18:00). Slots inside
+  every attendee's local hours rank first; slots outside those hours rank lower and are never excluded.
+- Aria resolves time zones from Slack profiles (`tz`) or memory. A new setting `aria_others_hours` controls the assumed
+  local day.
