@@ -6,8 +6,8 @@ import type { Tool } from "./mcp.ts";
 import { readMachines, MACHINE_FIELDS, DEFAULTS, listProblems, savedList, type Machine, type Problem } from "./config.ts";
 import type { StatusStore } from "./status-store.ts";
 import { readKeys, TIMEOUTS, withConnection, type Keys, type SshMachine, type Transport } from "./ssh.ts";
-import { UPDATE_ARGV } from "./apt.ts";
-import { publish, publishRow, readHost, rowOf, stateOfError } from "./status.ts";
+import { detect, parseOsRelease, UPDATE_ARGV } from "./apt.ts";
+import { publish, publishRow, READ, readHost, rowOf, stateOfError } from "./status.ts";
 
 type Dict = Record<string, unknown>;
 
@@ -45,7 +45,8 @@ export async function checkOne(m: Machine, transport: Transport, keys: Keys, sta
     // `refresh`: the schedule's check first refreshes apt's index (it installs nothing), so a newly published fix is seen even on a
     // host that never refreshes on its own. The page's "check now" reads the index as it is.
     checked = await withConnection(transport, targetOf(m), keys, async (c, pin) => {
-      if (opts.refresh) await c.exec([...UPDATE_ARGV], TIMEOUTS.lock);
+      // Only on a supported host: an unsupported one is reported as such by the read, never as a failed refresh.
+      if (opts.refresh && !("unsupported" in detect(parseOsRelease((await c.exec([...READ.osRelease])).stdout)))) await c.exec([...UPDATE_ARGV], TIMEOUTS.lock);
       return readHost(c, pin);
     });
   } catch (e) {

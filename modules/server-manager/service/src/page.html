@@ -131,6 +131,8 @@
     const changed = removing.size || list.some((e) => added.includes(e.name) || dirty(e.name));
     // Nothing differs from what is saved (an unfinished new server alone): no proposal, so the bar offers no Save.
     if (!changed && !proposedBefore) { say(hint.trim()); return; }
+    // Set when a change is sent, not when it is acknowledged: a discard right after must still send the withdrawal.
+    if (changed) proposedBefore = true;
     const sent = { drafts: structuredClone(drafts), removing: new Set(removing), added: [...added] }, rev = ++sentRev;
     inOrder(async () => {
       try {
@@ -142,7 +144,7 @@
           return;
         }
         lastGood = sent;
-        const any = changed; proposedBefore = !!any;
+        const any = changed;
         say(`${any ? "Changes are proposed: Save in the bar above applies them." : ""}${hint}`, !any && !!hint);
       } catch (e) {
         if (rev === sentRev) rollback();
