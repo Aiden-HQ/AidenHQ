@@ -235,7 +235,7 @@ export function createSummon(o: {
       if (db.prepare("SELECT 1 FROM summon_sends WHERE connection = ? AND message = ?").get(ev.connection, ev.id) || (ev.from_owner && signed(text))) { log("summon: our own reply dropped", { connection: ev.connection, id: ev.id }); return mark(true); }
       // A reply threaded under a summons that had no thread of its own (a DM's top-level message) is that summons' conversation.
       const flat = conversationKey(ev.connection, ev.resource);
-      const under = ev.thread && db.prepare("SELECT 1 FROM summons WHERE conv = ? AND message IN (?, ?) AND state IN ('claimed', 'filed') LIMIT 1").get(flat, ev.thread, `${ev.resource}:${ev.thread}`);
+      const under = ev.thread && db.prepare("SELECT 1 FROM summons WHERE conv = ? AND message IN (?, ?) LIMIT 1").get(flat, ev.thread, `${ev.resource}:${ev.thread}`);
       const conv = under ? flat : conversationKey(ev.connection, ev.resource, ev.thread), line = neutral(text).trim();
       if (ev.from_owner) {
         const keys = matchSummons(text, roster());
