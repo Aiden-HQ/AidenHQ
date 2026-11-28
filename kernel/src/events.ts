@@ -286,16 +286,21 @@ export function createEvents(o: {
             if (mine >= ROUTINE_HOURLY || all >= TOTAL_HOURLY) {
               // Over a cap the batch waits sealed for a later pass: events are triaged late, never lost (intake's PENDING_MAX bounds
               // the wait). Waiting batches of the same subscription merge, up to a batch's size, so a backlog drains in few runs.
-              for (const m of db.prepare("SELECT * FROM event_batches WHERE routine = ? AND sub = ? AND state = 'sealed' AND id != ? ORDER BY sealed_at").all(b.routine, b.sub, b.id) as Batch[]) {
-                if (b.count + m.count > BATCH_MAX) break;
-                db.prepare("UPDATE event_queue SET batch = ? WHERE batch = ?").run(b.id, m.id);
-                db.prepare("DELETE FROM event_batches WHERE id = ?").run(m.id);
-                b.count += m.count;
-              }
-              db.prepare("UPDATE event_batches SET count = ? WHERE id = ?").run(b.count, b.id);
+              db.exec("BEGIN IMMEDIATE");
+              try {
+                for (const m of db.prepare("SELECT * FROM event_batches WHERE routine = ? AND sub = ? AND state = 'sealed' AND id != ? ORDER BY sealed_at").all(b.routine, b.sub, b.id) as Batch[]) {
+                  if (b.count + m.count > BATCH_MAX) break;
+                  db.prepare("UPDATE event_queue SET batch = ? WHERE batch = ?").run(b.id, m.id);
+                  db.prepare("DELETE FROM event_batches WHERE id = ?").run(m.id);
+                  b.count += m.count;
+                }
+                // To the back of the line: a capped routine's batches never hold up the batches behind them.
+                db.prepare("UPDATE event_batches SET count = ?, turn = ? WHERE id = ?").run(b.count, now(), b.id);
+                db.exec("COMMIT");
+              } catch (e) { db.exec("ROLLBACK"); throw e; }
               continue;
             }
-            db.prepare("UPDATE event_batches SET state = 'firing' WHERE id = ?").run(b.id);
+            db.prepare("UPDATE event_batches SET state = 'firing', sealed_at = ? WHERE id = ?").run(now(), b.id); // the retry window starts here, not when it was sealed
           }
           db.prepare("UPDATE event_batches SET tries = tries + 1 WHERE id = ?").run(b.id);
           let res: { status: number; issue?: string };
