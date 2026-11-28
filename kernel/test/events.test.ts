@@ -120,11 +120,12 @@ test("drain, caps, gates and binding", async () => {
   await events.drain();
   assert.equal(r.runs.length, 0);
 
-  // Caps count dispatch times: R1 has 4 runs this hour; 8 more reach 12, the 13th is dropped; an hour on, it runs again.
+  // Caps count dispatch times: R1 has 4 runs this hour; 8 more reach 12, the 13th waits (never dropped); an hour on, it runs merged with the next event.
   r.runs.length = 0;
+  const drops = r.logs.filter(([m]) => m === "events: batch dropped").length;
   for (let i = 0; i < 9; i++) { events.ingest("slack", ev(`c${i}`)); r.tick(60_000); await events.drain(); }
   assert.equal(r.runs.length, 8);
-  assert.ok(r.logs.some(([m, f]) => m === "events: batch dropped" && String(f?.why).startsWith("cap:")));
+  assert.equal(r.logs.filter(([m]) => m === "events: batch dropped").length, drops);
   r.tick(3600_000);
   events.ingest("slack", ev("c-late"));
   r.tick(60_000);
@@ -132,9 +133,9 @@ test("drain, caps, gates and binding", async () => {
   assert.equal(r.runs.length, 9);
 });
 
-test("the global cap and the pending cap: dropped and counted, still a 2xx answer", async () => {
+test("the global cap defers (no loss); the pending cap drops and counts, still a 2xx answer", async () => {
   const r = rig();
-  // 120 runs in the past hour across routines: the next is dropped.
+  // 120 runs in the past hour across routines: the next ones wait.
   for (let i = 0; i < 130; i++) {
     r.grants.routine_events[`r-${i}`] = { key: `k${i}`, agent: "a1", connection: "slack", resource: "C9", filter: { kind: "message" } };
     r.routines[`r-${i}`] = { status: "active", assignee: "a1" };
@@ -146,7 +147,7 @@ test("the global cap and the pending cap: dropped and counted, still a 2xx answe
   r.tick(60_000);
   await r.events.drain();
   assert.equal(r.runs.length, 120);
-  assert.equal(r.logs.filter(([m, f]) => m === "events: batch dropped" && String(f?.why).startsWith("cap:")).length, 10);
+  assert.equal(r.logs.filter(([m]) => m === "events: batch dropped").length, 0);
   // Over the pending cap an event is acknowledged as dropped (overflow).
   const p = rig();
   for (let i = 0; i < PENDING_MAX; i++) p.events.ingest("slack", ev(`q${i}`));

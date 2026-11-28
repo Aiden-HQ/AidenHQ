@@ -265,6 +265,7 @@ export function createEvents(o: {
         // In turn order (sealed first; a failed routine lookup moves its batch's turn to the back), never the firing deadline.
         for (const b of db.prepare("SELECT * FROM event_batches WHERE state IN ('sealed', 'firing') ORDER BY max(turn, sealed_at)").all() as Batch[]) {
           if (Date.now() > until) break;
+          if (!get(b.id)) continue; // merged into an earlier batch this pass
           if (b.state === "firing" && now() - b.sealed_at! > FIRING_MS) { drop(b, "Paperclip didn't take the run in 10 minutes"); continue; }
           const s = subs()[b.routine];
           if (!s || !reads(s.agent, s.connection)) { drop(b, "the subscription or its read grant is gone"); continue; }
@@ -282,7 +283,18 @@ export function createEvents(o: {
             // A batch firing holds its place in the caps until it lands (its retries keep the same key and place).
             const mine = (db.prepare("SELECT count(*) AS n FROM event_batches WHERE routine = ? AND (dispatched_at > ? OR state = 'firing')").get(b.routine, since) as { n: number }).n;
             const all = (db.prepare("SELECT count(*) AS n FROM event_batches WHERE dispatched_at > ? OR state = 'firing'").get(since) as { n: number }).n;
-            if (mine >= ROUTINE_HOURLY || all >= TOTAL_HOURLY) { drop(b, `cap: ${mine} runs of this routine and ${all} in all in the past hour`); continue; }
+            if (mine >= ROUTINE_HOURLY || all >= TOTAL_HOURLY) {
+              // Over a cap the batch waits sealed for a later pass: events are triaged late, never lost (intake's PENDING_MAX bounds
+              // the wait). Waiting batches of the same subscription merge, up to a batch's size, so a backlog drains in few runs.
+              for (const m of db.prepare("SELECT * FROM event_batches WHERE routine = ? AND sub = ? AND state = 'sealed' AND id != ? ORDER BY sealed_at").all(b.routine, b.sub, b.id) as Batch[]) {
+                if (b.count + m.count > BATCH_MAX) break;
+                db.prepare("UPDATE event_queue SET batch = ? WHERE batch = ?").run(b.id, m.id);
+                db.prepare("DELETE FROM event_batches WHERE id = ?").run(m.id);
+                b.count += m.count;
+              }
+              db.prepare("UPDATE event_batches SET count = ? WHERE id = ?").run(b.count, b.id);
+              continue;
+            }
             db.prepare("UPDATE event_batches SET state = 'firing' WHERE id = ?").run(b.id);
           }
           db.prepare("UPDATE event_batches SET tries = tries + 1 WHERE id = ?").run(b.id);
