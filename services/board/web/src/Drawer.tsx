@@ -451,6 +451,21 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
   const engineers = board.assignees.filter((a) => a.kind === "engineer" && a.key !== member.agent);
   const next = engineers.find((a) => a.engine === "claude") ?? engineers[0];
 
+  /** Cancel this part (the task itself when the card is the part); the parent stays open. Undo reopens it. */
+  async function dismiss(p: IssueView) {
+    const refresh = () => Promise.all([onChanged(), reload(), self ? Promise.resolve() : load()]);
+    setBusy(true);
+    try {
+      await api.update(p.id, { status: "cancelled" });
+      toast(`${p.identifier} dismissed`, { label: "Undo", run: () => void api.update(p.id, { status: p.status === "in_progress" ? "in_progress" : "todo" }).then(refresh, (e) => toast(`Couldn't undo: ${(e as Error).message}`)) });
+      await refresh();
+    } catch (e) {
+      toast(`Couldn't do that: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function act(run: () => Promise<unknown>, note: string) {
     setBusy(true);
     try {
@@ -507,7 +522,7 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
                 Hand to {shortName(next)}
               </button>
             )}
-            <button className="btn" disabled={busy} onClick={() => void act(() => api.update(part.id, { status: "cancelled" }), self ? "Task dismissed" : "Dismissed")}>
+            <button className="btn" disabled={busy || part.identifier !== selected} onClick={() => void dismiss(part)}>
               Dismiss
             </button>
           </div>
