@@ -1,0 +1,22 @@
+{
+  "id": "ru-urgent-any-hours",
+  "kind": "ruling",
+  "source": "ruling:overrides-follow-the-owner",
+  "description": "The owner says the call is urgent: earliest possible, even outside their hours. Aria asks calendar_find_times with owner_hours any and books the earliest slot it returns, even though it is outside the owner's working hours, and says so. Settings are soft signals; the owner's words win.",
+  "world": {
+    "now": "2026-11-09T18:30:00Z",
+    "calendar": [],
+    "contacts": [],
+    "find_times": { "slots": [{"start":"2026-11-09T21:00:00{{OFFSET}}","end":"2026-11-09T21:30:00{{OFFSET}}","tier":"outside_hours"}] }
+  },
+  "trigger": { "owner_ask": "I need 30 minutes with Priya (priya@partner.example.com) as soon as possible, tonight is fine, even outside my hours." },
+  "expect": [
+    { "tool": "calendar_find_times", "args": { "owner_hours": "any" } },
+    { "tool": "calendar_create_event", "args": { "start": "2026-11-09T21:00:00{{OFFSET}}" } },
+    { "reply": { "contains": "outside" } }
+  ],
+  "must_not": [
+    { "tool": "calendar_create_event", "args": { "start_after": "2026-11-10T00:00:00{{OFFSET}}" } },
+    { "reply": { "contains": "would you prefer" } }
+  ]
+}

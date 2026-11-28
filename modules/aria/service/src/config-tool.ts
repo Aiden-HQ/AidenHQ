@@ -1,0 +1,87 @@
+// Aria's tools on the module's MCP connection `aria`: the owner's page reads (`aria_config`) and proposes (`aria_configure`), and
+// Aria's own `aria_suggest` (save a proposal for the page).
+// A change is validated whole. The owner's call (the Aria page) only proposes: it comes back as a typed settings change the board
+// shows in its Save bar. An agent's call files the change itself (POST /v1/settings/agent).
+import { suggest, teamDomainOf, type Meeting } from "./prefill.ts";
+import { DEFAULTS, KEYS, problem, problems, type Key } from "./settings.ts";
+import type { Store } from "./state.ts";
+import type { Tool } from "./mcp.ts";
+
+type Dict = Record<string, unknown>;
+const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
+
+export interface Deps {
+  settings: () => Record<Key, unknown>;
+  state: Store;
+  env: { timezone: string; time_format: string; owner_email: string };
+  now: () => Date;
+  /** POST /v1/settings/agent as the calling job (its assertion goes along). */
+  file: (changes: Dict[], assertion: string) => Promise<unknown>;
+}
+
+/** The setting after `change`: an object setting merges field by field, anything else is replaced, null puts the default back. */
+export function applyChange(current: unknown, change: unknown, key: Key): unknown {
+  if (change === null) return structuredClone(DEFAULTS[key]);
+  return isMap(current) && isMap(change) ? { ...current, ...change } : change;
+}
+
+export function configTools(d: Deps): Tool[] {
+  // What this process has filed for an agent and the instance has not yet applied (the service runs on the settings it started with,
+  // until the apply recreates it): a second change builds on the first, never on the startup snapshot.
+  const filed: Partial<Record<Key, unknown>> = {};
+  const current = () => ({ ...d.settings(), ...filed });
+  return [
+    {
+      name: "aria_config", roles: ["aria-admin"],
+      description: "Aria's settings as the owner has them (working hours, stretch hours, blocking calendars, preferences, the nightly tidy-up prompt), their defaults, any problems, the owner's time zone, the owner's own organisation domain (their team) and the proposal Aria last saved from reading their calendar.",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      run: async () => {
+        const settings = current();
+        return {
+          settings, defaults: DEFAULTS, problems: problems(settings), timezone: d.env.timezone, time_format: d.env.time_format,
+          owner_team_domain: teamDomainOf(d.env.owner_email) ?? null,
+          suggestion: d.state.get().suggestion ?? null,
+        };
+      },
+    },
+    {
+      name: "aria_configure", roles: ["aria-admin"],
+      description: `Propose changes to Aria's settings, in one settings change: { changes: { <setting>: <value> | null } }, null putting the default back. Settings: ${KEYS.join(", ")}. A map setting takes only the fields you name (the rest stay); a list inside it is replaced whole. Refused whole when the result wouldn't be valid.`,
+      inputSchema: { type: "object", properties: { changes: { type: "object" } }, required: ["changes"], additionalProperties: false },
+      run: async (a, caller) => {
+        if (!isMap(a.changes) || !Object.keys(a.changes).length) throw new Error("say what to change: { changes: { <setting>: <value> } }");
+        const now = current(), out: Dict[] = [], summary: string[] = [];
+        for (const [k, v] of Object.entries(a.changes)) {
+          if (!(KEYS as readonly string[]).includes(k)) throw new Error(`there is no setting ${k.slice(0, 40)} (${KEYS.join(", ")})`);
+          const key = k as Key, next = applyChange(now[key], v, key);
+          const bad = problem(key, next);
+          if (bad) throw new Error(`that wouldn't work: ${bad}`);
+          if (JSON.stringify(next) === JSON.stringify(now[key])) continue;
+          out.push({ kind: "setting", key, value: next });
+          summary.push(`${key} changed`);
+        }
+        if (!out.length) return { changes: ["no changes"], _aidenhq: { settings_change: [] } };
+        // The owner's own call (the Aria page) only proposes: the board shows it and files it on his Save.
+        if (caller.kind === "owner") return { changes: summary, _aidenhq: { settings_change: out } };
+        const answer = await d.file(out, caller.assertion ?? "");
+        for (const o of out) filed[o.key as Key] = o.value;
+        return { filed: answer, changes: summary };
+      },
+    },
+    {
+      name: "aria_suggest", roles: ["aria-admin"],
+      description: "Save what you learned from reading the owner's last four weeks of meetings, for their Aria page to propose (they correct it and save; nothing changes until then): { meetings: [{ start, end, all_day?: boolean }], calendars?: [id] }, every timed meeting of the four weeks (all-day entries are ignored, so keep Google's all_day flag). Instants are ISO with an offset or Z. The service works out working hours per weekday and the blocking calendars; you never do that arithmetic.",
+      inputSchema: { type: "object", properties: { meetings: { type: "array", items: { type: "object", properties: { start: { type: "string" }, end: { type: "string" }, all_day: { type: "boolean" } }, required: ["start", "end"] } }, calendars: { type: "array", items: { type: "string" } } }, required: ["meetings"], additionalProperties: false },
+      run: async (a) => {
+        if (!Array.isArray(a.meetings) || a.meetings.length > 2000) throw new Error("send up to 2000 meetings");
+        const s = suggest(a.meetings as Meeting[], { timeZone: d.env.timezone, calendars: Array.isArray(a.calendars) ? a.calendars.map(String) : [] });
+        if (!s.based_on.meetings) throw new Error("none of those are timed meetings: send each one's start and end instants");
+        // What is saved must be what the page can show and the settings accept.
+        const bad = problem("aria_working_hours", s.working_hours) ?? problem("aria_blocking_calendars", s.blocking_calendars);
+        if (bad) throw new Error(`that calendar gave a proposal the settings can't hold: ${bad}`);
+        d.state.set({ ...d.state.get(), suggestion: { ...s, at: d.now().toISOString() } });
+        return { saved: true, ...s };
+      },
+    },
+  ];
+}

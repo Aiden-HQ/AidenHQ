@@ -62,7 +62,7 @@ function world(settings = {}) {
       result: async (c) => results.get(c) ?? { state: "running" },
     },
     // A post lands at once unless the test makes it wait (`posts.pending`): only a posted finding gates.
-    poster: { post: async (p) => (posted.push(p), refusals.get(p.run) ?? { state: posts.pending ? "pending" : "posted", write: `k-${posted.length}` }), ack: async (a) => { if (a.state === "classified") return void classifieds.push(a); if (w.ackErr) throw Object.assign(new Error(w.ackErr), w.ackStatus ? { status: w.ackStatus } : {}); if (w.acksDown) { w.acksDown--; throw new Error("kernel 502"); } acks.push(a); return w.ackPending ? { state: "pending" as const, write: w.ackPending } : undefined; }, reply: async (r) => (replied.push(r), { state: "posted", write: `r-${replied.length}` }), outcome: async (id) => outcomes.get(id) ?? (id.startsWith("s-") ? { state: "posted" } : { state: "pending" }), close: async (...a) => { if (perms.closeDown) { perms.closeDown = false; throw new Error("kernel 502"); } closed.push(a); }, status: async (st) => (statuses.push(st), { state: "pending", write: `s-${statuses.length}` }),
+    poster: { post: async (p) => (posted.push(p), refusals.get(p.run) ?? { state: posts.pending ? "pending" : "posted", write: `k-${posted.length}` }), ack: async (a) => { if (a.state === "classified") return void classifieds.push(a); if (w.ackErr) throw Object.assign(new Error(w.ackErr), w.ackStatus ? { status: w.ackStatus } : {}); if (w.acksDown) { w.acksDown--; throw new Error("kernel 502"); } acks.push(a); return w.ackPending ? { state: "pending" as const, write: w.ackPending } : w.ackId ? { state: "posted" as const, ack: w.ackId } : undefined; }, reply: async (r) => (replied.push(r), { state: "posted", write: `r-${replied.length}` }), outcome: async (id) => outcomes.get(id) ?? (id.startsWith("s-") ? { state: "posted" } : { state: "pending" }), close: async (...a) => { if (perms.closeDown) { perms.closeDown = false; throw new Error("kernel 502"); } closed.push(a); }, status: async (st) => (statuses.push(st), { state: "pending", write: `s-${statuses.length}` }),
       notify: async (n) => { if (perms.notifyDown) throw new Error("kernel 502"); notes.push(n); return n.task && perms.taskClosed ? "closed" : "sent"; },
     },
     agents: async () => [{ name: "Engineer", model: "~deepseek/deepseek-flash-latest" }, { name: "Checker", model: "~openai/gpt-luna-latest" }],
@@ -83,7 +83,7 @@ function world(settings = {}) {
   const finish = (i, o, billed) => results.set(`c-${i + 1}`, { state: "done", review: review(started[i], o), ...(billed !== undefined ? { billed_usd: billed } : {}) });
   const pr = (n, head, o = {}) => prs.set(n, { repo: REPO, number: n, head, base: sha("b"), base_ref: "main", draft: false, fork: false, author: "bob", open: true, url: `https://github.com/${REPO}/pull/${n}`, ...o });
   const say = (n, author, body) => comments.push({ id: String(comments.length + 1), number: n, author, body, created_at: new Date(t).toISOString() });
-  const w = { db, engine, posts, snaps, statuses, threads, commits, patches, bases, fails, rewritten, closed, outcomes, refusals, perms, prs, pr, say, started, posted, replied, acks, classifieds, facts, notes, finish, results, readsDown, acksDown: 0, ackErr: "", ackStatus: 0, ackPending: "", later: (ms) => (t += ms), now: () => t, events: feedQueue,
+  const w = { db, engine, posts, snaps, statuses, threads, commits, patches, bases, fails, rewritten, closed, outcomes, refusals, perms, prs, pr, say, started, posted, replied, acks, classifieds, facts, notes, finish, results, readsDown, acksDown: 0, ackErr: "", ackStatus: 0, ackPending: "", ackId: 0, later: (ms) => (t += ms), now: () => t, events: feedQueue,
     // A tick reads every watched repo whole (the feed's resync), as GitHub changes in a test aren't announced; `{ github: false }`: only what the feed holds.
     tick: (o) => { if (o?.github !== false) for (const r of cfg.repos) feedQueue.push({ resource: r.repo, id: `resync:${seq}`, kind: "github.resync" }); return w.engine.tick(); }, restart: () => { w.engine = createEngine({ ...deps, now: () => t }); } };
   // `w` is returned after createEngine's deps, so the fake's ack can read acksDown from it.
@@ -1457,6 +1457,21 @@ test("a PR no review will speak on (tier skip) gets the tier notice once: nothin
   await w.tick();
   assert.equal(w.classifieds.at(-1).head, sha("4"));
   assert.equal(w.classifieds.length, 2);
+});
+
+test("past the push review cap the cap notice stands: a push writes no notice (never \"not started yet\")", async () => {
+  const w = world({ repos: [{ repo: REPO, on_open: [MUST], on_push: [MUST_PUSH], push_rounds: 1 }] });
+  w.ackId = 77; // the comment exists, as on GitHub
+  await opened(w, 2, sha("2"));
+  w.finish(0, NONE); await w.tick();
+  w.pr(2, sha("3")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  w.finish(1, NONE); await w.tick();
+  w.pr(2, sha("4")); await w.tick(); w.later(DEBOUNCE + 1); await w.tick();
+  assert.equal(reasonOf(w.acks.at(-1).why), "push_cap");
+  const n = w.acks.length;
+  for (const h of ["5", "6"]) { w.pr(2, sha(h)); await w.tick(); w.later(DEBOUNCE + 1); await w.tick(); }
+  assert.equal(w.acks.length, n);
+  assert.equal(w.classifieds.length, 0);
 });
 
 test("a design note (a docs-only PR's finding, stored pre_existing) never gates: the verdict passes", async () => {

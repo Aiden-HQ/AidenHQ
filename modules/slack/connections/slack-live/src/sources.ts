@@ -8,6 +8,7 @@ import { carriesCode } from "./pair.js";
 import type { Logger } from "pino";
 import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";
 import { permalink } from "./map.js";
+import type { Store } from "./store.js";
 
 export const MESSAGE: Table = {
   name: "message",
@@ -202,6 +203,24 @@ const PERMANENT = /channel_not_found|not_in_channel|missing_scope|is_archived|ac
 // reconcile tombstones so its replies aren't taken for deleted.
 const GONE_THREAD = /thread_not_found/;
 
+/** Events a gap pass replayed that the kernel didn't take (transport, 429, 5xx): kept, and retried on the next pass. */
+export type ReplayQueue = { keep: (e: SourceEvent) => void; pending: () => SourceEvent[]; done: (id: string) => void };
+/** A message older than this is never replayed or retried (by its own Slack timestamp): a message from yesterday must not become a task today. */
+export const REPLAY_KEEP_MS = 6 * 3_600_000;
+/** The queue in slack-live's own sqlite kv (store.ts), keyed `replay:<event id>`. */
+export function replayQueue(kv: Pick<Store, "getKv" | "setKv" | "delKv" | "listKv">, now = () => Date.now()): ReplayQueue {
+  return {
+    keep: (e) => { if (!kv.getKv(`replay:${e.id}`)) kv.setKv(`replay:${e.id}`, JSON.stringify({ e })); },
+    pending: () => kv.listKv("replay:").flatMap(({ k, v }) => {
+      const { e } = JSON.parse(v) as { e: SourceEvent };
+      if (now() - Number(e.id.slice(e.id.lastIndexOf(":") + 1)) * 1000 <= REPLAY_KEEP_MS) return [e];
+      kv.delKv(k);
+      return [];
+    }),
+    done: (id) => kv.delKv(`replay:${id}`),
+  };
+}
+
 /**
  * One time-boxed gap-sync pass over the conversations the owner is in, oldest-synced first (never-synced, then by when
  * each was last saved), stopping once `budgetMs` is spent (at least one conversation per pass); the rest wait for the
@@ -211,9 +230,14 @@ const GONE_THREAD = /thread_not_found/;
  * recorded done only when every conversation was covered since the cycle began. People (users.list) are refreshed
  * daily. Returns rows written with a difference.
  */
-export async function gapSync(store: SourceStore, api: Api, now = Date.now(), log?: Pick<Logger, "warn" | "info">, budgetMs = PASS_BUDGET_MS, forward?: (e: SourceEvent) => Promise<void>): Promise<number> {
+export async function gapSync(store: SourceStore, api: Api, now = Date.now(), log?: Pick<Logger, "warn" | "info">, budgetMs = PASS_BUDGET_MS, forward?: (e: SourceEvent) => Promise<void>, ownerId?: string, retry?: ReplayQueue): Promise<number> {
   await store.migrate(DDL);
   const started = Date.now();
+  // Events an earlier pass couldn't hand on (the kernel was down) go first, for at most a tenth of the pass: the scan still runs.
+  if (forward && retry) for (const e of retry.pending()) {
+    if (Date.now() - started >= budgetMs / 10) break;
+    if (await forward(e).then(() => true, () => false)) retry.done(e.id);
+  }
   let written = 0;
   const skipped: string[] = [];
   const skippedThreads: string[] = [];
@@ -268,11 +292,12 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
   // the event id is the message's, so the router drops one that also arrived live. Best effort: a failure is logged, never fails the pass.
   const replay = async (id: string, type: string | undefined, m: Record<string, any>, r: string, baseline: boolean, fresh: boolean) => {
     if (!forward || baseline || !fresh || r !== "new" || m.subtype === "tombstone") return;
+    if (now - Number(m.ts) * 1000 > REPLAY_KEEP_MS) return; // too old to become a task now
     // A pairing code is a live credential: the warehouse row is blanked, and the router must not see its raw text either. An
     // unknown type may be a DM, so it is skipped too; a public or private channel keeps and replays its ordinary text.
     if ((type === "im" || type === "mpim" || type === undefined) && carriesCode(m)) return;
-    const e = toSourceEvent({ event: { ...m, type: "message", channel: id, channel_type: type }, authorizations: [{ is_bot: false }] });
-    if (e) await forward(e).catch((err: unknown) => log?.warn({ err: String(err) }, "gap replay failed"));
+    const e = toSourceEvent({ event: { ...m, type: "message", channel: id, channel_type: type }, authorizations: [{ is_bot: false }] }, ownerId);
+    if (e) await forward(e).catch((err: unknown) => { retry?.keep(e); log?.warn({ err: String(err) }, "gap replay failed; kept for the next pass"); });
   };
 
   const readThread = async (id: string, type: string | undefined, ts: string, oldest: string | undefined, baseline: boolean, seen: Set<string>) => {
@@ -380,7 +405,7 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
  * Runs the gap sync every `everyMs` (15 minutes), one pass at a time, each recorded in src_meta.ingest_run, read as the owner
  * through slack-mcp (`api`). While Slack isn't connected (`owner` answers null) a pass is skipped.
  */
-export function startGapSync(store: SourceStore, api: Api, owner: () => Promise<unknown>, log: Logger, forward?: (e: SourceEvent) => Promise<void>, everyMs = 15 * 60_000): void {
+export function startGapSync(store: SourceStore, api: Api, owner: () => Promise<unknown>, log: Logger, forward?: (e: SourceEvent) => Promise<void>, everyMs = 15 * 60_000, ownerId?: () => string | undefined, retry?: ReplayQueue): void {
   let warned = false;
   const tick = async () => {
     try {
@@ -389,7 +414,7 @@ export function startGapSync(store: SourceStore, api: Api, owner: () => Promise<
         warned = true;
       } else {
         warned = false;
-        const rows = await store.run("slack", "gap-sync", () => gapSync(store, api, Date.now(), log, PASS_BUDGET_MS, forward));
+        const rows = await store.run("slack", "gap-sync", () => gapSync(store, api, Date.now(), log, PASS_BUDGET_MS, forward, ownerId?.(), retry));
         log.info({ rows }, "src_slack gap sync done");
       }
     } catch (err) {

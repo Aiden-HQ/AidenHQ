@@ -1,0 +1,22 @@
+{
+  "id": "ru-required-optional-attendee",
+  "kind": "ruling",
+  "source": "ruling:overrides-follow-the-owner",
+  "description": "The owner names two must-have people and one nice-to-have. No slot works for all three, so Aria books the best slot for the two required people and adds the third as an optional attendee, and says so in the confirmation. She does not ask the owner first and does not drop the third person silently.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [],
+    "contacts": [],
+    "find_times": { "slots": [{"start":"2026-11-11T15:00:00{{OFFSET}}","end":"2026-11-11T15:30:00{{OFFSET}}","tier":"best","people":{"marc@acme.example.com":{"status":"free"},"sandeep@acme.example.com":{"status":"free"},"john@acme.example.com":{"status":"busy"}},"optional_free":[]}], "all_three_free": [] }
+  },
+  "trigger": { "owner_ask": "Set 30 minutes with Marc and Sandeep this week. They are must-haves. Squeeze John in if possible, otherwise invite him as optional." },
+  "expect": [
+    { "tool": "calendar_find_times", "args": { "required": ["marc@acme.example.com", "sandeep@acme.example.com"], "optional": ["john@acme.example.com"] } },
+    { "tool": "calendar_create_event", "args": { "start": "2026-11-11T15:00:00{{OFFSET}}", "attendees": [{"email":"marc@acme.example.com"},{"email":"sandeep@acme.example.com"},{"email":"john@acme.example.com","optional":true}] } },
+    { "reply": { "contains": "optional" } }
+  ],
+  "must_not": [
+    { "tool": "calendar_create_event", "args": { "attendees_without": "john@acme.example.com" } },
+    { "reply": { "contains": "which of" } }
+  ]
+}

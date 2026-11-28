@@ -18,6 +18,10 @@
       "source": "./apps-platform"
     },
     {
+      "name": "aria",
+      "source": "./aria"
+    },
+    {
       "name": "board",
       "source": "./board"
     },

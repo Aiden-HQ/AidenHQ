@@ -129,6 +129,10 @@
       "source": "./pageok"
     },
     {
+      "name": "pausedrt",
+      "source": "./pausedrt"
+    },
+    {
       "name": "roleopt",
       "source": "./roleopt"
     },

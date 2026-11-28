@@ -19,7 +19,8 @@ import { postMessage, transportSend, type SlackConfig } from "./send.js";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { serveExecutor } from "./aidenhq-sdk/executor.js";
 import { SourceStore } from "./source-store.js";
-import { slackApi as relayApi, slackTee, startGapSync } from "./sources.js";
+import { replayQueue, slackApi as relayApi, slackTee, startGapSync } from "./sources.js";
+import { attest, postedByAgent, relayWrites, summon, SummonError } from "./summon.js";
 import { AppError, apps as appsOf, type Part } from "./apps.js";
 import { ownerReader } from "./signin.js";
 
@@ -72,6 +73,8 @@ const appToken = env("SLACK_APP_TOKEN");
 const slackMcp = (process.env.SLACK_MCP_URL ?? "http://slack-mcp:8082").replace(/\/$/, "");
 const relayKey = env("RELAY_KEY");
 const owner = ownerReader(slackMcp, relayKey);
+// Summoning (summon.ts): reads and writes as the owner through slack-mcp's relay; off without the relay key.
+const summoning = relayKey ? summon({ relay: { read: relayApi(slackMcp, relayKey), write: relayWrites(slackMcp, relayKey) }, store, owner: () => cfg.ownerId || undefined, signedIn: async () => (await owner())?.user_id ?? null }) : undefined;
 // The Slack app made or updated from a pasted App Configuration Token (the board's setup page, with the pair token).
 const slackApps = appsOf(store);
 // Whether the bot is set up (the board's Connections shows it): booleans only, never a token. Once the owner uses Slack (signed
@@ -102,7 +105,9 @@ const health = async () => {
   const detail = missing.length ? missing.join(" ") : undefined;
   // A signed-in Slack with no bot is a real misconfiguration (the board should show it); a token with a blip is not.
   const ok = bot || !ownerNow;
-  return JSON.stringify({ ok, ...(detail ? { detail } : {}), channels, socket, paired, ...(paired && pairedAt ? { paired_at: pairedAt } : {}) });
+  const app = slackApps.status();
+  // The app made or updated for the bot lists the summon user scopes: slack-mcp's Connect pre-selects them then (and only then).
+  return JSON.stringify({ ok, summon_scopes: app.part === "advanced" && app.current, ...(detail ? { detail } : {}), channels, socket, paired, ...(paired && pairedAt ? { paired_at: pairedAt } : {}) });
 };
 
 const http = createServer(async (req, res) => {
@@ -157,6 +162,23 @@ const http = createServer(async (req, res) => {
       return void res.writeHead(500).end();
     }
   }
+  if (url.pathname.startsWith("/summon/")) {
+    // The kernel's summon calls (summon.ts), with the connection's key.
+    if (!authorized(req)) return void res.writeHead(401).end();
+    if (req.method !== "POST") return void res.writeHead(405).end();
+    const call = summoning?.[url.pathname.slice("/summon/".length) as "context" | "reply" | "react"];
+    const json = (status: number, body: unknown) => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+    if (!call) return json(summoning ? 404 : 503, { error: summoning ? "unknown call" : "summoning needs the relay key (RELAY_KEY)" });
+    try {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      return json(200, await call(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}")));
+    } catch (err) {
+      if (err instanceof SummonError) return json(err.status, { error: err.message });
+      log.error({ err: String((err as Error).message).slice(0, 200) }, "summon call failed");
+      return json(500, { error: "slack-live couldn't do that" });
+    }
+  }
   if (url.pathname !== "/mcp") return void res.writeHead(404).end();
   if (!authorized(req)) return void res.writeHead(401).end();
   if (req.method !== "POST") return void res.writeHead(405).end();
@@ -204,7 +226,7 @@ const pair = (body: unknown, ack?: () => Promise<void>) =>
 const sources = SourceStore.fromEnv("slack");
 const tee = sources ? slackTee(sources, log) : undefined;
 // Missed messages go on to the event router (triage) only with the bot: without it, triage is off, as the setup page says.
-if (sources && relayKey) startGapSync(sources, relayApi(slackMcp, relayKey), owner, log, channelToken && bot ? (e) => forward(e) : undefined);
+if (sources && relayKey) startGapSync(sources, relayApi(slackMcp, relayKey), owner, log, channelToken && bot ? (e) => forward(e) : undefined, undefined, () => cfg.ownerId || undefined, replayQueue(store));
 else log.warn(sources ? "RELAY_KEY not set; src_slack gets live events only (no gap sync)" : "warehouse not configured; src_slack is off");
 
 // Channel binding: the owner's /aiden commands (a kernel record each) and @mentions in bound channels (a task each).
@@ -222,7 +244,9 @@ const binding = cfg.botToken ? {
 
 // Routines' events: each kept event to the kernel's event router with this module's own token (role kernel.events). Any 2xx is
 // taken (queued, skipped or dropped); a 429 or 5xx throws so Slack redelivers; any other refusal is logged and passed.
-const forward = async (e: unknown) => {
+const agentPosted = postedByAgent(slackMcp, relayKey);
+const forward = async (event: { id: string; resource: string; text?: string; from_owner?: boolean }) => {
+  const e = await attest(event, agentPosted);
   const res = await fetch(`${kernelUrl}/v1/events`, { method: "POST", headers: { authorization: `Bearer ${channelToken}`, "content-type": "application/json" }, body: JSON.stringify(e), signal: AbortSignal.timeout(15_000) });
   if (res.status === 429 || res.status >= 500) throw new Error(`POST /v1/events -> ${res.status}`);
   if (!res.ok) log.warn({ status: res.status }, "the kernel refused an event; passed");

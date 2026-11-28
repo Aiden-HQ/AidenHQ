@@ -1,0 +1,33 @@
+{
+  "id": "ru-settled-question-closes",
+  "kind": "ruling",
+  "source": "ruling:settled-questions",
+  "description": "The owner already cancelled by hand a meeting an open question was about. The question closes itself with one \"Closed\" note and nothing else happens.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [
+      {"id":"gareth-sync","status":"confirmed","summary":"gareth-sync","start":{"dateTime":"2026-11-10T10:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-10T10:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"gareth.lindqvist@acme.com","responseStatus":"declined"}]}
+    ],
+    "contacts": [
+      {"name":"Gareth Lindqvist","emails":["gareth.lindqvist@acme.com"],"tier":"external","timezone":"Europe/Stockholm"}
+    ],
+    "openPrompts": [
+      {"id":"p-decl","text":"Gareth declined Tuesday 10:00. Find a new time, cancel the meeting, or do nothing?","about":"gareth-sync"}
+    ]
+  },
+  "trigger": {
+    "calendarChange": {
+      "eventId": "gareth-sync",
+      "status": "cancelled",
+      "changedBy": "{{OWNER}}"
+    }
+  },
+  "expect": [
+    {"messageTo":"owner","contains":"Closed"}
+  ],
+  "must_not": [
+    {"approval":{"count":1}},
+    {"outbox":{"kind":"create_event"}},
+    {"messageTo":"gareth.lindqvist@acme.com"}
+  ]
+}

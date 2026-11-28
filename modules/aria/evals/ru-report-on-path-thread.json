@@ -1,0 +1,51 @@
+{
+  "id": "ru-report-on-path-thread",
+  "kind": "ruling",
+  "source": "ruling:report-on-path",
+  "description": "A guest on an email thread asks to move their meeting; Aria moves it and tells the guest on that same thread.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [
+      {"id":"oskar-sync","status":"confirmed","summary":"Oskar / Owner","start":{"dateTime":"2026-11-10T11:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-10T11:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"oskar.pell@brightfield.example.com","responseStatus":"accepted"}]}
+    ],
+    "contacts": [
+      {"name":"Oskar Pell","emails":["oskar.pell@brightfield.example.com"],"tier":"external","timezone":"Europe/Warsaw"}
+    ],
+    "threads": [
+      {"channel":"email","externalThreadId":"gt-os","about":"oskar-sync"}
+    ]
+  },
+  "trigger": {
+    "ingest": {
+      "channel": "email",
+      "externalMessageId": "gm-1",
+      "externalThreadId": "gt-os",
+      "sender": {
+        "channel": "email",
+        "externalId": "oskar.pell@brightfield.example.com",
+        "verified": true,
+        "displayName": "Oskar Pell",
+        "email": "oskar.pell@brightfield.example.com"
+      },
+      "text": "Could we move our Tuesday call to Wednesday around the same time?",
+      "receivedAt": "2026-11-09T06:00:00Z",
+      "mentionsAria": true,
+      "isDirect": false,
+      "kind": "message",
+      "threadMeta": {
+        "subject": "Our call",
+        "participants": [
+          "oskar.pell@brightfield.example.com",
+          "{{ARIA}}"
+        ]
+      }
+    }
+  },
+  "expect": [
+    {"calendarEvent":"oskar-sync","moved":true},
+    {"messageTo":"oskar.pell@brightfield.example.com"}
+  ],
+  "must_not": [
+    {"approval":{"count":1}}
+  ]
+}

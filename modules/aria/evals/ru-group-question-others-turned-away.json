@@ -1,0 +1,38 @@
+{
+  "id": "ru-group-question-others-turned-away",
+  "kind": "ruling",
+  "source": "ruling:group-questions",
+  "description": "Someone other than the exec asks Aria an unrelated question in a group; she says she only takes the exec's questions there.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [],
+    "contacts": [
+      {"name":"Oskar Pell","emails":["oskar.pell@brightfield.example.com"],"tier":"external","timezone":"Europe/Warsaw"}
+    ]
+  },
+  "trigger": {
+    "ingest": {
+      "channel": "telegram",
+      "externalMessageId": "-100500:11",
+      "externalThreadId": "-100500",
+      "sender": {
+        "channel": "telegram",
+        "externalId": "7002",
+        "verified": true,
+        "displayName": "Oskar Pell"
+      },
+      "text": "@aria what is the weather like in Lisbon this week?",
+      "receivedAt": "2026-11-09T06:00:00Z",
+      "mentionsAria": true,
+      "isDirect": false,
+      "kind": "message"
+    }
+  },
+  "expect": [
+    {"messageTo":"-100500","contains":"only"}
+  ],
+  "must_not": [
+    {"outbox":{"kind":"create_event"}},
+    {"outbox":{"kind":"delete_event"}}
+  ]
+}

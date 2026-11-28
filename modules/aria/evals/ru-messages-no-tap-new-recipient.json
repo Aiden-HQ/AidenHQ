@@ -1,0 +1,52 @@
+{
+  "id": "ru-messages-no-tap-new-recipient",
+  "kind": "ruling",
+  "source": "ruling:messages-no-tap",
+  "status": "old-harness: approval-taps: the old per-action owner tap; calendar writes are now reviewed by the AI reviewer",
+  "description": "A guest asks Aria to bring a colleague into the thread; she writes to the colleague without an owner tap.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [
+      {"id":"gareth-call","status":"confirmed","summary":"gareth-call","start":{"dateTime":"2026-11-12T11:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-12T11:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"gareth.lindqvist@acme.com","responseStatus":"accepted"}]}
+    ],
+    "contacts": [
+      {"name":"Gareth Lindqvist","emails":["gareth.lindqvist@acme.com"],"tier":"external","timezone":"Europe/Stockholm"},
+      {"name":"Sunita Mehra","emails":["sunita.mehra@acme.com"],"tier":"external"}
+    ],
+    "threads": [
+      {"channel":"email","externalThreadId":"gt-g2"}
+    ]
+  },
+  "trigger": {
+    "ingest": {
+      "channel": "email",
+      "externalMessageId": "gm-1",
+      "externalThreadId": "gt-g2",
+      "sender": {
+        "channel": "email",
+        "externalId": "gareth.lindqvist@acme.com",
+        "verified": true,
+        "displayName": "Gareth Lindqvist",
+        "email": "gareth.lindqvist@acme.com"
+      },
+      "text": "Please also include my colleague Sunita Mehra (sunita.mehra@acme.com) on our Thursday call and send her the details.",
+      "receivedAt": "2026-11-09T06:00:00Z",
+      "mentionsAria": true,
+      "isDirect": false,
+      "kind": "message",
+      "threadMeta": {
+        "subject": "Thursday call",
+        "participants": [
+          "gareth.lindqvist@acme.com",
+          "{{ARIA}}"
+        ]
+      }
+    }
+  },
+  "expect": [
+    {"messageTo":"sunita.mehra@acme.com"}
+  ],
+  "must_not": [
+    {"approval":{"count":1}}
+  ]
+}

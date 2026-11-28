@@ -34,8 +34,8 @@ it("a kept Slack event is forwarded once, after owner routing, with its bot flag
   await send({ type: "message", subtype: "channel_join", user: "U3", channel: "C1", ts: "1.5", text: "joined" }, "Ev5");
   expect(ack).toHaveBeenCalledOnce();
   expect(forwarded).toEqual([
-    { connection: "slack", resource: "C1", id: "C1:1.3", kind: "message", author: "U2", text: "deploy is red", bot: false, url: "https://slack.com/archives/C1/p13" },
-    { connection: "slack", resource: "C1", id: "C1:1.4", kind: "message", author: "B9", text: "build failed", bot: true, url: "https://slack.com/archives/C1/p14" },
+    { connection: "slack", resource: "C1", id: "C1:1.3", kind: "message", author: "U2", text: "deploy is red", bot: false, url: "https://slack.com/archives/C1/p13", thread: "1.3", from_owner: false },
+    { connection: "slack", resource: "C1", id: "C1:1.4", kind: "message", author: "B9", text: "build failed", bot: true, url: "https://slack.com/archives/C1/p14", thread: "1.4", from_owner: false },
   ]);
 
   // The kernel didn't take it: not acked, so Slack redelivers.

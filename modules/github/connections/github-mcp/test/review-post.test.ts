@@ -490,7 +490,7 @@ describe("posting", () => {
     expect(w.calls.some((c) => c.method === "PATCH" && c.path.endsWith("/issues/comments/8"))).toBe(false);
   });
 
-  it("writes nothing for a status or a notice that is already what GitHub shows", async () => {
+  it("writes nothing for a status or a notice that is already what GitHub shows, a newer head in the footer aside", async () => {
     const w = world();
     const p = poster(w);
     const st = { repo: "acme/payments", pr: 12, head: HEAD, reason: "findings", important: 2 };
@@ -502,8 +502,10 @@ describe("posting", () => {
     const n = { repo: "acme/payments", pr: 12, head: HEAD, phase: "skipped", reason: "stopped" };
     const out = JSON.parse((await p.execute("notice", n)).text);
     await p.execute("notice", { ...n, ack: out.ack_id });
-    await p.execute("notice", { ...n, ack: out.ack_id });
+    await p.execute("notice", { ...n, ack: out.ack_id, head: "b".repeat(40) });
     expect(w.calls.filter((c) => c.method !== "GET" && c.path.includes("/issues/"))).toHaveLength(1);
+    await p.execute("notice", { ...n, ack: out.ack_id, reason: "push_cap" });
+    expect(w.calls.filter((c) => c.method !== "GET" && c.path.includes("/issues/"))).toHaveLength(2);
   });
 
   it("an important finding where someone else has an open thread still gets its own thread: that is where it is answered and closed", async () => {

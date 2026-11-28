@@ -11,6 +11,10 @@ export const READ_SCOPES = [
 ];
 export const WRITE_SCOPES = ["chat:write", "reactions:write", "channels:write", "groups:write", "im:write", "mpim:write", "files:write", "canvases:write", "lists:write"];
 
+/** What summoning acts with as the owner (slack-live src/summon.ts): pre-selected on Connect once the instance has its bot (advanced). */
+export const SUMMON_SCOPES = ["chat:write", "reactions:write"];
+export const connectScopes = (advanced: boolean): string[] => (advanced ? [...READ_SCOPES, ...SUMMON_SCOPES] : READ_SCOPES);
+
 /** An oauth.v2.user.access answer in the standard shape: the user token sits at the top or under authed_user. */
 export function slackAnswer(json: Record<string, unknown>): Record<string, unknown> {
   if (json.ok === false) return { error: String(json.error ?? "refused") };

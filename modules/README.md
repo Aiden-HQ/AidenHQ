@@ -25,6 +25,7 @@ services. An instance's own modules are local modules in its instance repo (`mod
 | `owner-channel`, `channel-telegram`, `voice`, `chat-lane` | How messages reach you: `notify` and its routing, Telegram, voice notes, and the fast chat lane (`slack` is an owner channel too, in its advanced part). |
 | `models-openrouter`, `model-tools`, `memory` | The OpenRouter key (the gateway prices every model from OpenRouter's list); advisor and fan-out tools; agent memory. |
 | `google`, `slack`, `glean`, `jira`, `hubspot`, `primer`, `meetings`, `intake`, `open-loops` | Source connections and the agents built on them. |
+| `aria` | Aria, the executive assistant for your calendar: free times computed in code, booking first, scheduling in summoned chats, an optional nightly tidy-up, and her page. Not in the default bundle. |
 | `clickhouse`, `grafana`, `monitoring`, `warehouse` | Data and observability. |
 
 ## Connections

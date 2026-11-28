@@ -1,0 +1,52 @@
+{
+  "id": "ru-autonomy-joiner-retime",
+  "kind": "ruling",
+  "source": "ruling:autonomy",
+  "description": "A guest asks to add a colleague; Aria checks the new person's availability, adds them (re-timing if needed) and tells the thread, with no owner question.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [
+      {"id":"gareth-call","status":"confirmed","summary":"gareth-call","start":{"dateTime":"2026-11-12T11:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-12T11:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"gareth.lindqvist@acme.com","responseStatus":"accepted"}]}
+    ],
+    "contacts": [
+      {"name":"Gareth Lindqvist","emails":["gareth.lindqvist@acme.com"],"tier":"external","timezone":"Europe/Stockholm"},
+      {"name":"Sunita Mehra","emails":["sunita.mehra@acme.com"],"tier":"external"}
+    ],
+    "threads": [
+      {"channel":"email","externalThreadId":"gt-g4"}
+    ]
+  },
+  "trigger": {
+    "ingest": {
+      "channel": "email",
+      "externalMessageId": "gm-1",
+      "externalThreadId": "gt-g4",
+      "sender": {
+        "channel": "email",
+        "externalId": "gareth.lindqvist@acme.com",
+        "verified": true,
+        "displayName": "Gareth Lindqvist",
+        "email": "gareth.lindqvist@acme.com"
+      },
+      "text": "Can you add Sunita Mehra (sunita.mehra@acme.com) to our Thursday call?",
+      "receivedAt": "2026-11-09T06:00:00Z",
+      "mentionsAria": true,
+      "isDirect": false,
+      "kind": "message",
+      "threadMeta": {
+        "subject": "Thursday call",
+        "participants": [
+          "gareth.lindqvist@acme.com",
+          "{{ARIA}}"
+        ]
+      }
+    }
+  },
+  "expect": [
+    {"messageTo":"gareth.lindqvist@acme.com"}
+  ],
+  "must_not": [
+    {"approval":{"count":1}},
+    {"outbox":{"kind":"delete_event"}}
+  ]
+}

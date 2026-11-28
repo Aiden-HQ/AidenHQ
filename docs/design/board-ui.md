@@ -302,7 +302,7 @@ contributes:
   `styles.variables`: the MCP Apps standard names the board has tokens for (`--color-background-*`, `--color-text-*`,
   `--color-border-primary|secondary`, `--color-ring-primary`, `--font-sans`, `--font-text-xs|sm|md-size`,
   `--border-radius-xs|sm|md|lg`, `--shadow-sm|md|lg`; the one table is `TOKENS` in `ModuleView.tsx`), as the board's tokens
-  write them, so the view sets `color-scheme` to `theme`; `teammates` maps each teammate's key to its current name), `ui/notifications/initialized`, `ui/notifications/host-context-changed` (the board sends the host context again when the system theme flips; the frame inherits the board's color-scheme, so the two must match or the browser paints an opaque backdrop), `tools/call`, `ui/message` (opens Ask Aiden with the text ready) and `ui/notifications/size-changed`
+  write them, so the view sets `color-scheme` to `theme`; `teammates` maps each teammate's key to its current name; `origin` is the board's own address, for a link to another board page, opened with `ui/open-link`), `ui/notifications/initialized`, `ui/notifications/host-context-changed` (the board sends the host context again when the system theme flips; the frame inherits the board's color-scheme, so the two must match or the browser paints an opaque backdrop), `tools/call`, `ui/message` (opens Ask Aiden with the text ready) and `ui/notifications/size-changed`
   (the frame's height). Nothing else is answered. A web host should use a sandbox proxy on a second origin; the board has one
   origin in every exposure mode, so the single sandboxed frame stands in for it.
 - **The page kit** (`services/shared/page-kit.css|js`, copied into each module that serves a page by

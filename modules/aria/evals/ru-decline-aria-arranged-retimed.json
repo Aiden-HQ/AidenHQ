@@ -1,0 +1,37 @@
+{
+  "id": "ru-decline-aria-arranged-retimed",
+  "kind": "ruling",
+  "source": "ruling:everyone-declined",
+  "description": "A meeting Aria arranged is declined for the first time: she re-times it (book first), no tap.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [
+      {"id":"arranged","status":"confirmed","summary":"Gareth / Owner intro","start":{"dateTime":"2026-11-12T10:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-12T10:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"gareth.lindqvist@acme.com","responseStatus":"accepted"}],"extendedProperties":{"private":{"ariaArranged":"true"}}}
+    ],
+    "contacts": [
+      {"name":"Gareth Lindqvist","emails":["gareth.lindqvist@acme.com"],"tier":"external","timezone":"Europe/Stockholm"}
+    ],
+    "threads": [
+      {"channel":"email","externalThreadId":"gt-gar"}
+    ],
+    "ariaSent": [
+      {"channel":"email","externalThreadId":"gt-gar","to":"gareth.lindqvist@acme.com","text":"Booked: Thursday 10:00 am {{CITY}} time. Invitation to follow.","sentAt":"2026-11-08T08:00:00Z"}
+    ]
+  },
+  "trigger": {
+    "calendarChange": {
+      "eventId": "arranged",
+      "attendees": [
+        {"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},
+        {"email":"gareth.lindqvist@acme.com","responseStatus":"declined"}
+      ]
+    }
+  },
+  "expect": [
+    {"calendarEvent":"arranged","moved":true}
+  ],
+  "must_not": [
+    {"approval":{"count":1}},
+    {"outbox":{"kind":"delete_event"}}
+  ]
+}

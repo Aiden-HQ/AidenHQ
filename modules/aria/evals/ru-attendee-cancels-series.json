@@ -1,0 +1,47 @@
+{
+  "id": "ru-attendee-cancels-series",
+  "kind": "ruling",
+  "source": "ruling:attendees-cancel",
+  "description": "A colleague says to drop the whole weekly. Any participant may cancel a series; no tap.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "owner_team_domain": "{{DOMAIN}}",
+    "calendar": [
+      {"id":"lena-weekly_20261111","status":"confirmed","summary":"Lena / Owner weekly","start":{"dateTime":"2026-11-11T10:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-11T10:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"lena.voss@{{DOMAIN}}","responseStatus":"accepted"}],"recurringEventId":"lena-weekly"},
+      {"id":"lena-weekly_20261118","status":"confirmed","summary":"Lena / Owner weekly","start":{"dateTime":"2026-11-18T10:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-18T10:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"lena.voss@{{DOMAIN}}","responseStatus":"accepted"}],"recurringEventId":"lena-weekly"}
+    ],
+    "contacts": [
+      {"name":"Lena Voss","emails":["lena.voss@{{DOMAIN}}"],"tier":"team","timezone":"Europe/Berlin"}
+    ],
+    "threads": [
+      {"channel":"slack","externalThreadId":"T1:DU0LEN001:1"}
+    ]
+  },
+  "trigger": {
+    "ingest": {
+      "channel": "slack",
+      "externalMessageId": "T1:DU0LEN001:1762671600.000100",
+      "externalThreadId": "T1:DU0LEN001:1762671600.000100",
+      "sender": {
+        "channel": "slack",
+        "externalId": "T1:U0LEN001",
+        "verified": true,
+        "displayName": "Lena Voss",
+        "email": "lena.voss@{{DOMAIN}}",
+        "emailFromDirectory": true
+      },
+      "text": "We no longer need our weekly 1:1, please drop the whole series.",
+      "receivedAt": "2026-11-09T06:00:00Z",
+      "mentionsAria": true,
+      "isDirect": true,
+      "kind": "message"
+    }
+  },
+  "expect": [
+    {"outbox":{"kind":"delete_event"}},
+    {"messageTo":"owner"}
+  ],
+  "must_not": [
+    {"approval":{"count":1}}
+  ]
+}

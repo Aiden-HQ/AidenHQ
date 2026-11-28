@@ -1,0 +1,6 @@
+name: pausedrt
+description: "declares a scheduled routine paused, which stays paused whether or not quiet start is on"
+agents:
+  p: { }
+routines:
+  nightly: { title: Nightly, agent: p, status: paused, description: "Today is {{date}}", schedules: [ { cron: "0 2 * * *", timezone: "${settings.timezone}", label: n } ] }
