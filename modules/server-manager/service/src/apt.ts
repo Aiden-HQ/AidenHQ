@@ -184,8 +184,10 @@ export function unattendedUpgrades(config: Map<string, string>, unit: { code: nu
   const state = unit.stdout.trim().toLowerCase();
   if (/^(disabled|masked|not-found)/.test(state)) return "off";
   if (unit.code === 0) return state ? "on" : "unknown";
-  // A unit that does not exist is not a failed probe: it is a host where this module does the patching.
-  if (/not[- ]?found|no such file|does not exist|could not be found|failed to get unit file state/i.test(`${state} ${unit.stderr ?? ""}`)) return "off";
+  // A unit that does not exist is not a failed probe: it is a host where this module does the patching. Only a diagnostic that
+  // names the unit as missing counts: `Failed to get unit file state ...: Access denied` is a probe that could not answer, not an
+  // absent unit, and must stay unknown.
+  if (/not[- ]?found|no such file|does not exist|could not be found/i.test(`${state} ${unit.stderr ?? ""}`)) return "off";
   return "unknown";
 }
 

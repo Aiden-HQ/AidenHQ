@@ -188,6 +188,16 @@ export const REBOOT_READ = {
   installedVersions: ["dpkg-query", "-W"],
 } as const;
 
+/**
+ * The dpkg frontend lock, taken non-blocking and verbosely: a package writer already holds it, so the state is not read or a
+ * reboot issued while a transaction may be changing the versions the approval names. `--verbose` is what puts "failed to get lock"
+ * on stderr, so a lock conflict can be told from a command that failed for its own reason (a plain `flock -n` says nothing).
+ */
+export const DPKG_LOCK_NOWAIT = ["sudo", "-n", "flock", "--verbose", "-n", "-x", "/var/lib/dpkg/lock-frontend"] as const;
+
+/** A package writer held the dpkg lock when the final reboot state was read. */
+export class RebootLocked extends Error {}
+
 /** `dpkg-query -W`'s `package<TAB>version` lines as a map. A malformed line is skipped, never guessed at. */
 export function parseInstalledVersions(text: string): Map<string, string> {
   const out = new Map<string, string>();
@@ -218,14 +228,23 @@ export function awaitingKernel(running: string, installed: Map<string, string>):
     .join(",");
 }
 
-/** Reads a host's reboot state: the boot ID, the running kernel, the kernel awaiting boot, and the reboot-triggering packages
- * with their installed versions (from `dpkg-query -W`). */
-export async function readRebootState(c: Connection): Promise<RebootState> {
-  const boot = (await c.exec([...REBOOT_READ.bootId], TIMEOUTS.read)).stdout.trim();
-  const kernel = (await c.exec([...REBOOT_READ.kernel], TIMEOUTS.read)).stdout.trim();
-  const installed = await c.exec([...REBOOT_READ.installedVersions], TIMEOUTS.read);
+/**
+ * Reads a host's reboot state: the boot ID, the running kernel, the kernel awaiting boot, and the reboot-triggering packages with
+ * their installed versions (from `dpkg-query -W`). `lock` is the final read before a reboot: the installed versions are read under
+ * the dpkg lock, non-blocking, so a package writer that is changing them makes this refuse instead of returning a stale approval.
+ */
+export async function readRebootState(c: Connection, opts: { lock?: boolean } = {}): Promise<RebootState> {
   const flag = await c.probe([...REBOOT_READ.rebootFlag]);
   const pkgs = flag.code === 0 ? await c.probe([...REBOOT_READ.rebootPkgs]) : undefined;
+  const boot = (await c.exec([...REBOOT_READ.bootId], TIMEOUTS.read)).stdout.trim();
+  const kernel = (await c.exec([...REBOOT_READ.kernel], TIMEOUTS.read)).stdout.trim();
+  const installed = opts.lock
+    ? await c.probe([...DPKG_LOCK_NOWAIT, ...REBOOT_READ.installedVersions], TIMEOUTS.read)
+    : await c.exec([...REBOOT_READ.installedVersions], TIMEOUTS.read);
+  if (opts.lock && installed.code !== 0) {
+    if (/flock: failed to get lock/i.test(installed.stderr)) throw new RebootLocked("a package manager was writing to the host, so the reboot state could not be read");
+    throw new Error(`dpkg-query -W did not complete (exit ${installed.code}${installed.stderr.trim() ? `: ${installed.stderr.trim().split("\n")[0]}` : ""})`);
+  }
   const versions = parseInstalledVersions(installed.stdout);
   const reboot_pkgs = (pkgs?.stdout ?? "").split("\n").map((s) => s.trim()).filter(Boolean).map((name) => ({ name, version: versions.get(name) ?? "" }));
   return { boot_id: boot, kernel, kernel_awaiting: awaitingKernel(kernel, versions), reboot_pkgs, needed: flag.code === 0 };
@@ -247,8 +266,11 @@ export function rebootDue(i: { quiet_start: string; quiet_end: string }, consent
   return consent.pending;
 }
 
-/** The one command a reboot runs: a fixed argv, never a caller's words. */
-export const REBOOT_ARGV = ["sudo", "-n", "systemctl", "reboot"];
+/**
+ * The one command a reboot runs: a fixed argv, never a caller's words. It takes the dpkg lock non-blocking around `systemctl`, so a
+ * package writer that is still running when the reboot is issued makes the command refuse instead of rebooting a different state.
+ */
+export const REBOOT_ARGV = [...DPKG_LOCK_NOWAIT, "systemctl", "reboot"];
 
 /**
  * Rebooting (§11.11-12): the window is rechecked at the moment of the reboot, not when the run started; the command is issued and
@@ -263,7 +285,17 @@ export async function rebootAndProve(c: Connection, i: { before: string; window:
   // the proof below is what decides either way. A `Connection` cannot tell its own refusal from a cut, so a failure here is kept and
   // reported only if the boot ID never changes.
   let issued: Error | undefined;
-  try { await c.exec([...REBOOT_ARGV], TIMEOUTS.read); } catch (e) { issued = e as Error; }
+  try {
+    const r = await c.probe([...REBOOT_ARGV], TIMEOUTS.read);
+    // A writer that took the lock after the final read: refuse now, rather than poll for a reboot that never happened.
+    if (r.code !== 0 && /flock: failed to get lock/i.test(r.stderr)) {
+      return { ok: false, reason: "a package manager held the dpkg lock when the reboot was due, so the host was not rebooted: run again once it is clear" };
+    }
+    if (r.code !== 0) issued = new Error(`the reboot command answered: exit ${r.code}${r.stderr.trim() ? `: ${r.stderr.trim().split("\n")[0]}` : ""}`);
+  } catch (e) {
+    // A connection that drops as the host goes down is the reboot starting, not a failed reboot; the boot ID is the proof.
+    issued = e as Error;
+  }
   const deadline = Date.now() + TIMEOUTS.reboot;
   let after = "";
   // The connection may drop while the host goes down: a failed read is expected, and the loop retries until the bound.

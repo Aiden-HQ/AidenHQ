@@ -87,8 +87,10 @@ registry commit op is a `createCommitOnBranch` bound to the parent (`expectedHea
 the commit as whoever the actor is: the App's, signed by GitHub. A push that merges the base is one merge commit made through REST git data
 (`git/trees` on the head's tree, `git/commits` with parents head and base tip, no author or committer), then the branch moved bound to
 the head exactly (`updateRefs` with `beforeOid`). GitHub signs that commit for the App; when the actor is the owner's OAuth token the
-commit is unsigned, so it is accepted only where the branch has no `required_signatures` rule, and a signature-required branch still
-refuses it.
+commit is unsigned, so it is accepted only where the branch requires no signatures, and a signature-required branch still refuses
+it. Both forms of that requirement are read: repository rulesets with a `required_signatures` rule, and a classic branch protection's
+`required_signatures` setting (read with the owner token, since an App without administration cannot see it). A protection endpoint
+that answers neither way is treated as a requirement: the unsigned merge is refused rather than risked.
 
 ## Session boxes and the host
 

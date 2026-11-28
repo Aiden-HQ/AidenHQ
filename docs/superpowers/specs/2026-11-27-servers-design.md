@@ -480,6 +480,7 @@ Rules `execute.ts` enforces, in order, before it installs anything:
 4. **A broken state is not patched over.** If `dpkg --audit` reports an interrupted run, `dpkg --configure -a` is itself
    a write: it happens inside this approved run, or the run stops and reports the broken state for the owner to decide.
    The audit must have completed successfully; a denied or failed `dpkg --audit` is a refusal, never a clean database.
+   The audit is read-only and runs as the SSH user, so the passwordless sudo grant is needed for APT, not for this check.
 5. **Respect pins.** `apt-mark showhold` entries are never upgraded, and are named in the report as held.
 6. **Never a release upgrade.** The `--only-upgrade` install above, never `dist-upgrade`, and no `do-release-upgrade`.
    If the set would move the release — a `libc6` or `base-files` jump across a codename — stop and report rather than
@@ -495,7 +496,9 @@ Rules `execute.ts` enforces, in order, before it installs anything:
     it**. When it is off, this module does the work. An absent unit is off; a probe that failed to answer is a refusal, not a skip.
 11. **Prove the reboot.** Read `/proc/sys/kernel/random/boot_id` before and after. SSH answering is not proof; a reboot
     is done only when the boot ID changed. If it did not change within 900 s, the run fails and reports it.
-12. **Recheck the window immediately before rebooting**, not when the run started.
+12. **Recheck the window immediately before rebooting**, not when the run started. The final read of the reboot state (the
+    installed versions the pending id binds) and the reboot command itself take the dpkg lock non-blocking, so a package
+    writer active at that moment makes the run refuse and wake the owner instead of rebooting a state the approval did not cover.
 
 ## 12. Schedules and reliability
 

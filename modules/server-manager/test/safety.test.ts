@@ -299,16 +299,18 @@ test("§11.11 a reboot with no changed boot ID fails: SSH answering again is not
 
 // §11.11 — the host closing sshd before `systemctl reboot` returns is the reboot starting, not a failed reboot.
 test("§11.11 a reboot whose command connection drops is still proven by the boot ID, never reported as failed", async () => {
-  // A connection whose exec rejects the moment the reboot is issued, and whose boot ID then reads differently: the drop is expected.
+  // A connection whose reboot probe rejects the moment the reboot is issued, and whose boot ID then reads differently: the drop is expected.
   let bootReads = 0;
   let rebooted = false;
   const c = {
     async exec(argv: string[]) {
-      if (argv.join(" ") === "sudo -n systemctl reboot") { rebooted = true; throw new Error("vm-one: connection closed by remote host"); }
       if (argv.join(" ") === "cat /proc/sys/kernel/random/boot_id") return { code: 0, stdout: rebooted ? `${(bootReads += 1) && "boot-2"}\n` : "boot-1\n", stderr: "" };
       return { code: 0, stdout: "", stderr: "" };
     },
-    async probe() { return { code: 0, stdout: "", stderr: "" }; },
+    async probe(argv: string[]) {
+      if (argv.join(" ").endsWith("systemctl reboot")) { rebooted = true; throw new Error("vm-one: connection closed by remote host"); }
+      return { code: 0, stdout: "", stderr: "" };
+    },
   } as unknown as Parameters<typeof rebootAndProve>[0];
   const r = await rebootAndProve(c, { before: "boot-1", window: { start: "00:00", end: "00:00" }, timeZone: "UTC" });
   assert.equal(r.ok, true);

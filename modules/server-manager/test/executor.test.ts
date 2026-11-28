@@ -38,7 +38,7 @@ const REBOOT_STATE = {
 };
 
 /** A stand-in ssh over the recorded fixture, with the answers the write path asks for (the exact-list simulation, dpkg, units). */
-function fakeHost(i: { simulate?: string; estimate?: string; audit?: string; auditCode?: number; auditErr?: string; bootId?: string; units?: string; ua?: string; uaCode?: number; uaErr?: string; disk?: string; rebootPkgs?: string; installed?: string } = {}) {
+function fakeHost(i: { simulate?: string; estimate?: string; audit?: string; auditCode?: number; auditErr?: string; bootId?: string; units?: string; ua?: string; uaCode?: number; uaErr?: string; disk?: string; rebootPkgs?: string; installed?: string; lockBusy?: boolean; rebootLockBusy?: boolean; installedSeq?: string[] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "sm-exec-"));
   mkdirSync(join(root, "tmp"));
   mkdirSync(join(root, "state"), { recursive: true });
@@ -56,7 +56,7 @@ function fakeHost(i: { simulate?: string; estimate?: string; audit?: string; aud
     "dpkg-query -W": { out: i.installed ?? "libc6\t2.39-0ubuntu8.5\nopenssl\t3.0.13-0ubuntu3.4\nlinux-image-6.8.0-49-generic\t6.8.0-49.50\n" },
     "apt-config dump": { out: i.ua === "enabled" ? g("apt-config dump") : "" },
     "systemctl is-enabled unattended-upgrades": { out: i.ua ?? "disabled", code: i.uaCode, err: i.uaErr },
-    "sudo -n dpkg --audit": { out: i.audit ?? "", code: i.auditCode, err: i.auditErr },
+    "dpkg --audit": { out: i.audit ?? "", code: i.auditCode, err: i.auditErr },
   };
   const prefixes: [string, { out: string }][] = [
     ["apt-cache policy", { out: g("apt-cache policy") }],
@@ -78,8 +78,13 @@ function fakeHost(i: { simulate?: string; estimate?: string; audit?: string; aud
     'const at = args.findIndex((a) => a.includes("@"));',
     "const raw = args.slice(at + 1).join(\" \");",
     // The dpkg lock guard (§11.9) is stripped for the lookup only, so every expected command below is the same words it was.
-    'const cmd = raw.split("flock -w 600 -x /var/lib/dpkg/lock-frontend ").join("");',
+    'const cmd = raw.split("flock -w 600 -x /var/lib/dpkg/lock-frontend ").join("").split("sudo -n flock --verbose -n -x /var/lib/dpkg/lock-frontend ").join("");',
     `fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ cmd: raw, key: args.includes("-i") }) + "\\n");`,
+    `if (${JSON.stringify(i.lockBusy ?? false)} && raw.startsWith("sudo -n flock --verbose -n -x /var/lib/dpkg/lock-frontend ")) { process.stderr.write("flock: failed to get lock" + String.fromCharCode(10)); process.exit(1); }`,
+    `if (${JSON.stringify(i.rebootLockBusy ?? false)} && cmd === "systemctl reboot") { process.stderr.write("flock: failed to get lock" + String.fromCharCode(10)); process.exit(1); }`,
+    `const installedSeq = ${JSON.stringify(i.installedSeq ?? null)};`,
+    `const installedCount = ${JSON.stringify(join(root, "installed-count"))};`,
+    'if (installedSeq && cmd === "dpkg-query -W") { const n = fs.existsSync(installedCount) ? Number(fs.readFileSync(installedCount, "utf8")) : 0; const out = installedSeq[Math.min(n, installedSeq.length - 1)]; fs.writeFileSync(installedCount, String(n + 1)); process.stdout.write(out.endsWith(String.fromCharCode(10)) ? out : out + String.fromCharCode(10)); process.exit(0); }',
     `const exact = ${JSON.stringify(exact)};`,
     `const prefixes = ${JSON.stringify(prefixes)};`,
     "const answer = exact[cmd] ?? (prefixes.find((p) => cmd.startsWith(p[0])) ?? [])[1];",
@@ -367,6 +372,8 @@ test("execute refuses the patch when dpkg --audit cannot run, instead of reading
   const r = await ex.execute({ id: "k-0123456789abcdef", kind: "server-manager.patch", args: plan.args, digest: "d", idempotency_key: "i", tier: 0 } as never);
   assert.equal(r.ok, false);
   assert.match(r.text, /dpkg --audit did not complete .*package database's state is unknown/);
+  assert.ok(h.read().some((c) => c.cmd === "dpkg --audit"), "the read-only audit runs as the SSH user, without requiring sudo");
+  assert.ok(!h.read().some((c) => c.cmd.startsWith("sudo -n dpkg --audit")), "the audit never needs the APT sudo grant");
   assert.ok(!h.read().some((c) => c.cmd.startsWith("sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install")), "a denied audit is not a clean package database");
   assert.equal(wakes.length, 1, "the refusal wakes the agent with the failed check");
 });
@@ -408,6 +415,46 @@ test("execute refuses a reboot whose pending id no longer matches, and one outsi
     assert.ok(!h.read().some((c) => c.cmd.includes("systemctl reboot")));
   } finally { (globalThis as { Date: unknown }).Date = realDate; }
   assert.equal(wakes.length >= 1, true, "§13: a refused or failed reboot wakes the agent");
+});
+
+test("§6 the locked final read refuses a reboot when the same package has a new installed version", async () => {
+  const base = "libc6\t2.39-0ubuntu8.5\nopenssl\t3.0.13-0ubuntu3.4\nlinux-image-6.8.0-49-generic\t6.8.0-49.50\n";
+  const moved = base.replace("2.39-0ubuntu8.5", "2.39-0ubuntu8.6");
+  const h = fakeHost({ installedSeq: [base, moved] });
+  const { d, wakes } = deps(h);
+  const ex = createExecutor(d);
+  const plan = await ex.plan({ kind: "server-manager.reboot", args: { machine: "vm-one" }, requester: module(), task: "" } as never);
+  // The plan read version A; by the time the locked final read runs the same package is on version B. The approval must not ride it.
+  const out = await ex.execute({ id: "k-0123456789abcdef", kind: "server-manager.reboot", args: { ...(plan.args as Record<string, unknown>), quiet_window: { start: "00:00", end: "00:00" } }, digest: "d", idempotency_key: "i", tier: 0 } as never);
+  assert.equal(out.ok, false);
+  assert.match(out.text, /another reboot/);
+  assert.ok(!h.read().some((c) => c.cmd.includes("systemctl reboot")), "nothing rebooted");
+  assert.equal(wakes.length, 1, "the mismatch wakes the agent");
+});
+
+test("§6 a package writer holding the dpkg lock refuses the reboot instead of reading a stale approval", async () => {
+  const h = fakeHost({ lockBusy: true });
+  const { d, wakes } = deps(h);
+  const ex = createExecutor(d);
+  const plan = await ex.plan({ kind: "server-manager.reboot", args: { machine: "vm-one" }, requester: module(), task: "" } as never);
+  const out = await ex.execute({ id: "k-0123456789abcdef", kind: "server-manager.reboot", args: { ...(plan.args as Record<string, unknown>), quiet_window: { start: "00:00", end: "00:00" } }, digest: "d", idempotency_key: "i", tier: 0 } as never);
+  assert.equal(out.ok, false);
+  assert.match(out.text, /package manager was writing/);
+  assert.ok(!h.read().some((c) => c.cmd.includes("systemctl reboot")), "nothing rebooted");
+  assert.equal(wakes.length, 1);
+  assert.match(wakes[0]!.title, /waited on the package manager/);
+});
+
+test("§11.12 a package writer that takes the dpkg lock just before the reboot refuses it, without a proof wait", async () => {
+  const h = fakeHost({ rebootLockBusy: true });
+  const { d, wakes } = deps(h);
+  const ex = createExecutor(d);
+  const plan = await ex.plan({ kind: "server-manager.reboot", args: { machine: "vm-one" }, requester: module(), task: "" } as never);
+  const out = await ex.execute({ id: "k-0123456789abcdef", kind: "server-manager.reboot", args: { ...(plan.args as Record<string, unknown>), quiet_window: { start: "00:00", end: "00:00" } }, digest: "d", idempotency_key: "i", tier: 0 } as never);
+  assert.equal(out.ok, false);
+  assert.match(out.text, /held the dpkg lock/);
+  assert.equal(wakes.length, 1, "the lock refusal wakes the agent");
+  assert.match(wakes[0]!.title, /waited on the package manager/);
 });
 
 // §6, §11.12 — a reboot the scheduler filed for one window, and the owner approved after that window closed, is deferred *and*
@@ -484,7 +531,7 @@ test("§12 a patch and a reboot for one machine do not overlap: the reboot waits
   const calls = h.read().map((c) => c.cmd);
   const install = calls.findIndex((c) => c.startsWith("sudo -n flock -w 600 -x /var/lib/dpkg/lock-frontend env DEBIAN_FRONTEND=noninteractive apt-get install "));
   assert.ok(install >= 0, "the patch installed");
-  assert.ok(!calls.some((c) => c === "sudo -n systemctl reboot"), "nothing rebooted");
+  assert.ok(!calls.some((c) => c.includes("systemctl reboot")), "nothing rebooted");
   assert.ok(calls.lastIndexOf("uname -r") > install, "the reboot's reads happened after the patch's install, so the two never overlapped");
 });
 
@@ -493,11 +540,11 @@ test("§12 a patch and a reboot for one machine do not overlap: the reboot waits
 // moves the clock back above the read fails here without a test that could ever reboot anything.
 test("§11.12 the window clock is taken after the reboot state is read", async () => {
   const src = readFileSync(new URL("../service/src/executor.ts", import.meta.url), "utf8");
-  const read = src.indexOf("const st = await readRebootState(c);");
+  const read = src.indexOf("st = await readRebootState(c, { lock: true });");
   const now = src.indexOf("const now = new Date();");
   assert.ok(read > 0 && now > 0);
-  assert.ok(now > read, "`now` is sampled after `readRebootState`, so consent, window and reboot share a time taken once the reads are done");
-  assert.ok(!/const now = new Date\(\);\s*\n\s*const st = await readRebootState/.test(src), "never sampled before the read");
+  assert.ok(now > read, "`now` is sampled after the locked `readRebootState`, so consent, window and reboot share a time taken once the reads are done");
+  assert.ok(!/const now = new Date\(\);\s*\n\s*st = await readRebootState/.test(src), "never sampled before the read");
 });
 
 // §6 — an "ask me first" machine reboots only on the owner's decision: a Tier 0 record with no decision on record refuses.
@@ -511,7 +558,7 @@ test("§6 an ask-first reboot refuses a Tier 0 record with no owner decision, an
   const low = await ex.execute({ id: "k-0000000000000001", kind: "server-manager.reboot", args, digest: "d", idempotency_key: "a", tier: 0 } as never);
   assert.equal(low.ok, false);
   assert.match(low.text, /asks before it reboots|no owner decision/);
-  assert.ok(!h.read().some((c) => c.cmd === "sudo -n systemctl reboot"), "a Tier 0 record reboots nothing on an ask-first machine");
+  assert.ok(!h.read().some((c) => c.cmd.includes("systemctl reboot")), "a Tier 0 record reboots nothing on an ask-first machine");
   // The owner's Tier 2 decision gets past that gate: it is not refused for want of a decision (its own run then meets the window).
   const high = await ex.execute({ id: "k-0000000000000002", kind: "server-manager.reboot", args: { ...args, quiet_window: { start: "00:00", end: "00:01" } }, digest: "d", idempotency_key: "b", tier: 2 } as never);
   assert.doesNotMatch(high.text, /asks before it reboots|no owner decision/, "a Tier 2 record is not refused for want of a decision");

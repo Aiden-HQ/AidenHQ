@@ -120,7 +120,8 @@ export const hashOf = (list: Planned[]) => listHash(list.map(word));
 /**
  * §11.4: a broken dpkg state is not patched over. `dpkg --audit` names packages left half-configured; an empty answer is a clean
  * state. A non-empty one stops the run and reports it for the owner to decide: this run never repairs the state on its own, and
- * builds no argument list that would.
+ * builds no argument list that would. The audit is read-only and runs as the SSH user, so a host whose sudo policy covers only
+ * APT is not refused for a privilege the audit never needed.
  */
 export const DPKG_AUDIT = ["dpkg", "--audit"];
 
@@ -161,9 +162,9 @@ export function verifyPatch(rec: PatchArgs, fresh: { list: Planned[]; hash: stri
   // §11.1: what gets installed is what this last read showed. A different set is not the approved one.
   if (fresh.hash !== rec.hash) return { stale: true };
   if (fresh.list.length !== rec.packages.length || fresh.list.some((p, i) => word(p) !== rec.packages[i])) return { stale: true };
-  // §11.4: the audit must have completed before its silence can mean a clean package database. A sudo policy that denies
-  // `dpkg --audit` exits non-zero with nothing on stdout; reading that as clean would patch over an interrupted state.
-  if (fresh.audit.code !== 0) return { ok: false, code: "dpkg_audit_failed", reason: `dpkg --audit did not complete (exit ${fresh.audit.code}${fresh.audit.stderr?.trim() ? `: ${fresh.audit.stderr.trim().split("\n").slice(0, 3).join("; ")}` : ""}), so the package database's state is unknown: nothing was installed. Fix the sudo policy or the host's dpkg state, then run again.` };
+  // §11.4: the audit must have completed before its silence can mean a clean package database. A failed read exits non-zero with
+  // nothing on stdout; reading that as clean would patch over an interrupted state.
+  if (fresh.audit.code !== 0) return { ok: false, code: "dpkg_audit_failed", reason: `dpkg --audit did not complete (exit ${fresh.audit.code}${fresh.audit.stderr?.trim() ? `: ${fresh.audit.stderr.trim().split("\n").slice(0, 3).join("; ")}` : ""}), so the package database's state is unknown: nothing was installed. Fix the host's dpkg state, then run again.` };
   // The simulation must show no package outside the list installed, removed or downgraded (§11.1).
   const outside = simulationProblems(parseSimulation(fresh.simulation), rec.packages);
   if (outside.length) return { ok: false, code: "plan_mismatch", reason: `the plan is not what the record said: ${outside.slice(0, 5).join("; ")}${outside.length > 5 ? ` (and ${outside.length - 5} more)` : ""}. Nothing was installed.` };
@@ -215,7 +216,8 @@ export async function runPatch(c: Connection, machine: Machine, rec: PatchArgs):
     const uaState = unattendedUpgrades(parseAptConfig(aptConfig.stdout), ua);
     if (uaState === "unknown") return { ...base, detail: `systemctl could not say whether unattended-upgrades is on (exit ${ua.code}${ua.stderr.trim() ? `: ${ua.stderr.trim().split("\n")[0]}` : ""}), so this run did not patch and did not skip: fix the host's systemd state, then run again.`, refused: "unattended_upgrades_unknown" };
     const rebootBefore = await c.probe(["test", "-f", "/var/run/reboot-required"]);
-    const audit = await c.probe(["sudo", "-n", ...DPKG_AUDIT]);
+    // Read-only, and readable by the SSH user on a normal apt host: no sudo requirement for a check that changes nothing.
+    const audit = await c.probe([...DPKG_AUDIT]);
     const secStatus = await c.probe([...READ.securityStatus]);
     const fresh = revalidate({
       os: os.stdout, policy: policy.stdout, simulated: simulated.stdout, holds: holds.code === 0 ? holds.stdout : "",

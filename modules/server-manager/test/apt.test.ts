@@ -77,6 +77,8 @@ test("the effective unattended-upgrades setting wins over the unit's state; the 
   assert.equal(unattendedUpgrades(new Map(), { code: 1, stdout: "masked" }), "off");
   // A unit that is not installed exits non-zero with empty stdout and a not-found diagnostic: off, not on.
   assert.equal(unattendedUpgrades(new Map(), { code: 1, stdout: "", stderr: "Failed to get unit file state for unattended-upgrades.service: No such file or directory" }), "off");
+  // The same generic prefix with an access error is not an absent unit: the probe could not answer, so it is unknown.
+  assert.equal(unattendedUpgrades(new Map(), { code: 1, stdout: "", stderr: "Failed to get unit file state for unattended-upgrades.service: Access denied" }), "unknown");
   // A probe that failed for another reason is not an answer: unknown, never a silent skip.
   assert.equal(unattendedUpgrades(new Map(), { code: 1, stdout: "", stderr: "Failed to connect to bus: No medium found" }), "unknown");
   // An `apt-config dump` line is `KEY "value";`, nested and repeated keys included; the first listing wins.

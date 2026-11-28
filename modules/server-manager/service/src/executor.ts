@@ -7,7 +7,7 @@
 // after it was granted. A write a run cannot finish is reported to the owner's agent as a task (§13), never retried blind.
 import { readMachines, type Machine } from "./config.ts";
 import { runPatch, revalidate, StalePatch, type PatchArgs, type PatchOutcome } from "./execute.ts";
-import { ConsentStore, inWindow, pendingId, readRebootState, rebootAndProve } from "./reboot.ts";
+import { ConsentStore, inWindow, pendingId, readRebootState, rebootAndProve, RebootLocked } from "./reboot.ts";
 import { withConnection, type Keys, type SshMachine, type Transport } from "./ssh.ts";
 import type { Executor, ExecuteRequest, PlanRequest, PlanResult } from "./aidenhq-sdk/executor.ts";
 import { detect, downloadEstimate, parseOsRelease, parseSimulatedUpgrade } from "./apt.ts";
@@ -260,8 +260,16 @@ export function createExecutor(d: ExecutorDeps): Executor {
             return { ok: false, text: `${m.name}: the host key changed since the record was filed (filed ${args.fingerprint}, presented ${pin.fingerprint}): nothing ran. Only the owner's re-pin gets past it.` };
           }
           // §11.12: the state is read first and the clock sampled *after* it, so the consent, the window and the reboot are all judged
-          // by a time taken once the reads are done — never by the instant the run started.
-          const st = await readRebootState(c);
+          // by a time taken once the reads are done — never by the instant the run started. This final read takes the dpkg lock
+          // non-blocking: a package writer active now is a refusal, not a stale version from before its transaction.
+          let st: Awaited<ReturnType<typeof readRebootState>>;
+          try {
+            st = await readRebootState(c, { lock: true });
+          } catch (e) {
+            if (!(e instanceof RebootLocked)) throw e;
+            await d.wake({ machine: m.name, title: `Server Manager: a reboot waited on the package manager on ${m.name}`, body: `${m.name}: ${e.message}; nothing was rebooted.`, source: `server-manager:reboot-locked:${m.name}:${args.pending_id.slice(0, 12)}` }).catch(() => undefined);
+            return { ok: false, text: `${m.name}: ${e.message}: nothing was rebooted.` };
+          }
           const now = new Date();
           const id = pendingId(st);
           if (id !== args.pending_id) {
@@ -288,7 +296,8 @@ export function createExecutor(d: ExecutorDeps): Executor {
           }
           const r = await rebootAndProve(c, { before: st.boot_id, window: args.quiet_window, timeZone: d.timeZone(), at: now });
           if (!r.ok) {
-            await d.wake({ machine: m.name, title: `Server Manager: a reboot was not proven on ${m.name}`, body: `${m.name}: ${r.reason}`, source: `server-manager:reboot-failed:${m.name}:${args.pending_id.slice(0, 12)}` }).catch(() => undefined);
+            const locked = /held the dpkg lock/.test(r.reason);
+            await d.wake({ machine: m.name, title: locked ? `Server Manager: a reboot waited on the package manager on ${m.name}` : `Server Manager: a reboot was not proven on ${m.name}`, body: `${m.name}: ${r.reason}`, source: locked ? `server-manager:reboot-locked:${m.name}:${args.pending_id.slice(0, 12)}` : `server-manager:reboot-failed:${m.name}:${args.pending_id.slice(0, 12)}` }).catch(() => undefined);
             return { ok: false, text: `${m.name}: ${r.reason}` };
           }
           consent.drop(m.name);
