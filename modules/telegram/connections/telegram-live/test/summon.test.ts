@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { CHAT_GAP_MS, sender } from "../src/send.js";
 import { createIngest, markAgentSend } from "../src/ingest.js";
-import { createSummon, renderLinks } from "../src/summon.js";
+import { createSummon } from "../src/summon.js";
 import { openStore } from "../src/store.js";
 import { chat, log, ME, msg, newMessage, scriptedTd, tmpDb } from "./helpers.js";
 import { FakeTd } from "./fake-td.js";
@@ -116,10 +116,6 @@ test("react puts 👀 on the message; context reads the chat oldest first and ma
   const r = await summon.handle("context", { resource: "-10", before: "-10:5", n: 2 });
   expect((r.body as any).messages.map((m: any) => [m.id, m.author, m.is_owner, m.text])).toEqual([["-10:2", "User42", true, "older"], ["-10:3", "User7", false, "newer"]]);
   expect(store.db.prepare(`SELECT 1 FROM summoned_chats WHERE chat_id = -10`).get()).toBeTruthy();
-});
-
-test("renderLinks leaves text without links alone", () => {
-  expect(renderLinks("plain [x] (y)")).toEqual({ text: "plain [x] (y)", entities: [] });
 });
 
 test("a reply into a forum topic carries the topic; balanced parentheses stay in a link", async () => {

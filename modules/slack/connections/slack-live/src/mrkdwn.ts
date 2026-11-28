@@ -6,22 +6,51 @@ const boardOrigin = (url?: string): string => { if (!url) return ""; try { retur
 // An in-app route: a plain label, and a path (no host, scheme or markup) after "#/".
 const ROUTE_LINK = /\[([^[\]\n<>`&*_]+)\]\(#\/([A-Za-z0-9][A-Za-z0-9\-._/]*)\)/g;
 
-export function toSlackMrkdwn(text: string, boardUrl?: string): string {
-  const board = boardOrigin(boardUrl);
+const TABLE_ROW = /^[ \t]*\|.*\|[ \t]*$/;
+const TABLE_RULE = /^[ \t]*\|[\s:|-]+\|[ \t]*$/;
+
+/** The one markdown subset agents write (**bold**, _italic_, `code`, [text](url), "- " bullets, "> " quotes, paragraphs) as Slack
+ * mrkdwn; headers become bold lines and tables plain lines. `labelled` makes `[text](url)` Slack's `<url|text>` (a message an
+ * agent posts into a chat); otherwise the real address stays visible (a message to the owner: no label that could hide it). */
+export function toSlackMrkdwn(text: string, o: { boardUrl?: string; labelled?: boolean; keepTokens?: boolean } = {}): string {
+  if (o.keepTokens) {
+    // The bot's own channel posts: Slack's `<@U1>` / `<#C1>` / `<url|label>` tokens the agent wrote stay as written (the caller has stripped `<!…>`).
+    const kept: string[] = [];
+    const marked = text.replace(/\u0001/g, "").replace(/<[@#]?[^<>\s|]+(?:\|[^<>\n]*)?>/g, (t) => `\u0001${kept.push(t) - 1}\u0001`);
+    return toSlackMrkdwn(marked.replace(/\u0000/g, ""), { ...o, keepTokens: false }).replace(/\u0001(\d+)\u0001/g, (_, n: string) => kept[Number(n)]!);
+  }
+  const board = boardOrigin(o.boardUrl);
+  // Block syntax (headers, tables, bullets, quotes) is read on whole lines; link destinations are set aside so emphasis can't touch them.
+  const kept: string[] = [];
+  const hold = (t: string) => `\u0000${kept.push(t) - 1}\u0000`;
+  const blocks = (part: string) =>
+    part
+      .split("\n")
+      .flatMap((line) => (TABLE_RULE.test(line) ? [] : TABLE_ROW.test(line) ? [line.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim()).filter(Boolean).join(" · ")] : [line]))
+      .join("\n")
+      .replace(/^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$/gm, "*$1*")
+      .replace(/^([ \t]*)[-*][ \t]+/gm, "$1• ")
+      .replace(/^[ \t]*&gt;[ \t]?/gm, "> "); // a quote: Slack's own syntax is a literal ">" (escaping made it "&gt;")
   // Code (fenced and inline) is kept as written; everything between is converted.
-  return escape(text)
-    .split(/(```[\s\S]*?```|`[^`\n]+`)/)
-    .map((part, i) =>
-      i % 2 === 1
-        ? part
-        : part
-            .replace(/^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$/gm, "*$1*")
-            .replace(/^([ \t]*)[-*][ \t]+/gm, "$1• ")
-            .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)"<>|]+)\)/g, "$1 (<$2>)") // the real address stays visible: no labelled links that could hide it
-            // An in-app route: the same visible address, resolved against the board's own configured origin.
-            .replace(ROUTE_LINK, (_, label: string, route: string) => (board ? `${label} (<${board}/#/${route}>)` : `[${label}](#/${route})`))
-            .replace(/\*\*([^*\n]+)\*\*/g, "*$1*")
-            .replace(/__([^_\n]+)__/g, "_$1_"),
+  return escape(text.replace(/\u0000/g, ""))
+    .split(/(```[\s\S]*?```)/)
+    .map((block, b) =>
+      b % 2 === 1
+        ? block
+        : blocks(block)
+            .split(/(`[^`\n]+`)/)
+            .map((part, i) =>
+              i % 2 === 1
+                ? part
+                : part
+                    .replace(/\[([^\]\n|]+)\]\((https?:\/\/(?:[^\s()"<>|]|\([^\s()"<>|]*\))+)\)/g, (_, label: string, url: string) => (o.labelled ? hold(`<${url}|${label}>`) : `${label} (${hold(`<${url}>`)})`))
+                    // An in-app route: the same visible address, resolved against the board's own configured origin.
+                    .replace(ROUTE_LINK, (_, label: string, route: string) => (board ? `${label} (${hold(`<${board}/#/${route}>`)})` : `[${label}](#/${route})`))
+                    .replace(/\*\*([^*\n]+)\*\*/g, "*$1*")
+                    .replace(/__([^_\n]+)__/g, "_$1_"),
+            )
+            .join(""),
     )
-    .join("");
+    .join("")
+    .replace(/\u0000(\d+)\u0000/g, (_, n: string) => kept[Number(n)]!);
 }

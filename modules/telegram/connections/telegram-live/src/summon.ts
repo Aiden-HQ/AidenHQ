@@ -17,25 +17,8 @@ const ACK_BUDGET_MS = 2_500;
 /** Bounds one TDLib call (invoke has no timeout of its own): the call is abandoned, not cancelled. */
 const within = <T>(p: Promise<T>, ms: number): Promise<T> => Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new TdError(504, "Telegram did not answer in time")), Math.max(ms, 1)).unref())]);
 export const EMOJI: Record<string, string> = { eyes: "👀" };
-// A link's url may hold one level of balanced parentheses (Wikipedia's `Mercury_(planet)`).
-const LINK = /\[([^\]\n]+)\]\((https?:\/\/(?:[^\s()]|\([^\s()]*\))+)\)/g;
-
 export type Reply = { status: number; body: unknown };
 const reply = (status: number, body: unknown): Reply => ({ status, body });
-
-/** `[label](url)` as the text-link entities Telegram renders (offsets in UTF-16 units, as TDLib counts them). */
-export function renderLinks(markdown: string): { text: string; entities: unknown[] } {
-  let text = "";
-  let last = 0;
-  const entities: unknown[] = [];
-  for (const m of markdown.matchAll(LINK)) {
-    text += markdown.slice(last, m.index);
-    entities.push({ _: "textEntity", offset: text.length, length: m[1]!.length, type: { _: "textEntityTypeTextUrl", url: m[2] } });
-    text += m[1];
-    last = m.index! + m[0].length;
-  }
-  return { text: text + markdown.slice(last), entities };
-}
 
 const str = (v: unknown, max = 20_000) => (typeof v === "string" && v !== "" && v.length <= max ? v : undefined);
 /** `<chat>:<message>` or a bare message id, in `chat`: the message id. */
@@ -130,7 +113,6 @@ export function createSummon(d: { td: () => TdClient | undefined; store: Store; 
     if (!key || !text || to === undefined) return reply(400, { error: "send { resource, in_reply_to, text, key }" });
     // The writes row's id is the idempotency key's hash: the same key reaches the same row, which sends at most once.
     const id = `summon-${createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
-    const { text: plain, entities } = renderLinks(text);
     // A reply already sent (or confirmed late) under this key answers first: a retry never needs the original message again.
     const done = settled(id);
     if (done) return reply(200, { id: `${c.id}:${done}` });
@@ -138,7 +120,7 @@ export function createSummon(d: { td: () => TdClient | undefined; store: Store; 
     // A failed lookup fails the reply (handle: 502) rather than send it without its topic.
     const target = await c.td.invoke<any>({ _: "getMessage", chat_id: c.id, message_id: to });
     const topic = target?.topic_id?._ === "messageTopicForum" ? { _: "messageTopicForum", forum_topic_id: target.topic_id.forum_topic_id } : undefined;
-    const r = await d.run({ id, kind: "telegram.reply", digest: "", idempotency_key: key, args: { action: "reply", chat_id: String(c.id), reply_to_message_id: String(to), text: plain, agent: "summon" } }, { entities, topic });
+    const r = await d.run({ id, kind: "telegram.reply", digest: "", idempotency_key: key, args: { action: "reply", chat_id: String(c.id), reply_to_message_id: String(to), text, agent: "summon" } }, { topic });
     const sent = settled(id);
     if (sent) return reply(200, { id: `${c.id}:${sent}` });
     return reply(r.text.startsWith("Send cap") ? 429 : 502, { error: r.text });

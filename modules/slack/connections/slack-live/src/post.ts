@@ -5,6 +5,7 @@
 import { createHash } from "node:crypto";
 import type { Executor } from "./aidenhq-sdk/executor.js";
 import { bindings } from "./bind.js";
+import { toSlackMrkdwn } from "./mrkdwn.js";
 import type { Store } from "./store.js";
 
 export interface PostConfig {
@@ -31,7 +32,7 @@ export async function slackPost(store: Store, cfg: PostConfig, a: PostArgs, call
     if (now - p.at < DUPLICATE_MS) return { ok: true, channel: a.channel, ts: p.ts, duplicate: true };
   }
   // No special mentions (@channel, @here, @everyone, user groups): an agent never pages a whole channel or team.
-  const body = noSpecial(a.text);
+  const body = toSlackMrkdwn(noSpecial(a.text), { labelled: true, keepTokens: true });
   const name = noSpecial(caller.name).replace(/[<>*&]/g, "").replace(/\s+/g, " ").trim().slice(0, 60);
   const res = await fetch("https://slack.com/api/chat.postMessage", {
     method: "POST",

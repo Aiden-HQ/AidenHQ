@@ -2221,11 +2221,11 @@ function cappedFile(instanceDir: string, path: string, warnings: string[], fix: 
   return text;
 }
 
-const PROMPT = { fields: ["id", "file", "order", "when", "unless", "lane"], order: ["first", "normal", "last"], tests: ["tools", "roles", "modules", "fields"] };
+const PROMPT = { fields: ["id", "file", "order", "when", "unless", "lane"], order: ["first", "normal", "last"], tests: ["tools", "tools_any", "roles", "modules", "fields"] };
 /**
  * A module's handbook sections, its `prompts:` (spec §3.1): [{id: <module>.<id>, file, order, when, unless, lane}]. A prompt
  * `file` is a prompts/<name>.md in the module, used verbatim past its optional frontmatter (its leading blank lines included).
- * `when` and `unless` test presence: `tools` (`connection.tool` granted), `roles`, `modules` (enabled) and `fields` (an agent
+ * `when` and `unless` test presence: `tools` (every `connection.tool` granted), `tools_any` (at least one granted), `roles`, `modules` (enabled) and `fields` (an agent
  * field: `true` = set and not false, anything else = equal). Every `when` test must hold, and no `unless` test. `lane: true`:
  * the fast chat lane's prompt gets it too.
  */
@@ -2294,7 +2294,8 @@ export function effectiveSkills(key: string, def: Obj, override: Obj | undefined
 }
 /** Handbook order: first, normal, last; then module; then id. */
 export const promptOrder = (a: Obj, b: Obj) => PROMPT.order.indexOf(a.order) - PROMPT.order.indexOf(b.order) || a.module.localeCompare(b.module) || a.id.localeCompare(b.id);
-const holds = (t: Obj, a: Obj, enabled: string[]) => [...(t.tools ?? []).map((x: string) => a.enabled_tools?.[x.split(".")[0]!]?.includes(x.split(".")[1]) ?? false), ...(t.roles ?? []).map((r: string) => (a.roles ?? []).includes(r)), ...(t.modules ?? []).map((m: string) => enabled.includes(m)), ...Object.entries(t.fields ?? {}).map(([f, v]) => (v === true ? a[f] != null && a[f] !== false : a[f] === v))];
+const granted = (a: Obj, x: string) => a.enabled_tools?.[x.split(".")[0]!]?.includes(x.split(".")[1]) ?? false;
+const holds = (t: Obj, a: Obj, enabled: string[]) => [...(t.tools ?? []).map((x: string) => granted(a, x)), ...(t.tools_any ? [t.tools_any.some((x: string) => granted(a, x))] : []), ...(t.roles ?? []).map((r: string) => (a.roles ?? []).includes(r)), ...(t.modules ?? []).map((m: string) => enabled.includes(m)), ...Object.entries(t.fields ?? {}).map(([f, v]) => (v === true ? a[f] != null && a[f] !== false : a[f] === v))];
 /** Its tests hold for the agent. */
 export const promptApplies = (p: Obj, a: Obj, enabled: string[]) => holds(p.when, a, enabled).every(Boolean) && !holds(p.unless, a, enabled).some(Boolean);
 

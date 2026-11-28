@@ -60,6 +60,8 @@ connections:
 prompts:
   # How a summoned teammate works its task: the one rule, for every agent that can reply in a summoned chat.
   - { id: summoned, file: prompts/summoned.md, when: { tools: [ conversation.conversation_reply ] } }
+  # How anything an agent writes into a chat reads: one copy for every agent that holds a chat or email send tool.
+  - { id: chat-writing, file: prompts/chat-writing.md, when: { tools_any: [ conversation.conversation_reply, slack_live.slack_post, slack.slack_send_message, slack.slack_send_message_draft, telegram_account.telegram_send, telegram_account.telegram_reply, telegram_account.telegram_save_draft, owner_channel.notify, google_workspace.gmail_send, google_workspace.gmail_draft ] }, lane: true }
 services:
   data: true
   run:

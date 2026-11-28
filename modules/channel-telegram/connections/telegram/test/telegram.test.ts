@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { openStore } from "../src/store.js";
-import { answerMarkup, buttonsMarkup, fromAnswerCallback, fromTelegramCallback } from "../src/telegram.js";
+import { answerMarkup, buttonsMarkup, fromAnswerCallback, fromTelegramCallback, toTelegramHtml } from "../src/telegram.js";
 import { pressAnswer } from "../src/chat.js";
 import { markOwnerMessage, transportSend } from "../src/send.js";
 
@@ -80,5 +80,17 @@ describe("the transport", () => {
     expect(JSON.parse(store.getKv(`ans:${buttons[0].callback_data}`)!)).toEqual({ label: "Wait", task: "issue-9", since: "2026-11-24T10:00:00.000Z" });
     await transportSend(cfg, store, { kind: "decision", text: "Ship?", head, asks: true, answer: { options: ["Wait", "Publiér"], since: "s" } }, 2_000);
     expect(JSON.parse(String(fetchMock.mock.calls[1]![1]!.body)).reply_markup).toBeUndefined();
+  });
+});
+
+describe("toTelegramHtml chat subset", () => {
+  it("renders bold labels, italics, bullets, a quote and a link with its address", () => {
+    expect(toTelegramHtml("Lead\n\n- **Time:** 3pm _maybe_ [site](https://a.b/x)\n\n> said\n> more\nend")).toBe("Lead\n\n• <b>Time:</b> 3pm <i>maybe</i> site (https://a.b/x)\n\n<blockquote>said\nmore</blockquote>\nend");
+  });
+  it("degrades a header to bold and a table to plain lines; snake_case stays", () => {
+    expect(toTelegramHtml("## Plan\n| a | b |\n|---|---|\n| 1 | 2 |\nsome_snake_name")).toBe("<b>Plan</b>\na · b\n1 · 2\nsome_snake_name");
+  });
+  it("keeps link addresses and quotes whole lines around inline code", () => {
+    expect(toTelegramHtml("> Run `cmd` now [docs](https://a.b/_docs_)")).toBe("<blockquote>Run <code>cmd</code> now docs (https://a.b/_docs_)</blockquote>");
   });
 });
