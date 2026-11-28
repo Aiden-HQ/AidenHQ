@@ -712,9 +712,9 @@ test("under failing only a bump with a red check gets a task; under off none doe
   assert.deepEqual(off.tasks, []);
 });
 
-test("under failing a green Dependabot PR is adopted by the round (handoff: all) and gets no task; a red one gets the task", async (t) => {
+test("under failing a green Dependabot PR is adopted by the round (no label needed) and gets no task; a red one gets the task", async (t) => {
   const red = dep("acme/app", 2, { commits: { nodes: [{ commit: { statusCheckRollup: redChecks() } }] } });
-  const m = await multi(t, [{ repo: "acme/app", duties: "all", dependabot: "failing" }], { "acme/app": [dep("acme/app", 1), red] }, { settings: () => PRESETS.full });
+  const m = await multi(t, [{ repo: "acme/app", duties: "all", dependabot: "failing" }], { "acme/app": [dep("acme/app", 1), red] }, { settings: () => PRESETS.cautious });
   await m.watch.tick();
   assert.deepEqual(m.tasks.map((x) => x.source).filter((x) => x.startsWith("dependabot:")), ["dependabot:acme/app/2"]);
   const a = openState(join(m.cacheDir, "state.json"));
