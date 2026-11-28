@@ -154,14 +154,14 @@ export class MultiWorkspace {
   /** Each account's granted scopes, as stored at its sign-in. */
   private readonly scopes = new Map<string, string[]>();
 
-  constructor(path: string, calendarId = "primary", fetchImpl: typeof fetch = fetch, private readonly reach: { addresses: readonly string[]; ledger: SendLedger } = { addresses: [], ledger: new SendLedger(new ReachState()) }) {
+  constructor(path: string, calendarId = "primary", fetchImpl: typeof fetch = fetch, private readonly reach: { claims: (account: string) => Promise<readonly string[]>; ledger: SendLedger } = { claims: async () => [], ledger: new SendLedger(new ReachState()) }) {
     const { primary, accounts } = loadAccounts(path);
     this.primary = primary;
     for (const [email, creds] of accounts) {
       const client = new GoogleClient(creds, fetchImpl);
       this.clients.set(email, client);
       this.scopes.set(email, creds.scopes ?? []);
-      this.ws.set(email, new Workspace(client, calendarId, this.reach.addresses));
+      this.ws.set(email, new Workspace(client, calendarId, () => this.reach.claims(email)));
     }
   }
 

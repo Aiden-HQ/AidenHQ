@@ -143,8 +143,8 @@ export class Workspace {
   constructor(
     private readonly g: GoogleClient,
     private readonly calendarId = "primary",
-    /** The agents' own email addresses (reach.ts): mail to or cc one is the poller's, never the inbox feed's. */
-    private readonly agentAddresses: readonly string[] = [],
+    /** The agent addresses this mailbox is the poller's for (reach.ts Identities.assigned): mail to or cc one is the poller's, never the inbox feed's. */
+    private readonly agentAddresses: () => Promise<readonly string[]> = async () => [],
   ) {}
 
   async listEvents(start: string, end: string, query?: string, max = 100): Promise<NormalizedEvent[]> {
@@ -490,11 +490,15 @@ export class Workspace {
     if (!listedAll) return { threads: [], dropped: {}, cursor: after, more: true };
     // One consumer: mail addressed to an agent's own address belongs to the reach poller (reach.ts), classified by the same Gmail
     // query, so the feed never shows it whichever scan comes first.
+    // An address nobody is assigned to (its send-as not verified, another mailbox's) leaves its mail here.
     const claimed = new Set<string>();
-    if (this.agentAddresses.length) {
+    const mine = await this.agentAddresses().catch(() => []);
+    if (mine.length) {
       let next: string | undefined;
       do {
-        const page = await this.g.get<{ messages?: { id: string }[]; nextPageToken?: string }>(`${GMAIL}/messages`, { q: `${agentQuery(this.agentAddresses)} after:${Math.floor(after / 1000)}`, maxResults: 500, pageToken: next });
+        // Like the listing above, it stops at the walk's deadline: a call that cannot classify its window serves nothing and says `more`.
+        if (Date.now() >= deadline) return { threads: [], dropped: {}, cursor: after, more: true };
+        const page = await this.g.get<{ messages?: { id: string }[]; nextPageToken?: string }>(`${GMAIL}/messages`, { q: `${agentQuery(mine)} after:${Math.floor(after / 1000)}`, maxResults: 500, pageToken: next });
         for (const m of page.messages ?? []) claimed.add(m.id);
         next = page.nextPageToken;
       } while (next);
@@ -692,11 +696,11 @@ export class Workspace {
   // -------------------------------------------------------------- Agent addresses (reach.ts)
 
   /** Message ids matching a Gmail query, newest first, at most `max` over up to `pages` pages. */
-  async gmailIds(q: string, max = 500, pages = 5): Promise<string[]> {
+  async gmailIds(q: string, max = 500, pages = 5, pageSize = 100): Promise<string[]> {
     const ids: string[] = [];
     let pageToken: string | undefined;
     for (let i = 0; i < pages && ids.length < max; i++) {
-      const page = await this.g.get<{ messages?: { id: string }[]; nextPageToken?: string }>(`${GMAIL}/messages`, { q, maxResults: Math.min(100, max - ids.length), pageToken });
+      const page = await this.g.get<{ messages?: { id: string }[]; nextPageToken?: string }>(`${GMAIL}/messages`, { q, maxResults: Math.min(pageSize, max - ids.length), pageToken });
       ids.push(...(page.messages ?? []).map((m) => m.id));
       pageToken = page.nextPageToken;
       if (!pageToken) break;
@@ -729,10 +733,13 @@ export class Workspace {
 
   /** The agent sends of this mailbox since `sinceMs` carrying `token` (an ambiguous send is reconciled against this before a retry). */
   async findSent(token: string, sinceMs: number): Promise<{ message_id: string; thread_id: string } | undefined> {
-    for (const id of await this.gmailIds(`in:sent after:${Math.max(0, Math.floor(sinceMs / 1000) - 120)}`, 50, 1)) {
+    const ids = await this.gmailIds(`in:sent after:${Math.max(0, Math.floor(sinceMs / 1000) - 5)}`, FIND_MAX, FIND_MAX / 100);
+    for (const id of ids) {
       const m = await this.gmailMessage(id, "metadata");
       if (m && header(m, SEND_HEADER) === token) return { message_id: m.id, thread_id: m.threadId };
     }
+    // A window too full to read whole proves nothing: the send stays pending and this fails, rather than sending twice.
+    if (ids.length >= FIND_MAX) throw new Error("too much sent mail since the unsure send to check it; look in Sent and retry");
     return undefined;
   }
 
@@ -770,6 +777,8 @@ export class Workspace {
 // ---------------------------------------------------------------- Gmail
 
 const GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
+/** The most sent messages one reconciliation reads. */
+const FIND_MAX = 200;
 
 /** A message an agent writes: plain text, to named addresses; `thread_id` makes it a reply there. */
 /** A reply as `prepare` froze it (reach.ts): who it is from and to, in which thread and after which message, and what it says. */

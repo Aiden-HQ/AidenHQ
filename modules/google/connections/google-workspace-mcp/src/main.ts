@@ -58,10 +58,17 @@ const reachState = new ReachState(join(dirname(credsPath), "reach-state.json"));
 const sendLedger = new SendLedger(reachState);
 const identities = new Identities((account) => multi?.workspace(account));
 
+// The inbox feed leaves alone only the addresses a mailbox is the assigned one for (the same assignment the poller uses): mail to an
+// address nobody can send as stays in the feed.
+const claimsOf = (account: string) => {
+  const m = multi;
+  return agentAddresses.length && m ? identities.assigned([m.primary, ...m.accounts().filter((x) => x !== m.primary)], agentAddresses.map((a) => a.address), account) : Promise.resolve([]);
+};
+
 /** (Re)loads the accounts: at start, after a reconnect from the board, and when google-auth.sh rewrites the file. */
 function loadWorkspace() {
   try {
-    multi = new MultiWorkspace(credsPath, process.env.CALENDAR_ID ?? "primary", fetch, { addresses: agentAddresses.map((a) => a.address), ledger: sendLedger });
+    multi = new MultiWorkspace(credsPath, process.env.CALENDAR_ID ?? "primary", fetch, { claims: claimsOf, ledger: sendLedger });
     workspace = multi;
     authError = undefined;
     log.info({ accounts: multi.accounts(), primary: multi.primary }, "Google accounts loaded");

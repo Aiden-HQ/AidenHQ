@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { GoogleApiError, GoogleAuthError } from "./google.js";
-import { addresses as addressesIn, agentQuery, automated, category, MAX_LOOKBACK_MS, SEND_HEADER } from "./inbox.js";
+import { agentQuery, automated, category, MAX_LOOKBACK_MS, SEND_HEADER } from "./inbox.js";
 import { header, messageText, type GmailMessage, type Workspace } from "./workspace.js";
 
 export type Address = { agent: string; address: string };
@@ -29,17 +29,17 @@ export function parseAddresses(json: string | undefined): Address[] {
 
 // ------------------------------------------------------------------------------------------------ durable state
 
-type Send = { at: number; account: string; state: "pending" | "sent"; message_id?: string; thread_id?: string };
-type Data = { cursors: Record<string, number>; seen: Record<string, number>; sends: Record<string, Send> };
+type Send = { at: number; account: string; token: string; state: "pending" | "sent"; message_id?: string; thread_id?: string };
+type Data = { cursors: Record<string, number>; starts: Record<string, number>; seen: Record<string, number>; sends: Record<string, Send> };
 const SEEN_KEEP_MS = 14 * 86_400_000, SENDS_KEEP_MS = 30 * 86_400_000;
 
 /** The poller's cursors, the message ids it has handed to the kernel and the send ledger: one small JSON file in the service's
  *  state dir, written whole and renamed into place. Without a file it lives in memory (tests). */
 export class ReachState {
-  private d: Data = { cursors: {}, seen: {}, sends: {} };
+  private d: Data = { cursors: {}, starts: {}, seen: {}, sends: {} };
   constructor(private readonly file?: string, now = Date.now()) {
     if (file && existsSync(file)) {
-      try { this.d = { cursors: {}, seen: {}, sends: {}, ...(JSON.parse(readFileSync(file, "utf8")) as Partial<Data>) }; } catch { /* unreadable: start clean, the cursors restart at now */ }
+      try { this.d = { cursors: {}, starts: {}, seen: {}, sends: {}, ...(JSON.parse(readFileSync(file, "utf8")) as Partial<Data>) }; } catch { /* unreadable: start clean, the cursors restart at now */ }
     }
     for (const [k, at] of Object.entries(this.d.seen)) if (at < now - SEEN_KEEP_MS) delete this.d.seen[k];
     for (const [k, s] of Object.entries(this.d.sends)) if (s.at < now - SENDS_KEEP_MS) delete this.d.sends[k];
@@ -51,6 +51,9 @@ export class ReachState {
   }
   cursor(address: string): number | undefined { return this.d.cursors[address]; }
   setCursor(address: string, ms: number) { this.d.cursors[address] = ms; this.save(); }
+  /** When an address was first scanned: mail from before it is never handed to the agent. */
+  start(address: string): number | undefined { return this.d.starts[address]; }
+  setStart(address: string, ms: number) { this.d.starts[address] = ms; this.save(); }
   seen(id: string): boolean { return id in this.d.seen; }
   markSeen(id: string, at: number) { this.d.seen[id] = at; this.save(); }
   send(key: string): Send | undefined { return this.d.sends[key]; }
@@ -83,6 +86,12 @@ export class Identities {
     if (base && m && `${m[1]}@${m[2]}` === base.email) return { ok: true, ...(base.name ? { name: base.name } : {}) };
     return { ok: false };
   }
+  /** The addresses of `addresses` that `account` is the mailbox of (see owner): the only ones whose mail the inbox feed leaves alone. */
+  async assigned(accounts: string[], addresses: readonly string[], account: string): Promise<string[]> {
+    const mine: string[] = [];
+    for (const a of addresses) if ((await this.owner(accounts, a))?.account === account) mine.push(a);
+    return mine;
+  }
   /** The first account (the primary first) that may send as `address`. */
   async owner(accounts: string[], address: string): Promise<{ account: string; name?: string } | undefined> {
     for (const account of accounts) {
@@ -95,8 +104,9 @@ export class Identities {
 
 // ------------------------------------------------------------------------------------------------ send ledger
 
-/** The token an agent send carries in SEND_HEADER: derived from the send's key, so a retry of the same send finds its own. */
-export const tokenOf = (key: string) => createHash("sha256").update(key).digest("hex").slice(0, 32);
+/** The token an agent send carries in SEND_HEADER: fresh for each logical send (the key and the attempt's time), and kept in its
+ *  ledger record so only a retry of that send reconciles against it. */
+export const tokenOf = (key: string, at: number) => createHash("sha256").update(`${key}:${at}`).digest("hex").slice(0, 32);
 /** The key of a gmail_send: the same call again is the same send. */
 export const mailKey = (account: string, m: { to: string[]; cc?: string[]; bcc?: string[]; subject?: string; body: string; thread_id?: string }) =>
   createHash("sha256").update(JSON.stringify([account, m.to, m.cc ?? [], m.bcc ?? [], m.subject ?? "", m.thread_id ?? "", m.body])).digest("hex");
@@ -127,16 +137,17 @@ export class SendLedger {
     return p;
   }
   private async attempt<T extends Sent>(key: string, account: string, ops: { send: (token: string) => Promise<T>; find: (token: string, sinceMs: number) => Promise<Sent | undefined> }, once: boolean): Promise<T | Sent> {
-    const token = tokenOf(key), prior = this.state.send(key);
+    const prior = this.state.send(key);
     if (prior?.state === "sent" && once && prior.message_id && prior.thread_id) return { message_id: prior.message_id, thread_id: prior.thread_id };
     if (prior?.state === "pending") {
-      const found = await ops.find(token, prior.at);
+      const found = await ops.find(prior.token, prior.at);
       if (found) { this.state.setSend(key, { ...prior, state: "sent", ...found }); return found; }
     }
-    this.state.setSend(key, { at: this.now(), account, state: "pending" });
+    const at = this.now(), token = tokenOf(key, at);
+    this.state.setSend(key, { at, account, token, state: "pending" });
     try {
       const r = await ops.send(token);
-      this.state.setSend(key, { at: this.now(), account, state: "sent", message_id: r.message_id, thread_id: r.thread_id });
+      this.state.setSend(key, { at, account, token, state: "sent", message_id: r.message_id, thread_id: r.thread_id });
       return r;
     } catch (err) {
       if (!ambiguous(err)) this.state.delSend(key);
@@ -148,7 +159,7 @@ export class SendLedger {
 // ------------------------------------------------------------------------------------------------ messages as events
 
 /** What the kernel's event router takes (kernel/src/events.ts SourceEvent, with the reach fields). */
-export type ReachEvent = { connection: "google_workspace"; resource: string; id: string; kind: "message"; author: string; author_name?: string; text: string; bot: false; url: string; thread: string; from_owner: boolean; to_agent: string; entry: string; truncated?: true };
+export type ReachEvent = { connection: "google_workspace"; resource: string; id: string; kind: "message"; author: string; author_name?: string; text: string; bot: false; url: string; thread: string; from_owner: boolean; data: { subject: string }; to_agent: string; entry: string; truncated?: true };
 
 /** The event id of a message as seen through one address: `<account>:<message id>:<address>`, so two agents cc'd on one mail are two events. */
 export const eventId = (account: string, message: string, address: string) => `${account}:${message}:${address}`;
@@ -167,9 +178,28 @@ export function parseEntry(entry: string): { account: string; address: string } 
   return entry.startsWith("gmail:") ? parseResource(entry.slice(6)) : undefined;
 }
 
+/** The mailboxes of an address header (`Name <a@x>, b@y`): the address inside angle brackets, or the bare address, never text in a quoted
+ *  display name (`"old@x.com" <new@x.com>` is new@x.com), lower-cased. */
+export function mailboxesIn(h: string | undefined): string[] {
+  const parts: string[] = [];
+  let cur = "", quoted = false, depth = 0;
+  for (const ch of h ?? "") {
+    if (ch === '"') quoted = !quoted;
+    else if (!quoted && ch === "(") depth++;
+    else if (!quoted && ch === ")" && depth) depth--;
+    if (ch === "," && !quoted && !depth) { parts.push(cur); cur = ""; } else cur += ch;
+  }
+  parts.push(cur);
+  return parts.flatMap((p) => {
+    const bare = p.replace(/"(?:[^"\\]|\\.)*"/g, " ").replace(/\([^)]*\)/g, " ");
+    const angle = /<([^<>\s]+)>/.exec(bare)?.[1] ?? bare.trim().split(/\s+/).find((t) => t.includes("@"));
+    return angle && isEmail(angle.toLowerCase()) ? [angle.toLowerCase()] : [];
+  });
+}
+
 /** A sender as a name and an address (`Ada L <ada@x.com>`). */
 export function personOf(from: string | undefined): { address: string; name?: string } {
-  const address = [...addressesIn(from)][0] ?? (from ?? "").trim().toLowerCase();
+  const address = mailboxesIn(from)[0] ?? (from ?? "").trim().toLowerCase();
   const name = /^\s*"?([^"<]+?)"?\s*</.exec(from ?? "")?.[1]?.trim();
   return { address, ...(name ? { name } : {}) };
 }
@@ -199,18 +229,22 @@ export function toEvent(m: GmailMessage, account: string, a: Address, link: (thr
   if (agentSend(m)) return "echo";
   if (category(labels) || automated((n) => header(m, n), true)) return "noise";
   const who = personOf(header(m, "From"));
-  const text = `Subject: ${header(m, "Subject") ?? "(no subject)"}\n\n${newWords(messageText(m.payload))}`;
+  // The owner's event carries only the owner's new words (a reply keeps the other person's subject, which must not read as the owner's);
+  // the subject travels as data. Anyone else's message leads with it.
+  const subject = (header(m, "Subject") ?? "(no subject)").replace(/\s+/g, " ").slice(0, 190), words = newWords(messageText(m.payload));
+  const mine = fromOwner(m);
+  const text = mine ? words : `Subject: ${subject}\n\n${words}`;
   return {
     connection: "google_workspace", resource: resourceOf(account, a.address), id: eventId(account, m.id, a.address), kind: "message",
     author: who.address, ...(who.name ? { author_name: who.name } : {}), text: text.slice(0, EVENT_TEXT), bot: false, url: link(m.threadId, account),
-    thread: m.threadId, from_owner: fromOwner(m), to_agent: a.agent, entry: entryOf(account, a.address), ...(text.length > EVENT_TEXT ? { truncated: true as const } : {}),
+    thread: m.threadId, from_owner: mine, data: { subject }, to_agent: a.agent, entry: entryOf(account, a.address), ...(text.length > EVENT_TEXT ? { truncated: true as const } : {}),
   };
 }
 
 // ------------------------------------------------------------------------------------------------ poller
 
 export interface Mailboxes { primary: string; accounts(): string[]; workspace(account: string): Workspace | undefined }
-const PER_SCAN = 50, OVERLAP_S = 120;
+const PER_SCAN = 50, OVERLAP_S = 120, LIST_MAX = 5000;
 
 /**
  * Every 60 s, per configured address: the account that may send as it, one Gmail search for new mail to or cc it (the owner's own
@@ -252,9 +286,13 @@ export class Poller {
     if (!own || !ws) { this.o.log.warn({ address: a.address }, "no connected Google account can send as this agent address (not a verified send-as alias); skipped"); return; }
     // A new address starts now: enabling it never replays old mail to the agent.
     let cursor = this.o.state.cursor(a.address);
-    if (cursor === undefined) { cursor = now; this.o.state.setCursor(a.address, now); }
+    if (cursor === undefined) { cursor = now; this.o.state.setCursor(a.address, now); this.o.state.setStart(a.address, now); }
+    const from = this.o.state.start(a.address) ?? 0;
     const start = Math.max(cursor, now - MAX_LOOKBACK_MS);
-    const ids = (await ws.gmailIds(`${agentQuery([a.address])} after:${Math.floor(start / 1000) - OVERLAP_S}`)).reverse();
+    // The whole window (Gmail lists newest first; a partial list would let the cursor pass mail never listed): past the cap, nothing is done.
+    const listed = await ws.gmailIds(`${agentQuery([a.address])} after:${Math.floor(start / 1000) - OVERLAP_S}`, LIST_MAX, LIST_MAX / 500, 500);
+    if (listed.length >= LIST_MAX) { this.o.log.warn({ address: a.address }, "too much mail to this agent address to list in one go; skipped until the window shrinks"); return; }
+    const ids = listed.reverse();
     let done = 0;
     for (const id of ids) {
       const key = eventId(own.account, id, a.address);
@@ -265,6 +303,7 @@ export class Poller {
       const e = toEvent(m, own.account, a, this.o.link);
       const at = Number(m.internalDate ?? now);
       if (e === "draft") continue; // a draft's id is the sent message's later: not remembered
+      if (at < from) { this.o.state.markSeen(key, now); continue; } // from before the address was switched on
       done++;
       if (typeof e === "object") await this.o.post(e);
       this.o.state.markSeen(key, now);

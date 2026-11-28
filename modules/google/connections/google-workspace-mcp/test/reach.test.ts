@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
 import { gmailLink, MultiWorkspace } from "../src/accounts.js";
-import { Identities, Poller, ReachState, SendLedger, type ReachEvent } from "../src/reach.js";
+import { Identities, mailboxesIn, Poller, ReachState, SendLedger, type ReachEvent } from "../src/reach.js";
 import { summon, SummonError } from "../src/summon.js";
 import { SCOPES } from "../src/google.js";
 
@@ -54,8 +54,9 @@ function setup(msgs: Msg[], o: { failSend?: number; addresses?: { agent: string;
   const state = new ReachState(join(dir, "reach-state.json"));
   const ledger = new SendLedger(state);
   const addresses = o.addresses ?? [{ agent: "aria", address: ARIA }];
-  const ws = new MultiWorkspace(creds, "primary", g.impl, { addresses: addresses.map((a) => a.address), ledger });
-  const identities = new Identities((a) => ws.workspace(a));
+  let identities!: Identities;
+  const ws = new MultiWorkspace(creds, "primary", g.impl, { claims: (account) => identities.assigned([ME], addresses.map((a) => a.address), account), ledger });
+  identities = new Identities((a) => ws.workspace(a));
   const events: ReachEvent[] = [];
   const poller = new Poller({ mail: () => ws, addresses, state, identities, post: async (e) => void events.push(e), link: gmailLink, log: { warn: () => {}, info: () => {} }, now: () => NOW });
   const calls = summon({ mail: () => ws, addresses: () => addresses, identities, ledger, link: gmailLink });
@@ -109,6 +110,28 @@ describe("agent address poller", () => {
   });
 });
 
+describe("agent address details", () => {
+  it("an address nobody can send as stays in the inbox feed, and mail from before it was switched on is never handed over", async () => {
+    const t = setup([mail("m1", "t1", FRESH, { From: "Dana <dana@acme.com>", To: "pending@work.com, " + ME })], { addresses: [{ agent: "aria", address: "pending@work.com" }] });
+    const feed = await t.ws.gmailInbox({ [ME]: NOW }, 10);
+    expect(feed.threads.map((x) => x.thread_id)).toEqual(["t1"]);
+    const u = setup([]);
+    await u.poller.scan();
+    u.g.msgs.push(mail("old", "to", NOW - 30_000, { From: "Dana <dana@acme.com>", To: ARIA }), mail("new", "tn", FRESH, { From: "Dana <dana@acme.com>", To: ARIA }));
+    await u.poller.scan();
+    expect(u.events.map((e) => e.id.split(":")[1])).toEqual(["new"]);
+  });
+
+  it("the owner's event carries only the owner's new words; the subject travels as data. Recipients ignore a quoted display name", async () => {
+    const t = setup([]);
+    await t.poller.scan();
+    t.g.msgs.push(mail("o1", "to", FRESH, { From: ME, To: "dana@acme.com", Cc: ARIA, Subject: "Re: cc Aria about lunch" }, ["SENT"], "Please confirm noon."));
+    await t.poller.scan();
+    expect(t.events[0]).toMatchObject({ from_owner: true, text: "Please confirm noon.", data: { subject: "Re: cc Aria about lunch" } });
+    expect(mailboxesIn('"old@example.com" <new@example.com>, Pat (pat2@x.com) <pat@x.com>, bare@x.com')).toEqual(["new@example.com", "pat@x.com", "bare@x.com"]);
+  });
+});
+
 describe("summon calls", () => {
   const anchor = mail("a1", "t1", FRESH, { From: "Dana <dana@acme.com>", To: `${ARIA}, Lee <lee@acme.com>`, Cc: "Pat <pat@acme.com>", Subject: "Lunch?", "Message-ID": "<a1@acme.com>" });
   const conv = { entry: `gmail:${ME}:${ARIA}`, resource: `${ME}:${ARIA}`, thread: "t1", agent: { key: "aria", name: "Aria" } };
@@ -156,7 +179,8 @@ describe("summon calls", () => {
 
   it("context returns the thread with the owner's own words marked, agent sends not", async () => {
     const t = setup([anchor, mail("a2", "t1", FRESH + 5, { From: ME, To: "dana@acme.com", Subject: "Re: Lunch?" }, ["SENT"], "Sure"), mail("a3", "t1", FRESH + 6, { From: "Aria <aria@work.com>", To: "dana@acme.com", Subject: "Re: Lunch?", "X-AidenHQ-Token": "abc" }, ["SENT"], "Noon")]);
-    const r = (await t.calls.context({ ...conv, n: 10, before: `${ME}:a3:${ARIA}` })) as { messages: { id: string; is_owner: boolean }[] };
+    const { entry: _entry, ...noEntry } = conv; // context and react may come without the entry
+    const r = (await t.calls.context({ ...noEntry, n: 10, before: `${ME}:a3:${ARIA}` })) as { messages: { id: string; is_owner: boolean }[] };
     expect(r.messages.map((m) => [m.id.split(":")[1], m.is_owner])).toEqual([["a1", false], ["a2", true]]);
   });
 });

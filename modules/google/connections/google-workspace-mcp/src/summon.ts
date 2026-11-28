@@ -8,8 +8,7 @@
 // A Cc added to the thread while a reply is in review never widens its audience: nothing is read again at send time except the
 // send-as check. A reply without a payload is refused.
 import { z } from "zod";
-import { addresses as addressesIn } from "./inbox.js";
-import { type Address, eventId, fromOwner, type Identities, isEmail, newWords, parseEntry, parseEventId, parseResource, personOf, type SendLedger, type Mailboxes } from "./reach.js";
+import { type Address, eventId, fromOwner, type Identities, isEmail, mailboxesIn, newWords, parseEntry, parseEventId, parseResource, personOf, type SendLedger, type Mailboxes } from "./reach.js";
 import { fromHeader, type GmailMessage, header, messageText, type FrozenMail } from "./workspace.js";
 
 export class SummonError extends Error { constructor(public status: number, message: string) { super(message); } }
@@ -27,10 +26,11 @@ export type Frozen = z.infer<typeof Frozen>;
 
 export function summon(o: { mail: () => Mailboxes | undefined; addresses: () => Address[]; identities: Identities; ledger: SendLedger; link: (thread: string, account: string) => string }) {
   /** The configured address a conversation is about (entry and resource must agree), and the connected account's mailbox. */
-  const bind = (b: Json): { account: string; address: string; ws: NonNullable<ReturnType<Mailboxes["workspace"]>> } => {
+  const bind = (b: Json, entryRequired: boolean): { account: string; address: string; ws: NonNullable<ReturnType<Mailboxes["workspace"]>> } => {
     const resource = str(b.resource), entry = str(b.entry);
     const r = resource ? parseResource(resource) : undefined, e = entry ? parseEntry(entry) : undefined;
-    if (!r || !e || r.account !== e.account || r.address !== e.address) throw new SummonError(400, "resource and entry must name the same account and address");
+    // The resource alone names the conversation's account and address (context and react may come without the entry); an entry, when given, must agree.
+    if (!r || (entryRequired && !e) || (entry && (!e || r.account !== e.account || r.address !== e.address))) throw new SummonError(400, "resource and entry must name the same account and address");
     const agent = o.addresses().find((a) => a.address === r.address);
     if (!agent) throw new SummonError(403, `${r.address} is not an agent address`);
     const key = (b.agent as Json | undefined)?.key;
@@ -41,7 +41,7 @@ export function summon(o: { mail: () => Mailboxes | undefined; addresses: () => 
   };
 
   async function context(b: Json) {
-    const { account, address, ws } = bind(b);
+    const { account, address, ws } = bind(b, false);
     const thread = str(b.thread);
     if (!thread) throw new SummonError(400, "thread is required");
     const before = str(b.before) ? parseEventId(str(b.before)!) : undefined;
@@ -61,8 +61,8 @@ export function summon(o: { mail: () => Mailboxes | undefined; addresses: () => 
    *  went to; when the anchor is our own mail, the people it went to. */
   function recipients(m: GmailMessage, mine: Set<string>): { to: string[]; cc: string[] } {
     const sent = (m.labelIds ?? []).includes("SENT");
-    const first = sent ? addressesIn(header(m, "To")) : addressesIn(header(m, "Reply-To") || header(m, "From"));
-    const rest = sent ? addressesIn(header(m, "Cc")) : new Set([...addressesIn(header(m, "To")), ...addressesIn(header(m, "Cc"))]);
+    const first = new Set(sent ? mailboxesIn(header(m, "To")) : mailboxesIn(header(m, "Reply-To") || header(m, "From")));
+    const rest = new Set(sent ? mailboxesIn(header(m, "Cc")) : [...mailboxesIn(header(m, "To")), ...mailboxesIn(header(m, "Cc"))]);
     const seen = new Set(mine);
     const take = (s: Set<string>) => [...s].filter((a) => isEmail(a) && !seen.has(a) && (seen.add(a), true));
     let to = take(first);
@@ -72,7 +72,7 @@ export function summon(o: { mail: () => Mailboxes | undefined; addresses: () => 
   }
 
   async function prepare(b: Json) {
-    const { account, address, ws } = bind(b);
+    const { account, address, ws } = bind(b, true);
     const text = str(b.text, BODY_MAX), anchorId = str(b.in_reply_to) ? parseEventId(str(b.in_reply_to)!) : undefined;
     const as = b.reply_as === "owner" ? "owner" : "agent";
     if (!text || !anchorId || anchorId.account !== account || anchorId.address !== address) throw new SummonError(400, "text and an in_reply_to message of this conversation are required");
@@ -103,7 +103,7 @@ export function summon(o: { mail: () => Mailboxes | undefined; addresses: () => 
     if (!key) throw new SummonError(400, "key is required");
     if (!parsed.success) throw new SummonError(400, "reply needs the payload prepare froze");
     const p = parsed.data;
-    const { ws } = bind(b);
+    const { ws } = bind(b, true);
     if (p.account !== parseResource(str(b.resource) ?? "")?.account || p.address !== parseResource(str(b.resource) ?? "")?.address) throw new SummonError(400, "the payload is for another conversation");
     for (const a of [...p.to, ...p.cc]) if (!isEmail(a)) throw new SummonError(400, "the payload has an invalid recipient");
     const fromAddress = p.as === "owner" ? p.account : p.address;
@@ -120,7 +120,7 @@ export function summon(o: { mail: () => Mailboxes | undefined; addresses: () => 
   }
 
   // Email has no acknowledgement to give (a read receipt would tell a stranger); the kernel's 👀 step is satisfied by an empty answer.
-  async function react(b: Json) { bind(b); return {}; }
+  async function react(b: Json) { bind(b, false); return {}; }
 
   return { context, prepare, reply, react };
 }
