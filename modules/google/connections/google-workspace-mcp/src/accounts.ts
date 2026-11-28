@@ -274,7 +274,7 @@ export class MultiWorkspace {
         // defaults
       }
     }
-    const stretchMin = (d.stretch_hours ?? DEFAULT_STRETCH_HOURS) * 60;
+    const stretchMin = Math.round((d.stretch_hours ?? DEFAULT_STRETCH_HOURS) * 60);
     const around = (c: [string, string]): [string, string] => [hhmm(Math.max(0, minutes(c[0]) - stretchMin)), hhmm(Math.min(1440, minutes(c[1]) + stretchMin))];
     return listed.map((email) => {
       const zone = zoneOf(email);
@@ -305,7 +305,7 @@ export class MultiWorkspace {
     const horizon = to + ((args.weeks ?? 1) - 1) * 7 * 86_400_000;
     const { events, timeZone } = (await this.in(name, (w) => w.rawEvents(new Date(from - LOOKBACK_MS).toISOString(), new Date(horizon + 86_400_000).toISOString()))) as Awaited<ReturnType<Workspace["rawEvents"]>>;
     const optional = (args.optional ?? []).filter((o) => !args.required.some((r) => r.toLowerCase() === o.toLowerCase()));
-    const views = await this.personViews(name, [...args.required, ...optional], args.attendees_local, [args.window_start, new Date(horizon).toISOString()], now, args);
+    const views = await this.personViews(name, [...args.required, ...optional], args.attendees_local, [args.window_start, new Date(horizon + 86_400_000).toISOString()], now, args);
     const isOptional = (v: PersonView) => optional.some((o) => o.toLowerCase() === v.email.toLowerCase());
     const people = views.flatMap((v) => this.inputOf(v, !isOptional(v), name));
     const attendees: AttendeeStatus[] = views.map((v) => ({ email: v.email, freebusy: v.freebusy, timezone_known: !!v.timezone, ...(v.hours ? { hours: { core: v.hours.core, source: v.hours.source } } : {}), ...(isOptional(v) ? { optional: true as const } : {}) }));
@@ -326,7 +326,8 @@ export class MultiWorkspace {
         views.map(async (v) => {
           const base = { email: v.email, freebusy: v.freebusy, ...(v.timezone ? { timezone: v.timezone } : {}), ...(v.hours ? { hours: v.hours } : {}) };
           if (v === self && own) {
-            const busy = blocksOf(own.events, own.timeZone).map((b) => ({ start: new Date(b.start).toISOString(), end: new Date(b.end).toISOString() }));
+            const [lo, hi] = [Date.parse(a.window_start), Date.parse(a.window_end)];
+            const busy = blocksOf(own.events, own.timeZone).filter((b) => b.start < hi && b.end > lo).map((b) => ({ start: new Date(Math.max(b.start, lo)).toISOString(), end: new Date(Math.min(b.end, hi)).toISOString() }));
             return { ...base, timezone: base.timezone ?? own.timeZone, busy, working_location: locationsOf(own.events, own.timeZone) };
           }
           // A colleague's working-location entries, when their calendar shares them: best effort, a few people, never an error.

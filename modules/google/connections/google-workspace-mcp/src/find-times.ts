@@ -233,7 +233,8 @@ export function findTimes(args: FindTimesArgs, events: GEvent[], people: PersonI
         // The same wall-clock time in each of the next weeks must be free too.
         let repeats = true;
         for (let k = 1; k < weeks && repeats; k++) {
-          const s2 = wallOn(addDays(date, 7 * k), t, zone);
+          const d2 = addDays(date, 7 * k);
+          const s2 = wallOn(d2, t, zoneOn(d2, home, events, calendarZone));
           repeats = s2 !== undefined && free(s2, s2 + durMs);
         }
         if (!repeats) continue;
@@ -276,7 +277,7 @@ export function checkTimes(candidates: { start: string; end: string }[], events:
   });
 }
 
-export const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+export const hhmm = (m: number) => `${String(Math.floor(Math.round(m) / 60)).padStart(2, "0")}:${String(Math.round(m) % 60).padStart(2, "0")}`;
 const percentile = (sorted: number[], p: number) => sorted[Math.floor(p * (sorted.length - 1))]!;
 
 /**
@@ -309,9 +310,9 @@ export function locationsOf(events: GEvent[], zone: string): LocationDay[] {
   for (const e of events) {
     if (!ownTravel(e) && e.organizer?.self !== true) continue;
     const label = clean(e.workingLocationProperties?.officeLocation?.label ?? e.workingLocationProperties?.customLocation?.label ?? e.summary);
-    if (e.eventType === "workingLocation" && e.start?.date) {
+    if (e.eventType === "workingLocation" && (e.start?.date || e.start?.dateTime)) {
       const t = e.workingLocationProperties?.type;
-      out.push({ date: e.start.date, kind: t === "homeOffice" ? "home" : t === "officeLocation" ? "office" : "custom", ...(label ? { label } : {}) });
+      out.push({ date: e.start.date ?? dateIn(Date.parse(e.start.dateTime!), validZone(e.start.timeZone) ? e.start.timeZone : zone), kind: t === "homeOffice" ? "home" : t === "officeLocation" ? "office" : "custom", ...(label ? { label } : {}) });
     } else if (isFlight(e)) {
       const s = span(e, zone);
       if (s) out.push({ date: dateIn(s[1], e.end?.timeZone && validZone(e.end.timeZone) ? e.end.timeZone : zone), kind: "custom", ...(clean(e.summary) ? { label: clean(e.summary) } : {}) });

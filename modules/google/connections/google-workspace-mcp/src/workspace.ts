@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { type GoogleClient, GoogleApiError } from "./google.js";
 import { blocksOf, conflictWith } from "./find-times.js";
-import { renderInZone, wallInstant, zoneOrUtc } from "./zones.js";
+import { dateIn, renderInZone, wallInstant, zoneOrUtc } from "./zones.js";
 
 export { renderInZone };
 import { automated, category, ccOnly, INBOX_BUDGET_MS, INBOX_QUERY, INBOX_WALK_SHARE, MAX_READS, READS_AT_ONCE } from "./inbox.js";
@@ -225,10 +225,11 @@ export class Workspace {
       fields: "items(start,workingLocationProperties(type,customLocation(label),officeLocation(label)))",
     });
     return (page.items ?? []).flatMap((e) => {
-      if (!e.start?.date) return [];
+      const date = e.start?.date ?? (e.start?.dateTime ? dateIn(Date.parse(e.start.dateTime), zoneOrUtc(e.start.timeZone)) : undefined);
+      if (!date) return [];
       const t = e.workingLocationProperties?.type;
       const label = (e.workingLocationProperties?.officeLocation?.label ?? e.workingLocationProperties?.customLocation?.label)?.replace(/[\r\n\t]+/g, " ").trim().slice(0, 200);
-      return [{ date: e.start.date, kind: t === "homeOffice" ? ("home" as const) : t === "officeLocation" ? ("office" as const) : ("custom" as const), ...(label ? { label } : {}) }];
+      return [{ date, kind: t === "homeOffice" ? ("home" as const) : t === "officeLocation" ? ("office" as const) : ("custom" as const), ...(label ? { label } : {}) }];
     });
   }
 

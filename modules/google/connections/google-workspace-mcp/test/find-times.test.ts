@@ -327,6 +327,16 @@ describe("a scheduling agent's signals", () => {
     expect(() => findTimes(base({ weeks: 9 }), [], [], NOW)).toThrow(/weeks/);
   });
 
+  it("a fractional stretch_hours still answers, and free_busy shows only the window", async () => {
+    const g = google({ [`GET ${EV}`]: { items: [{ id: "x", summary: "Early", start: { dateTime: "2026-12-08T23:00:00+04:00" }, end: { dateTime: "2026-12-09T00:30:00+04:00" } }] }, [FB]: { calendars: { "c@work.com": { busy: [] } } } });
+    const ws = new MultiWorkspace(creds(SCOPES), "primary", g.impl);
+    const r = await ws.findTimes(args({ duration_min: 30, required: ["c@work.com"], stretch_hours: 1.33, attendees_local: { "c@work.com": { timezone: "Asia/Dubai", hours: ["09:00", "17:00"] } } }), NOW);
+    expect(r.attendees[0]!.hours).toMatchObject({ source: "given" });
+    expect(r.slots.length).toBeGreaterThan(0);
+    const v = await ws.freeBusyView({ people: ["me@work.com"], window_start: "2026-12-09T00:00:00+04:00", window_end: "2026-12-10T00:00:00+04:00" }, NOW);
+    expect(v.people[0]!.busy).toEqual([{ start: "2026-12-08T20:00:00.000Z", end: "2026-12-08T20:30:00.000Z" }]);
+  });
+
   it("check_times flags a busy required person and the owner's conflicting events", async () => {
     const taken = { id: "board", summary: "Board prep", start: { dateTime: "2026-12-09T09:00:00+04:00" }, end: { dateTime: "2026-12-09T09:30:00+04:00" } };
     const g = google({ [`GET ${EV}`]: { items: [taken] }, [FB]: { calendars: { "dana@work.com": { busy: [{ start: "2026-12-09T05:30:00Z", end: "2026-12-09T06:00:00Z" }] } } } });
