@@ -12,8 +12,9 @@ import { fakeStates, row } from "./fake-states.js";
 const AGENT = "11111111-1111-4111-8111-111111111111";
 const at = "2026-11-20T10:00:00.000Z";
 const issue = (id: string, o: Partial<Issue> = {}): Issue => ({ id, identifier: `WOR-${id}`, title: `Task ${id}`, description: "", status: "todo", priority: "medium", assigneeUserId: null, assigneeAgentId: AGENT, assigneeAdapterOverrides: null, createdAt: at, updatedAt: at, ...o });
-// A parent closed elsewhere with its crew part still open: the sweep closes the part, a GET never does.
-const open = [issue("1"), issue("2", { parentId: "9" }), issue("3")];
+// A parent closed elsewhere with its crew part still open: the sweep closes the part, a GET never does. The part is parked
+// in backlog on its question to the owner (the kernel parks a wait): the closed task was what it asked, so it closes too.
+const open = [issue("1"), issue("2", { parentId: "9", status: "backlog" }), issue("3")];
 const closed = [issue("9", { status: "cancelled", cancelledAt: new Date().toISOString(), assigneeAgentId: null, assigneeUserId: "me" }), issue("8", { status: "done", completedAt: at })];
 const writes: string[] = [];
 const pc = new Proxy(
@@ -36,7 +37,7 @@ const pc = new Proxy(
 // 8 closed before it (an old task edited later: never Done again).
 const states = fakeStates([
   row("1", { kind: "waiting", reason: "job_queued", lane: "blocked", blocker: "task:3" }),
-  row("2", { kind: "waiting", reason: "owner_wait", lane: "needs_you", question: "Stripe or Adyen?", attention: [{ who: "owner", why: "owner_wait", ref: "wait:2", since: "2026-11-01T00:00:00Z" }] }),
+  row("2", { kind: "waiting", reason: "owner_wait", lane: "needs_you", question: "Stripe or Adyen?", wait_since: "2026-11-01T00:00:00Z", attention: [{ who: "owner", why: "owner_wait", ref: "wait:2", since: "2026-11-01T00:00:00Z" }] }),
   row("9", { kind: "done", reason: "cancelled", lane: "done", since: new Date().toISOString() }),
   row("8", { kind: "done", reason: "closed", lane: "done", since: "2026-01-01T00:00:00.000Z" }),
 ]);

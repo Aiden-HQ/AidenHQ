@@ -158,6 +158,25 @@ test("the fleet settler routes a routine run held by another agent, and is refus
   assert.match(r.json.error.message, /WOR-2 isn't yours to change: ask its assignee \(bo\) or the Fleet Steward to pass it on/);
 });
 
+test("a fleet settler closes an agent's part of the owner's task once the owner closed that task, and never the task itself", async (t) => {
+  const { h, act } = await setup(t);
+  // The owner's task, and Bo's part of it the board made as the owner, parked on the owner's reply.
+  const TASK = "10000000-0000-4000-8000-0000000000a1", PART = "10000000-0000-4000-8000-0000000000a2";
+  h.issues[TASK] = { id: TASK, identifier: "WOR-21", status: "in_progress", assigneeAgentId: null, assigneeUserId: "u-owner", createdByUserId: "u-owner", companyId: "co", parentId: null };
+  h.issues[PART] = { id: PART, identifier: "WOR-22", status: "backlog", assigneeAgentId: BO, createdByUserId: "u-owner", companyId: "co", parentId: TASK };
+  // While the owner's task is open, the part waits on them: no settler's to move.
+  let r = await act("settler", "PATCH", "/api/issues/WOR-22", { status: "cancelled", comment: "Stale." });
+  assert.deepEqual([r.status, h.issues[PART].status], [403, "backlog"]);
+  // Closed: nobody waits on the part any more, and the settler cancels it.
+  h.issues[TASK].status = "done";
+  r = await act("settler", "PATCH", "/api/issues/WOR-22", { status: "cancelled", comment: "The owner closed WOR-21." });
+  assert.deepEqual([r.status, h.issues[PART].status], [200, "cancelled"]);
+  // The owner's task itself is still never a settler's.
+  h.issues[TASK].status = "in_progress";
+  r = await act("settler", "PATCH", "/api/issues/WOR-21", { status: "cancelled", comment: "Stale." });
+  assert.deepEqual([r.status, /it is the owner's own task/.test(r.json.error.message), h.issues[TASK].status], [403, true, "in_progress"]);
+});
+
 test("the chief of staff comments on any task of its company, heard by that task's agent, and nothing more", async (t) => {
   const { h, act } = await setup(t);
   let r = await act("cos", "POST", "/api/issues/WOR-2/comments", { body: "The owner asks for the summary by noon." });

@@ -11,9 +11,10 @@
 //   top-level). A fleet overseer (the chief of staff, role fleet-admin, or the Fleet Steward, role fleet-audit) comments on any
 //   task of its company; an agent comments on the tasks the
 //   grants table names for it (review log, chat) and on the shared "Fleet issues" log task (grants `fleet_issues`). A fleet settler (role fleet-settle, the Fleet Steward) settles stuck work on any
-//   task of its company an agent made, or a routine run with a holder agent (scope `settle`): a comment, a status (done only on a
-//   task in review, through the finish gate, heard as the task's own close), and handing the task to any agent; never a task a
-//   person made (the owner's own task or chat), a routine run with no agent, and never a log task. The evidence close (scope
+//   task of its company an agent made, a routine run with a holder agent, or an agent's part of an owner task the owner closed
+//   (scope `settle`): a comment, a status (done only on a task in review, through the finish gate, heard as the task's own
+//   close), and handing the task to any agent; never another task a person made (the owner's own task or chat), a routine run
+//   with no agent, and never a log task. The evidence close (scope
 //   `evidence`): an open task an agent made and handed to the owner is closed by its maker, the maker of a part of it, or a
 //   fleet settler, with a comment (a cited link or task identifier for `done`) and at most a label. Anything else is
 //   refused, naming whom to ask. Each write carries a tag (the plugin's once-only key): on the job's own task and the tasks its
@@ -164,11 +165,21 @@ export function createCp({ whoami, asserter, plugin, once, sawn = () => 0, agent
     /** A routine run: a task a routine wakes on its own timetable, with no agent as its creator (wakes.ts, admission.ts). */
     const isRoutineRun = (t: Issue) => t.originKind === "routine_execution";
     /**
-     * A task a fleet settler may change: one an agent made (never a person's own task or chat) or a routine run with a holder
-     * agent (a routine run has no creator agent), and not a log task.
+     * A task a fleet settler may change: one an agent made (never a person's own task or chat), a routine run with a holder
+     * agent (a routine run has no creator agent), or an agent's part of the owner's task once the owner closed that task
+     * (nobody waits on the part any more); never a log task.
      */
-    const settleScope = (t: Issue) =>
-      roles.includes(SETTLE) && !isLogTask(t, logs) && !t.createdByUserId && (t.createdByAgentId || (isRoutineRun(t) && t.assigneeAgentId)) ? "settle" : undefined;
+    const settleScope = async (t: Issue) => {
+      if (!roles.includes(SETTLE) || isLogTask(t, logs)) return undefined;
+      const may = t.createdByUserId ? await closedOwnersPart(t) : Boolean(t.createdByAgentId || (isRoutineRun(t) && t.assigneeAgentId));
+      return may ? "settle" : undefined;
+    };
+    /** An agent-held part of a task the owner holds and has closed (done or cancelled). */
+    const closedOwnersPart = async (t: Issue) => {
+      if (!t.parentId || !t.assigneeAgentId) return false;
+      const p = await issue(t.parentId).catch(() => undefined);
+      return Boolean(p && p.assigneeUserId && !p.assigneeAgentId && ["done", "cancelled"].includes(String(p.status)));
+    };
     /** A settler is told the state that blocks it, not to ask itself to pass the task on. */
     const refuse = (t: Issue, child = false): never => {
       const who = t.assigneeAgentId ? `its assignee (${keyOf(t.assigneeAgentId)})` : "the owner";
@@ -323,7 +334,7 @@ export function createCp({ whoami, asserter, plugin, once, sawn = () => 0, agent
     // Setup's log tasks take comments only, even from the agent that holds them.
     if ((status !== undefined || Object.keys(patch).length) && isLogTask(t, logs)) throw fail(403, "forbidden", `${t.identifier ?? t.id} is a log task: it takes comments only`);
     // A settler acts as one on any task it may settle, its own and its delegations included.
-    const settling = settleScope(t) === "settle";
+    const settling = (await settleScope(t)) === "settle";
     const evidence = await evidenceClose(t, status, patch, comment);
     const source = status === undefined && !evidence && sourceAppend(t, patch);
     const scope = evidence ? "evidence" : source ? "source" : (await scopeOf(t)) ?? (settling ? "settle" : undefined) ?? (status === undefined && !Object.keys(patch).length ? commentScope(t) : undefined) ?? refuse(t);
