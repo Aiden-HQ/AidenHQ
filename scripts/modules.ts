@@ -169,6 +169,12 @@ export const OPS_NETWORKS: Record<string, string> = { ci: "aidenhq-ci" };
 const legacyOf = (name: string) => ({ links: LEGACY_LINKS[name]?.to, secrets: LEGACY_SECRETS[name], hostEnv: LEGACY_HOST_ENV[name], opsNetwork: OPS_NETWORKS[name] });
 
 /**
+ * Connection names this release renamed. A saved instance override (`overrides.agents.<key>.connections.<old>`, written by
+ * the board's grants editor) is carried to the new name with a warning, so a rename never fails an instance's compile.
+ */
+export const RENAMED_CONNECTIONS: Record<string, string> = { "server-manager": "server_manager" };
+
+/**
  * Spend settings this release removed (one install limit, enforced by the model gateway; one cap per task): an instance or
  * module that still sets one fails compile with the replacement named (spendGone).
  */
@@ -1192,8 +1198,10 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     if (typeof o.connections !== "object" || Array.isArray(o.connections)) fail(`override overrides.agents.${key}.connections: a map of connection: read | write | [tools]`);
     const conns: Obj = { ...(a.connections ?? {}) };
     for (const [c, g] of Object.entries(o.connections)) {
-      delete conns[`${c}?`];
-      conns[c] = g;
+      const name = RENAMED_CONNECTIONS[c] ?? c;
+      if (name !== c) warnings.push(`overrides.agents.${key}.connections.${c} was renamed to ${name}: carried over, update instance.yaml`);
+      delete conns[`${name}?`];
+      conns[name] = g;
     }
     a.connections = conns;
   }

@@ -269,6 +269,15 @@ test("upstream: off leaves every agent without an upstream tool; with issues onl
   for (const tool of ["github_product_issue", "github_product_issue_status"]) assert.deepEqual(granted(off, tool), [], tool);
 });
 
+test("a saved grant override under a renamed connection follows the rename, with a warning", () => {
+  // The board's grants editor writes overrides.agents.<key>.connections.<connection>; a connection renamed in a release must
+  // not turn that saved key into a grant to a connection that no longer exists (which fails the whole compile).
+  const saved = { overrides: { agents: { "server-manager": { connections: { "server-manager": ["server_manager_config"] } } } } };
+  const r = compile(product, pinst(["server-manager"], owner, saved));
+  assert.deepEqual(r.paperclip.agents["server-manager"].enabled_tools.server_manager, ["server_manager_config"], "the saved grant lands on server_manager");
+  assert.deepEqual(r.paperclip.agents["server-manager"].enabled_tools["server-manager"], undefined, "no grant to the old name");
+  assert.ok(r.warnings.some((w) => /overrides\.agents\.server-manager\.connections\.server-manager was renamed to server_manager/.test(w)), JSON.stringify(r.warnings));
+});
 test("optional secrets are created only where the secrets dir is really there (never into a locked vault's bare mountpoint)", () => {
   const dir = mkdtempSync(join(tmpdir(), "sec-"));
   assert.deepEqual(ensureOptionalSecrets(dir, ["telegram_notify_bot_token"], "slack_live_mcp_token"), [], "no known secret yet: looks like an unmounted vault");
