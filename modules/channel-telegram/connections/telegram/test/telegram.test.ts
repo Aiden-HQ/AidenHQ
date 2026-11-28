@@ -90,4 +90,7 @@ describe("toTelegramHtml chat subset", () => {
   it("degrades a header to bold and a table to plain lines; snake_case stays", () => {
     expect(toTelegramHtml("## Plan\n| a | b |\n|---|---|\n| 1 | 2 |\nsome_snake_name")).toBe("<b>Plan</b>\na · b\n1 · 2\nsome_snake_name");
   });
+  it("keeps link addresses and quotes whole lines around inline code", () => {
+    expect(toTelegramHtml("> Run `cmd` now [docs](https://a.b/_docs_)")).toBe("<blockquote>Run <code>cmd</code> now docs (https://a.b/_docs_)</blockquote>");
+  });
 });

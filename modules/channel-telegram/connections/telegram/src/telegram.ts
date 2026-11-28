@@ -19,33 +19,39 @@ const TABLE_RULE = /^[ \t]*\|[\s:|-]+\|[ \t]*$/;
 
 export function toTelegramHtml(text: string, taskUrl?: string, boardUrl?: string): string {
   const board = boardOrigin(boardUrl);
-  const parts = escape(text).split(/```(?:[a-z]*)\n?([\s\S]*?)\n?```/);
+  // Block syntax is read on whole lines; link destinations are set aside so emphasis can't touch them.
+  const kept: string[] = [];
+  const hold = (t: string) => `\u0000${kept.push(t) - 1}\u0000`;
+  const blocks = (part: string) =>
+    part
+      .split("\n")
+      .flatMap((line) => (TABLE_RULE.test(line) ? [] : TABLE_ROW.test(line) ? [line.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim()).filter(Boolean).join(" · ")] : [line]))
+      .join("\n")
+      .replace(/^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$/gm, "<b>$1</b>")
+      .replace(/^[ \t]*[-*] /gm, "• ")
+      .replace(/(?:^[ \t]*&gt;[ \t]?.*(?:\n|$))+/gm, (q) => `<blockquote>${q.replace(/^[ \t]*&gt;[ \t]?/gm, "").replace(/\n$/, "")}</blockquote>${q.endsWith("\n") ? "\n" : ""}`);
+  const parts = escape(text.replace(/\u0000/g, "")).split(/```(?:[a-z]*)\n?([\s\S]*?)\n?```/);
   return parts
     .map((part, i) => {
       if (i % 2 === 1) return `<pre>${part}</pre>`;
       // Inline code is kept as written, so a markdown link written inside it stays literal.
-      let s = part
+      let s = blocks(part)
         .split(/(`[^`\n]+`)/)
         .map((seg, j) => {
           if (j % 2 === 1) return `<code>${seg.slice(1, -1)}</code>`;
           const out = seg
-            .split("\n")
-            .flatMap((line) => (TABLE_RULE.test(line) ? [] : TABLE_ROW.test(line) ? [line.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim()).filter(Boolean).join(" · ")] : [line]))
-            .join("\n")
-            .replace(/^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*$/gm, "<b>$1</b>")
-            .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)"<>]+)\)/g, "$1 ($2)")
+            .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)"<>]+)\)/g, (_, label: string, url: string) => `${label} (${hold(url)})`)
             .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
             .replace(/__([^_\n]+)__/g, "<i>$1</i>")
-            .replace(/(?<![\p{L}\p{N}_])_(?=\S)([^_\n]+?)(?<=\S)_(?![\p{L}\p{N}_])/gu, "<i>$1</i>")
-            .replace(/^[ \t]*[-*] /gm, "• ")
-            .replace(/(?:^[ \t]*&gt;[ \t]?.*(?:\n|$))+/gm, (q) => `<blockquote>${q.replace(/^[ \t]*&gt;[ \t]?/gm, "").replace(/\n$/, "")}</blockquote>${q.endsWith("\n") ? "\n" : ""}`);
+            .replace(/(?<![\p{L}\p{N}_])_(?=\S)([^_\n]+?)(?<=\S)_(?![\p{L}\p{N}_])/gu, "<i>$1</i>");
           return board ? out.replace(ROUTE_LINK, (_, label: string, route: string) => `<a href="${board}/#/${route}">${label}</a>`) : out;
         })
         .join("");
       if (taskUrl) s = s.replace(/(?<![\w/-])([A-Z][A-Z0-9]*-\d+)\b(?![^<]*<\/code>)/g, (id) => `<a href="${escape(taskUrl.replace("{id}", id))}">${id}</a>`);
       return s;
     })
-    .join("");
+    .join("")
+    .replace(/\u0000(\d+)\u0000/g, (_, n: string) => kept[Number(n)]!);
 }
 
 export type InlineKeyboard = { inline_keyboard: { text: string; callback_data: string }[][] };

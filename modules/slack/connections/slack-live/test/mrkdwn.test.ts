@@ -16,3 +16,7 @@ test("a header degrades to a bold line and a table to plain lines", () => {
 test("the bot's own posts keep the mentions and links the agent wrote", () => {
   expect(toSlackMrkdwn("- hi <@U1> <https://a.b|x> **b**", { labelled: true, keepTokens: true })).toBe("• hi <@U1> <https://a.b|x> *b*");
 });
+
+test("link addresses and whole-line blocks survive inline code and emphasis marks", () => {
+  expect(toSlackMrkdwn("> Run `cmd` to see [docs](https://a.b/_docs_)", { labelled: true })).toBe("> Run `cmd` to see <https://a.b/_docs_|docs>");
+});

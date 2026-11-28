@@ -80,7 +80,7 @@ function infer(a: any, agent: string): SendArgs {
 export type Run = (rec: ExecuteRequest, o?: { topic?: unknown }) => Promise<{ ok: boolean; text: string }>;
 const fmt = (t: number) => new Date(t).toISOString();
 /** The agent's markdown as Telegram renders it: entities, never parse modes (format.ts). */
-const content = (markdown: string) => ({ _: "inputMessageText", text: { _: "formattedText", ...renderTelegram(markdown) } });
+const content = (rendered: ReturnType<typeof renderTelegram>) => ({ _: "inputMessageText", text: { _: "formattedText", ...rendered } });
 
 export function sender(d: {
   td: () => TdClient | undefined;
@@ -154,8 +154,10 @@ export function sender(d: {
       const last = db.prepare(`SELECT MAX(at) AS at FROM send_log WHERE chat_id = ?`).get(chatId) as { at: number | null };
       if (last.at !== null && t - last.at < CHAT_GAP_MS) return { ok: false, text: `Send cap reached (one action per chat every ${CHAT_GAP_MS / 1000} s): try again after ${fmt(last.at + CHAT_GAP_MS)}.` };
 
+      // Rendered once: the row keeps the words as Telegram will show them (what the echo of this send is matched against).
+      const rendered = a.text !== undefined ? renderTelegram(a.text) : undefined;
       d.store.tx(() => {
-        db.prepare(`INSERT INTO writes (id, state, chat_id, at, body) VALUES (?, 'sending', ?, ?, ?)`).run(rec.id, chatId, t, a.text ?? null);
+        db.prepare(`INSERT INTO writes (id, state, chat_id, at, body) VALUES (?, 'sending', ?, ?, ?)`).run(rec.id, chatId, t, rendered?.text ?? null);
         db.prepare(`INSERT INTO send_log (at, chat_id) VALUES (?, ?)`).run(t, chatId);
       });
 
@@ -166,7 +168,7 @@ export function sender(d: {
           return finish(rec.id, "done", `Reacted ${a.emoji} in ${title}.`, Number(a.message_id));
         }
         if (a.action === "edit") {
-          await td.invoke({ _: "editMessageText", chat_id: chatId, message_id: Number(a.message_id), input_message_content: content(a.text!) });
+          await td.invoke({ _: "editMessageText", chat_id: chatId, message_id: Number(a.message_id), input_message_content: content(rendered!) });
           return finish(rec.id, "done", `Edited message ${a.message_id} in ${title}.`, Number(a.message_id));
         }
         if (a.action === "delete") {
@@ -183,7 +185,7 @@ export function sender(d: {
             chat_id: chatId,
             ...(o?.topic ? { topic_id: o.topic } : {}),
             ...(a.action === "reply" ? { reply_to: { _: "inputMessageReplyToMessage", message_id: Number(a.reply_to_message_id) } } : {}),
-            input_message_content: content(a.text!),
+            input_message_content: content(rendered!),
           });
         }
         if (typeof temp?.id !== "number") throw new TdError(500, "Telegram returned no message for the send");
