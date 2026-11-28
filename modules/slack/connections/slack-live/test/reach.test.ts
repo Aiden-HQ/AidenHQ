@@ -45,6 +45,9 @@ describe("classification", () => {
     const fromInstance = toSourceEvent({ event: dmEvent, authorizations: [{ is_bot: false }] }, OWNER, { ...route, peers });
     const fromApp = toSourceEvent({ event: dmEvent, authorizations: [{ is_bot: true, user_id: ARIA_BOT }] }, OWNER, { receiver: { to: "aria", entry: "slack:app:A0ARIA00" }, bots: route.bots });
     expect(fromInstance).toEqual(fromApp);
+    // Naming another of our bots in that DM changes nothing: the DM is with Aria, on every stream.
+    const named = { ...dmEvent, text: `<@${BOT}> loop Nora in` };
+    expect(toSourceEvent({ event: named, authorizations: [{ is_bot: false }] }, OWNER, { ...route, peers })).toEqual(toSourceEvent({ event: named, authorizations: [{ is_bot: true, user_id: ARIA_BOT }] }, OWNER, { receiver: { to: "aria", entry: "slack:app:A0ARIA00" }, bots: route.bots }));
     expect(fromApp).toMatchObject({ to_agent: "aria", entry: "slack:app:A0ARIA00", from_owner: true });
     // Before the other party is known the owner's colleague DM stays a plain event.
     expect(toSourceEvent({ event: dmEvent, authorizations: [{ is_bot: false }] }, OWNER, route)?.to_agent).toBeUndefined();

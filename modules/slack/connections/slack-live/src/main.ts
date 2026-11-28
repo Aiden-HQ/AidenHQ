@@ -94,8 +94,14 @@ const peers = new Map<string, string>();
 /** Who the owner's DM `channel` is with (the relay reads as the owner), once; only while an agent has an app of its own. */
 const learnDm = async (channel: string) => {
   if (!relayKey || peers.has(channel) || !Object.keys(agentApps.bots()).length) return;
-  const user = ((await relayApi(slackMcp, relayKey)("conversations.info", { channel })).channel as { user?: string } | undefined)?.user;
-  if (user) peers.set(channel, user);
+  try {
+    const user = ((await relayApi(slackMcp, relayKey)("conversations.info", { channel })).channel as { user?: string } | undefined)?.user;
+    peers.set(channel, user ?? "");
+  } catch (err) {
+    // A refusal that will repeat (no scope, a conversation Slack won't describe) leaves the DM a plain one; anything else is retried.
+    if (!/missing_scope|not_allowed_token_type|channel_not_found|access_denied|invalid_auth|token_revoked/.test(String(err))) throw err;
+    peers.set(channel, "");
+  }
 };
 const route = (): Route => ({
   peers,

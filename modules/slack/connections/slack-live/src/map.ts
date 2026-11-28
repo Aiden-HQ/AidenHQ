@@ -59,14 +59,15 @@ function addressedTo(ev: Record<string, unknown>, channel: string, text: string,
   if (route.receiver && dm && botAuth) return through(route.receiver);
   // The receiving app's own bot id is in the envelope's authorizations, so its mention is known before anything is looked up.
   const bots = { ...(route.receiver ? Object.fromEntries(auths.filter((a) => a?.is_bot === true && typeof a.user_id === "string").map((a) => [a.user_id!, route.receiver!])) : {}), ...route.bots };
+  // The owner's own DM with a bot of ours (an agent's app): the other party is that bot, whichever app's socket carried it.
+  const peer = dm ? route.peers?.get(channel) : undefined;
+  if (peer && bots[peer]) return through(bots[peer]!);
   for (const [, id] of text.matchAll(MENTION)) {
     const t = bots[id!];
     if (t) return through(t);
   }
   if (route.receiver && str(ev.type) === "app_mention") return through(route.receiver);
-  // The owner's own DM with a bot of ours (an agent's app): the other party is that bot, whichever app's socket carried it.
-  const peer = dm ? route.peers?.get(channel) : undefined;
-  return peer && bots[peer] ? through(bots[peer]!) : undefined;
+  return undefined;
 }
 
 export function toSourceEvent(body: unknown, owner?: string, route?: Route): SourceEvent | null {
