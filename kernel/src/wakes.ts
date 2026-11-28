@@ -1103,7 +1103,7 @@ const SCANNED = new Set(["todo", "in_progress", "in_review"]);
       db.exec("BEGIN IMMEDIATE");
       try {
         q("INSERT OR IGNORE INTO wake_dispatchers (module, since) VALUES (?, ?)").run(module, t);
-        const rows = (q("SELECT * FROM wakes WHERE ((state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND claimed_by = ? AND until <= ?)) ORDER BY state = 'claimed', EXISTS (SELECT 1 FROM wake_first f WHERE f.task = wakes.task) DESC, at, key").all(t, module, t) as unknown as Wake[]).filter((w) => dispatches.may(module, w.agent));
+        const rows = (q("SELECT * FROM wakes WHERE ((state = 'open' AND (until IS NULL OR until <= ?)) OR (state = 'claimed' AND job IS NULL AND claimed_by = ? AND until <= ?)) ORDER BY state = 'claimed', EXISTS (SELECT 1 FROM wake_first f WHERE f.task = wakes.task AND f.at > ?) DESC, at, key").all(t, module, t, t - 86_400_000) as unknown as Wake[]).filter((w) => dispatches.may(module, w.agent));
         // Every end has its fact (else task state reads the wake as still pending or held): dropped, or done by the job that consumed it.
         const set = (w: Wake, end: { dropped: string } | { done: string; job: string }) => {
           const state = "job" in end ? "done" : "dropped";

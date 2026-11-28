@@ -38,7 +38,7 @@ export type SummonDecl = { connection: string; url: string; auth_secret: string 
 /** A teammate the owner can summon: its agent key and the name the owner knows it by (compiled `teammates`). */
 export type Teammate = { key: string; name: string };
 type SummonModules = { modules?: Record<string, { roles?: string[]; summon?: SummonDecl; label?: string }>; teammates?: Teammate[]; summon?: { on?: boolean; signature?: string } };
-type Row = { id: number; connection: string; resource: string; thread: string | null; conv: string; message: string; agent: string; text: string; state: string; task: string | null; reacted: number; at: number; due: number };
+type Row = { id: number; connection: string; resource: string; thread: string | null; conv: string; message: string; agent: string; text: string; state: string; task: string | null; reacted: number; posted: number; at: number; due: number };
 type Line = { id: number; connection: string; conv: string; owner: number; author: string | null; text: string; event: string };
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 const refuse = (status: number, message: string) => Object.assign(new Error(message), { status });
@@ -73,9 +73,13 @@ const fenced = (text: string) => { const f = "`".repeat(Math.max(3, ...[...text.
  * first job always has the words (summons and the Slack thread mentions, channels.ts thread()).
  */
 export async function postAndOpen(owner: Api, poster: Api, task: string, agent: string, body: string): Promise<void> {
-  const id = encodeURIComponent(task);
-  const c = await poster("POST", `/api/issues/${id}/comments`, { body });
+  const c = await poster("POST", `/api/issues/${encodeURIComponent(task)}/comments`, { body });
   if (c.status >= 300) throw refuse(c.status >= 500 ? 502 : c.status, `posting on the task: the control plane answered ${c.status}`);
+  await openFor(owner, task, agent);
+}
+/** A task its agent works now: one that is parked, closed or someone else's goes back to `todo` with that agent. */
+async function openFor(owner: Api, task: string, agent: string): Promise<void> {
+  const id = encodeURIComponent(task);
   const i = await owner("GET", `/api/issues/${id}`);
   if (i.status !== 200) throw refuse(502, `reading the task: the control plane answered ${i.status}`);
   if (["todo", "in_progress"].includes(String(i.json?.status)) && i.json?.assigneeAgentId === agent) return;
@@ -90,6 +94,7 @@ export const httpCall = (secret: (n: string) => string, resolver: Resolver) => a
   return new Promise((resolve, reject) => {
     const req = http.request({ host: to.host, port: to.port, path: to.path, method: "POST", timeout: CALL_MS, headers: { host: new URL(d.url).host, authorization: `Bearer ${secret(d.auth_secret)}`, "content-type": "application/json", "content-length": data.length } }, (res) => {
       let text = "";
+      res.on("error", reject).on("aborted", () => reject(new Error(`${op}: the answer broke off`)));
       res.setEncoding("utf8").on("data", (c) => { if (text.length < 1_000_000) text += c; }).on("end", () => {
         let json: unknown = {};
         try { json = JSON.parse(text); } catch {}
@@ -121,7 +126,7 @@ export function createSummon(o: {
   now?: () => number; log?: Log; sleep?: (ms: number) => Promise<void>;
 }) {
   const { db } = o, now = o.now ?? Date.now, log = o.log ?? (() => {}), sleep = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  db.exec(`CREATE TABLE IF NOT EXISTS summons (id INTEGER PRIMARY KEY AUTOINCREMENT, connection TEXT NOT NULL, resource TEXT NOT NULL, thread TEXT, conv TEXT NOT NULL, message TEXT NOT NULL, agent TEXT NOT NULL, text TEXT NOT NULL, state TEXT NOT NULL, task TEXT, reacted INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL, due INTEGER NOT NULL, UNIQUE (connection, message, agent));
+  db.exec(`CREATE TABLE IF NOT EXISTS summons (id INTEGER PRIMARY KEY AUTOINCREMENT, connection TEXT NOT NULL, resource TEXT NOT NULL, thread TEXT, conv TEXT NOT NULL, message TEXT NOT NULL, agent TEXT NOT NULL, text TEXT NOT NULL, state TEXT NOT NULL, task TEXT, reacted INTEGER NOT NULL DEFAULT 0, posted INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL, due INTEGER NOT NULL, UNIQUE (connection, message, agent));
     CREATE INDEX IF NOT EXISTS summons_conv ON summons (conv, state);
     CREATE INDEX IF NOT EXISTS summons_task ON summons (task);
     CREATE TABLE IF NOT EXISTS summon_events (connection TEXT NOT NULL, id TEXT NOT NULL, consumed INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (connection, id));
@@ -170,7 +175,13 @@ export function createSummon(o: {
     }
     db.prepare("UPDATE summons SET task = ? WHERE id = ?").run(t.id, r.id);
     // The owner's own words, typed: the agent's dispatch and the reviewer read them as the owner's (cplimit.ts, review-loop.ts).
-    await postAndOpen(o.owner, o.ownerTyped, t.id, id, `[${a.module}] ${neutral(r.text)}`);
+    // Posted once: a pass that failed after the post only opens the task on its retry.
+    if (!r.posted) {
+      const c = await o.ownerTyped("POST", `/api/issues/${encodeURIComponent(t.id)}/comments`, { body: `[${a.module}] ${neutral(r.text)}` });
+      if (c.status >= 300) throw refuse(502, `posting the owner's words: the control plane answered ${c.status}`);
+      db.prepare("UPDATE summons SET posted = 1 WHERE id = ?").run(r.id);
+    }
+    await openFor(o.owner, t.id, id);
     db.prepare("UPDATE summons SET state = CASE WHEN id = ? THEN 'filed' ELSE 'done' END WHERE id = ? OR (conv = ? AND agent = ? AND state IN ('filed', 'closed'))").run(r.id, r.id, r.conv, r.agent);
     o.first?.(t.id);
     log("summoned", { connection: r.connection, agent: r.agent, task: t.identifier || t.id, reopened: t.deduplicated, ms: now() - r.at });
@@ -187,6 +198,8 @@ export function createSummon(o: {
       const i = await o.owner("GET", `/api/issues/${encodeURIComponent(task)}`);
       if (i.status >= 500) throw new Error(`reading task ${task}: the control plane answered ${i.status}`);
       if (i.status !== 200 || ["done", "cancelled"].includes(String(i.json?.status))) { db.prepare("UPDATE summons SET state = 'closed' WHERE task = ? AND agent = ? AND state = 'filed'").run(task, agent); continue; }
+      // Someone else's words never resume blocked work (a comment would reopen it): only the owner's do.
+      if (!l.owner && i.json?.status === "blocked") continue;
       const label = a?.module ?? l.connection;
       const body = l.owner
         ? `[${label}] ${neutral(l.text)}`
@@ -220,7 +233,10 @@ export function createSummon(o: {
       const text = ev.text ?? "";
       // The agent's own reply coming back: by the id `reply` returned, or (before that id is known) by its signature.
       if (db.prepare("SELECT 1 FROM summon_sends WHERE connection = ? AND message = ?").get(ev.connection, ev.id) || (ev.from_owner && signed(text))) { log("summon: our own reply dropped", { connection: ev.connection, id: ev.id }); return mark(true); }
-      const conv = conversationKey(ev.connection, ev.resource, ev.thread), line = neutral(text).trim();
+      // A reply threaded under a summons that had no thread of its own (a DM's top-level message) is that summons' conversation.
+      const flat = conversationKey(ev.connection, ev.resource);
+      const under = ev.thread && db.prepare("SELECT 1 FROM summons WHERE conv = ? AND message IN (?, ?) AND state IN ('claimed', 'filed') LIMIT 1").get(flat, ev.thread, `${ev.resource}:${ev.thread}`);
+      const conv = under ? flat : conversationKey(ev.connection, ev.resource, ev.thread), line = neutral(text).trim();
       if (ev.from_owner) {
         const keys = matchSummons(text, roster());
         // The owner's quick next lines fold into a summons still in its debounce.

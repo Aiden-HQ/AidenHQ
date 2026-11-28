@@ -377,7 +377,8 @@ const summon = createSummon({
   file: (b) => moduleTasks.file("kernel", b), owner: ownerApi, ownerTyped: asApi((p, init) => cpApi(p, init, true)),
   route: (ev) => events.deliver(ev), first: (task) => wakes.first(task), call: httpCall(secret, resolver),
 });
-const pumpSummons = () => void summon.pump().catch((e: Error) => log("summon pass failed", { err: String(e.message).slice(0, 300) }));
+// Only once the previous kernel has exited (a claim accepted during a drain waits for the next pass): one process files a row.
+const pumpSummons = () => void (previousGone() ? summon.pump() : Promise.resolve()).catch((e: Error) => log("summon pass failed", { err: String(e.message).slice(0, 300) }));
 // Once the previous kernel has exited (it may be filing the same rows): at once (claimed rows left by a restart), then every 2 s.
 afterPrevious(() => { pumpSummons(); every(pumpSummons, 2_000); });
 const updates = createUpdates({
