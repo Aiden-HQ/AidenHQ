@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AccountsView } from "./Accounts";
 import { SignInRequired, admin, api, type Session } from "./api";
 import { PoweredBy } from "./components";
@@ -6,12 +6,12 @@ import { needsAttention, type ConnectionsData } from "./connections";
 import { useEvents } from "./events";
 import { askForNotifications, notificationsSupported } from "./notify";
 import { ConnectionsPage, RowsSkeleton } from "./SettingsConnections";
-import { parseInput, shown } from "./settings-format";
-import { ChangePreview, ChangeProgress, Changes, Group, IN_FLIGHT, Page, Row, Toasts, useFiled } from "./settings-ui";
-import type { FiledChange, SettingChange, SettingRow, SettingsData, UpdatesData } from "./types";
-import { urlSettingProblem } from "../../src/url-setting";
+import { ADVANCED_SETTINGS, CATEGORIES, PAGE_SETTINGS, type Category } from "./settings-layout";
+import { SettingsCard, type RowOpts } from "./SettingsForm";
+import { Changes, IN_FLIGHT, Page, Toasts } from "./settings-ui";
+import type { FiledChange, SettingChange, SettingRow, SettingsData } from "./types";
 import "./settings.css";
-import { Banner, Button, LinkButton, SectionCard, Segmented, StatusDot, Switch, Tag, safeHref } from "./ui";
+import { Banner, Button, Disclosure, FieldRow, LinkButton, Select, StatusDot, safeHref } from "./ui";
 import { Steps } from "./SetupFlow";
 import { clockOpts, clockText } from "./util";
 
@@ -28,18 +28,6 @@ ${cloudReachable(origin) ? "Claude Desktop and claude.ai connectors work here to
 // only through its apply card (docs/design/settings-changes.md). What the board owns (accounts, sign-ins, browser
 // notifications) changes right here.
 
-export const CATEGORIES = [
-  { key: "connections", name: "Connections", group: "Connect" },
-  { key: "approvals", name: "Approvals and autonomy", group: "Fleet" },
-  { key: "spend", name: "Spend limits", group: "Fleet" },
-  { key: "switches", name: "Kill switches", group: "Fleet" },
-  { key: "notifications", name: "Notifications", group: "You" },
-  { key: "accounts", name: "Accounts and access", group: "You" },
-  { key: "general", name: "General", group: "System" },
-  { key: "instance", name: "Instance", group: "System" },
-] as const;
-export type Category = (typeof CATEGORIES)[number]["key"];
-export const isCategory = (s: string | null | undefined): s is Category => CATEGORIES.some((c) => c.key === s);
 const GROUPS = [...new Set(CATEGORIES.map((c) => c.group))];
 
 interface Props {
@@ -72,7 +60,6 @@ export function SettingsView({ cat, mobile, session, go, onSignIn, can }: Props)
   useEvents(["connections"], () => loadConns(true));
   // While a change is under way, follow it closely (and the connections, which come up after it); otherwise every 30 s.
   const busy = changes.some((c) => IN_FLIGHT.includes(c.stage));
-  const wasBusy = useRef(busy);
   useEffect(() => {
     const t = setInterval(() => {
       if (document.visibilityState !== "visible") return;
@@ -81,11 +68,13 @@ export function SettingsView({ cat, mobile, session, go, onSignIn, can }: Props)
     }, busy ? 5_000 : 30_000);
     return () => clearInterval(t);
   }, [busy, loadChanges, loadConns]);
-  // A change just went live: the compiled config moved, so read it again.
+  // A change just went live (even one that applied before its first in-flight read): the compiled config moved, so read it again.
+  const applied = useRef<Set<string> | null>(null);
   useEffect(() => {
-    if (wasBusy.current && !busy) void loadSettings();
-    wasBusy.current = busy;
-  }, [busy, loadSettings]);
+    const now = new Set(changes.filter((c) => c.stage === "applied").map((c) => c.identifier));
+    if (applied.current && [...now].some((id) => !applied.current!.has(id))) void loadSettings();
+    applied.current = now;
+  }, [changes, loadSettings]);
 
   const toast = useCallback((text: string, tone?: "ok" | "bad") => {
     const id = Date.now() + Math.random();
@@ -107,7 +96,7 @@ export function SettingsView({ cat, mobile, session, go, onSignIn, can }: Props)
   );
   const ctx = useMemo(() => ({ changes, file, toast }), [changes, file, toast]);
 
-  const current: Category = cat ?? "connections";
+  const current: Category = cat ?? "profile";
   const attention = conns ? needsAttention(conns, can) : false;
   const check = () => (setChecking(true), void loadConns(true).finally(() => setChecking(false)));
 
@@ -173,6 +162,7 @@ export function SettingsView({ cat, mobile, session, go, onSignIn, can }: Props)
   );
 }
 
+
 function Pane({ cat, data, conns, session, onSignIn, can, checking, check }: { cat: Category; data: SettingsData | null; conns: ConnectionsData | null; session: Session | null; onSignIn: () => void; can: Props["can"]; checking: boolean; check: () => void }) {
   if (cat === "accounts") return session ? <div className="st-embedded"><AccountsView session={session} onSignIn={onSignIn} /></div> : null;
   if (cat === "connections") return <ConnectionsPage conns={conns} can={can} refresh={checking} onRefresh={check} />;
@@ -183,164 +173,84 @@ function Pane({ cat, data, conns, session, onSignIn, can, checking, check }: { c
         <RowsSkeleton />
       </Page>
     );
-  const rows = (keys: string[]) => keys.map((k) => data.settings.find((s) => s.key === k)).filter((s): s is SettingRow => Boolean(s));
-  if (cat === "approvals") return <ApprovalsPage data={data} rows={rows} />;
-  if (cat === "spend") return <SpendPage rows={rows(["spend_day_usd", "spend_month_usd", "task_usd"])} />;
-  if (cat === "switches") {
-    const sw = data.settings.filter((s) => s.switch);
-    const off = sw.filter((s) => (s.live ?? s.value ?? s.default) === "off").length;
-    return (
-      <Page title="Kill switches" sub={`${sw.length - off} of ${sw.length} on. Turning one off files a change for you to approve; most take effect on the next use after it lands.`}>
-        <Group>{sw.length ? sw.map((s) => <SettingItem key={s.key} s={s} />) : <p className="st-empty">No switches on this instance.</p>}</Group>
-      </Page>
-    );
+  const find = (keys: readonly string[]) => keys.map((k) => data.settings.find((s) => s.key === k)).filter((s): s is SettingRow => Boolean(s));
+  const rows = (page: keyof typeof PAGE_SETTINGS) => find(PAGE_SETTINGS[page]);
+  const card = (page: keyof typeof PAGE_SETTINGS, opts?: Record<string, RowOpts>) => <SettingsCard rows={rows(page)} all={data.settings} opts={opts} />;
+  switch (cat) {
+    case "profile":
+      return (
+        <Page title="Profile" sub={data.owner.name ? `This AidenHQ belongs to ${data.owner.name}. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.` : `Who this AidenHQ belongs to. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.`}>
+          {card("profile", {
+            owner_name: { sub: "Handbooks say “the owner”; one line names you." },
+            owner_email: { sub: "The board account setup created: you sign in with it." },
+            timezone: { sub: "Schedules, spend limits and your day reset at midnight here.", control: (v, set) => <TimezoneInput value={String(v ?? "")} set={set} /> },
+            time_format: { sub: "How times read on the board and in what the agents say.", labels: { "12h": "8:00 PM", "24h": "20:00" } },
+          })}
+        </Page>
+      );
+    case "notifications":
+      return <NotificationsPage rows={rows("notifications")} all={data.settings} conns={conns} />;
+    case "autonomy":
+      return <AutonomyPage data={data} card={card("autonomy", { autonomy: { sub: "How much of Tier 1 the AI reviewer decides.", labels: { off: "Off", tier0: "Tier 0", full: "Full" } } })} />;
+    case "spend":
+      return (
+        <Page title="Spend" sub="The model gateway refuses a call that would take the whole install past either install limit (a day, or a calendar month: midnight in your timezone), and a task that would pass its own limit. All in USD.">
+          {card("spend", {
+            spend_day_usd: { sub: "Across every agent, per day.", prefix: "$" },
+            spend_month_usd: { sub: "Across every agent, per calendar month.", prefix: "$" },
+            task_usd: { sub: "One task and everything it delegates.", prefix: "$" },
+          })}
+        </Page>
+      );
+    case "updates":
+      return <UpdatesPage data={data} />;
+    case "access":
+      return (
+        <Page title="Board access" sub="How this board is reached from outside the server.">
+          <SettingsCard
+            rows={rows("access")}
+            advanced={find(ADVANCED_SETTINGS.access)}
+            all={data.settings}
+            opts={{
+              exposure: { sub: "Public, a tailnet, a Cloudflare tunnel, or this machine only.", labels: { public: "Public", tailscale: "Tailnet", cloudflare: "Cloudflare", local: "Local" } },
+              computers_max: { sub: "How many agent jobs run at once, 1 to 64.", min: 1, max: 64 },
+            }}
+            trail={
+              <div className="st-set-full">
+                <Disclosure summary="Connect your Claude">
+                  <p className="st-hint">Your own Claude can check status, talk to Aiden, change settings and decide approvals as you, and can help finish anything you skipped in setup.</p>
+                  <Steps text={mcpSteps(location.origin)} />
+                </Disclosure>
+              </div>
+            }
+          />
+        </Page>
+      );
+    case "backups":
+      return (
+        <Page title="Backups" sub="Every night the server keeps a local backup. An off-host repository keeps a copy that survives losing the machine.">
+          {card("backups", { backup_repository: { sub: "A restic repository, for example a storage box. Empty means no off-host backup.", placeholder: "sftp://user@host:23/aidenhq" } })}
+        </Page>
+      );
   }
-  if (cat === "notifications") return <NotificationsPage rows={rows(["channels", "notify_transports", "notify_fyi", "slack_post_channels"])} conns={conns} />;
-  if (cat === "general") {
-    const elsewhere = new Set(["autonomy", "spend_day_usd", "spend_month_usd", "task_usd", "channels", "notify_transports", "notify_fyi", "slack_post_channels"]);
-    const general = data.settings.filter((s) => !s.switch && !s.page && !elsewhere.has(s.key) && s.type !== "url");
-    return (
-      <Page title="General" sub={data.owner.name ? `This AidenHQ belongs to ${data.owner.name}. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.` : `Who this AidenHQ belongs to, and how it is named. The board's own Today and Tomorrow use ${data.instance.boardTimezone}.`}>
-        <Group>{general.length ? general.map((s) => <SettingItem key={s.key} s={s} />) : <p className="st-empty">Nothing here on this instance.</p>}</Group>
-        <SectionCard title="Connect your Claude" meta="Manage AidenHQ from your own Claude">
-          <p className="st-hint">Your own Claude can check status, talk to Aiden, change settings and decide approvals as you, and can help finish anything you skipped in setup.</p>
-          <Steps text={mcpSteps(location.origin)} />
-        </SectionCard>
-      </Page>
-    );
-  }
-  return <InstancePage data={data} />;
 }
 
-// ------------------------------------------------------------------ one setting, changed in place
+// ------------------------------------------------------------------ pages
 
-const label = (k: string) => k.replace(/_/g, " ").replace(/\burl\b/g, "URL").replace(/\bmcp\b/g, "MCP").replace(/^./, (c) => c.toUpperCase());
-
-export function SettingItem({ s, title }: { s: SettingRow; title?: string }) {
-  const filed = useFiled((c) => c.kind === "setting" && c.key === s.key);
-  const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
-  const effective = s.live ?? s.value ?? s.default;
-  const [open, setOpen] = useState(false);
-  const [to, setTo] = useState<unknown>(undefined);
-  const drift = s.live !== undefined && s.known && s.value !== null && s.live !== String(s.value);
-  const pick = (v: unknown) => (setTo(v), setOpen(true));
-  const status = busy ? <StatusDot tone="busy">Changing</StatusDot> : null;
-  if (s.switch) {
-    const on = (to ?? effective) !== "off";
-    return (
-      <Row
-        title={title ?? label(s.key)}
-        sub={s.doc}
-        meta={status ?? (!s.known && s.live === undefined ? <StatusDot tone="idle">Unknown</StatusDot> : undefined)}
-        action={<Switch on={on} label={`${label(s.key)}: ${on ? "on" : "off"}`} disabled={busy} onChange={(v) => pick(v ? "on" : "off")} />}
-        open={open || Boolean(filed)}
-        onToggle={(o) => (setOpen(o), !o && setTo(undefined))}
-        details={
-          filed && !open ? (
-            <ChangeProgress f={filed} />
-          ) : to !== undefined ? (
-            <ChangePreview items={[{ kind: "setting", key: s.key, value: to }]} was={[s.value ?? s.default]} onCancel={() => (setOpen(false), setTo(undefined))} onDone={() => (setOpen(false), setTo(undefined))} />
-          ) : (
-            <SettingFacts s={s} drift={drift} />
-          )
-        }
-      />
-    );
-  }
-  return (
-    <Row
-      title={title ?? label(s.key)}
-      sub={s.doc}
-      meta={status ?? <span className="st-value" title={shown(s.value)}>{s.known ? shown(s.value) : "unknown"}</span>}
-      open={open}
-      onToggle={setOpen}
-      details={
-        <>
-          {filed && <ChangeProgress f={filed} />}
-          {!busy && <SettingEditor s={s} onDone={() => setOpen(false)} />}
-          <SettingFacts s={s} drift={drift} />
-        </>
-      }
-    />
-  );
-}
-
-function SettingFacts({ s, drift }: { s: SettingRow; drift: boolean }) {
+/** A timezone: type it or pick one the browser knows. */
+function TimezoneInput({ value, set }: { value: string; set: (v: string) => void }) {
+  const zones = useMemo(() => { try { return Intl.supportedValuesOf("timeZone"); } catch { return []; } }, []);
   return (
     <>
-      {drift && <p className="st-hint warn">Running as {s.live}, while the compiled config says {shown(s.value)}: the last apply may not have finished.</p>}
-      <dl className="st-facts compact">
-        <dt>Key</dt>
-        <dd>
-          <code>settings.{s.key}</code>
-        </dd>
-        <dt>From</dt>
-        <dd>{!s.known ? "the board can't read it yet" : s.set ? "instance.yaml" : s.default !== undefined ? `the default (${shown(s.default)})` : "not set"}</dd>
-        <dt>Module</dt>
-        <dd>{s.module}</dd>
-      </dl>
+      <input className="ui-input" list="st-zones" value={value} onChange={(e) => set(e.target.value)} spellCheck={false} aria-label="Timezone" placeholder="Europe/London" />
+      <datalist id="st-zones">{zones.map((z) => <option key={z} value={z} />)}</datalist>
     </>
   );
 }
 
-/** The control a setting's type calls for: a choice, several choices, a URL, a number or text; then its preview. */
-function SettingEditor({ s, onDone }: { s: SettingRow; onDone: () => void }) {
-  const values = s.values ?? [];
-  const multi = Array.isArray(s.value ?? s.default);
-  const [v, setV] = useState<unknown>(s.value ?? s.default ?? (multi ? [] : ""));
-  const [text, setText] = useState(Array.isArray(v) ? (v as unknown[]).join(", ") : v === null || v === undefined ? "" : String(v));
-  const [review, setReview] = useState(false);
-  const next = values.length ? v : parseInput(s, text);
-  const shaped = s.pattern && typeof next === "string" && next !== "" && !new RegExp(s.pattern).test(next) ? `a value like ${s.pattern}` : null;
-  const problem = s.type === "url" ? urlSettingProblem(next, s.host) : typeof (s.default ?? s.value) === "number" && Number.isNaN(next) ? "a number" : shaped;
-  const same = JSON.stringify(next) === JSON.stringify(s.value ?? s.default);
+function AutonomyPage({ data, card }: { data: SettingsData; card: React.ReactNode }) {
   return (
-    <form className="st-editor" onSubmit={(e) => (e.preventDefault(), !problem && !same && setReview(true))}>
-      {values.length && !multi ? (
-        values.length <= 4 ? (
-          <Segmented value={String(v)} label={label(s.key)} options={values.map((x) => [String(x), String(x)] as const)} onChange={(x) => (setV(values.find((y) => String(y) === x)), setReview(false))} />
-        ) : (
-          <select className="ui-select" value={String(v)} onChange={(e) => (setV(values.find((y) => String(y) === e.target.value)), setReview(false))} aria-label={label(s.key)}>
-            {values.map((x) => (
-              <option key={String(x)}>{String(x)}</option>
-            ))}
-          </select>
-        )
-      ) : values.length ? (
-        <div className="ui-checks" role="group" aria-label={label(s.key)}>
-          {values.map((x) => {
-            const on = (v as unknown[]).includes(x);
-            return (
-              <label key={String(x)} className={`ui-check${on ? " on" : ""}`}>
-                <input type="checkbox" checked={on} onChange={() => (setV(on ? (v as unknown[]).filter((y) => y !== x) : [...(v as unknown[]), x]), setReview(false))} />
-                {String(x)}
-              </label>
-            );
-          })}
-        </div>
-      ) : (
-        <input className="ui-input" value={text} onChange={(e) => (setText(e.target.value), setReview(false))} type={s.type === "url" ? "url" : "text"} spellCheck={false} aria-label={label(s.key)} placeholder={multi ? "comma, separated" : ""} />
-      )}
-      {problem && !same && <span className="ui-field-error">{problem.replace(/^./, (c) => c.toUpperCase())}</span>}
-      {review ? (
-        <ChangePreview items={[{ kind: "setting", key: s.key, value: next }]} was={[s.value ?? s.default]} onCancel={() => setReview(false)} onDone={onDone} />
-      ) : (
-        <div className="st-change-actions">
-          <button className="btn primary" disabled={same || Boolean(problem)}>
-            Review change
-          </button>
-        </div>
-      )}
-    </form>
-  );
-}
-
-// ------------------------------------------------------------------ approvals, spend, notifications, modules, instance
-
-function ApprovalsPage({ data, rows }: { data: SettingsData; rows: (keys: string[]) => SettingRow[] }) {
-  const [autonomy] = rows(["autonomy"]);
-  return (
-    <Page title="Approvals and autonomy" sub="Every write (a push, merge, apply, deploy or outbound message) is an approval record. Code sets each one's tier; autonomy says how much of Tier 1 the AI reviewer decides.">
+    <Page title="Autonomy" sub="Every write (a push, merge, apply, deploy or outbound message) is an approval record. Code sets each one's tier; autonomy says how much of Tier 1 the AI reviewer decides.">
       <div className="st-tiers">
         <div className="st-tier">
           <span className="st-tier-n">Tier 0</span>
@@ -356,148 +266,131 @@ function ApprovalsPage({ data, rows }: { data: SettingsData; rows: (keys: string
         </div>
       </div>
       <p className="st-note">{data.approvals.pending ? <><a href="#/">{data.approvals.pending} waiting on you</a> on Home.</> : "Nothing is waiting on you."}</p>
-      <Group title="Settings">
-        {autonomy && <SettingItem s={autonomy} />}
-      </Group>
+      {card}
     </Page>
   );
 }
 
-function SpendPage({ rows }: { rows: SettingRow[] }) {
+const TRANSPORT_NAMES: Record<string, string> = { slack: "Slack", "channel-telegram": "Telegram" };
+// Which key of a channel module's health says a transport has its tokens (channel-telegram: telegram; channel-slack: slack).
+const TRANSPORT_HEALTH: Record<string, string> = { slack: "slack", "channel-telegram": "telegram" };
+const transportName = (id: string) => TRANSPORT_NAMES[id] ?? id.replace(/^channel-/, "").replace(/^./, (c) => c.toUpperCase());
+
+/** The channels a message tries, in order: move one up or down, take one out, add one back. */
+function OrderControl({ value, set, candidates, ready }: { value: string[]; set: (v: string[]) => void; candidates: string[]; ready: (id: string) => boolean | undefined }) {
+  const move = (i: number, d: number) => { const n = [...value]; [n[i], n[i + d]] = [n[i + d]!, n[i]!]; set(n); };
+  const rest = candidates.filter((c) => !value.includes(c));
   return (
-    <Page title="Spend limits" sub="The model gateway refuses a call that would take the whole install past either install limit (a day or a calendar month: midnight in the owner's timezone), and a task that would pass its own limit; all in USD.">
-      <Group>{rows.map((s) => <SettingItem key={s.key} s={s} />)}</Group>
-    </Page>
+    <div className="st-order">
+      <ol>
+        {value.map((id, i) => (
+          <li key={id}>
+            <span className="st-order-n">{i + 1}</span>
+            <span className="st-order-name">{transportName(id)}</span>
+            <StatusDot tone={ready(id) === undefined ? "idle" : ready(id) ? "ok" : "needs"}>{ready(id) === undefined ? "" : ready(id) ? "set up" : "not set up"}</StatusDot>
+            <button type="button" className="st-order-btn" aria-label={`Move ${transportName(id)} up`} disabled={i === 0} onClick={() => move(i, -1)}>↑</button>
+            <button type="button" className="st-order-btn" aria-label={`Move ${transportName(id)} down`} disabled={i === value.length - 1} onClick={() => move(i, 1)}>↓</button>
+            <button type="button" className="st-order-btn" aria-label={`Remove ${transportName(id)}`} onClick={() => set(value.filter((x) => x !== id))}>×</button>
+          </li>
+        ))}
+      </ol>
+      {rest.length > 0 && (
+        <Select value="" aria-label="Add a channel" options={[["", "Add a channel…"], ...rest.map((c) => [c, transportName(c)] as const)]} onChange={(c) => c && set([...value, c])} />
+      )}
+    </div>
   );
 }
 
-function NotificationsPage({ rows, conns }: { rows: SettingRow[]; conns: ConnectionsData | null }) {
+function NotificationsPage({ rows, all, conns }: { rows: SettingRow[]; all: SettingRow[]; conns: ConnectionsData | null }) {
   // Each channel module's health says which of its channels have tokens (channel-telegram: telegram, voice; channel-slack: slack).
   const probes = (conns?.connections ?? []).filter((c) => c.name === "telegram" || c.name === "slack_live").map((c) => c.probe?.channels).filter(Boolean);
-  const live = probes.length ? { channels: Object.assign({}, ...probes) as Record<string, boolean> } : undefined;
-  const chosen = (rows.find((r) => r.key === "channels")?.value as string[] | undefined) ?? [];
+  const channels = probes.length ? (Object.assign({}, ...probes) as Record<string, boolean>) : undefined;
+  const ready = (id: string) => (channels ? Boolean(channels[TRANSPORT_HEALTH[id] ?? id]) : undefined);
   const [perm, setPerm] = useState(() => (notificationsSupported() ? Notification.permission : "unsupported"));
-  const state = (k: string) => (!live?.channels ? "unknown" : live.channels[k] ? "set up" : "not set up");
-  const channels: [string, string, string][] = [
-    ["telegram", "Telegram", "The work bot: messages, approvals with one tap, voice notes."],
-    ["slack", "Slack", "A DM from the labelled bot, and Socket Mode for urgent pages."],
-    ["voice", "Voice notes", "Telegram voice notes transcribed on the host."],
-  ];
+  const transports = rows.find((r) => r.key === "notify_transports");
+  const candidates = [...new Set([...[transports?.default].flat(), ...[transports?.value].flat()].filter((x): x is string => typeof x === "string"))];
+  const opts: Record<string, RowOpts> = {
+    notify_transports: { sub: "Tried in this order: the first one set up that delivers a message gets it.", control: (v, set) => <OrderControl value={(v as string[]) ?? []} set={set} candidates={candidates} ready={ready} /> },
+    notify_fyi: { sub: "News to read later. Decisions, results and alerts always reach you.", labels: { send: "Send", mute: "Mute" } },
+    summon: { sub: "Let your own chats summon an agent." },
+    summon_signature: { sub: "The line every summoned agent's reply ends with; {agent} is its name.", required: true },
+  };
   return (
     <Page title="Notifications" sub="Where Aiden and the agents reach you, and where you can tap approvals.">
-      <Group title="This browser">
-        <Row
-          title="Browser notifications"
-          sub={perm === "denied" ? "Blocked: allow notifications for this site in the browser's settings." : "A notification when something needs you, while the board is open."}
-          meta={<StatusDot tone={perm === "granted" ? "ok" : perm === "denied" ? "needs" : "idle"}>{perm === "granted" ? "On" : perm === "denied" ? "Blocked" : perm === "unsupported" ? "Not supported" : "Off"}</StatusDot>}
-          action={
-            perm === "default" ? (
-              <button className="btn" onClick={() => void askForNotifications().then(setPerm)}>
-                Turn on
-              </button>
-            ) : undefined
-          }
-        />
-      </Group>
-      <Group title="Channels" hint={!live?.channels ? "The channel modules didn't say which channels have tokens." : undefined}>
-        {channels.map(([k, name, what]) => (
-          <Row key={k} title={name} sub={what} meta={<>{k !== "voice" && <Tag>{chosen.includes(k) ? "in your channels" : "not in your channels"}</Tag>}<StatusDot tone={state(k) === "set up" ? "ok" : "idle"}>{state(k)}</StatusDot></>} />
-        ))}
-      </Group>
-      {rows.length > 0 && (
-        <Group title="Settings">
-          {rows.map((s) => (
-            <SettingItem key={s.key} s={s} />
-          ))}
-        </Group>
-      )}
-    </Page>
-  );
-}
-
-function InstancePage({ data }: { data: SettingsData }) {
-  const i = data.instance;
-  const [q, setQ] = useState("");
-  const sha = (s: string | null) => (s ? <code title={s}>{s.slice(0, 12)}</code> : <span className="muted">unknown</span>);
-  const list = data.settings.filter((s) => !q || `${s.key} ${s.module} ${shown(s.value)}`.toLowerCase().includes(q.toLowerCase()));
-  return (
-    <Page title="Instance" sub="What this AidenHQ runs, and every setting it was compiled with.">
-      <div className="st-figures">
-        <Fig n={sha(i.product)} l="Product" />
-        <Fig n={sha(i.instance)} l="Instance repo, at the last applied change" />
-        <Fig n={i.lastChangeAt ? new Date(i.lastChangeAt).toLocaleString(undefined, { month: "short", day: "numeric", ...clockOpts() }) : "unknown"} l="Last applied change" />
-        <Fig n={i.node} l={`Board runtime, ${i.boardTimezone}`} />
-      </div>
-      {data.updates ? (
-        <Updates u={data.updates} setting={data.settings.find((s) => s.key === "auto_update")} />
-      ) : (
-        <p className="st-note">A newer product is a change to instance.yaml's product: pin; the Engineer files it with its commit log for you to approve.</p>
-      )}
-      <Group title="Every setting" count={data.settings.length} hint={<input className="ui-input small" type="search" placeholder="Filter" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Filter settings" />}>
-        <div className="st-table" role="table">
-          <div className="st-tr st-th" role="row">
-            <span role="columnheader">Setting</span>
-            <span role="columnheader">Value</span>
-            <span role="columnheader">From</span>
-            <span role="columnheader">Module</span>
-          </div>
-          {list.map((s) => (
-            <div key={s.key} className="st-tr" role="row">
-              <code role="cell">{s.key}</code>
-              <span role="cell" className="st-td-value">{s.known ? shown(s.value) : "unknown"}</span>
-              <span role="cell" className="muted">{s.set ? "instance.yaml" : "default"}</span>
-              <span role="cell" className="muted">{s.module}</span>
-            </div>
-          ))}
-          {!list.length && <p className="st-empty">No setting matches “{q}”.</p>}
-        </div>
-      </Group>
+      <SettingsCard
+        rows={rows}
+        all={all}
+        opts={opts}
+        lead={
+          <FieldRow
+            title="Browser alerts"
+            help={perm === "denied" ? "Blocked: allow notifications for this site in the browser's settings." : "A notification when something needs you, while the board is open."}
+          >
+            {perm === "default" ? (
+              <Button onClick={() => void askForNotifications().then(setPerm)}>Turn on</Button>
+            ) : (
+              <StatusDot tone={perm === "granted" ? "ok" : perm === "denied" ? "needs" : "idle"}>{perm === "granted" ? "On" : perm === "denied" ? "Blocked" : perm === "unsupported" ? "Not supported" : "Off"}</StatusDot>
+            )}
+          </FieldRow>
+        }
+      />
     </Page>
   );
 }
 
 // Release updates (docs/design/release-updates.md): the release this server follows, the one available with what changed, and
 // Update now, which is the kernel's own page (an owner tap happens there, never on the board).
-function Updates({ u, setting }: { u: UpdatesData; setting?: SettingRow }) {
+function UpdatesPage({ data }: { data: SettingsData }) {
+  const u = data.updates;
   const when = (t: string | null) => (t ? new Date(t).toLocaleString(undefined, { month: "short", day: "numeric", ...clockOpts() }) : "never");
-  const a = u.available;
+  const a = u?.available;
+  const i = data.instance;
+  const auto = data.settings.find((s) => s.key === "auto_update");
   return (
-    <Group title="Updates" hint={<span className="muted">Release {u.current?.name}, checked {when(u.checkedAt)}</span>}>
-      {a ? (
+    <Page title="Updates" sub={u ? `Release ${u.current?.name}, checked ${when(u.checkedAt)}.` : "This server's product is pinned by hand: a newer one is a change to instance.yaml's product: pin."}>
+      {u && a && (
         <Banner action={<LinkButton variant="primary" size="sm" href={`${admin.url}/updates`}>Update now</LinkButton>}>
           AidenHQ {a.name} is available.{" "}
           {u.auto ? `It installs tonight between ${clockText(2)} and ${clockText(5)} (${u.timezone ?? "UTC"}).` : "Auto-updates are off: install it when you're ready."}
         </Banner>
-      ) : (
-        <p className="st-note">{u.error ? `Update check: ${u.error}` : `This server runs ${u.current?.name}, the newest release.`}</p>
       )}
-      {a && (
+      {u && a && a.notes.length > 0 && (
         <div className="st-note">
-          {a.notes.length > 0 && (
-            <ul>
-              {a.notes.map((n, i) => (
-                <li key={i}>{n}</li>
-              ))}
-            </ul>
-          )}
+          <ul>
+            {a.notes.map((n, k) => (
+              <li key={k}>{n}</li>
+            ))}
+          </ul>
           <a href={safeHref(a.compare)} target="_blank" rel="noreferrer">
             Every change since {u.current?.name}
           </a>
         </div>
       )}
-      {u.last && (
+      {u?.last && (
         <p className="st-note">
           Last update: {u.last.release} {u.last.outcome === "installed" ? "installed" : `failed (${u.last.why ?? "see the apply log"}); this server went back to the release before it`}, {when(u.last.at)}.
         </p>
       )}
-      {setting && <SettingItem s={setting} title="Install updates automatically, at night" />}
-    </Group>
+      <SettingsCard
+        rows={auto ? [auto] : []}
+        all={data.settings}
+        opts={{ auto_update: { sub: "New releases install by themselves overnight; turn it off to install when you choose.", labels: { on: "On", off: "Off" } } }}
+        lead={
+          <FieldRow title="Version" help={u ? (u.error ? `Update check: ${u.error}` : a ? `${u.current?.name} is running; ${a.name} is available.` : `${u.current?.name} is running, the newest release.`) : "Pinned by hand."}>
+            <span className="st-versions">
+              {i.product ? <code title={i.product}>{i.product.slice(0, 12)}</code> : <span className="muted">unknown</span>}
+              <span className="muted">last change {when(i.lastChangeAt)}</span>
+            </span>
+          </FieldRow>
+        }
+        trail={
+          u ? (
+            <FieldRow title="Update now" help="Install the newest release now, on the kernel's own page.">
+              <LinkButton href={`${admin.url}/updates`}>Update now</LinkButton>
+            </FieldRow>
+          ) : undefined
+        }
+      />
+    </Page>
   );
 }
-
-const Fig = ({ n, l }: { n: ReactNode; l: string }) => (
-  <div className="st-figure">
-    <span className="st-figure-n">{n}</span>
-    <span className="st-figure-l">{l}</span>
-  </div>
-);

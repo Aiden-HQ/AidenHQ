@@ -37,18 +37,16 @@ contributes:
 settings:
   # HubSpot's remote MCP server.
   hubspot_mcp_url:
+    title: HubSpot MCP address
     default: https://mcp.hubspot.com
     type: url
     host: mcp.hubspot.com
   # Which object types the warehouse ingests (src_hubspot). `activities` is emails, calls, meetings, notes and tasks.
   # Agents' live reads cover everything regardless; this only decides what lands in the warehouse.
   hubspot_objects:
+    title: HubSpot objects to ingest
     default: [contacts, companies, deals, activities]
     values: [contacts, companies, deals, activities]
-  # How far back the first pass of each object type reads (baseline rows); later passes are incremental.
-  hubspot_history_days:
-    default: 365
-    pattern: '^[1-9][0-9]{0,3}$'
 connections:
   hubspot:
     setup: "Open its setup on the board (#/setup/hubspot): create an MCP connector in HubSpot with the redirect URL it shows, paste its client id and secret, then press Connect. HubSpot grants what the connecting user can see."
@@ -95,7 +93,6 @@ services:
         # The board's https address: Connect's one-click link returns there (the default is loopback).
         BOARD_URL: "${BOARD_LAN_URL:-}"
         HUBSPOT_OBJECTS: "${settings.hubspot_objects}"
-        HISTORY_DAYS: "${settings.hubspot_history_days}"
         HUBSPOT_CLIENT_ID_FILE: ${secrets.hubspot_client_id}
         HUBSPOT_CLIENT_SECRET_FILE: ${secrets.hubspot_client_secret}
         MCP_TOKEN_FILE: ${secrets.hubspot_service_key}

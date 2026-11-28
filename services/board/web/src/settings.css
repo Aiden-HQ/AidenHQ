@@ -83,11 +83,8 @@ button.st-row-hit:hover { background: var(--hover); }
 
 /* ------------------------------------------------------------ small parts: pills, chips, facts, values */
 @keyframes st-pulse { 50% { opacity: 0.3; transform: scale(0.8); } }
-.st-value { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-base); color: var(--text); font-variant-numeric: tabular-nums; }
 .st-hint { margin: 0; font-size: var(--text-sm); color: var(--muted); max-width: 60ch; }
 .st-hint.warn { color: var(--warn-text); }
-.st-next { margin: 8px 0 0; display: flex; align-items: center; gap: 8px; font-size: var(--text-base); }
-.st-next .btn { text-decoration: none; }
 .st-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0; font-size: var(--text-base); }
 .st-facts dt { color: var(--muted); }
 .st-facts dd { margin: 0; overflow-wrap: anywhere; }
@@ -97,11 +94,8 @@ button.st-row-hit:hover { background: var(--hover); }
 .st-account { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 
 /* ------------------------------------------------------------ controls */
-.st-money input { padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--surface); font-size: var(--text-md); outline: none; min-width: 0; transition: border-color var(--st-dur) var(--st-ease), box-shadow var(--st-dur) var(--st-ease); }
-.st-money input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .st-error { color: var(--bad-text); }
 .st-error { margin: 0; font-size: var(--text-base); }
-.st-editor { display: grid; gap: 10px; justify-items: start; }
 .st-change-actions { display: flex; gap: 8px; }
 
 /* ------------------------------------------------------------ connection URLs */
@@ -167,7 +161,7 @@ button.st-row-hit:hover { background: var(--hover); }
 .st-change h3 { margin: 0; font-size: var(--text-base); font-weight: 650; }
 .st-change input { width: 100%; }
 
-/* ------------------------------------------------------------ approvals, spend, instance */
+/* ------------------------------------------------------------ autonomy's tiers */
 .st-tiers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--border); border-radius: var(--st-radius); overflow: hidden; background: var(--surface); box-shadow: var(--shadow); }
 .st-tier { padding: 14px 16px; display: grid; gap: 4px; align-content: start; }
 .st-tier + .st-tier { border-left: 1px solid var(--border); }
@@ -176,17 +170,6 @@ button.st-row-hit:hover { background: var(--hover); }
 .st-tier:nth-child(1) .st-tier-n { color: var(--ok-text); }
 .st-tier:nth-child(2) .st-tier-n { color: var(--accent); }
 .st-tier:nth-child(3) .st-tier-n { color: var(--warn-text); }
-.st-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); border: 1px solid var(--border); border-radius: var(--st-radius); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
-.st-figure { padding: 14px 16px; display: grid; gap: 2px; border-left: 1px solid var(--border); margin-left: -1px; }
-.st-figure-n { font-size: var(--text-xl); font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.st-figure-n code { font-size: var(--text-lg); }
-.st-figure-l { font-size: var(--text-sm); color: var(--muted); }
-.st-money { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
-.st-money input { width: 84px; }
-.st-table { display: grid; font-size: var(--text-base); }
-.st-tr { display: grid; grid-template-columns: minmax(160px, 1.2fr) minmax(0, 1.4fr) 110px 110px; gap: 12px; padding: 7px 16px; border-top: 1px solid var(--border); align-items: baseline; }
-.st-th { border-top: 0; background: var(--surface-2); font-size: var(--text-xs); color: var(--faint); }
-.st-td-value { overflow-wrap: anywhere; }
 
 /* Accounts and access keeps its own component (Accounts.tsx): fit its page into the pane. */
 .st-embedded > .page.wide { max-width: none; margin: 0; padding: var(--page-top) var(--gutter) 64px; gap: var(--stack); }
@@ -204,11 +187,8 @@ button.st-row-hit:hover { background: var(--hover); }
 @media (max-width: 760px) {
   .st-tiers { grid-template-columns: minmax(0, 1fr); }
   .st-tier + .st-tier { border-left: 0; border-top: 1px solid var(--border); }
-  .st-tr { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .st-tr > :nth-child(3), .st-tr > :nth-child(4) { display: none; }
   .st-row-hit { flex-wrap: wrap; }
   .st-row-meta { order: 3; width: 100%; padding-left: 0; }
-  .st-value { max-width: 100%; }
   .st-group-hint { margin-left: 0; width: 100%; }
   .st-toasts { left: 16px; right: 16px; }
   .st-toast { max-width: none; }
@@ -240,3 +220,51 @@ button.st-row-hit:hover { background: var(--hover); }
 .hb-dialog { border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); color: var(--text); padding: 18px 20px; max-width: 460px; }
 .hb-dialog::backdrop { background: var(--scrim); }
 .hb-dialog p { margin: 0 0 14px; line-height: 1.5; }
+
+/* ------------------------------------------------------------ a page of settings: one card, one control width, one bar */
+.st-card-wrap { --st-ctl: 300px; display: grid; gap: 12px; align-content: start; min-width: 0; }
+.st-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--st-radius); overflow: hidden; box-shadow: var(--shadow); }
+.st-set-wrap.edited { box-shadow: inset var(--st-rail) 0 0 var(--accent); background: color-mix(in srgb, var(--accent) 4%, var(--surface)); }
+.st-card > * + * { border-top: 1px solid var(--border); }
+.st-card .ui-field-row { grid-template-columns: minmax(0, 1fr) var(--st-ctl); gap: 6px 20px; }
+.st-card .ui-field-row-control { width: 100%; }
+.st-card .ui-field-row-control > .ui-seg { display: flex; width: 100%; }
+.st-card .ui-field-row-control > .ui-seg button { flex: 1; }
+.st-card .ui-field-row-control > .btn { text-decoration: none; margin-left: auto; }
+.st-card .ui-field-row-control > .ui-checks { justify-content: flex-end; }
+.st-card .ui-field-row-text > span { display: grid; gap: 2px; }
+.st-set-note { font-size: var(--text-sm); color: var(--warn-text); }
+.st-set-note.bad { color: var(--bad-text); }
+.st-set-full { padding: 4px 8px; }
+.st-set-full .st-hint { margin-bottom: 10px; }
+.st-advanced .ui-disc-btn { padding: 12px 16px; width: 100%; }
+.st-advanced .ui-disc-inner { padding: 0; }
+.st-advanced .ui-disc-body .st-set-wrap { border-top: 1px solid var(--border); }
+.st-numfield { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
+.st-prefix { color: var(--muted); }
+.st-readonly { color: var(--muted); font-size: var(--text-base); text-align: right; overflow-wrap: anywhere; }
+.st-versions { display: grid; justify-items: end; gap: 2px; font-size: var(--text-base); text-align: right; }
+.muted { color: var(--muted); }
+
+.st-order { display: grid; gap: 8px; }
+.st-order ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.st-order li { display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 10px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-2); font-size: var(--text-base); }
+.st-order-n { color: var(--faint); font-variant-numeric: tabular-nums; }
+.st-order-name { flex: 1; min-width: 0; font-weight: 600; }
+.st-order-btn { width: 26px; height: 26px; border: 0; border-radius: 6px; background: none; color: var(--muted); font-size: var(--text-md); cursor: pointer; }
+.st-order-btn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.st-order-btn:disabled { opacity: 0.35; cursor: default; }
+.st-order-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.st-bar { position: sticky; bottom: 12px; z-index: 5; display: flex; align-items: center; gap: 16px; padding: 10px 12px 10px 16px; border-radius: var(--st-radius); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); box-shadow: var(--shadow-lg); animation: st-in var(--st-dur) var(--st-ease); }
+.st-bar-text { flex: 1; min-width: 0; display: grid; gap: 2px; font-size: var(--text-base); }
+.st-bar-text > span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-bar-text > .st-bar-error { color: var(--bad-text); white-space: normal; }
+.st-bar-actions { flex: none; display: flex; gap: 8px; }
+
+@media (max-width: 760px) {
+  .st-card .ui-field-row { grid-template-columns: minmax(0, 1fr); }
+  .st-bar { flex-direction: column; align-items: stretch; bottom: 8px; }
+  .st-bar-actions { justify-content: flex-end; }
+  .st-bar-text > span { white-space: normal; }
+}

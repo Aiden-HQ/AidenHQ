@@ -39,14 +39,7 @@ const d: Deps = {
   fileTask: kernel.fileTask,
   noticeTask: kernel.noticeTask,
   muteFyi: process.env.NOTIFY_FYI === "mute",
-  attention: {
-    mode: process.env.NOTIFY_ATTENTION === "enforce" ? "enforce" : "observe",
-    blocked: list(process.env.NOTIFY_BLOCKED),
-    dailyCap: Number(process.env.NOTIFY_DAILY_CAP ?? 40),
-    digestHours: list(process.env.NOTIFY_DIGEST_HOURS).map(Number).filter((x) => x >= 0 && x < 24),
-    timezone: process.env.OWNER_TIMEZONE || "UTC",
-    warn: (o, msg) => log.warn(o, msg),
-  },
+  attention: { timezone: process.env.OWNER_TIMEZONE || "UTC" },
   // The task's agent heads the message (notify keeps it only when that is the caller), and the owner's reply goes where they last wrote on it (read through the kernel).
   resolveTask: async (identifier) => {
     const issue = await kernel.read(`/api/issues/${encodeURIComponent(identifier)}`);

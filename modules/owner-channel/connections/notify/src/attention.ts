@@ -2,47 +2,21 @@ import { randomUUID } from "node:crypto";
 import { clip, TOLD_MAX, type Store, type ToldRow } from "./store.js";
 import type { Kind } from "./notify.js";
 
-// Attention control on notify: per-agent caps, an owner block list and a digest of routine messages. A decision
-// and an urgent alert always pass; the chief of staff (role fleet-admin) is never blocked or digested. The block list and the digest
-// are the owner's preferences and always act; only the cap is a gate, and it ships in observe mode (logs what it would
-// have blocked and lets the message through).
+// Attention control on notify: a digest of routine messages. A decision and an urgent alert always pass; the chief of staff
+// (role fleet-admin) is never digested.
 export interface AttentionConfig {
-  mode: "observe" | "enforce"; // the daily cap only
-  blocked: string[]; // agent keys the owner silenced: their routine messages are dropped
-  dailyCap: number; // routine messages one agent may send per UTC day
-  digestHours: number[]; // owner-local hours at which the digest of fyi/done messages goes
   timezone: string;
-  warn?: (obj: Record<string, unknown>, msg: string) => void;
 }
-export type Attend = { do: "pass" } | { do: "block" | "limit"; note: string } | { do: "digest" };
+/** Owner-local hours at which the digest of fyi/done messages goes. */
+export const DIGEST_HOURS = [9, 13, 18];
+export type Attend = { do: "pass" } | { do: "digest" };
 /** A digest line, with what the ledger records once it goes out: `source` is the agent key ("kernel" for the kernel's), `at` when it was queued. */
 type Item = { id?: string; agent: string; task?: string; text: string; source?: string; kind?: string; at?: number; told?: true };
 
-/** The owner's calendar day: the daily cap resets at midnight in their timezone. */
-const dayOf = (now: number, timezone: string) => {
-  try { return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now); } catch { return new Date(now).toISOString().slice(0, 10); } // an unknown zone reads as UTC
-};
-
 /** What happens to one normal message. `conversing`: the owner is writing on its chat, so the reply goes straight back. */
-export function attend(store: Store, cfg: AttentionConfig, who: { id: string; key: string; roles: string[] } | undefined, kind: Kind, o: { conversing: boolean; buttons: boolean }, now = Date.now()): Attend {
-  if (!who) return { do: "pass" };
-  const cos = who.roles.includes("fleet-admin");
-  // The block list holds for every kind (an agent could label anything a decision); only urgent alerts bypass this function.
-  if (!cos && cfg.blocked.includes(who.key)) return { do: "block", note: "The owner muted messages from you, so nothing was sent. That is expected: put it in your task result instead." };
-  if (kind === "decision") return { do: "pass" };
-  let out: Attend = { do: "pass" };
-  const day = dayOf(now, cfg.timezone);
-  const counts = JSON.parse(store.getKv("attn:counts") || "{}") as { day?: string; n?: Record<string, number> };
-  const n = counts.day === day ? (counts.n ?? {}) : {};
-  if ((n[who.id] ?? 0) >= cfg.dailyCap) out = { do: "limit", note: `Daily limit reached: ${cfg.dailyCap} routine messages today. Nothing was sent; put it in your task result or send it tomorrow.` };
-  else if (!cos && !o.conversing && !o.buttons && cfg.digestHours.length) out = { do: "digest" };
-  if (out.do === "pass" || out.do === "digest") n[who.id] = (n[who.id] ?? 0) + 1;
-  store.setKv("attn:counts", JSON.stringify({ day, n }));
-  if (out.do === "limit" && cfg.mode === "observe") {
-    cfg.warn?.({ event: "gate.would_block", gate: "notify-attention", outcome: out.do, agent: who.key }, "notify attention gate would act");
-    return { do: "pass" };
-  }
-  return out;
+export function attend(who: { roles: string[] } | undefined, kind: Kind, o: { conversing: boolean; buttons: boolean }): Attend {
+  if (!who || kind === "decision") return { do: "pass" };
+  return !who.roles.includes("fleet-admin") && !o.conversing && !o.buttons ? { do: "digest" } : { do: "pass" };
 }
 
 export function queueDigest(store: Store, item: Item, now = Date.now()): void {
@@ -53,9 +27,9 @@ export function queueDigest(store: Store, item: Item, now = Date.now()): void {
 }
 
 /** The owner-local slot now: its date plus the latest digest hour already reached (none before the first one). */
-export function slotNow(cfg: Pick<AttentionConfig, "digestHours" | "timezone">, now: number): string | undefined {
+export function slotNow(cfg: AttentionConfig, now: number): string | undefined {
   const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: cfg.timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "numeric", hourCycle: "h23" }).formatToParts(now).map((x) => [x.type, x.value]));
-  const hour = [...cfg.digestHours].sort((a, b) => a - b).filter((h) => h <= Number(p.hour)).pop();
+  const hour = DIGEST_HOURS.filter((h) => h <= Number(p.hour)).pop();
   return hour === undefined ? undefined : `${p.year}-${p.month}-${p.day}T${hour}`;
 }
 

@@ -7,7 +7,7 @@ tool instead: it checks the commit and keeps the install on releases. Leave rele
 
 ## What it costs
 
-- **Auto-updates stop for good.** Without `release:` the updater never touches the instance; Settings > Instance shows no
+- **Auto-updates stop for good.** Without `release:` the updater never touches the instance; Settings > Updates shows no
   release. If the github module is connected, its release train then moves `product:` to each newest main
   commit whose CI is green, as an apply card; otherwise nothing moves unless you move it.
 - **No checks on your move.** The `update` tool's checks (on main, CI green on that commit, after what runs now) don't run.

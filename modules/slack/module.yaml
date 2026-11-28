@@ -148,6 +148,7 @@ settings:
   # Slack channel ids agents may post to at the AI reviewer's word (an agent still needs slack_post granted); any other
   # channel needs the owner's approval too.
   slack_post_channels:
+    title: Channels agents may post in
     default: []
     pattern: '^[CG][A-Z0-9]+$'
 # Runner jobs of an Engineer, through the model gateway with their own token (scripts/modules.ts jobcapEntries).

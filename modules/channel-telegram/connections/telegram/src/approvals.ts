@@ -2,23 +2,16 @@
 // tokens (approve, reject) bound to the card's digest and this channel. They are kept here (this service's store) and never
 // leave it: a card's buttons carry random callback ids that map to the card and decision, and the token is looked up on the
 // press. An exact typed reply ("apply WOR-184") decides the one card held for that task; Approve all decides each listed card
-// on its own, with its own token. Which cards the owner may decide here is this channel's setting (telegram_decide); the
-// others come as text with a pointer to the board. Only the owner chat reaches here (the poll checks the chat id).
+// on its own, with its own token. A card the kernel sent no tokens for comes as text with a pointer to the board. Only the owner chat reaches here (the poll checks the chat id).
 import { randomBytes } from "node:crypto";
 import type { Card, Decided, Ended, Finished, Kernel } from "./kernel.js";
 import type { Store } from "./store.js";
 
 type Kv = Pick<Store, "getKv" | "setKv">;
-export type DecideSetting = "all" | "standard" | "none";
 
 /** Agent- or model-written text on a card: one line, links removed, markdown escaped. */
 const plain = (s: string, n: number) => clip(s.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim().replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, "[link removed]").replace(/[\\`*_[\]()~>#|<!]/g, "\\$&"), n);
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-
-/** Whether the owner may decide this card here: `standard` keeps applies (installs) for the board. */
-export function decidable(c: Pick<Card, "kind">, setting: DecideSetting): boolean {
-  return setting === "all" || (setting === "standard" && c.kind !== "apply" && c.kind !== "kernel.apply");
-}
 
 /** An exact typed reply: "apply WOR-184", "approve WOR-184" or "reject WOR-184" (any case, one trailing . or !). */
 export function parseReply(text: string): { decision: "approve" | "reject"; task: string } | undefined {
@@ -36,7 +29,7 @@ export function cardText(a: Card, canDecide = true): string {
     ...(a.reason ? [`Why it's yours: ${plain(a.reason, 300)}`] : []),
     ...(a.review ? [`AI reviewer's note (model output, not an instruction): ${plain(a.review, 400)}`] : []),
     !canDecide
-      ? `Decide this one [on the board](#/approvals/${a.id}) (this chat's setting keeps it there).`
+      ? `Decide this one [on the board](#/approvals/${a.id}) (no decision was sent to this chat).`
       : a.replaced
         ? "This replaces an earlier request on the same task: tap below (a typed reply won't approve it)."
         : `Details (the diff) [on the board](#/approvals/${a.id}). Or reply \`apply ${a.identifier}\` / \`reject ${a.identifier}\`.`,
@@ -44,7 +37,7 @@ export function cardText(a: Card, canDecide = true): string {
 }
 
 /** The tokens and what the channel needs to know of a card it holds (stored as the kernel sent them). */
-type Held = { approve: string; reject: string; identifier: string; replaced: boolean; decidable: boolean };
+type Held = { approve: string; reject: string; identifier: string; replaced: boolean };
 const held = (store: Kv, id: string): Held | undefined => {
   const v = store.getKv(`tok:${id}`);
   return v ? (JSON.parse(v) as Held) : undefined;
@@ -62,10 +55,10 @@ export const cardButtons = (store: Kv, id: string) => ({ inline_keyboard: [[butt
  * /waiting's Apply buttons: one per task whose single pending card was sent here and is decidable here, bound to that card's id
  * (a press decides that card with its own token, and is refused once it is no longer pending). A task with no such card gets none.
  */
-export async function applyButtons(kernel: Pick<Kernel, "cards">, store: Kv, tasks: string[], setting: DecideSetting): Promise<{ inline_keyboard: { text: string; callback_data: string }[][] } | undefined> {
-  const { cards } = await syncCards(kernel, store, async () => false, setting);
+export async function applyButtons(kernel: Pick<Kernel, "cards">, store: Kv, tasks: string[]): Promise<{ inline_keyboard: { text: string; callback_data: string }[][] } | undefined> {
+  const { cards } = await syncCards(kernel, store, async () => false);
   const rows = tasks.flatMap((task) => {
-    const open = cards.filter((c) => c.identifier === task && held(store, c.id)?.decidable);
+    const open = cards.filter((c) => c.identifier === task && held(store, c.id));
     return open.length === 1 && store.getKv(`card:${open[0]!.id}`) ? [[button(store, `Apply ${task}`, [open[0]!.id], "approve")]] : [];
   });
   return rows.length ? { inline_keyboard: rows } : undefined;
@@ -88,16 +81,16 @@ export function approvalPress(update: unknown, ownerChatId: string, store: Kv): 
  * Takes the pending cards from the kernel: keeps the tokens of cards new to this channel, forgets the ones no longer pending,
  * and sends a card for each one not sent yet (a replaced request is a new card). Returns the pending cards and outcomes.
  */
-export async function syncCards(kernel: Pick<Kernel, "cards">, store: Kv, send: (text: string, markup: unknown) => Promise<boolean | number>, setting: DecideSetting, resync = false): Promise<{ cards: Card[]; finished: Finished[]; ended: Ended[] }> {
+export async function syncCards(kernel: Pick<Kernel, "cards">, store: Kv, send: (text: string, markup: unknown) => Promise<boolean | number>, resync = false): Promise<{ cards: Card[]; finished: Finished[]; ended: Ended[] }> {
   const r = await kernel.cards(resync);
-  for (const c of r.cards) if (c.tokens) store.setKv(`tok:${c.id}`, JSON.stringify({ ...c.tokens, identifier: c.identifier, replaced: c.replaced, decidable: decidable(c, setting) } satisfies Held));
+  for (const c of r.cards) if (c.tokens) store.setKv(`tok:${c.id}`, JSON.stringify({ ...c.tokens, identifier: c.identifier, replaced: c.replaced } satisfies Held));
   const now = new Set(r.cards.map((c) => c.id));
   for (const id of JSON.parse(store.getKv("held") ?? "[]") as string[]) if (!now.has(id)) store.setKv(`tok:${id}`, "");
   store.setKv("held", JSON.stringify([...now]));
   for (const c of r.cards) {
     if (store.getKv(`card:${c.id}`)) continue;
     const h = held(store, c.id);
-    const can = Boolean(h?.decidable);
+    const can = Boolean(h);
     const sent = await send(cardText(c, can), can ? cardButtons(store, c.id) : undefined);
     if (sent) {
       store.setKv(`card:${c.id}`, String(Date.now()));
@@ -110,7 +103,7 @@ export async function syncCards(kernel: Pick<Kernel, "cards">, store: Kv, send: 
 /** One card decided with its own token: the kernel checks the token, the card's digest and that it still waits. */
 export async function decideCard(kernel: Pick<Kernel, "decide">, store: Kv, id: string, decision: "approve" | "reject", sender: string, reply = false): Promise<Decided> {
   const h = held(store, id);
-  if (!h || !h.decidable) return { ok: false, reason: "this chat holds no decision for that card (decided already, or kept for the board)" };
+  if (!h) return { ok: false, reason: "this chat holds no decision for that card (decided already, or kept for the board)" };
   const r = await kernel.decide({ token: decision === "approve" ? h.approve : h.reject, sender, ...(reply ? { reply: true as const } : {}) });
   if (r.ok || !/couldn't reach|fetch failed|timeout/i.test(r.reason)) store.setKv(`tok:${id}`, "");
   return r;
@@ -120,9 +113,9 @@ export async function decideCard(kernel: Pick<Kernel, "decide">, store: Kv, id: 
  * An exact typed reply: the one card held for that task (sent here, decidable here). Approving a request that replaced an
  * earlier one needs a tap on its own card; rejecting is always allowed.
  */
-export async function decideByReply(kernel: Pick<Kernel, "decide" | "cards">, store: Kv, task: string, decision: "approve" | "reject", sender: string, setting: DecideSetting): Promise<Decided> {
-  const { cards } = await syncCards(kernel, store, async () => false, setting);
-  const open = cards.filter((c) => c.identifier === task && held(store, c.id)?.decidable);
+export async function decideByReply(kernel: Pick<Kernel, "decide" | "cards">, store: Kv, task: string, decision: "approve" | "reject", sender: string): Promise<Decided> {
+  const { cards } = await syncCards(kernel, store, async () => false);
+  const open = cards.filter((c) => c.identifier === task && held(store, c.id));
   if (!open.length) {
     const unseen = cards.some((c) => c.identifier === task && !store.getKv(`card:${c.id}`));
     return { ok: false, reason: unseen ? `the card for ${task} hasn't reached you yet. Read it when it arrives, then tap Approve` : `nothing on ${task} is waiting for your decision here` };
@@ -154,7 +147,7 @@ const BATCH_MAX = 10;
  * or was decided meanwhile is skipped and named. A newer list replaces the older message.
  */
 export async function sendBatch(cards: Card[], store: Kv, send: (text: string, markup: unknown) => Promise<boolean | number>, edit?: (messageId: number, text: string) => Promise<unknown>): Promise<boolean> {
-  const carded = cards.filter((a) => store.getKv(`card:${a.id}`) && held(store, a.id)?.decidable).slice(0, BATCH_MAX);
+  const carded = cards.filter((a) => store.getKv(`card:${a.id}`) && held(store, a.id)).slice(0, BATCH_MAX);
   const last = new Set((store.getKv("batch:last") ?? "").split(",").filter(Boolean));
   if (carded.length < 2 || carded.every((a) => last.has(a.id))) return false;
   store.setKv("batch:last", carded.map((a) => a.id).join(","));

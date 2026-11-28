@@ -55,7 +55,7 @@ const http = createVendorProxy({
 const sources = SourceStore.fromEnv("hubspot");
 if (sources) {
   const kinds = selected((process.env.HUBSPOT_OBJECTS ?? "contacts,companies,deals,activities").split(","));
-  startSync(sources, http.call, kinds, log, { days: Number(process.env.HISTORY_DAYS) || 365 });
+  startSync(sources, http.call, kinds, log, { days: 365 });
 }
 else log.warn("warehouse not configured; src_hubspot is off");
 

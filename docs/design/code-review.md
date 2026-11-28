@@ -263,7 +263,7 @@ deepsec 254.
   is the same over every file. The report says per option how many areas were reviewed and how many are unchanged, and the carried
   findings stay in it (and in the verdict), marked as carried over and counted apart from new ones; the board's area list marks
   the skipped ones. deepsec is whole-repo and keeps its own records (above), so it is always run.
-- **Room.** Check jobs have their own computers (`check_computers_max`, default 32), apart from agent jobs. At most 32 tree
+- **Room.** Check jobs have their own computers (a fixed 32), apart from agent jobs. At most 32 tree
   runs run at once (`TREE_RUNNING`), since each fetches its snapshot before it waits for a computer.
 - **deepsec stays whole-repo.** It gets the check's whole time (180 minutes less a 10-minute reserve) and carries its records
   between checks. The service keeps each repo's records on its `/data`, never the repo. They go in as an uploaded check input

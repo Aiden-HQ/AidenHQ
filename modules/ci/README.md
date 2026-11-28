@@ -15,8 +15,7 @@ runner group there and set `ci_org_runner_group`.
 ## What agents get
 
 No tools. Settings: `ci_runner_repos` (repos besides the fleet org it serves), `ci_org_runner_group`,
-`ci_review_model` (the model and effort of the template's code review, `<id>:<effort>`), `ci_review_models` (other models
-a CI token may call). CI review spend counts against the install's spend limit.
+`ci_review_model` (the model and effort of the template's code review, `<id>:<effort>`). CI review spend counts against the install's spend limit.
 
 ## New installs
 
@@ -69,7 +68,7 @@ and trades it at the gateway's `POST /ci/token` for an opaque CI token that live
 once. The repo and PR come from that signed token, and the answer names the review model and effort
 (`settings.ci_review_model`) and the repo's risk tier rules (its `code_review` entry's `rules` and `repo_class`, or none: the template's
 default rules) with the instance App's bot login, so the job classifies the PR as code review does (below). The CI token works only on the CI listener, only for `responses` (and `chat/completions`
-for repos on the older template) with `settings.ci_review_model` or `settings.ci_review_models`, no fallbacks, plugins,
+for repos on the older template) with `settings.ci_review_model` (or the older template's fixed model), no fallbacks, plugins,
 server tools or stored responses, zero data retention forced, under the install's spend limit (a refusal fails the review, no retry). Each call goes out while the limit is not used up
 and settles at what was billed (a Responses stream at its `response.completed`); a cut stream keeps its input estimate.
 Every call lands in the ledger as kind `ci-code-review` with `<owner>/<repo>#<pr>` and the head the job sent (advisory):

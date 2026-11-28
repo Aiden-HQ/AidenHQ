@@ -4,7 +4,7 @@
 // a PR removes in one place and adds in another unchanged is a move: the lines keep their owner and count as neither.
 // Copied into the code host's service (scripts/sync-shared.ts); codehost-local calls it from the kernel.
 
-/** The paths churn ignores unless the code host's `churn_exclude` setting says otherwise. */
+/** The paths churn ignores. */
 export const DEFAULT_CHURN_EXCLUDE = ["**/package-lock.json", "**/bun.lock", "**/dist/**", "**/vendor/**", "**/*.min.*"];
 export type ChurnPr = { pr: string; mergedAt: string; diff: string };
 export type Rewrite = { pr: string; by_pr: string; lines: number; days: number };

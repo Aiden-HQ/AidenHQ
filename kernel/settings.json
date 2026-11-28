@@ -1,17 +1,21 @@
 {
   "owner_name": {
+    "title": "Your name",
     "required": true,
     "doc": "The owner's name: handbooks say \"the owner\", and one line names them."
   },
   "owner_email": {
+    "title": "Board sign-in email",
     "required": true,
     "doc": "The owner's board account (the only one setup creates, ops/setup.sh)."
   },
   "timezone": {
+    "title": "Timezone",
     "required": true,
     "doc": "The instance's timezone (schedules and the owner's day)."
   },
   "time_format": {
+    "title": "Time format",
     "default": "12h",
     "values": [
       "12h",
@@ -20,13 +24,18 @@
     "doc": "How times read to the owner, on the board and in what the agents say: 12h = \"8:00 PM\" (the default), 24h = \"20:00\". Machine values (ISO timestamps, wake_at's \"YYYY-MM-DD HH:MM\", logs) stay 24-hour either way."
   },
   "company_name": {
+    "title": "Company name",
     "default": "work",
-    "doc": "The Paperclip company this instance runs."
+    "doc": "The Paperclip company this instance runs.",
+    "install": true
   },
   "instance_name": {
-    "doc": "Short name of this AidenHQ."
+    "title": "Instance name",
+    "doc": "Short name of this AidenHQ.",
+    "install": true
   },
   "autonomy": {
+    "title": "Autonomy",
     "default": "off",
     "values": [
       "off",
@@ -36,9 +45,11 @@
     "doc": "Tiered approvals: \"off\" = every write is the owner's card, the AI reviewer reading Tier 1 first (its reject is final; also the pause switch); \"tier0\" = Tier 0 runs at once and the AI reviewer only comments on Tier 1; \"full\" = the reviewer decides Tier 1. A new install starts at full (ops/setup.sh writes it)."
   },
   "backup_repository": {
+    "title": "Off-host backup",
     "doc": "Off-host backup (ops/backup-offsite.sh): a restic repository, e.g. sftp://u12345@u12345.your-storagebox.de:23/aidenhq. Set, apply installs a nightly timer (03:00 UTC); its password is the vault's restic_password. Unset = no off-host backup."
   },
   "exposure": {
+    "title": "Board access",
     "values": [
       "public",
       "tailscale",
@@ -48,21 +59,21 @@
     "doc": "How the board is reached, and so what the host firewall opens on the public interface (ops/vm/public-fw.sh): public = HTTPS on 443 (tcp 22, 443); tailscale = the tailnet (tcp 22, udp 41641); cloudflare = a Cloudflare tunnel, local = loopback through an SSH tunnel (tcp 22 only). Unset = tailscale; ops/setup.sh writes it. A change reaches the firewall when ops/vm/setup.sh runs again (root)."
   },
   "quiet_start": {
+    "title": "Quiet start",
     "default": "off",
     "values": [
       "on",
       "off"
     ],
-    "doc": "On (a new install): a module's scheduled routines start paused and its agents' heartbeats off, until the owner turns one on (overrides.routines.<key>.status: active, overrides.agents.<key>.heartbeat). Unset or off: they run as their modules declare. docs/design/quiet-start.md."
+    "doc": "On (a new install): a module's scheduled routines start paused and its agents' heartbeats off, until the owner turns one on (overrides.routines.<key>.status: active, overrides.agents.<key>.heartbeat). Unset or off: they run as their modules declare. docs/design/quiet-start.md.",
+    "install": true
   },
   "computers_max": {
-    "doc": "How many computers agent jobs run at once, 1 to 64: the kernel's job admission reads it (config/computers.json max). Unset: the host's RAM in GB divided by 1.5, within 4 to 64 (8 GB: 5, 16 GB: 10, 32 GB: 21, 64 GB: 42), worked out when the config is compiled. Check jobs have their own number, check_computers_max."
-  },
-  "check_computers_max": {
-    "default": 32,
-    "doc": "How many computers check jobs (code review, CI checks) run at once, 1 to 64, apart from agent jobs' computers_max (config/computers.json checks); the computer launcher keeps both. A check's computer mostly waits on remote model calls (about 250 MB, no CPU), so a repo review's area checks run side by side; a check over it waits queued."
+    "title": "Computers for agent jobs",
+    "doc": "How many computers agent jobs run at once, 1 to 64: the kernel's job admission reads it (config/computers.json max). Unset: the host's RAM in GB divided by 1.5, within 4 to 64 (8 GB: 5, 16 GB: 10, 32 GB: 21, 64 GB: 42), worked out when the config is compiled."
   },
   "summon": {
+    "title": "Summon agents",
     "default": "on",
     "values": [
       "on",
@@ -71,10 +82,12 @@
     "doc": "Summon a teammate from your own chats: \"cc Aria\", \"@Aria\" or \"Aria@AidenHQ\" in a message you write on a connected account (Slack, Telegram) gives that teammate the message and the conversation as a task, and it answers there from your account, signed. Off: those messages go to triage like any other. docs/superpowers/specs/2026-11-28-summon-agents-design.md."
   },
   "summon_signature": {
+    "title": "Summon signature",
     "default": "Sent by {agent} from [AidenHQ](https://aidenhq.ai)",
     "doc": "The line every summoned teammate's reply ends with ({agent} is its name; markdown links render in each chat's own markup). Never empty: it tells the other person an AI wrote it, and it keeps a teammate from reading its own reply as a new summons."
   },
   "auto_update": {
+    "title": "Install updates automatically",
     "default": "on",
     "values": [
       "on",
@@ -83,14 +96,17 @@
     "doc": "Release installs only (instance.yaml release: from the official distro repo): on, a newer release is verified and installed at night (02:00-05:00, settings.timezone), and rolled back if its health check fails; off, the owner is only told and installs it with Update now (Settings > Instance). An instance that pins product by hand never updates itself. docs/design/release-updates.md."
   },
   "spend_day_usd": {
+    "title": "Daily spend limit",
     "default": 50,
     "doc": "The install's spend limit on every model call (agents, checks, reviews, CI, everything the gateway meters), USD per day (midnight in the owner's timezone). Past it every call is refused and the owner is told once. Raising it is the owner's."
   },
   "spend_month_usd": {
+    "title": "Monthly spend limit",
     "default": 1000,
     "doc": "The install's spend limit on every model call, USD per calendar month (the owner's). Past it every call is refused and the owner is told once. Raising it is the owner's."
   },
   "task_usd": {
+    "title": "Per-task spend limit",
     "default": 20,
     "doc": "The most an agent's model calls on one task may spend, USD (a chat or routine task: per owner's day). Past it the task's calls are refused and whoever asked for the task is told. Raising it is the owner's."
   }

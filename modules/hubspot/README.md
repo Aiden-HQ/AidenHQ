@@ -19,8 +19,7 @@ The `hubspot` connection. Call `tool_guidance` first, then `discover_hubspot_sch
   12 `named`).
 - Write: `manage_crm_objects`. Destructive (reviewed, named grants only): `manage_marketing_email`,
   `manage_landing_page`, `manage_segment`, `manage_social_posts` and others.
-- Warehouse: setting `hubspot_objects` picks which types land (default all four) and `hubspot_history_days` (365) how
-  far the first pass reads.
+- Warehouse: setting `hubspot_objects` picks which types land (default all four) ; the first pass reads back 365 days.
 
 ## New installs
 

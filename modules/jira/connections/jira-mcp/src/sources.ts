@@ -6,7 +6,7 @@
 // same read scope). Every 15 minutes:
 // issues updated since the cursor (the first pass, the last BASELINE_DAYS days, is the baseline). Weekly, issues updated in
 // the last 30 days that Jira no longer returns are marked deleted (Jira sends no delete signal). No LLM.
-// Optional one-time history backfill per listed project (history_projects, history_days; syncHistory).
+// Optional one-time history backfill per listed project (history_projects, 365 days; syncHistory).
 // Confluence pages (src_jira.confluence_page) share this schema, DDL and sign-in; their passes are in src/confluence.ts.
 import type { Logger } from "pino";
 import { capText, SourceStore, tableDdl, USERS, type Row, type Table } from "./source-store.js";

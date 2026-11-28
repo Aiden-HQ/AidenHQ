@@ -51,23 +51,15 @@ settings:
   # The AidenHQ OAuth App's client ID: the device sign-in's client (public, no secret, like `gh`'s). Set it only to sign in
   # through your own OAuth App (device flow enabled); empty: the sign-in says it isn't configured.
   github_oauth_client_id:
+    title: GitHub OAuth client id
     default: Ov23liJ0rnoi7nCmm4FZ
     pattern: '^[A-Za-z0-9._-]{8,40}$'
   # GitHub's own MCP server: the sign-in's token is its bearer.
   github_mcp_url:
+    title: GitHub MCP address
     default: https://api.githubcopilot.com/mcp/
     type: url
     host: api.githubcopilot.com
-  # Contributing to the product upstream (spec §6.9a; a platform setting, here until the platform module lands): "issues"
-  # grants the connection's upstream tools (github_product_issue and its status read) to the agents that name them; "off" grants
-  # none.
-  upstream:
-    default: issues
-    values: ["off", "issues"]
-  # Minutes the release train batches merges before one pin bump (5-1440), counted from the first merge the bump carries (service/src/train.ts).
-  release_window_minutes:
-    default: 60
-    pattern: '^([5-9]|[1-9][0-9]{1,2}|1[0-3][0-9]{2}|14[0-3][0-9]|1440)$'
   # The repos the Maintainer watches, triages and fixes (issues only: pull requests are Ship's), each reachable by the owner's GitHub sign-in: a bare "owner/name"
   # (every default) or { repo, ... } with any of these fields (kernel/sdk/src/maintained-repos.ts parses and defaults them;
   # the Maintainer page edits them). Duties: `fixes` (default true: validate `fix_label` issues and see fixes through), `triage`
@@ -84,20 +76,20 @@ settings:
   # through. Dependabot and quiet contributor PRs are fields of a repo's ship entry (the ship module's `ship` setting); an
   # entry still carrying `dependabot` or `quiet_pr_days` fails the compile, naming that new home.
   maintainer_repos:
+    title: Maintained repos
     default: []
     entry: repo
     pattern: '^[\w.-]+/[\w.-]+$'
-  # Paths the churn pass ignores (service/src/churn.ts; kernel/sdk/src/churn.ts): globs, one per entry.
-  churn_exclude:
-    default: [ "**/package-lock.json", "**/bun.lock", "**/dist/**", "**/vendor/**", "**/*.min.*" ]
   # The org the fleet's repositories live in: bare create_repo names and `@agents` grants resolve to it. Chosen once from the
   # orgs the owner can create repos in; unset, the fleet's repos live in `local`. It survives a disconnect (create_repo then
   # refuses "GitHub isn't connected" rather than switching to `local`).
   github_fleet_org:
+    title: Fleet GitHub org
     pattern: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
   # GitHub orgs/users (besides the fleet org) the owner allows: the apps platform builds trusted apps from their repos, and
   # create_repo may create in them.
   github_orgs:
+    title: Allowed GitHub orgs
     default: []
     pattern: '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$'
     # An org added here is trusted for apps, and create_repo may write there.
@@ -133,8 +125,6 @@ connections:
       # after code's refusals (instance details).
       destructive: [ github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_pr_thread_reply, github_pr_thread_resolve, github_rerun_failed, github_product_issue, github_issue_label, github_issue_state, github_release_graduate ]
       unreviewed: [ github_issue_label, github_issue_state, github_pr_thread_reply ]
-    # Granted only while the upstream setting allows issues.
-    upstream: [ github_product_issue, github_product_issue_status, github_issue_link ]
     # The host's health probe (kernel/src/health.ts): the owner's sign-in answers a read.
     health_probes:
       github: { tool: github_whoami }
@@ -288,7 +278,6 @@ services:
         # The listed repos (compile derives them: the Maintainer's and Ship's lists, while each module is on; comma-separated): the
         # code host merges and closes there as in the fleet org (plan.ts, merges.ts) and the change feed watches them.
         GITHUB_LISTED_REPOS: "${settings.listed_repos}"
-        GITHUB_RELEASE_WINDOW_MINUTES: "${settings.release_window_minutes}" # the release train's batch window
         # Shared sources (src_github): the orgs it syncs (github_orgs plus the fleet org) and its warehouse login.
         GITHUB_SYNC_ORGS: "${settings.github_sync_orgs}"
         WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_github_password}
@@ -297,7 +286,6 @@ services:
         TASKS_DIR: /tasks
         PRODUCT_REPO: "${AIDENHQ_PRODUCT_REPO:-}"
         INSTANCE_REPO: "${AIDENHQ_INSTANCE_REPO:-}"
-        CHURN_EXCLUDE: "${settings.churn_exclude}" # comma-separated globs
         # The repos code review gates (a mandatory combo; compile derives it): the merge queue merges a PR there only on code
         # review's pass for its head, asked at code-review:8098 (whose service joins this module's network) with this module's
         # own token, which code review checks with the kernel.

@@ -50,7 +50,7 @@ export function validateImages(agents: Record<string, ComputerAgent>) {
   }
 }
 
-/** `max`: settings.computers_max, the agent jobs' computers; `checks`: settings.check_computers_max, the check jobs'. The launcher
+/** `max`: settings.computers_max, the agent jobs' computers; `checks`: the check jobs' (CHECK_COMPUTERS_MAX). The launcher
  * keeps both (their sum); the kernel admits each kind against its own. */
 export function computersConfig(paperclip: Record<string, any>, productDir: string, max?: number, checks?: number) {
   validateImages(paperclip.agents);

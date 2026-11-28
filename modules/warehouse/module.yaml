@@ -8,11 +8,13 @@ settings:
   # the github module files the Maintainer's product bugs there (github_product_issue; unset refuses). Its org must be in
   # github_orgs (or be the agents org).
   product_repo:
+    title: Product repo
     required: true
     pattern: '^[\w.-]+/[\w.-]+$'
   # "on": a cheap model (~deepseek/deepseek-flash-latest, through the gateway) writes a 2-3 sentence summary and 5-8 tags for
   # each task whose content changed, which keyword and meaning search then read too. Search works fully without them.
   search_summaries:
+    title: AI summaries in task search
     default: "off"
     values: [ "on", "off" ]
 apps:

@@ -5,13 +5,10 @@ requires:
   - fleet-steward
   - grafana # mcp-grafana joins its network (grafana_source: local)
 settings:
-  # How long Prometheus keeps samples (Prometheus duration: 30d, 8w).
-  monitoring_retention:
-    default: 30d
-    pattern: '^[0-9]+[smhdwy]$'
   # Grafana's https address on the tailnet, e.g. https://host.tailnet.ts.net:8444 (docs/operations.md, Monitoring). Links in
   # Grafana use it; empty = http://localhost:3131.
   grafana_root_url:
+    title: Grafana address
     default: ""
     type: url
 # Read-only host /, /sys and /proc for node-exporter and cAdvisor (filesystems, CPU, memory, pressure, OOM kills by cgroup).
@@ -27,7 +24,7 @@ services:
       command:
         - --config.file=/etc/prometheus/prometheus.yml
         - --storage.tsdb.path=/prometheus
-        - --storage.tsdb.retention.time=${settings.monitoring_retention}
+        - --storage.tsdb.retention.time=30d
         - --web.listen-address=:9090
       data: ["prometheus:/prometheus"]
       secrets: [monitoring_token] # scrapes the board's /internal/metrics

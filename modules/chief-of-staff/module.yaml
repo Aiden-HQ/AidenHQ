@@ -42,7 +42,7 @@ agents:
       # The live product pin and the last applies, and the owner's stale todos for the brief (the fleet-steward module's connection, when it is on).
       fleet_steward?: [ fleet_generation_status, fleet_stale_followups, fleet_followup_snooze, flow_report ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_create, task_update, task_comment, task_handoff, task_block, task_cancel, task_finish, task_stale, task_team, task_delegate, fleet_status, fleet_costs, fleet_control, fleet_catalog, task_relay_owner_words, chat_open, app_request_from_owner ]
-    # Woken every heartbeat_hours to check the work it waits on (modules/chief-of-staff/prompts/heartbeat.md); events wake it sooner (the kernel wake inbox, kernel/src/wakes.ts).
+    # Woken every 4 hours to check the work it waits on (modules/chief-of-staff/prompts/heartbeat.md); events wake it sooner (the kernel wake inbox, kernel/src/wakes.ts).
     heartbeat: true
     # fleet-admin: the board's fleet tools and relaying the owner's words (services/board/src/fleet.ts).
     # product-issues: product bugs upstream as the owner (github-mcp).
@@ -114,13 +114,6 @@ prompts:
   - { id: privacy, file: prompts/privacy.md, when: { fields: { profile: crew } } }
   # {{fleet_issues}}: the "Fleet issues" task where heartbeat runs note missed wake-ups (setup finds or creates it).
   - { id: heartbeat, file: prompts/heartbeat.md, order: last, when: { fields: { heartbeat: true } } }
-settings:
-  # Heartbeats: hours between an agent's scheduled "Heartbeat: <key>" runs (1, 2, 3, 4, 6, 8, 12 or 24); an agent's
-  # `heartbeat: <hours>` (or overrides.agents.<key>.heartbeat) sets its own.
-  heartbeat_hours:
-    title: Heartbeat interval (hours)
-    default: 4
-    values: [1, 2, 3, 4, 6, 8, 12, 24]
 # The "Fleet issues" task heartbeat runs note missed wake-ups on.
 labels:
   - { name: system-error, color: "#dc2626" }

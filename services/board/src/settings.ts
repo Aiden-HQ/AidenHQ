@@ -10,6 +10,8 @@ import { EFFORTS, compiledEngine } from "./board.js";
 
 /** The hours a heartbeat may run every (scripts/modules.ts HEARTBEAT_HOURS), and the tools it needs (HEARTBEAT_TOOLS). */
 export const HEARTBEAT_HOURS = [1, 2, 3, 4, 6, 8, 12, 24];
+/** Hours between a `heartbeat: true` agent's runs (scripts/modules.ts HEARTBEAT_EVERY_HOURS). */
+export const HEARTBEAT_DEFAULT_HOURS = 4;
 export const HEARTBEAT_TOOLS = ["task_list", "task_comments", "task_approvals", "task_comment", "task_finish"];
 
 
@@ -22,6 +24,8 @@ export interface SettingDef {
   host?: string;
   title?: string;
   doc?: string;
+  /** Written once at install: the board never shows it. */
+  install?: boolean;
   /** An anchored regex a text value must match; `when`: it applies only while these settings hold. */
   pattern?: string;
   when?: Record<string, unknown>;
@@ -201,14 +205,13 @@ export function settingsView(s: Sources) {
         ...(d?.def.doc ? { doc: d.def.doc } : {}),
         ...(d?.def.type ? { type: d.def.type } : {}),
         ...(d?.def.host ? { host: d.def.host } : {}),
+        ...(d?.def.install ? { install: true } : {}),
         ...(d?.def.pattern ? { pattern: d.def.pattern } : {}),
         ...(d?.def.when ? { when: d.def.when } : {}),
         ...(live !== undefined ? { live } : {}),
-        switch: JSON.stringify(d?.def.values) === JSON.stringify(["on", "off"]),
       };
     });
 
-  const hours = Number(effective.heartbeat_hours?.value ?? 4);
   const grantsByKey = new Map(Object.values(s.grants?.agents ?? {}).map((g) => [g.key, g]));
   /** The module's own value (module.yaml as written) for each field it sets on one agent or routine: what Reset goes back to. */
   const defaultsOf = (kind: "agents" | "routines", key: string, fields: string[]) => {
@@ -227,7 +230,7 @@ export function settingsView(s: Sources) {
       model: a.model ?? "",
       models: a.models ?? [],
       effort: a.reasoning_effort ?? "",
-      heartbeatHours: a.heartbeat === true ? hours : typeof a.heartbeat === "number" ? a.heartbeat : null,
+      heartbeatHours: a.heartbeat === true ? HEARTBEAT_DEFAULT_HOURS : typeof a.heartbeat === "number" ? a.heartbeat : null,
       /** Whether a heartbeat may be turned on (compile refuses one for an Engineer or a session, or one without the tools). */
       canHeartbeat: a.profile !== "engineer" && a.profile !== "session" && !a.team && !a.member_of && HEARTBEAT_TOOLS.every((t) => a.enabled_tools?.paperclip_tasks?.includes(t)),
       // Only an engine that takes an effort shows the setting; an engine without efforts, none.

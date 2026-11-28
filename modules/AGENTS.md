@@ -42,6 +42,9 @@ purpose: each line links the rule's home, and [CLAUDE.md](../CLAUDE.md) "Convent
   Declare the page in `module.yaml` and ship it as a module view; the how-to is in
   [board-ui.md](../docs/design/board-ui.md) "Modules". One editor per setting: moving a feature setting to its page removes
   it from the generic screens in the same change (CLAUDE.md "One way to do each thing"). Lay it out as "Settings pages" below says.
+- **General Settings holds kernel settings only** (You, Agents, System: `services/board/web/src/settings-layout.ts`), plus the few module
+  settings a general page lists there (the owner-channel's `notify_transports` and `notify_fyi`). Every other module setting is edited on
+  its module's page and nowhere else; a setting few owners ever change is a constant in code, not a setting.
 - **Saves are validated against the module's declared settings on every path.** An owner's Fleet save goes through the
   board's `/api/pages/<id>/save`, limited to the page's declared settings, as the owner's own change; an agent's change goes
   through the kernel's tiered settings-change path (`/v1/settings/agent`, [settings-changes.md](../docs/design/settings-changes.md)).

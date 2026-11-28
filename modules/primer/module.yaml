@@ -37,16 +37,19 @@ settings:
   # Connect), signed in as the owner. Either way a comment on a document an agent published wakes that agent
   # (connections/primer-mcp/src/subscriber.ts).
   primer_mode:
+    title: Primer mode
     default: self-host
     values: [self-host, connect]
   # self-host with settings.edge: the gate's host that shares Primer with people beyond the admins (instance-only, like an
   # app's share.host); it replaces the module door. Empty: the module door.
   primer_host:
+    title: Primer host
     default: ""
     pattern: '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
     when: { primer_mode: self-host }
   # self-host with app_login access or header-jwt: the sign-in audience of the access application that covers primer_host.
   primer_host_aud:
+    title: Primer audience
     default: ""
     pattern: '^[A-Za-z0-9:._-]{1,200}$'
     when: { primer_mode: self-host }

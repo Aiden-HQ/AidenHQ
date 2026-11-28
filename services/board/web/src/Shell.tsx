@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { load, peek } from "./cache";
 import { prefetchView, QUERIES } from "./queries";
-import { CATEGORIES } from "./Settings";
+import { CATEGORIES } from "./settings-layout";
 import { openAsk, useAskOpen } from "./AskAiden";
 import type { ChatRow, ModuleRow, PageRow, RosterAgent, SpendNow } from "./types";
 import { Face, Kbd, faceProps } from "./ui";
@@ -128,7 +128,7 @@ export function TopNav({ view, needs, working, onNav, spend, settingsAlert, onPa
         <span>Ask Aiden</span>
         <Kbd>{askKey}</Kbd>
       </button>
-      <a className={`tn-icon tn-settings${view === "settings" ? " on" : ""}`} href="#/settings" onClick={(e) => (e.preventDefault(), onNav("settings"))} aria-current={view === "settings" ? "page" : undefined} title="Settings: connections, approvals, accounts and the instance" aria-label="Settings">
+      <a className={`tn-icon tn-settings${view === "settings" ? " on" : ""}`} href="#/settings" onClick={(e) => (e.preventDefault(), onNav("settings"))} aria-current={view === "settings" ? "page" : undefined} title="Settings: your profile, agents, connections and the server" aria-label="Settings">
         <Icon name="settings" />
         {settingsAlert && <span className="tn-dot" title="A connection needs you" />}
       </a>

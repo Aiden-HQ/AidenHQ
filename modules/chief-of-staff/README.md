@@ -19,7 +19,7 @@ connected (each is an optional grant).
 - Event wake-ups: the kernel's wake inbox (`kernel/src/wakes.ts`) wakes a heartbeat agent on its open task when what it
   waits on changes: a new comment, a kernel notice that a write, approval card or delegated sub-task finished, or a
   `wake_at` it set. Each reason starts at most one job.
-- Setting `heartbeat_hours` (default 4): how often a heartbeat agent checks the work it waits on.
+- A heartbeat agent checks the work it waits on every 4 hours (`heartbeat: <hours>` on an agent sets its own).
 
 ## New installs
 

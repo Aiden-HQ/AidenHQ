@@ -1,4 +1,4 @@
-// Backfill: on first connect, each stored chat's history back to telegram_backfill_days, newest chats first. Paced: two chats
+// Backfill: on first connect, each stored chat's history back 30 days, newest chats first. Paced: two chats
 // at a time, live work first, Telegram's flood waits honoured and persisted, every page's position persisted so a restart
 // resumes. Rows only: backfilled messages fire no events, never revive a deleted message and never overwrite a newer edit.
 // Each chat is read from its checkpoint down, so it never touches messages that live ingest and reconcile own.

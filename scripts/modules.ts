@@ -41,6 +41,8 @@ const OVERRIDABLE = { agents: ["model", "reasoning_effort", "engine", "timeout_s
 const kernelJson = (f: string): Obj => JSON.parse(readFileSync(new URL(`../kernel/${f}`, import.meta.url), "utf8"));
 const KERNEL_SETTINGS = kernelJson("settings.json");
 const KERNEL_DEFAULTS = kernelJson("defaults.json");
+/** The check jobs' own computers (code review, CI checks), apart from agent jobs' `computers_max`: a check's box mostly waits on model calls. A constant, not a setting. */
+export const CHECK_COMPUTERS_MAX = 32;
 const SETTING = /\$\{settings\.([A-Za-z0-9_]+)\}/g;
 // Local modules (the instance repo's modules/<name>/: module.yaml, agents/<key>/AGENTS.md, skills/): the owner's and the
 // agents' own. A closed allowlist of manifest keys (no roles, services, connections, apps or privileged), the fields one of
@@ -61,12 +63,6 @@ export const DESTRUCTIVE_NAME = /delete|trash|remove|purge/i;
 export const writeTools = (c: Obj) => [...(c?.tools?.write ?? []), ...(c?.tools?.destructive ?? [])];
 /** A connection's tools a read shorthand reaches: its `read` tools, less the ones it also tags `named` (a grant must name those). */
 export const readTools = (c: Obj) => (c?.tools?.read ?? []).filter((t: string) => !(c?.tools?.named ?? []).includes(t));
-/**
- * Whether a connection's `upstream` tool may be granted at all: the setting's `off` (or anything but `issues`) withholds every
- * tool the connection tags `upstream` (spec §6.9a). One predicate for every grant path, so a shorthand list, an agent's list and
- * a module's `default_grants:` can't drift apart and hand one back after another has stripped it.
- */
-export const upstreamGranted = (c: Obj, tool: string, upstream: unknown) => String(upstream ?? "off") === "issues" || !(c.upstream ?? []).includes(tool);
 // Every connection is reached through the kernel's tool proxy, which holds the grants and the service keys.
 export const KERNEL_URL = "http://10.231.0.1:3130";
 
@@ -470,6 +466,33 @@ export function productsOf(v: unknown): Record<string, string[]> {
   return out;
 }
 
+/**
+ * Settings this release removed: each is now a fixed value in code (or gone with its feature). An instance that still sets one
+ * fails compile, naming the key, so the line comes out of instance.yaml rather than silently doing nothing.
+ */
+export const REMOVED_SETTINGS: Record<string, string> = {
+  check_computers_max: "a fixed 32 check computers",
+  heartbeat_hours: "a fixed 4 hours (an agent's own `heartbeat: <hours>` stays)",
+  fleet_ops_interval_minutes: "a fixed 10 minutes",
+  release_window_minutes: "a fixed 60 minutes",
+  churn_exclude: "a fixed list of ignored paths",
+  upstream: "always on: the agents that name the product-issue tools get them",
+  telegram_decide: "always all: Telegram decides every card it is sent",
+  notify_attention: "gone: routine messages are digested, nothing is capped",
+  notify_daily_cap: "gone: routine messages are digested, nothing is capped",
+  notify_blocked: "gone: routine messages are digested, nothing is muted per agent",
+  notify_digest_hours: "a fixed 9:00, 13:00 and 18:00 owner-local",
+  telegram_backfill_days: "a fixed 30 days",
+  hubspot_history_days: "a fixed 365 days",
+  history_days: "a fixed 365 days",
+  monitoring_retention: "a fixed 30 days",
+  ci_review_models: "a fixed model list (the review model is `ci_review_model`)",
+};
+/** Fails on a removed setting (REMOVED_SETTINGS) the instance still sets, naming it. */
+function removedSettings(instance: Obj) {
+  for (const [k, now] of Object.entries(REMOVED_SETTINGS)) if (instance.settings?.[k] !== undefined) fail(`settings.${k} was removed: it is now ${now}. Delete it from instance.yaml`);
+}
+
 /** Fails on a spend setting this release removed (SPEND_GONE), naming it. */
 function spendGone(instance: Obj) {
   const st = instance.settings ?? {}, cr = st.code_review ?? {};
@@ -486,9 +509,11 @@ function spendGone(instance: Obj) {
  * models as the gateway sees them (codegenie's `openrouter/` provider and `:<reasoning>` suffix dropped); the review model and
  * effort the code-review job gets with its CI token (always one of the allowed models); and each code review entry's tier rules and class.
  */
+/** Models a CI token may call besides `ci_review_model`: repos still on the older template (codegenie's; OpenRouter ids). */
+const CI_LEGACY_MODELS = ["~deepseek/deepseek-flash-latest"];
 function ciReview(settings: Obj, codeReview: unknown) {
   const want = String(settings.ci_review_model ?? "~deepseek/deepseek-flash-latest:high").trim(), bare = (m: unknown) => String(m).trim().replace(/^openrouter\//, "").replace(/:(minimal|low|medium|high|xhigh|max)$/, "");
-  const review = { model: bare(want), effort: /:(minimal|low|medium|high|xhigh)$/.exec(want)?.[1] ?? "high" }, models = [...new Set([...[settings.ci_review_models ?? []].flat().map(bare), review.model])].filter(Boolean);
+  const review = { model: bare(want), effort: /:(minimal|low|medium|high|xhigh)$/.exec(want)?.[1] ?? "high" }, models = [...new Set([...CI_LEGACY_MODELS, review.model])];
   // Each code review entry's risk tier rules and class, for the CI template's own classification (kernel/src/gateway/lib.ts /ci/token).
   const entries = readCodeReview(JSON.stringify(codeReview ?? {}));
   if (entries.errors.length) fail(`settings.code_review: ${entries.errors.join("; ")}`);
@@ -836,8 +861,8 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   for (const [, defs] of declaredSettings) for (const [k, d] of Object.entries(defs)) if (d && "default" in d) settings[k] = d.default;
   Object.assign(settings, instance.settings ?? {});
   spendGone(instance);
+  removedSettings(instance);
   settings.computers_max ??= defaultComputersMax();
-  if (settings.upstream === "prs") { settings.upstream = "issues"; warnings.push("setting upstream: prs was removed in this release: treated as issues"); }
   setupFlows(enabledDefs, compiled, settings);
   const orgs = organisations(readMarketplace(productDir).organisations, known, enabledDefs);
   if (compiled.board && orgs.length) compiled.board.organisations = orgs;
@@ -887,7 +912,6 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // settings.exposure: one mode, never a list; unset is tailscale, the mode of every install made before the setting.
   if (Array.isArray(settings.exposure)) fail("settings.exposure: one of public, tailscale, cloudflare or local, not a list");
   if (!(Number.isInteger(settings.computers_max) && settings.computers_max >= 1 && settings.computers_max <= 64)) fail("settings.computers_max: a whole number, 1 to 64");
-  if (!(Number.isInteger(settings.check_computers_max) && settings.check_computers_max >= 1 && settings.check_computers_max <= 64)) fail("settings.check_computers_max: a whole number, 1 to 64");
   settings.exposure ??= "tailscale";
   // instance_name: a DNS label (agents commit as <key>@<instance_name>.aidenhq.ai).
   if (settings.instance_name != null && !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(String(settings.instance_name))) fail("settings.instance_name: lowercase letters, digits and - (a DNS label)");
@@ -1009,7 +1033,6 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
         const unknown = ev.filter.filter((f: string) => !EVENT_FILTER_KEYS.includes(f));
         if (unknown.length) fail(`connection ${k}: events.filter ${unknown.join(", ")} isn't a key the event router evaluates (${EVENT_FILTER_KEYS.join(", ")})`);
       }
-      if (c.upstream != null && (!Array.isArray(c.upstream) || c.upstream.some((t: string) => ![...c.tools.read, ...c.tools.write, ...(c.tools.destructive ?? [])].includes(t)))) fail(`connection ${k}: upstream lists tools it tags read, write or destructive`);
       put(paperclip.mcp_servers, k, { ...c, module: name }, "connection");
     }
     Object.assign(writes, writeKinds(name, def, root, instance.writes ?? {}, writes, [...all.keys()]));
@@ -1229,18 +1252,15 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
       const all = [...c.tools.read, ...c.tools.write, ...(c.tools.destructive ?? [])];
       const list = grant === "read" ? readTools(c) : grant === "write" ? [...readTools(c), ...c.tools.write] : Array.isArray(grant) ? grant : fail(`${key}: grant to ${name} must be read, write or a list of tools`);
       for (const t of list) if (!all.includes(t)) fail(`${key}: ${name} has no tool ${t}`);
-      // A connection's `upstream` tools file to the product's upstream repos: granted only while the upstream setting
-      // allows issues (spec §6.9a; off grants none of them).
-      tools[name] = list.filter((t: string) => upstreamGranted(c, t, settings.upstream));
+      tools[name] = list;
       if (!tools[name].length) delete tools[name];
     }
     // Default grants (a module's `default_grants:`, on its own connections, by the same tests as prompts): e.g. owner_channel.notify
     // for every crew agent outside untrusted modules, advisor_ask and memory_note while model-tools and memory are on.
-    // An agent without `profile:` is crew (as its grant entry says). They honour `upstream` too: this loop runs after the one above,
-    // and a default grant naming an upstream tool would otherwise put back what `upstream: off` stripped.
+    // An agent without `profile:` is crew (as its grant entry says).
     for (const g of defaultGrants) if (promptApplies(g, { ...a, profile: a.profile ?? "crew", enabled_tools: tools }, enabled)) for (const t of g.tools) {
       const [c, tool] = t.split(".");
-      if (!tools[c]?.includes(tool) && upstreamGranted(paperclip.mcp_servers[c], tool, settings.upstream)) tools[c] = [...(tools[c] ?? []), tool];
+      if (!tools[c]?.includes(tool)) tools[c] = [...(tools[c] ?? []), tool];
     }
     delete a.connections;
     // jobcaps: [<id>] (`<id>?`: only when its module is on): the agent's runner jobs read through the gateway with their token.
@@ -1447,7 +1467,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   const profile = profileOf(instanceDir, warnings);
   if (profile) paperclip.owner_profile = profile;
   // The kernel first, always on (the board's Settings lists its settings as the kernel's), then every module.
-  const kernelEntry: Obj = { name: "kernel", description: "The kernel: the settings every instance has.", enabled: true, chosen: false, requires: [], agents: [], teammates: [], routines: [], connections: [], apps: [], ...(revision ? { revision } : {}), settings: Object.fromEntries(Object.entries(KERNEL_SETTINGS).map(([k, d]) => [k, { ...("default" in d ? { default: d.default } : {}), ...(d.values ? { values: d.values } : {}), ...(d.required ? { required: true } : {}), ...(d.doc ? { doc: d.doc } : {}) }])) };
+  const kernelEntry: Obj = { name: "kernel", description: "The kernel: the settings every instance has.", enabled: true, chosen: false, requires: [], agents: [], teammates: [], routines: [], connections: [], apps: [], ...(revision ? { revision } : {}), settings: Object.fromEntries(Object.entries(KERNEL_SETTINGS).map(([k, d]) => [k, { ...("default" in d ? { default: d.default } : {}), ...(d.values ? { values: d.values } : {}), ...(d.required ? { required: true } : {}), ...(d.title ? { title: d.title } : {}), ...(d.install ? { install: true } : {}), ...(d.doc ? { doc: d.doc } : {}) }])) };
   const catalog = [kernelEntry, ...[...all.values()].map(({ name, root, def, marketplace, tier, sha, source, pinned }) => ({
     name, description: def.description ?? "", enabled: enabled.includes(name), chosen: chosen.includes(name), requires: def.requires ?? [],
     ...(def.replaces ? { replaces: [def.replaces].flat().map(String) } : {}),
@@ -1549,7 +1569,7 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   if (graders.length > 1) fail(`modules ${graders.join(", ")} all request kernel.grader: one grading module at a time`);
   for (const n of graders) if (!(enabledDefs[n]?.checks ?? []).some((c: Obj) => c.at === "task.rubric")) fail(`module ${n}: kernel.grader needs a rubric check (checks: at: task.rubric)`);
   const secretPatterns = Object.fromEntries([...all.values()].flatMap((m) => [m.def.secrets?.provided ?? []].flat().filter((p: Obj) => p?.setup?.pattern).map((p: Obj) => [p.name, p.setup.pattern])));
-  return { secretPatterns, bundleState: { seen: bundle, adopted: [...adopted] }, paperclip, faces, computersMax: settings.computers_max, checkComputersMax: settings.check_computers_max, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
+  return { secretPatterns, bundleState: { seen: bundle, adopted: [...adopted] }, paperclip, faces, computersMax: settings.computers_max, checkComputersMax: CHECK_COMPUTERS_MAX, apps: { apps }, points, compose, catalog, warnings, optionalSecrets, askedSecrets: setup.map((f) => f.secret), generatedSecrets, dataDirs, stateDirs, dataModules, gateway, jobcaps, engines, connections, writes, checks, kernelModules, exposure: settings.exposure, edge: edge && { gate: edge.gate, cloudflared: edge.cloudflared } };
 }
 
 /**
@@ -2137,12 +2157,14 @@ export function expandTeams(instance: Obj, paperclip: Obj, warnings: string[]) {
   }
 }
 
-// Heartbeats: `heartbeat: true` (every `heartbeat_hours`, default 4) or `heartbeat: <hours>` on an agent adds one routine that
+// Heartbeats: `heartbeat: true` (every 4 hours) or `heartbeat: <hours>` on an agent adds one routine that
 // wakes it on a schedule to check the work it waits on. The kernel's wake inbox does the real work; a heartbeat is the backstop
 // for what it misses. Engineers have none.
 // Not Paperclip's per-agent `runtimeConfig.heartbeat` timer (kept off) nor its "heartbeat runs" (every run): a routine.
 const HEARTBEAT_TOOLS = ["task_list", "task_comments", "task_approvals", "task_comment", "task_finish"];
 const HEARTBEAT_HOURS = [1, 2, 3, 4, 6, 8, 12, 24]; // divisors of 24, so the cron fires evenly
+/** Hours between the scheduled runs of an agent with `heartbeat: true` (a constant; `heartbeat: <hours>` sets one agent's own). */
+const HEARTBEAT_EVERY_HOURS = 4;
 const HEARTBEAT_PROMPT = `Today is {{date}}. This is a heartbeat run: follow "Heartbeats" in your instructions. This task is only the
 heartbeat: delegate under the original work task, never this one, and finish this one with task_finish when done.
 `;
@@ -2150,8 +2172,7 @@ heartbeat: delegate under the original work task, never this one, and finish thi
 const heartbeatMinute = (key: string) => [...key].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % 30;
 
 function heartbeatRoutines(paperclip: Obj, settings: Obj, agentOverrides: Obj, routineTitles: Set<string>) {
-  const every = Number(settings.heartbeat_hours ?? 4);
-  if (!HEARTBEAT_HOURS.includes(every)) fail(`settings.heartbeat_hours: one of ${HEARTBEAT_HOURS.join(", ")}`);
+  const every = HEARTBEAT_EVERY_HOURS;
   for (const [key, a] of Object.entries<Obj>(paperclip.agents)) {
     // Quiet start: a module agent's heartbeat counts only once the instance turns it on (overrides.agents.<key>.heartbeat).
     if (settings.quiet_start === "on" && a.tier !== "local" && agentOverrides[key]?.heartbeat == null && a.heartbeat != null) a.heartbeat = false;

@@ -97,7 +97,7 @@ const PROVIDER = new Set(["only", "order", "allow_fallbacks", "ignore", "require
 
 /** Why a CI call's body is refused, or undefined. `models`: the allowed model ids, exactly; `path`: the route's API. */
 export function ciBodyProblem(body: Record<string, unknown>, models: unknown[], path = "chat/completions"): string | undefined {
-  if (!models.includes(body.model)) return `model ${String(body.model).slice(0, 80)} isn't one CI code review may use (settings.ci_review_models)`;
+  if (!models.includes(body.model)) return `model ${String(body.model).slice(0, 80)} isn't one CI code review may use (its configured review model)`;
   const responses = path === "responses";
   const extra = Object.keys(body).find((k) => !(responses ? RESPONSES : CHAT).has(k));
   if (extra) return `field ${extra.slice(0, 40)} isn't allowed in a CI call`;

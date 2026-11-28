@@ -50,7 +50,7 @@ is `kernel/src/updates.ts`.
   its pin landed, as any apply does: apply's own health check has put the host back on the last good generation.
 - **Telling the owner.** Each event (available, installed, failed, refused, an Update now that couldn't start) is a line in the
   state file; the kernel sends each once through the owner channels' line (kernel.db `update_notices`).
-- **Update now.** Settings > Instance links to the kernel's `/updates` page (admin listener, signed-in admin, CSRF); its button
+- **Update now.** Settings > Updates links to the kernel's `/updates` page (admin listener, signed-in admin, CSRF); its button
   files the release now.
 - **A main commit** (the owner MCP's `update { to: "main" | <sha> }`, for an owner waiting on a fix that just merged). The
   board posts it to the kernel's `/v1/owner/update` with the MCP bearer (beside `/v1/owner/decide`; who is the bearer's

@@ -10,6 +10,7 @@ contributes:
 settings:
   # ClickHouse Cloud's hosted MCP server: the same for every organization. Override only for a non-standard host.
   clickhouse_mcp_url:
+    title: ClickHouse MCP address
     default: https://mcp.clickhouse.cloud/mcp
     type: url
     host: "*.clickhouse.cloud"

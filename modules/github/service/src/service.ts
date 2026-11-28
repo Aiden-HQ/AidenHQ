@@ -83,15 +83,11 @@ export type Options = {
   /** The listed repos ("owner/name": the Maintainer's and Ship's lists): where the fleet merges and closes outside the agents org and the product repo. */
   listed?: string[];
   log?: (msg: string, f?: Record<string, unknown>) => void;
-  /** The release train's batch window, minutes (the instance's release_window_minutes). */
-  releaseWindowMinutes?: number;
   /** Tests: the merge loop's clock and its poll interval. */
   now?: () => Date; mergeEveryMs?: number;
   /** Tests: how long a stacked PR's asynchronous merge request waits between reads, and how many reads before it is reported
    * still pending (the async merge REST API, `enqueueAsync`). */
   asyncPollMs?: number; asyncPolls?: number;
-  /** The churn pass ignores these globs (the churn_exclude setting). */
-  churnExclude?: string[];
   /** Code review's verdict on a head before the merge queue merges it (review-gate.ts). */
   reviewGate: ReviewGate;
   /**
@@ -1935,7 +1931,7 @@ export function createService(o: Options) {
     return [...out];
   }
   const flow = createFlow({
-    kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, log, exclude: o.churnExclude, now: o.now,
+    kernelUrl: o.kernelUrl, key: o.key, cacheDir: o.cacheDir, log, now: o.now,
     // Signed out: no repos, so the passes call nothing (and tell the owner nothing) until GitHub is connected.
     repos: async () => (access.connected() ? managedRepos() : []),
     gh: (method, path, opts) => gh(method, path, undefined, { background: true, ...opts }),
@@ -2320,7 +2316,7 @@ export function createService(o: Options) {
   let feed: Pick<Feed, "tip"> | undefined;
   // The train lands the bump through GitHub: an instance repo on this server (local/…, codehost-local's) is not its to move.
   const train = o.productRepo && o.instanceRepo && slugOf(o.instanceRepo).org.toLowerCase() !== LOCAL_ORG ? createReleaseTrain({
-    dir: join(o.cacheDir, "release"), productRepo: o.productRepo, instanceRepo: o.instanceRepo, windowMinutes: o.releaseWindowMinutes ?? 60, kernel, log, now: o.now,
+    dir: join(o.cacheDir, "release"), productRepo: o.productRepo, instanceRepo: o.instanceRepo, windowMinutes: 60, kernel, log, now: o.now,
     commit: trainCommit,
     // The target must compile the instance before a bump is filed (#1730): the kernel's read-only preflight, which runs the
     // target's own staged compiler exactly as the apply does. Its throw is transient (the next poll retries); a refusal is the

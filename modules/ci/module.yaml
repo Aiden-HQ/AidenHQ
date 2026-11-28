@@ -80,10 +80,6 @@ settings:
     title: CI review model
     default: "~deepseek/deepseek-flash-latest:high"
     pattern: '^(openrouter/)?[~\w./-]+(:(minimal|low|medium|high|xhigh|max))?$'
-  # Models a CI token may call besides ci_review_model: repos still on the older template (codegenie).
-  ci_review_models:
-    title: Other CI review models
-    default: ["~deepseek/deepseek-flash-latest"] # codegenie's (roadmap-keeper until its codex copy PR lands)
 # The host's runner registration (ops/ci-runner-token.ts) asks the kernel with it.
 generated_secrets:
   - ci_token

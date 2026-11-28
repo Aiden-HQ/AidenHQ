@@ -22,16 +22,15 @@ contributes:
 settings:
   # Atlassian's remote MCP server; v2 with ?tools=all lists every tool flat, so per-tool grants hold (no discover/execute*).
   atlassian_mcp_url:
+    title: Atlassian MCP address
     default: https://mcp.atlassian.com/v2/mcp?tools=all
     type: url
     host: mcp.atlassian.com
   # Quiet projects' history: the live sync starts 30 days back site-wide, so a project with little recent activity would be
-  # nearly empty. Each listed project is read once (baseline rows), back history_days, then left alone.
+  # nearly empty. Each listed project is read once (baseline rows), back 365 days, then left alone.
   history_projects:
+    title: Jira projects to backfill
     default: []  # e.g. [ AGR, TRM ]: Jira project keys
-  # How many days back each history_projects project is read once.
-  history_days:
-    default: 365
 connections:
   jira:
     setup: "Press Connect on the board (Settings, Connections), give your Atlassian site's address and allow access."
@@ -76,7 +75,6 @@ services:
         # The board's https address: Connect's one-click link returns there (the default is loopback).
         BOARD_URL: "${BOARD_LAN_URL:-}"
         HISTORY_PROJECTS: "${settings.history_projects}"
-        HISTORY_DAYS: "${settings.history_days}"
         MCP_TOKEN_FILE: ${secrets.jira_service_key}
         # The board's sign-in endpoints: state, and starting or finishing a sign-in.
         JIRA_AUTH_TOKEN_FILE: ${secrets.jira_auth_token}

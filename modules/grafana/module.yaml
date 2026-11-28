@@ -11,6 +11,7 @@ contributes:
 settings:
   # Grafana's hosted MCP server, which signs in and reads your stack (the address Connect asks for).
   grafana_mcp_url:
+    title: Grafana MCP address
     default: https://mcp.grafana.com/mcp
     type: url
     host: mcp.grafana.com
@@ -18,6 +19,7 @@ settings:
   # "cloud": your Grafana Cloud stack, signed in on the board. "local": the monitoring module's Grafana on this host
   # (modules/monitoring; put a Viewer service account token in the vault's grafana_service_account_token), no sign-in.
   grafana_source:
+    title: Grafana source
     default: cloud
     values: [cloud, local]
 # Agents granted `grafana: read` (e.g. the Fleet Steward, in the instance's agent overrides) query metrics and dashboards.

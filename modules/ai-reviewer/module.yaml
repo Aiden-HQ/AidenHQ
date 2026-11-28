@@ -42,6 +42,7 @@ settings:
   # by code (code_review_owns, on its card). Merges, closes, create_repo, sends, settings, deploys and tool calls are always
   # reviewed. Only the owner changes it: fewer reviews are less checking.
   ai_review_code:
+    title: AI review of code changes
     default: all
     values: [ all, none, unless_code_review_mandatory ]
 generated_secrets:

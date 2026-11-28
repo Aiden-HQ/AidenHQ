@@ -28,7 +28,7 @@ history. Its UI is the fleet console. It runs nothing: the kernel runs every age
 specialist agents woken by schedules (Paperclip routines) or events (routine webhooks); the wake inbox turns each into a kernel job. Every agent is a
 `module.yaml` entry plus an `AGENTS.md` handbook, so new behaviour is configuration and prose, not core code. A
 `heartbeat: true` agent is also woken when work it waits on changes (a sub-task, an approval card, a PR: the
-kernel wake inbox (`kernel/src/wakes.ts`)) and, as a backstop, by a "Heartbeat: <key>" routine every `heartbeat_hours` (default 4). This is not
+kernel wake inbox (`kernel/src/wakes.ts`)) and, as a backstop, by a "Heartbeat: <key>" routine every 4 hours. This is not
 Paperclip's own heartbeat: Paperclip calls every agent run a "heartbeat run" and has a per-agent heartbeat timer, which
 AidenHQ keeps off.
 

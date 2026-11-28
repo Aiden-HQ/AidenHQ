@@ -132,16 +132,14 @@ settings:
   # Muted groups and channels: `tagged` stores muted groups but triages only messages that tag or reply to you, and skips
   # muted channels; `all` treats muted like unmuted.
   telegram_muted:
+    title: Muted Telegram chats
     default: tagged
     values: [ tagged, all ]
   # Chat ids never stored or triaged.
   telegram_exclude_chats:
+    title: Excluded Telegram chats
     default: []
     pattern: '^-?[0-9]{1,20}$'
-  # How far back the first sync goes.
-  telegram_backfill_days:
-    default: 30
-    pattern: '^[1-9][0-9]{0,3}$'
 secrets:
   provided:
     # The Telegram app's id and hash from my.telegram.org, saved by the setup flow (or Connect); empty: Telegram is idle.
@@ -176,7 +174,6 @@ services:
         TELEGRAM_DATA_DIR: /data
         TELEGRAM_MUTED: "${settings.telegram_muted}"
         TELEGRAM_EXCLUDE_CHATS: "${settings.telegram_exclude_chats}"
-        TELEGRAM_BACKFILL_DAYS: "${settings.telegram_backfill_days}"
         MCP_BEARER_TOKEN_FILE: ${secrets.telegram_live_service_key}
         # The board's bearer on /auth/*, and this module's own token at the kernel (events, notices).
         AUTH_TOKEN_FILE: ${secrets.telegram_auth_token}

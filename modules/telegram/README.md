@@ -22,8 +22,7 @@ Board, Settings, Telegram (`#/setup/telegram`), about three minutes, needs the T
 the board offers Connect again.
 
 Settings: `telegram_muted` (`tagged` stores muted groups but triages only messages that tag or reply to you, and skips muted
-channels; `all` treats muted like unmuted), `telegram_exclude_chats` (chat ids never stored or triaged),
-`telegram_backfill_days` (how far back the first sync goes, 30).
+channels; `all` treats muted like unmuted), `telegram_exclude_chats` (chat ids never stored or triaged). The first sync goes back 30 days.
 
 ## What agents get
 

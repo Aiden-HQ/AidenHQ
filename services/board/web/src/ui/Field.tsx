@@ -31,14 +31,14 @@ export function Switch({ on, onChange, label, disabled, danger }: { on: boolean;
 }
 
 /** Several choices from a short list. */
-export function Checks<T extends string>({ options, value, onChange, label }: { options: readonly T[]; value: readonly T[]; onChange: (v: T[]) => void; label: string }) {
+export function Checks<T extends string>({ options, value, onChange, label, disabled }: { options: readonly T[]; value: readonly T[]; onChange: (v: T[]) => void; label: string; disabled?: boolean }) {
   return (
     <div className="ui-checks" role="group" aria-label={label}>
       {options.map((o) => {
         const on = value.includes(o);
         return (
           <label key={o} className={`ui-check${on ? " on" : ""}`}>
-            <input type="checkbox" checked={on} onChange={() => onChange(on ? value.filter((x) => x !== o) : [...value, o])} />
+            <input type="checkbox" checked={on} disabled={disabled} onChange={() => onChange(on ? value.filter((x) => x !== o) : [...value, o])} />
             {o}
           </label>
         );
