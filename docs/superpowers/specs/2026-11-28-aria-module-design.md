@@ -229,3 +229,30 @@ asked, through the tiered settings path. The defaults are old Aria's `templates/
   - It needs at least 8 busy days and a 4–14 h span; otherwise it uses the defaults.
   - Results are cached for 7 days.
 - Hours given by the caller (learned from the person or the owner) win over inferred hours.
+
+## Scheduling toolkit: soft signals (owner, 2026-11-28)
+
+Every setting and ranking is a soft signal that Aria's model can override from the owner's words. Code tools handle
+the common cases and all date math. Data tools let the model plan unusual asks. A checker verifies anything the model
+composes.
+
+| Tool | Role |
+|---|---|
+| `calendar_free_busy(people, window, people_local?)` | Raw data: busy blocks, visibility, zone, core/stretch hours (given / inferred / default), working location per person |
+| `calendar_find_times(required, optional?, …, owner_hours: strict\|stretch\|any, movable_event_ids?, weeks?, days?, preferred?)` | Common case. Slots annotated per person with `{status, tier}` and `optional_free` |
+| `calendar_check_times(candidates, people)` | Verifier. Required before booking any slot that didn't come from `find_times` |
+| create/update with `{email, optional}` attendees | Optional invitees |
+
+Complex asks checked against the toolkit:
+- must-haves plus "squeeze John or make him optional";
+- urgent, outside the owner's hours;
+- make room by moving named meetings;
+- a weekly slot for N weeks;
+- rotating inconvenience across time zones;
+- back-to-back interview loops;
+- in person when someone is in the office or the owner is in a city;
+- a quorum;
+- day, part-of-day and lunch preferences;
+- holds then release.
+
+Each is either one `find_times` call, or `free_busy` plus model planning followed by `check_times`.
