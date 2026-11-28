@@ -15,6 +15,7 @@ import { createOnce } from "./once.ts";
 import { wrote } from "./cplimit.ts";
 import { signature } from "../../services/paperclip-events/sign.js";
 import { heldRoles } from "./identity.ts";
+import { sanitizeReply } from "../sdk/src/model-text.ts";
 
 const PLUGIN = "aidenhq.events";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -103,7 +104,20 @@ export function createOutcomes({ db, plugin, delegates, finish, relay, facts, ag
   /** Post `req` on `job.task` as `job.agent`, once per (job, kind), or per turn of a session. */
   async function post(job: { id: string; agent: string; task: string }, req: PostRequest): Promise<Outcome> {
     if (!UUID.test(job.agent)) throw new OutcomeError(400, "bad-agent", "an agent is its Paperclip id");
-    if (typeof req.body !== "string" || !req.body.trim()) throw new OutcomeError(400, "bad-request", "send {kind, body}");
+    // A reply's body is the agent's prose: the model's own format (a role tag or chat-template header at the front, tool-call
+    // markup at the back) never reaches the comment or the owner's channel. A body that was only markup is no reply, and the
+    // sanitized body is the one `once` keys, posts and relays, so a retry reads the same reply the first call did.
+    if (typeof req.body !== "string") throw new OutcomeError(400, "bad-request", "send {kind, body}");
+    if (req.kind === "reply") {
+      const body = sanitizeReply(req.body);
+      // Only model-format markup leaves no reply at all, the empty final's path rather than a refused post.
+      if (!body.trim() && req.body.trim()) {
+        log("reply not posted: its body was only model-format markup", { job: job.id, task: job.task });
+        return { comment: null, status: null };
+      }
+      req = { ...req, body };
+    }
+    if (!req.body.trim()) throw new OutcomeError(400, "bad-request", "send {kind, body}");
     // `listed` is the kernel's word: the grants table naming this task for the agent (its chat task), never the caller's.
     if (req.scope === "listed" && chatTask?.(job.agent) !== job.task) throw new OutcomeError(403, "not-listed", `a listed post is only for a task the grants table names for agent ${job.agent}`);
     // A closed task takes no reply, and none is relayed: not a new comment on it, and not the channel copy of one posted
