@@ -41,7 +41,7 @@ export type Kept = Adoption & {
   /** `head`: the head the hand-off covers. A fork's moves on only to a head ship's own write made from it, or one with the same own change. */
   trigger: Adoption["trigger"] & { at: string; head: string };
   hold: (Adoption["hold"] & { at?: string }) | null;
-  /** The logins ship assigned on a hold: a later trusted trigger unassigns exactly these; anyone else assigned pauses the loop. */
+  /** The logins ship assigned on a hold: a later trusted trigger unassigns exactly these. Assignees never stop ship. */
   assigned?: string[];
   /** The report comment's id (edited in place), and the words it carries now (a same text is never written again). */
   report?: number;

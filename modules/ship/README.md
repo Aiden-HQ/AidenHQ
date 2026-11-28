@@ -34,7 +34,7 @@ The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui
   head it was given and ship's own commits; any other new commit holds it until handed off again. Ship pushes to a fork only
   where the author allows maintainer edits; otherwise the PR holds.
 - **One decision per pass.** Merge-gate's `decide` returns `wait`, `repair`, `fix_ci`, `fix_review`, `approve`, `enqueue`,
-  `merge`, `done`, `stall` or `fail`, and each writer re-decides right before it writes. Nothing moves on a draft, a stop label (`stop_label`, default `ship:stop`), a person assigned to the PR, or a hold.
+  `merge`, `done`, `stall` or `fail`, and each writer re-decides right before it writes. Nothing moves on a draft, a stop label (`stop_label`, default `ship:stop`), or a hold (assigning anyone never stops it).
 - **Repair** (PRs into the default branch: the merge gate waits on any other base before a conflict is looked at). The repo's own
   `actions` run first: each a workflow with `workflow_dispatch`, dispatched on the default branch (the repo's own trusted copy, so
   a PR doesn't change what runs with its secrets) with the PR's number as an input
@@ -57,7 +57,8 @@ The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui
   Every write is a kernel record bound to the head, tiered in code; github refuses it when the head moved or ship is paused.
   The task closes once the PR reads merged.
 - **Report.** One comment per PR (marker `<!-- aidenhq-ship -->`), edited in place, written by code in fixed sentences: posted
-  when a person must act, or once to acknowledge a member's hand-off.
+  whenever its status changes (waits included), so a quiet PR is never read as stuck; a PR the fleet opened for a task gets
+  one only when a person must act.
 - **Hold.** Past a cap, or on a step the settings exclude, the PR goes on hold with the reason; a member's PR gets its author
   assigned. A new head clears a stalled hold.
 

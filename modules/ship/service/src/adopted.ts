@@ -60,7 +60,7 @@ export const ended = (a: Pick<Kept, "counters" | "reportStale">) => a.counters?.
 export function adoptedPass(o: AdoptedOptions) {
   /** A PR stopped by its own hand: a draft, the stop label, or a person assigned (not by ship). No hold is set for it. */
   const isStopped = (repo: string, view: PrView, a: Kept | undefined) =>
-    view.draft || view.labels.includes(o.settings(repo)?.stop_label ?? "ship:stop") || view.assignees.some((x) => !(a?.assigned ?? []).includes(x));
+    view.draft || view.labels.includes(o.settings(repo)?.stop_label ?? "ship:stop");
   /** Per repo, the PRs this scan runs a round on toward the default branch and nobody stopped (see(), kept current by open()): the only ones front() ranks. */
   const eligible = new Map<string, Set<number>>();
   /**
