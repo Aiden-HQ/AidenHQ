@@ -167,9 +167,8 @@ export async function intake(d: HandoffDeps, pr: PrView, task?: string, bump?: b
   // A task's PR stays its task's: a member's label or comment hands over nothing (github merges it only for that task).
   if (was?.owner?.kind === "task") return was;
   const { trigger, handback } = await newest(d, pr, was ? { at: was.trigger.at, event: was.trigger.event } : undefined);
-  if (trigger) {
-    // `handoff: none` is the fleet's own PRs only; otherwise a member's trigger adopts any PR, a fork included.
-    if (s.handoff === "none") return was;
+  // `handoff: none` takes no member's trigger (the fleet's own PRs and green bumps only); otherwise it adopts any PR, a fork included.
+  if (trigger && s.handoff !== "none") {
     // A fork is handed off at the head the member saw: one ship first saw after the label or comment (or can't tell, having
     // started since) may be newer, so the adoption starts held and a member hands it off again.
     const late = pr.fork && !(Date.parse(pr.headSeen ?? "") <= Date.parse(trigger.at));

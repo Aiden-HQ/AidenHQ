@@ -240,7 +240,8 @@ export function loosens(before: unknown, after: unknown, scope: Scope = ALL): st
     if (rank(HANDOFF, y.handoff) > rank(HANDOFF, x.handoff)) add("handoff");
     if (y.rebase === "behind" && x.rebase !== "behind") add("rebase");
     // The owner's gates the Maintainer's entries carried for these duties: every Dependabot PR, and closing quiet human PRs.
-    if (y.dependabot === "all" && x.dependabot !== "all") add("dependabot");
+    // `failing` merges green bumps unasked (handoff.ts) and `all` files a task for each: turning either on is the owner's.
+    if (y.dependabot !== "off" && y.dependabot !== x.dependabot) add("dependabot");
     // Any sooner close: switched on, or a shorter window than before.
     if (y.quiet_pr_days !== null && (x.quiet_pr_days === null || y.quiet_pr_days < x.quiet_pr_days)) add("quiet_pr_days");
     for (const t of TIERS) {

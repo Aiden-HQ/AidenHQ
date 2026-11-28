@@ -136,7 +136,7 @@
   // Plain words for every control: what it does, and what each choice means. The server's controls give the values; the meanings are the page's.
   const COLS = {
     preset: ["Preset", "The starting set of guards for this repo. A field you set yourself keeps its value when the preset changes.", { cautious: "The default guards: caps on rounds and spend, and protected files held for you.", full: "No guards: no caps and no protected files." }],
-    handoff: ["Hand-off", "Which pull requests Ship takes on.", { label: "A member adds the ship label or comments /ship.", all: "Every PR a member opens is adopted, unasked.", none: "Off: nothing is adopted." }],
+    handoff: ["Hand-off", "Which pull requests Ship takes on.", { label: "A member adds the ship label or comments /ship.", all: "Every PR a member opens is adopted, unasked.", none: "Off: no person's PR is adopted." }],
   };
   // Risk tiers (code review gives each PR head one; its rules are on the Reviews page): what Ship's App and merge do for each.
   const TIERS = ["skip", "trivial", "standard", "sensitive"];
@@ -188,7 +188,7 @@
     "caps.usd": ["Spend (USD)", "The most Ship spends on one PR, in dollars. Blank is unlimited.", null],
     "caps.requeue_on_timeout": ["Requeues on timeout", "How many times a timed-out run is queued again. Blank is unlimited.", null],
     stop_label: ["Stop label", "While a PR carries this label Ship leaves it alone; removing it resumes.", null],
-    dependabot: ["Dependabot updates", "Which dependency bumps an engineer takes through to a merge.", { off: "None.", failing: "Only the ones whose checks fail.", all: "Every one, once its checks finish." }],
+    dependabot: ["Dependabot updates", "Which dependency bumps an engineer takes through to a merge.", { off: "None.", failing: "Only the ones whose checks fail; Ship merges the green ones itself, unasked.", all: "Every one, once its checks finish." }],
     quiet_pr_days: ["Inactive contributor PRs", "A nudge, then closed after the same wait again. Drafts wait twice as long.", null],
   };
   const STAGES = { conflict: "When a PR conflicts", behind: "When a PR is behind", before_merge: "Before merge" };
