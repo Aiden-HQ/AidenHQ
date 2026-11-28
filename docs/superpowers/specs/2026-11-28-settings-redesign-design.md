@@ -41,7 +41,7 @@ System
 - Each module's own settings are edited on that module's page: a feature page where one exists, otherwise its module
   Settings tab. They no longer appear in general Settings.
 - Every setting our instance customises stays a setting.
-- Examples: ai_review_code, app_login, ci_*, github_orgs, github_fleet_org, jira history_projects, primer_*,
+- Examples: ai_review_code, app_login, ci_runner_repos, ci_org_runner_group, ci_review_model, github_orgs, github_fleet_org, jira history_projects, primer_*,
   grafana_source and the vendor URLs, slack_post_channels, search_summaries, product_repo, telegram_muted,
   telegram_exclude_chats, code_review.
 
