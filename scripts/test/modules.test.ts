@@ -49,6 +49,18 @@ test("an official module's setting without a comment above it fails compile; the
   const out = compile(add("  # Where it listens.\n  host: { default: x, pattern: '^[a-z]+$' }\n"), finst(["doc"]));
   assert.deepEqual(out.catalog.find((m) => m.name === "doc").settings.host, { default: "x", pattern: "^[a-z]+$", doc: "Where it listens." });
 });
+test("a connection name the launcher cannot route fails compile, naming it; an underscore name passes", () => {
+  const add = (name) => {
+    const dir = market((m) => ({ ...m, plugins: [...m.plugins, { name: "conn", source: "./conn" }] }));
+    mkdirSync(join(dir, "modules", "conn"));
+    writeFileSync(join(dir, "modules", "conn", "module.yaml"), `name: conn\ndescription: d\nconnections:\n  ${name}: { url: "http://conn-mcp:1/mcp", auth: conn_service_key, tools: { read: [conn_get], write: [] } }\n`);
+    return dir;
+  };
+  // emitsServer refuses a name outside ROUTABLE_CONNECTION (services/computer/lib.ts), so a hyphenated connection installs
+  // green and every run of an agent granted it is refused before its first step: compile refuses the manifest instead.
+  assert.throws(() => compile(add("conn-mcp"), finst(["conn"])), /connection conn-mcp: the name must be lowercase letters, digits and _ .*cannot route "conn-mcp"/);
+  assert.ok(compile(add("conn_mcp"), finst(["conn"])).connections.conn_mcp, "an underscore name compiles");
+});
 test("a list setting's entries are checked against its pattern: a map entry is refused unless the setting names its `entry` field", () => {
   const add = (settings) => {
     const dir = market((m) => ({ ...m, plugins: [...m.plugins, { name: "doc", source: "./doc" }] }));

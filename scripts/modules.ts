@@ -12,7 +12,7 @@ import { AUTH_PORT, checkPorts, edgeConfig, GATE_PORT, TEST_LISTENER_PORT } from
 import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { teammateNameProblem } from "../services/shared/teammate-name.ts";
 import { faceKitProblem, type FaceKit } from "../services/shared/face-kit.ts";
-import { MAX_CHECK_MIN } from "../services/computer/lib.ts";
+import { MAX_CHECK_MIN, ROUTABLE_CONNECTION } from "../services/computer/lib.ts";
 import { OWNER_TOOLS } from "../services/board/src/mcp-tools.ts";
 import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "./compiler/bindings.ts";
@@ -958,6 +958,10 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     for (const [id, j] of Object.entries(jobcapEntries(name, def))) { if (jobcaps[id]) fail(`duplicate jobcap: ${id}`); jobcaps[id] = { ...j, module: name }; }
     for (const [kind, e] of Object.entries(engineEntries(name, def, root, productDir))) { if (engines[kind]) fail(`two modules declare engine kind ${kind}: ${engines[kind].module} and ${name}`); engines[kind] = e; }
     for (const [k, c] of Object.entries<Obj>(def.connections ?? {})) {
+      // The launcher emits and routes only names ROUTABLE_CONNECTION accepts (services/computer/lib.ts emitsServer, a
+      // box's /c/<name>/mcp route): any other name installs green and then refuses every run of an agent granted it,
+      // so compile refuses it here, naming the connection.
+      if (!ROUTABLE_CONNECTION.test(k)) fail(`connection ${k}: the name must be lowercase letters, digits and _ (a-z, 0-9, _): the launcher cannot route ${JSON.stringify(k)}`);
       if (!Array.isArray(c.tools?.read) || !Array.isArray(c.tools?.write)) fail(`connection ${k}: tools.read and tools.write must list its tools`);
       if (c.tools.destructive != null && !Array.isArray(c.tools.destructive)) fail(`connection ${k}: tools.destructive must be a list`);
       // `unreviewed`: destructive tools whose calls skip the AI reviewer (Tier 0; still granted only by name, and code's refusals hold).

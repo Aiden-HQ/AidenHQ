@@ -18,7 +18,7 @@ test("the module requires board and warehouse, and asks for the kernel's tasks a
 });
 
 test("the connection is the module's own, untrusted, with the 1800 s tool timeout and check tagged named", () => {
-  const c = def.connections["server-manager"];
+  const c = def.connections.server_manager;
   assert.equal(c.url, "http://server-manager-ssh:8103/mcp");
   assert.equal(c.auth, "server_manager_service_key");
   assert.equal(c.returns, "untrusted");
@@ -51,11 +51,11 @@ test("the agent's grants are exactly the spec's, and its heartbeat is the backst
   assert.equal(a.model, "~deepseek/deepseek-flash-latest");
   assert.equal(a.timeout_sec, 1200);
   assert.equal(a.heartbeat, 4);
-  assert.deepEqual(a.connections["server-manager"], ["server_manager_config", "server_manager_status", "server_manager_check"]);
+  assert.deepEqual(a.connections.server_manager, ["server_manager_config", "server_manager_status", "server_manager_check"]);
   assert.deepEqual(a.connections.apps, ["web_view", "app_view"]);
   assert.deepEqual(a.connections.paperclip_tasks, ["task_current", "task_get", "task_comments", "task_comment", "task_block", "task_finish", "task_list", "task_approvals"]);
   // The agent has no write: a patch and a reboot always come from a schedule or the owner's click.
-  for (const t of ["server_manager_patch", "server_manager_reboot", "server_manager_host_key_reset"]) assert.ok(!a.connections["server-manager"].includes(t));
+  for (const t of ["server_manager_patch", "server_manager_reboot", "server_manager_host_key_reset"]) assert.ok(!a.connections.server_manager.includes(t));
 });
 
 test("servers_machines is an entry list with a pattern, the owner's to write, and nothing is scheduled", () => {
