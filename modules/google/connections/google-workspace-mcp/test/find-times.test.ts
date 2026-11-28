@@ -84,6 +84,11 @@ describe("findTimes", () => {
     expect(plain[0]!.start).toContain("T00:00");
   });
 
+  it("counts a person once however often they are listed", () => {
+    const a = base({ timezone: "Europe/London", window_start: "2026-12-02T00:00:00+00:00", window_end: "2026-12-03T00:00:00+00:00", working_hours: week([["00:00", "10:00"]]), attendees_local: { "dana@example.com": { timezone: "Asia/Dubai" } } });
+    expect(findTimes({ ...a, attendees: ["dana@example.com", "DANA@example.com"] }, [], [], NOW)).toEqual(findTimes({ ...a, attendees: ["dana@example.com"] }, [], [], NOW));
+  });
+
   it("an attendee with hours 10-16 and stretch_hours 2 stretches over 08-10 and 16-18", () => {
     const args = base({ stretch_hours: 2, working_hours: week([["06:00", "20:00"]]), attendees: ["dana@example.com"], attendees_local: { "DANA@example.com": { timezone: "Asia/Dubai", hours: ["10:00", "16:00"] } } });
     const slots = findTimes({ ...args, stretch_hours: 2, working_hours: week([["08:00", "18:00"]]) }, [], [], NOW);

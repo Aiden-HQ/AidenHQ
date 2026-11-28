@@ -162,8 +162,8 @@ export function findTimes(args: FindTimesArgs, events: GEvent[], attendeeBusy: {
   const stretchMin = (args.stretch_hours ?? DEFAULT_STRETCH_HOURS) * 60;
   const span2 = (w: readonly [string, string]) => [minutes(w[0]), minutes(w[1])] as const;
   const known = new Map(Object.entries(args.attendees_local ?? {}).map(([e, v]) => [e.toLowerCase(), v]));
-  const people = (args.attendees ?? []).flatMap((a) => {
-    const v = known.get(a.toLowerCase());
+  const people = [...new Set((args.attendees ?? []).map((a) => a.toLowerCase()))].flatMap((a) => {
+    const v = known.get(a);
     if (!validZone(v?.timezone)) return [];
     const core = span2(v!.hours ?? args.default_hours ?? DEFAULT_HOURS);
     const stretch = v!.hours ? ([Math.max(0, core[0] - stretchMin), Math.min(1440, core[1] + stretchMin)] as const) : span2(args.default_stretch ?? DEFAULT_STRETCH);
@@ -201,7 +201,7 @@ export function findTimes(args: FindTimesArgs, events: GEvent[], attendeeBusy: {
         const slack = buf + ADJACENT_SLACK_MS;
         const sides = (busy.some((m) => m.meeting && start >= m.end && start - m.end <= slack) ? 1 : 0) + (busy.some((m) => m.meeting && m.start >= end && m.start - end <= slack) ? 1 : 0);
         // Generated only within the owner's stretch, so the owner is in core or in stretch.
-        const bands = [ownerCore.some(([x, y]) => x <= t && t + args.duration_min <= y) ? 0 : 1, ...people.map((p) => band(start, end, p.zone, p.core, p.stretch))];
+        const bands = [ownerCore.some((c) => band(start, end, zone, c, c) === 0) ? 0 : 1, ...people.map((p) => band(start, end, p.zone, p.core, p.stretch))];
         found.set(start, { start, end, tier, zone, sides, stretch: bands.filter((x) => x === 1).length, outside: bands.filter((x) => x === 2).length });
       }
     }
