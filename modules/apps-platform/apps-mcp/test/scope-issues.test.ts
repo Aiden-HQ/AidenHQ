@@ -15,10 +15,10 @@ async function setup() {
       total integer, fetched integer);`);
   let t = Date.now();
   // One pass: `ago` hours before now. `error` null is a good pass; `retired` writes the non-error marker.
-  const run = async (scope: string, ago: number, o: { error?: string; status?: string; total?: number; fetched?: number } = {}) =>
+  const run = async (scope: string, ago: number, o: { error?: string; status?: string; total?: number; fetched?: number; source?: string } = {}) =>
     pg.query(
-      `INSERT INTO src_meta.ingest_run (source, scope, started_at, finished_at, rows, error, status, total, fetched) VALUES ('github', $1, $2, $2, 0, $3, $4, $5, $6)`,
-      [scope, new Date(t - ago * H), o.error ?? null, o.status ?? null, o.total ?? null, o.fetched ?? null],
+      `INSERT INTO src_meta.ingest_run (source, scope, started_at, finished_at, rows, error, status, total, fetched) VALUES ($7, $1, $2, $2, 0, $3, $4, $5, $6)`,
+      [scope, new Date(t - ago * H), o.error ?? null, o.status ?? null, o.total ?? null, o.fetched ?? null, o.source ?? "github"],
     );
   const deps = { pool: { query: (text: string, values?: unknown[]) => pg.query(text, values as never[]) as never } } as unknown as Pick<WarehouseDeps, "pool">;
   return { pg, run, deps };
@@ -82,7 +82,7 @@ it("a retirement marker never counts as a source's or a scope's last good pass, 
   // A still-synced scope keeps the source reported, and the retirement marker is not its last good pass.
   await run("org:live", 3, { total: 5, fetched: 5 });
   await run("org:live", 0.1, { error: "boom" });
-  expect(await sourceHealth(deps)).toEqual([{ source: "github", last_ok: expect.any(Date), failing: true }]);
+  expect(await sourceHealth(deps)).toEqual([{ source: "github", last_ok: expect.any(Date), failing: true, interval_min: null }]);
 
   // Every scope retired: the source is not reported at all (its sync is off).
   await run("org:live", 0.05, { status: "retired" });
@@ -90,7 +90,7 @@ it("a retirement marker never counts as a source's or a scope's last good pass, 
 
   // Re-added and already failing: the success from before its retirement is not its last good pass, so the alert is not held.
   await run("org:live", 0.01, { error: "boom" });
-  expect(await sourceHealth(deps)).toEqual([{ source: "github", last_ok: null, failing: true }]);
+  expect(await sourceHealth(deps)).toEqual([{ source: "github", last_ok: null, failing: true, interval_min: null }]);
 });
 
 it("a retired row is only the newest one that counts: an older retirement does not hide a later failure", async () => {
@@ -100,4 +100,33 @@ it("a retired row is only the newest one that counts: an older retirement does n
   await run("org:acme", 1, { error: "boom" });
   const out = await scopeIssues(deps);
   expect(out.failing.map((r) => r.scope)).toEqual(["org:acme"]);
+});
+
+it("interval_min is each source's median good-pass gap over 24 h in whole minutes, pooled across its scopes, null under 3 good passes", async () => {
+  const { run, deps } = await setup();
+  // A 15-minute connector with two scopes: 11 and 3 gaps of 15 minutes, then one 6-hour gap (a paused sync) that must not
+  // drag the median off the cadence the way a mean would.
+  for (let n = 1; n <= 12; n++) await run("org:acme", 0.25 * n);
+  for (let n = 1; n <= 4; n++) await run("org:other", 0.25 * n);
+  await run("org:acme", 0.25 * 12 + 6);
+  // A source that passes every 10 hours: three passes in the window, one 600-minute gap.
+  await run("drive", 20.2, { source: "docs" });
+  await run("drive", 10.2, { source: "docs" });
+  await run("drive", 0.2, { source: "docs" });
+  // Two good passes in the window, the third older than it: only the gaps inside the window count, and one gap is no median.
+  await run("live", 30, { source: "meetings" });
+  await run("live", 5, { source: "meetings" });
+  await run("live", 0.2, { source: "meetings" });
+  // Two good passes in the window: not enough for a median, so no interval (the detector's flat allowance stands).
+  await run("contacts", 5, { source: "hubspot" });
+  await run("contacts", 0.2, { source: "hubspot" });
+
+  const by = Object.fromEntries((await sourceHealth(deps)).map((r) => [r.source, r.interval_min]));
+  expect(by.github).toBe(15);
+  expect(by.docs).toBe(600);
+  expect(by.hubspot).toBeNull();
+  expect(by.meetings).toBeNull();
+  // The retired marker is never a good pass, so it contributes no gap.
+  await run("org:acme", 0.1, { status: "retired" });
+  expect((await sourceHealth(deps)).find((r) => r.source === "github")?.interval_min).toBe(15);
 });
