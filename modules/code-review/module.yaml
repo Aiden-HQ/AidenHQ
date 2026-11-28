@@ -13,7 +13,7 @@ contributes:
   # The Reviews page: a module view served by the connection below, on the owner's own calls (docs/design/board-ui.md "Modules"). Its
   # settings change is the module's own setting, code_review; a run's dismiss and a one-off ask are the owner's own calls.
   board.pages:
-    - { id: code-review, title: Reviews, icon: reviews, order: 5, connection: code_review, view: "ui://code-review/page", tools: [ code_review_overview, code_review_run_detail, code_review_report, code_review_catalog, code_review_available, code_review_run, code_review_dismiss, code_review_configure ] }
+    - { id: code-review, title: Reviews, icon: reviews, order: 5, connection: code_review, view: "ui://code-review/page", tools: [ code_review_overview, code_review_run_detail, code_review_report, code_review_catalog, code_review_available, code_review_run, code_review_dismiss, code_review_configure ], settings: [ code_review ] }
 roles:
   # kernel.tasks: one task per reviewed PR for the PR reviewer (role reviewer-manager), where its posts' approvals land.
   # kernel.wake, kernel.owner-notice: a one-off ask's one summary, as a wake notice on the task that asked for it (its agent

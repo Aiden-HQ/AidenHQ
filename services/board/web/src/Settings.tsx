@@ -60,7 +60,6 @@ export function SettingsView({ cat, mobile, session, go, onSignIn, can }: Props)
   useEvents(["connections"], () => loadConns(true));
   // While a change is under way, follow it closely (and the connections, which come up after it); otherwise every 30 s.
   const busy = changes.some((c) => IN_FLIGHT.includes(c.stage));
-  const wasBusy = useRef(busy);
   useEffect(() => {
     const t = setInterval(() => {
       if (document.visibilityState !== "visible") return;
@@ -69,11 +68,13 @@ export function SettingsView({ cat, mobile, session, go, onSignIn, can }: Props)
     }, busy ? 5_000 : 30_000);
     return () => clearInterval(t);
   }, [busy, loadChanges, loadConns]);
-  // A change just went live: the compiled config moved, so read it again.
+  // A change just went live (even one that applied before its first in-flight read): the compiled config moved, so read it again.
+  const applied = useRef<Set<string> | null>(null);
   useEffect(() => {
-    if (wasBusy.current && !busy) void loadSettings();
-    wasBusy.current = busy;
-  }, [busy, loadSettings]);
+    const now = new Set(changes.filter((c) => c.stage === "applied").map((c) => c.identifier));
+    if (applied.current && [...now].some((id) => !applied.current!.has(id))) void loadSettings();
+    applied.current = now;
+  }, [changes, loadSettings]);
 
   const toast = useCallback((text: string, tone?: "ok" | "bad") => {
     const id = Date.now() + Math.random();

@@ -74,12 +74,13 @@ function Control({ s, o, value, set, disabled, invalid }: { s: SettingRow; o: Ro
   const name = settingTitle(s);
   if (o.control) return <>{o.control(value, set)}</>;
   const values = (s.values ?? []).map(String);
-  if (multi(s)) return <Checks options={values} value={(value as unknown[]).map(String)} onChange={set} label={name} />;
+  if (multi(s)) return <Checks options={values} value={(value as unknown[]).map(String)} onChange={set} label={name} disabled={disabled} />;
   if (isChoice(s)) {
     const options = values.map((x) => [x, o.labels?.[x] ?? words(x)] as const);
     const pick = (x: string) => set((s.values ?? []).find((y) => String(y) === x));
     return values.length <= 4 ? <Segmented value={String(value)} label={name} options={options} onChange={pick} /> : <Select value={String(value)} options={options} onChange={pick} disabled={disabled} aria-label={name} />;
   }
+  if (isStructured(s)) return <span className="st-readonly" title="A map: its feature page edits it, or ask Aiden.">{settingSummary(effective(s))}</span>;
   const numeric = typeof effective(s) === "number";
   return (
     <span className="st-numfield">
@@ -110,6 +111,7 @@ export function SettingsCard({ rows, advanced = [], all, opts = {}, lead, trail,
   const [draft, setDraft] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
   const [sent, setSent] = useState<string | null>(null);
+  const task = useRef<string | null>(null);
   const [error, setError] = useState("");
   const mine = useMemo(() => [...rows, ...advanced], [rows, advanced]);
   // What the server now has changed (an apply landed): start over from it.
@@ -119,12 +121,13 @@ export function SettingsCard({ rows, advanced = [], all, opts = {}, lead, trail,
   const keys = useMemo(() => new Set(mine.map((r) => r.key)), [mine]);
   const filed = changes.find((f) => f.items.some((c) => c.kind === "setting" && keys.has(c.key)) && (IN_FLIGHT.includes(f.stage) || (["failed", "rejected", "closed"].includes(f.stage) && Date.now() - Date.parse(f.createdAt) < 15 * 60_000)));
   const busy = Boolean(filed && IN_FLIGHT.includes(filed.stage));
-  // A change this card filed just went live: the module's rows are read again (the Settings pages reload themselves).
-  const wasBusy = useRef(false);
+  // The change this card filed went live (even if no in-flight stage was seen): the module's rows are read again (the Settings pages reload themselves).
   useEffect(() => {
-    if (wasBusy.current && !busy) reload?.();
-    wasBusy.current = busy;
-  }, [busy, reload]);
+    if (task.current && changes.some((f) => f.identifier === task.current && f.stage === "applied")) {
+      task.current = null;
+      reload?.();
+    }
+  }, [changes, reload]);
 
   const optsOf = (s: SettingRow) => opts[s.key] ?? {};
   const valueOf = (s: SettingRow) => (s.key in draft ? draft[s.key] : holdsValue(s, optsOf(s)) ? effective(s) : textOf(effective(s)));
@@ -133,7 +136,7 @@ export function SettingsCard({ rows, advanced = [], all, opts = {}, lead, trail,
   const shownRows = rows.filter(visible);
   const shownAdvanced = advanced.filter(visible);
   // Only a row the owner touched is a change, and only while it differs from the live value.
-  const edits = [...shownRows, ...shownAdvanced].filter((s) => s.key in draft).map((s) => ({ s, next: typed(s, optsOf(s), draft[s.key]) })).filter(({ s, next }) => !same(next, effective(s)));
+  const edits = [...shownRows, ...shownAdvanced].filter((s) => s.key in draft && !isStructured(s)).map((s) => ({ s, next: typed(s, optsOf(s), draft[s.key]) })).filter(({ s, next }) => !same(next, effective(s)));
   const problems = new Map(edits.flatMap(({ s, next }) => { const p = problemOf(s, optsOf(s), next); return p ? [[s.key, p] as const] : []; }));
   const set = (s: SettingRow, v: unknown) => (setDraft((d) => ({ ...d, [s.key]: v })), setSent(null), setError(""));
   // Saved and under way (or just filed): the card's own progress says so, and the bar steps aside until it lands or fails.
@@ -143,9 +146,10 @@ export function SettingsCard({ rows, advanced = [], all, opts = {}, lead, trail,
     setError("");
     try {
       const items: SettingChange[] = edits.map(({ s, next }) => ({ kind: "setting", key: s.key, value: next }));
-      const task = await file(items);
+      const id = await file(items);
+      task.current = id;
       setSent(JSON.stringify(draft));
-      toast(`Saved as ${task}: it goes live in a moment.`);
+      toast(`Saved as ${id}: it goes live in a moment.`);
     } catch (e) {
       setError((e as Error).message);
     } finally {

@@ -242,6 +242,7 @@ button.st-row-hit:hover { background: var(--hover); }
 .st-advanced .ui-disc-body .st-set-wrap { border-top: 1px solid var(--border); }
 .st-numfield { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
 .st-prefix { color: var(--muted); }
+.st-readonly { color: var(--muted); font-size: var(--text-base); text-align: right; overflow-wrap: anywhere; }
 .st-versions { display: grid; justify-items: end; gap: 2px; font-size: var(--text-base); text-align: right; }
 .muted { color: var(--muted); }
 

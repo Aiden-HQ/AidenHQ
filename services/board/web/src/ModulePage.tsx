@@ -5,7 +5,7 @@ import { ConnectButton, useConnectNeeded, type Can, type Connectable } from "./C
 import { useEvents } from "./events";
 import { STATUS_LABEL, connectionStatus, displayName, type ConnectionRow } from "./connections";
 import { LockIcon, ModuleFacts, ModuleStatus, TurnOnCard, lockedWhy, moduleState, publisher, useModuleToggle, useSetupNeeded, useSetupPairing } from "./ModuleParts";
-import { SettingsCard, isStructured } from "./SettingsForm";
+import { SettingsCard } from "./SettingsForm";
 import { GENERAL_KEYS } from "./settings-layout";
 import { ChangePreview, ChangeProgress, ChangesScope, useChanges } from "./settings-ui";
 import { SetupButton } from "./SetupButton";
@@ -406,7 +406,7 @@ function ModuleSettings({ m, onSignIn }: { m: ModuleRow; onSignIn: () => void })
   if (error) return <EmptyState><strong>Couldn't load the settings.</strong> {error}</EmptyState>;
   if (!all) return <SkeletonLines lines={3} />;
   // A module's own settings, less the ones its Fleet page edits and the few a general Settings page owns.
-  const rows = all.filter((s) => s.module === m.name && !s.page && !s.install && !GENERAL_KEYS.has(s.key) && !isStructured(s));
+  const rows = all.filter((s) => s.module === m.name && !s.page && !s.install && !GENERAL_KEYS.has(s.key));
   if (!rows.length) return <EmptyState><strong>Nothing to set.</strong> {m.name} works as it is; it has no settings of its own.</EmptyState>;
   return <SettingsCard rows={rows} all={all} reload={load} />;
 }
