@@ -10,7 +10,7 @@ import { advance, discovered, stageOf, suggestLines, type Gh } from "./actions.t
 import type { Discovered } from "./discover.ts";
 import { fileTask, recordTask, tasksOf, type Kept, type PrView } from "./handoff.ts";
 import { queueNext, type QueueFacts, type QueueNext, type Queued } from "./queue.ts";
-import { ACK, HOLD, renderReport, say, waitFacts, type Facts } from "./report.ts";
+import { HOLD, renderReport, say, waitFacts, type Facts } from "./report.ts";
 import { staleApproval, type Judged, type Risk } from "./safe.ts";
 import type { ShipSettings } from "./settings.ts";
 import type { State } from "./state.ts";
@@ -125,7 +125,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   // A stall from the gate's decision (a review, a resolved thread, a label) is over once the gate no longer says stall: ship takes
   // back its own assignment and goes on. A pause, a draft, the stop label or a person's assignment is checked first: a stopped PR is
   // neither resumed nor unassigned.
-  if (a.hold?.kind === "stalled" && a.hold.onChange && pr.state === "open" && v.do !== "stall" && !d.paused() && !pr.draft && !pr.labels.includes(s.stop_label) && !pr.assignees.some((x) => !(a!.assigned ?? []).includes(x))) {
+  if (a.hold?.kind === "stalled" && a.hold.onChange && pr.state === "open" && v.do !== "stall" && !d.paused() && !pr.draft && !pr.labels.includes(s.stop_label)) {
     // A refused unassignment keeps the record, so ship's own assignee is never read as a person's stop.
     let undone = true;
     if (a.assigned?.length) await d.unassign(pr.repo, pr.number, a.assigned).catch((e) => { undone = false; d.log("unassign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }); });
@@ -135,7 +135,7 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     d.state.put(a);
     d.log("stall cleared: the gate no longer says stall", { pr: pr.url });
   }
-  // Stopped: nothing moves while ship is paused, the PR is closed or a draft, on hold, stopped by label, or a person is assigned.
+  // Stopped: nothing moves while ship is paused, the PR is closed or a draft, on hold, or stopped by label.
   // Landed: a hand-off's task ends with it (a task's PR tells its task instead), whatever else holds the PR.
   if (pr.state === "merged" && v.do === "done") {
     if (a.counters?.lastRound !== `${pr.head}:done`) {
@@ -166,8 +166,13 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
     }
     return "acted";
   }
-  const people = pr.assignees.filter((x) => !(a!.assigned ?? []).includes(x));
-  if (d.paused() || a.hold || pr.state !== "open" || pr.draft || pr.labels.includes(s.stop_label) || people.length) return "stopped";
+  // Assignees never stop ship (an author often assigns themselves): only a pause, a hold, a draft or the stop label do.
+  if (d.paused() || a.hold || pr.state !== "open") return "stopped";
+  // A draft or the stop label pauses it: the status says so, so an earlier wait isn't left standing (report skips a same text).
+  if (pr.draft || pr.labels.includes(s.stop_label)) {
+    if (a.report || a.owner?.kind !== "task") await report(d, a, pr, { kind: "paused", text: pr.draft ? "Paused while this PR is a draft." : `Paused by the \`${s.stop_label.replace(/[`\r\n]/g, "")}\` label. Remove it to let Ship continue.` });
+    return "stopped";
+  }
 
   const c = a.counters && a.counters.head === pr.head ? a.counters : { ...(a.counters ?? { rounds: 0, ci: 0, review: 0, red: {} }), head: pr.head, wakes: 0, acted: [], membersAsked: [] };
   a = { ...a, counters: c };
@@ -187,10 +192,11 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const save = async (f: Facts) => { d.state.put(a!); a = await report(d, a!, pr, f); };
   const hold = async (reason: string, plain: string, onChange = false) => {
     // Its owner is told: a task's PR wakes whoever asked for the task; a member's PR assigns its author (and the report says why).
-    const assign = a!.owner?.kind === "task" || pr.authorBot || !pr.author ? [] : [pr.author];
+    // Only an assignment ship adds is recorded as its own (a later resume removes exactly those): a self-assigned author stays.
+    const assign = a!.owner?.kind === "task" || pr.authorBot || !pr.author || pr.assignees.includes(pr.author) ? [] : [pr.author];
     if (assign.length) await d.assign(pr.repo, pr.number, assign).catch((e) => d.log("assign failed", { pr: pr.url, err: String((e as Error).message).slice(0, 200) }));
     if (a!.owner?.kind === "task") await tell(d, a!, pr, `**Ship stopped on ${pr.url}** at \`${pr.head.slice(0, 12)}\`: ${reason}. A new push resumes it. Decide its next step: re-scope the task, fix the cause another way, or tell the owner.`, `hold.${pr.head.slice(0, 12)}.${c.rounds}.${c.wakes}`, true);
-    a = { ...a!, hold: { kind: "stalled", reason, at: new Date().toISOString(), ...(onChange ? { onChange: true as const } : {}) }, assigned: assign };
+    a = { ...a!, hold: { kind: "stalled", reason, at: new Date().toISOString(), ...(onChange ? { onChange: true as const } : {}) }, assigned: [...new Set([...(a!.assigned ?? []), ...assign])] };
     d.log("hold", { pr: pr.url, reason });
     await save({ kind: "hold", text: plain });
     return "acted" as const;
@@ -374,7 +380,9 @@ export async function round(d: RoundDeps, pr: PrView, v: Decision, f: RoundFacts
   const followed = v.do === "merge" || v.do === "enqueue" || v.do === "approve" || (v.do === "repair" && f.dirty === true) || (v.do === "wait" && !!risk && staleApproval(a.approve, pr.head, risk));
   // A fix already asked for at this head is not asked again after a `wait` in between (a CI re-run with no push).
   const fix = ["fix_ci", "fix_review"].includes(v.do) || (v.do === "repair" && !f.dirty);
-  if (!followed && (c.lastRound === key || (fix && (c.acted ?? []).includes(act)))) return "nothing";
+  if (!followed && c.lastRound === key) return "nothing";
+  // The fix is out already: nothing is asked again, but the status still says what Ship is on (report skips a same text).
+  if (!followed && fix && (c.acted ?? []).includes(act)) { await save(v.do === "fix_review" ? { kind: "findings" } : { kind: "active" }); return "nothing"; }
   // Each new action spends a round; past `rounds` the PR holds.
   const spend = () => (over(c.rounds, caps.rounds) ? hold(`${c.rounds} rounds (rounds)`, HOLD.cap) : (c.rounds++, undefined));
   let queueWait: string | undefined, updatedOnly = false, ownerWait = false;
@@ -685,11 +693,10 @@ const wakeKey = (identity: string) => `ship.${createHash("sha256").update(identi
  */
 async function report(d: RoundDeps, a: Kept, pr: PrView, f: Facts): Promise<Kept> {
   const s = say(f);
-  // A task's PR is its task's to hear about (a wake); a comment only for what a person must do.
+  // A task's PR is its task's to hear about (a wake); a comment only for what a person must do. Any other PR shows its status as it
+  // changes, waits included, so nobody reads a quiet PR as stuck (a merge is never the first news).
   if (a.owner?.kind === "task" && !a.report && !s.act) return a;
-  const explicit = a.trigger.kind === "label" || a.trigger.kind === "comment";
-  // Nothing to say yet: no comment exists, and no person must act or was handed the PR on purpose (a merged one is never news).
-  const text = a.report || s.act ? s.text : explicit && f.kind !== "merged" ? ACK : undefined;
+  const text = a.report || s.act || f.kind !== "merged" ? s.text : undefined;
   const { reportStale: stale, ...kept } = a;
   if (!text || (a.report && a.said === text)) {
     if (stale) d.state.put(kept);

@@ -52,11 +52,18 @@ test("a timed-out create is posted again with the marker and no id, and the id i
   assert.equal(w.state.get("a/b", 7)!.report, 9);
 });
 
-test("a handoff: all PR with no human action posts nothing, and nothing when it merges", async () => {
+test("a handoff: all PR shows its status as it changes, waits included; a merge with no comment yet posts nothing", async () => {
   const w = world("all");
-  for (const v of [{ do: "wait", why: "checks are still running on its head" }, { do: "fix_review" }, { do: "merge", why: "ready" }]) await round(w.deps, w.pr(), v as any);
-  await round(w.deps, w.pr({ state: "merged" }), { do: "done" });
-  assert.equal(w.sent.length, 0);
+  await round(w.deps, w.pr(), { do: "wait", why: "checks are still running on its head" });
+  assert.match(w.sent[0]!.body, /Waiting for checks to finish\./);
+  await round(w.deps, w.pr(), { do: "wait", why: "waiting for required review" });
+  assert.equal(w.sent.length, 2);
+  assert.match(w.sent[1]!.body, /Waiting for a required review\./);
+  await round(w.deps, w.pr({ labels: ["ship:stop"] }), { do: "wait", why: "checks are still running on its head" });
+  assert.match(w.sent.at(-1)!.body, /Paused by the `ship:stop` label/);
+  const q = world("all");
+  await round(q.deps, q.pr({ state: "merged" }), { do: "done" });
+  assert.equal(q.sent.length, 0);
 });
 
 test("review findings that change at the same head don't edit the comment again, and their agent text is never printed", async () => {

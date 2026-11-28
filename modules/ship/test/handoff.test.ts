@@ -1,5 +1,5 @@
 // Hand-off and rounds end to end against fake GitHub reads and a fake kernel: who can hand a PR over, forks, sticky holds and
-// hand-backs, the person-assigned pause, the CI cap, the repair wake, the direct merge and the report.
+// hand-backs, assignees never stopping it, the CI cap, the repair wake, the direct merge and the report.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -108,12 +108,13 @@ test("a hand-back is sticky with the label still on; re-adding it starts generat
   assert.deepEqual([again?.generation, again?.hold], [2, null]);
 });
 
-test("a person assigned pauses the loop; past ci_rounds the PR holds with its author assigned once, and a fresh trigger clears it", async () => {
+test("an assignee doesn't stop ship, and a wait posts its status; past ci_rounds the PR holds with its author assigned once, and a fresh trigger clears it", async () => {
   const w = world({ repos: { "a/b": { preset: "cautious", caps: { ci_rounds: 1 } } } });
   const on = w.ev("e1", "labeled", "admin1", "2026-11-24T01:00:00Z");
   await intake(w.deps, w.pr({ events: [on] }));
-  assert.equal(await round(w.deps, w.pr({ assignees: ["reviewer1"] }), { do: "fix_ci" }, { failing: ["test"] }), "stopped");
-  assert.equal(await round(w.deps, w.pr({ head: H1 }), { do: "fix_ci" }, { failing: ["test"] }), "acted");
+  await round(w.deps, w.pr({ assignees: ["contrib"] }), { do: "wait", why: "waiting for required review" });
+  assert.match(String((w.state.get("a/b", 7) as any).said), /Waiting for a required review/);
+  assert.equal(await round(w.deps, w.pr({ head: H1, assignees: ["contrib", "reviewer1"] }), { do: "fix_ci" }, { failing: ["test"] }), "acted");
   assert.equal(w.jobs().length, 1);
   // Red on main too: pre-existing, so it spends no CI round (the Engineer judges it with evidence).
   await round(w.deps, w.pr({ head: H2 }), { do: "fix_ci" }, { failing: ["lint"], onBase: ["lint"] });
