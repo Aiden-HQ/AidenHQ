@@ -117,6 +117,8 @@
 //                              GET /v1/events/sources?connection= the resources its connection's routines subscribe to.
 //                              GET /v1/events/batch/:batch (role kernel.events, serving a job's routine_events call in flight) the
 //                              batch the job's own run was fired with, or {pending, retry_after_s} while its binding is stored
+//   POST /v1/conversation/context (the conversation connection's module, serving a job's conversation_context call in flight) {n?}
+//                              -> {conversation, messages}: the conversation the job's own task was summoned in (summon.ts)
 //   POST /v1/health/probe      (the host's health_probe_key, x-health-key) {probe}: one of the modules' declared health probes (health.ts), called as the
 //                              agent granted it -> {ok, ms, error?}, never the tool's answer; scripts/healthcheck.sh's reads
 //   POST /v1/views/<module>/mcp (the board's key) {view, method, params}: a module view's resources/read of itself or tools/call of a
@@ -161,6 +163,7 @@ import { requestChain } from "./review-loop.ts";
 import { NAME, type ConnectionState } from "./connection-state.ts";
 import { MemoryError, memoryOp, view as memoryView, type Memory } from "./memory.ts";
 import { EventsError, type Events } from "./events.ts";
+import type { Summon } from "./summon.ts";
 import { ownerDay } from "../sdk/src/owner-day.ts";
 import { OWNER_CAUSES, readNeed } from "../sdk/src/vendor/needs.ts";
 
@@ -268,6 +271,7 @@ export const ROUTES = [
   { method: "GET", path: "/v1/events/log", auth: "module" },
   { method: "GET", path: "/v1/events/readers", auth: "module" },
   { method: "GET", path: "/v1/events/batch/:batch", auth: "module+assertion" },
+  { method: "POST", path: "/v1/conversation/context", auth: "module+assertion" },
   { method: "ANY", path: "/v1/board-api/:module/*", auth: "board" },
   { method: "POST", path: "/v1/views/:module/mcp", auth: "board" },
   { method: "POST", path: "/v1/auth/:op", auth: "board" },
@@ -362,7 +366,7 @@ function flowRead(flow: Flow, p: URLSearchParams) {
   return flow.summary({ since, to, by: by as By, scope: p.get("scope")?.slice(0, 100) || undefined, journey: p.get("insights")?.slice(0, 100) || undefined });
 }
 
-export function createBackplane({ projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, answers, repos = () => ({}), graderToken = () => "", advisories = () => [], testSessions, accounts, checks, checkJobs, jobTools, moduleTool, precheck, repoBundle, appToken, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, compileCheck, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, views, log = () => {} }: {
+export function createBackplane({ summon, projects, idle, facts, whoami, asserter, proxy, cp, boardCp, grantsFile, writes, records, channels, brake, notify, owner, modules = () => ({}), boardKey = () => "", reviews, reviewerKey = () => "", jobs, codehost, admission, outcomes, wakes, tasks, eventsKey = () => "", work, flow, taskStates, answers, repos = () => ({}), graderToken = () => "", advisories = () => [], testSessions, accounts, checks, checkJobs, jobTools, moduleTool, precheck, repoBundle, appToken, ownerRaw, lane, healthProbe, healthKey = () => "", connectionHealth, connectionState, settingsChange, compileCheck, sharing, validate, routing, memory, events, boardApi: moduleBoardApi, views, log = () => {} }: {
   /** Flow's fact log (facts.ts): POST /v1/facts, and GET /v1/facts for incremental readers. */
   facts?: Facts;
   /** Projects (projects.ts): a code host's new PR fills in its task's project. */
@@ -446,6 +450,8 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
   memory?: Memory;
   /** The event router (events.ts). */
   events?: Events;
+  /** Summons (summon.ts): conversation_context reads the calling job's summoned conversation. */
+  summon?: Summon;
   /** A module view's calls for the owner (views.ts): its own resource and its page's tools. */
   views?: Views;
   /** A module's board API (board-api.ts): the board's reads of a module service, through the kernel. */
@@ -934,6 +940,18 @@ export function createBackplane({ projects, idle, facts, whoami, asserter, proxy
           const row = records?.db.prepare("SELECT routine FROM jobs WHERE id = ?").get(job.job) as { routine: string | null } | undefined;
           return send(res, 200, await events.batch({ task: job.task, agent: job.agent!, routine: row?.routine }, m[0]!));
         } catch (e) { if (e instanceof EventsError) throw fail(e.status, "refused", e.message); throw e; }
+      }
+      if (hit?.path === "/v1/conversation/context") {
+        // The conversation connection's module, serving a kernel job's conversation_context call in flight: the job, its task and
+        // agent from its own token, never the body's say-so; the conversation is the one its task was summoned in.
+        const w = await moduleOf(req);
+        if (!summon) throw fail(503, "unavailable", "summons are off");
+        const live = await asserter.inFlight(String(req.headers["x-aidenhq-caller"] ?? ""), w.module!);
+        const job = live?.flight.bearer ? await whoami(live.flight.bearer).catch(() => undefined) : undefined;
+        if (!live || job?.kind !== "run" || !job.task || !job.job || !job.key || job.agent !== live.caller.agent) throw fail(401, "unauthorized", "only a kernel job's tool call in flight reads its conversation");
+        if (String(live.caller.tool ?? "") !== "conversation.conversation_context") throw fail(403, "forbidden", "a conversation is conversation_context's only");
+        const b = (await json(req, 4_000)) as { n?: unknown };
+        try { return send(res, 200, await summon.context({ task: job.task, key: job.key }, b?.n)); } catch (e) { const st = (e as { status?: number }).status; if (st && st < 500) throw fail(st, "refused", (e as Error).message); throw fail(502, "upstream", (e as Error).message); }
       }
       if (hit?.path === "/v1/routing/:op") {
         // A module holding kernel.routing (the fleet-steward), serving a kernel job's tool call in flight: the job is read from

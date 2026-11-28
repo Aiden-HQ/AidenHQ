@@ -13,7 +13,7 @@ test("a fleet repo is worked with no entry; any other repo only once it has its 
 
 test("loosens names each loosened field by repo, and the same policy spelled differently is no change", () => {
   const l = loosens({ repos: { "a/b": "cautious" } }, { repos: { "a/b": { preset: "full" } } });
-  assert.ok(l.includes("a/b.by_tier.standard.approve") && l.includes("a/b.by_tier.sensitive.approve") && !l.includes("a/b.by_tier.standard.merge") && l.includes("a/b.caps.usd") && l.includes("a/b.handoff"));
+  assert.ok(l.includes("a/b.by_tier.standard.approve") && l.includes("a/b.by_tier.sensitive.approve") && !l.includes("a/b.by_tier.standard.merge") && l.includes("a/b.caps.usd") && !l.includes("a/b.handoff"));
   assert.deepEqual(loosens({ repos: { "a/b": "full" } }, { repos: { "a/b": { preset: "full" } } }), []);
   assert.deepEqual(loosens({ repos: { "a/b": "full" } }, { repos: { "a/b": "cautious" } }), []);
   // Per tier: approve raised, merge raised, the unwatched merge; lowering is free.
@@ -58,7 +58,7 @@ test("the pull-request duties are fields of a repo's entry: validated, and switc
   assert.match(validate({ repos: { "a/b": { dependabot: true, quiet_pr_days: 0 } } }).join("|"), /dependabot: one of off, failing, all.*quiet_pr_days: a whole number/);
   const e = effective({ repos: { "a/b": { dependabot: "failing" } } }, "a/b", scope)!;
   assert.deepEqual([e.dependabot, e.quiet_pr_days, effective({}, "acme/product", scope)!.dependabot], ["failing", null, "off"]);
-  assert.deepEqual(loosens({ repos: { "a/b": {} } }, { repos: { "a/b": { dependabot: "failing", quiet_pr_days: 7 } } }, scope), ["a/b.quiet_pr_days"]);
+  assert.deepEqual(loosens({ repos: { "a/b": {} } }, { repos: { "a/b": { dependabot: "failing", quiet_pr_days: 7 } } }, scope), ["a/b.dependabot", "a/b.quiet_pr_days"], "failing merges green bumps unasked: the owner's");
   assert.deepEqual(loosens({ repos: { "a/b": { dependabot: "failing", quiet_pr_days: 7 } } }, { repos: { "a/b": { dependabot: "all", quiet_pr_days: 3 } } }, scope), ["a/b.dependabot", "a/b.quiet_pr_days"], "a shorter window closes sooner: the owner's");
   assert.deepEqual(loosens({ repos: { "a/b": { quiet_pr_days: 7 } } }, { repos: { "a/b": { quiet_pr_days: 14 } } }, scope), [], "a longer window is a tightening");
   assert.deepEqual(loosens({ defaults: { quiet_pr_days: 30 } }, { defaults: { quiet_pr_days: 10 } }, scope), ["defaults.quiet_pr_days"]);

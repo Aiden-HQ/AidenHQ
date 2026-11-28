@@ -249,7 +249,7 @@ export function createAuth(o: {
       rmSync(`${o.dataDir}/tdlib`, { recursive: true, force: true });
       store.tx(() => {
         // Everything per account: another account signing in next must inherit none of it. (kv keeps only settings-like keys.)
-        for (const t of ["checkpoint", "backfill", "ingested", "msg_root", "agent_pending", "agent_sent", "outbox", "writes", "send_log"]) store.db.exec(`DELETE FROM ${t}`);
+        for (const t of ["checkpoint", "backfill", "ingested", "msg_root", "agent_pending", "agent_sent", "outbox", "writes", "send_log", "summoned_chats"]) store.db.exec(`DELETE FROM ${t}`);
         store.db.prepare(`DELETE FROM kv WHERE k IN ('backfill_started', 'revoked', 'revoke_notified')`).run();
       });
       log.info("telegram disconnected; restarting idle");

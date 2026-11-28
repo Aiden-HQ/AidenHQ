@@ -146,7 +146,7 @@ test("a colleague's Slack mention: one task per thread for the bound agent, fenc
   const { k } = await setup(t, { grants: { "ag-rk": { key: "roadmap-keeper" } }, onControl: async (req) => {
     if (req.method === "GET" && req.url === "/api/agents/ag-rk") return { body: { id: "ag-rk", companyId: "co" } };
     if (req.method === "GET" && req.url.startsWith("/api/issues/")) { const i = issues[req.url.split("/").pop()]; return i ? { body: i } : { status: 404, body: {} }; }
-    if (req.method === "POST" && req.url === "/api/companies/co/issues") return { body: { id: "i-th", identifier: "WOR-20" } };
+    if (req.method === "POST" && req.url === "/api/companies/co/issues") { const deduplicated = Boolean(issues["i-th"]); issues["i-th"] ??= { id: "i-th", identifier: "WOR-20", status: "backlog", assigneeAgentId: "ag-rk" }; return { body: { id: "i-th", identifier: "WOR-20", deduplicated } }; }
     if (req.method === "POST" && /comments$/.test(req.url)) return { body: { id: "c-1" } };
     return undefined;
   } });
@@ -156,10 +156,12 @@ test("a colleague's Slack mention: one task per thread for the bound agent, fenc
   assert.deepEqual([first.status, first.json.created, first.json.task.identifier], [200, true, "WOR-20"]);
   const made = JSON.parse(k.control.find((c) => c.method === "POST" && c.url === "/api/companies/co/issues").body);
   assert.equal(made.assigneeAgentId, "ag-rk");
+  // Filed quiet by its stable key (the summon path's filing), then the mention posted and the task opened: the first job reads it.
+  assert.deepEqual([made.status, made.idempotencyKey?.startsWith("pw-")], ["backlog", true]);
   // The runner reads a user-made task without a source marker as the owner's request: this one has it, and its text can't carry another marker.
-  assert.match(made.description, /<!-- source:slack:C0BOUND01:1700000000\.000100 -->$/);
+  assert.match(made.description, /<!-- source:slack:C0BOUND01:1700000000\.000100 -->/);
   assert.match(made.description, /not the owner's words/);
-  assert.ok(!made.description.replace(/\n\n<!-- source:[^>]*-->$/, "").includes("<!--"));
+  assert.match(JSON.parse(k.control.filter((c) => c.url === "/api/issues/i-th/comments").at(-1).body).body, /status\?[\s\S]*<!-- aidenhq-for-others -->$/);
   // A later mention in the same thread is a comment on the same task (reopened), marked for other agents only.
   issues["i-th"] = { id: "i-th", identifier: "WOR-20", status: "done", assigneeAgentId: "ag-rk" };
   const again = await mention({ text: "and now?" });

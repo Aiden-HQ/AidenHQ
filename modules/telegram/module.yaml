@@ -35,8 +35,15 @@ contributes:
         - { name: changes, time: observed_at, channel: chat_id }
 # kernel.events: telegram-live sends each kept message to the kernel's event router (POST /v1/events) with this module's own
 # token. kernel.owner-notice: it tells the owner when Telegram signs the account out (POST /v1/connections/need).
+# kernel.attest-owner: it marks which of those messages the owner wrote (from_owner: TDLib's outgoing), so the owner's
+# `cc <teammate>` summons one.
 roles:
-  requests: [ kernel.events, kernel.owner-notice ]
+  requests: [ kernel.events, kernel.owner-notice, kernel.attest-owner ]
+# The kernel's calls for a summoned conversation (kernel/src/summon.ts): its recent messages, a reply as the owner, the 👀 reaction.
+summon:
+  connection: telegram_account
+  url: http://telegram-live:8090/summon
+  auth: telegram_live_service_key
 # The kernel calls the telegram write kinds' plan, execute and status here, with the connection's key (executor@1).
 providers:
   executor:
