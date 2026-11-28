@@ -65,15 +65,18 @@ describe("findTimes", () => {
 
   it("ranks slots inside every known attendee zone's hours first, never excluding the rest", () => {
     // New York is 9 hours behind Dubai in December: 09:00-18:00 there is 18:00-03:00 Dubai.
-    const wide = base({ working_hours: week([["09:00", "21:00"]]), attendee_timezones: { "dana@example.com": "America/New_York" } });
+    const wide = base({ working_hours: week([["09:00", "21:00"]]), attendees: ["dana@example.com"], attendee_timezones: { "dana@example.com": "America/New_York" } });
     const slots = findTimes(wide, [], [], NOW);
     expect(hm(slots[0]!.start)).toBe("18:00");
     expect(slots.some((x) => hm(x.start) === "09:00")).toBe(true);
     const inHours = (iso: string) => hm(iso) >= "18:00";
     const flags = slots.map((x) => inHours(x.start));
     expect(flags).toEqual([...flags].sort((a, b) => Number(b) - Number(a)));
+    // A zone for someone not in the meeting does not count.
+    expect(findTimes({ ...wide, attendees: ["other@example.com"] }, [], [], NOW)[0]!.start).toContain("T09:00");
+    expect(findTimes({ ...wide, attendees: ["DANA@example.com"] }, [], [], NOW)[0]!.start).toContain("T18:00");
     // Two zones: only slots inside both rank first (Dubai and New York share no common 9-18 hours, so none is).
-    const both = findTimes(base({ working_hours: week([["09:00", "21:00"]]), attendee_timezones: { a: "America/New_York", b: "Asia/Dubai" }, attendee_hours: ["09:00", "18:00"] }), [], [], NOW);
+    const both = findTimes(base({ working_hours: week([["09:00", "21:00"]]), attendees: ["a", "b"], attendee_timezones: { a: "America/New_York", b: "Asia/Dubai" }, attendee_hours: ["09:00", "18:00"] }), [], [], NOW);
     expect(hm(both[0]!.start)).toBe("09:00");
   });
 
@@ -81,7 +84,7 @@ describe("findTimes", () => {
     const calls = { best: [["14:00", "16:00"]] } as FindTimesArgs["call_windows"];
     const plain = findTimes(base({ call_windows: calls }), [], [], NOW);
     expect(findTimes(base({ call_windows: calls, attendee_timezones: {} }), [], [], NOW)).toEqual(plain);
-    expect(findTimes(base({ call_windows: calls, attendee_timezones: { "x@example.com": "Not/AZone", "y@example.com": "" } }), [], [], NOW)).toEqual(plain);
+    expect(findTimes(base({ call_windows: calls, attendees: ["x@example.com", "y@example.com"], attendee_timezones: { "x@example.com": "Not/AZone", "y@example.com": "" } }), [], [], NOW)).toEqual(plain);
   });
 
   it("needs a window with explicit offsets, not longer than 62 days", () => {

@@ -153,7 +153,8 @@ export function findTimes(args: FindTimesArgs, events: GEvent[], attendeeBusy: {
   const tiered = best.length + ok.length > 0;
 
   // Only attendees with a valid zone count: one without is ignored, and with none the ranking is the owner's alone.
-  const attendeeZones = [...new Set(Object.values(args.attendee_timezones ?? {}).filter(validZone))];
+  const known = new Map(Object.entries(args.attendee_timezones ?? {}).map(([e, z]) => [e.toLowerCase(), z]));
+  const attendeeZones = [...new Set((args.attendees ?? []).map((a) => known.get(a.toLowerCase())).filter(validZone))];
   const [theirOpen, theirClose] = (args.attendee_hours ?? DEFAULT_ATTENDEE_HOURS).map(minutes) as [number, number];
   const inTheirHours = (start: number, end: number) =>
     attendeeZones.every((z) => {
