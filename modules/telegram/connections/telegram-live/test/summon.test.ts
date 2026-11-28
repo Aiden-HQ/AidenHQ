@@ -52,7 +52,7 @@ function setup(exclude: number[] = [-99]) {
       store.db.prepare(`INSERT INTO agent_sent (chat_id, message_id) VALUES (?, ?)`).run(chat, temp + 1000);
     },
   });
-  const summon = createSummon({ td: () => fake, store, settings: { exclude: new Set(exclude) }, run: ex.run, now: () => clock.t });
+  const summon = createSummon({ td: () => fake, store, me: () => ME, settings: { exclude: new Set(exclude) }, run: ex.run, now: () => clock.t });
   return { store, fake, summon, clock };
 }
 const body = { resource: "-10", in_reply_to: "-10:5", text: "Booked. Sent by Aria from [AidenHQ](https://aidenhq.ai)", key: "k1" };
@@ -91,7 +91,7 @@ test("the sent message comes back through ingest as stored, never as an event", 
   td.on("sendMessage", (r: any) => ({ ...msg(-10, 1000, { outgoing: true, text: "Booked.", sending: true }), chat_id: r.chat_id }));
   const ing = createIngest({ td, store, me: () => ME, settings: { muted: "tagged", exclude: new Set(), backfillDays: 30 }, log });
   const ex = sender({ td: () => td, store, onAgentSend: (c, t, w) => markAgentSend(store, c, t, w) });
-  const summon = createSummon({ td: () => td, store, settings: { exclude: new Set() }, run: ex.run });
+  const summon = createSummon({ td: () => td, store, me: () => ME, settings: { exclude: new Set() }, run: ex.run });
   const reply = summon.handle("reply", { resource: "-10", in_reply_to: "-10:5", text: "Booked.", key: "k" });
   await new Promise((r) => setTimeout(r, 50));
   // TDLib's success update: the temporary id 1000 becomes 2000
@@ -139,4 +139,36 @@ test("context keeps reading short pages until n", async () => {
   fake.on("getChatHistory", () => ({ messages: pages.shift() }));
   const r = await summon.handle("context", { resource: "-10", n: 5 });
   expect((r.body as any).messages.map((x: any) => x.text)).toEqual(["m5", "m6", "m7", "m8", "m9"]);
+});
+
+test("a retry of a sent reply never looks up the original message again", async () => {
+  const { summon, fake, clock } = setup();
+  await summon.handle("reply", body);
+  fake.on("getMessage", () => { throw new Error("message deleted"); });
+  clock.t += CHAT_GAP_MS * 2;
+  expect((await summon.handle("reply", body)).status).toBe(200);
+});
+
+test("Saved Messages are the owner's by sender id; a forward is never from_owner", async () => {
+  const saved = { ...msg(-10, 1, { text: "cc Aria" }), sender_id: { _: "messageSenderUser", user_id: ME.user_id } };
+  const fwd = { ...msg(-10, 2, { outgoing: true, text: "cc Aria" }), forward_info: { _: "messageForwardInfo" } };
+  const events = await ingestEvents([chat(-10, "dm")], [newMessage(saved as any), newMessage(fwd as any)]);
+  expect(events.map((e) => e.from_owner)).toEqual([true, false]);
+});
+
+test("a message an agent posts through telegram_send never fires an event, whatever its text", async () => {
+  const store = openStore(tmpDb());
+  const { td } = scriptedTd([chat(-10, "group")], {});
+  td.on("getChat", chat(-10, "group"));
+  td.on("sendMessage", (r: any) => ({ ...msg(-10, 1000, { outgoing: true, text: "cc Aria", sending: true }), chat_id: r.chat_id }));
+  const ing = createIngest({ td, store, me: () => ME, settings: { muted: "tagged", exclude: new Set(), backfillDays: 30 }, log });
+  const ex = sender({ td: () => td, store, onAgentSend: (c, t, w) => markAgentSend(store, c, t, w) });
+  const done = ex.execute({ id: "k-0000000000000001", kind: "telegram.send", digest: "d", idempotency_key: "i", args: { action: "send", chat_id: "-10", text: "cc Aria", agent: "Aiden" } });
+  await new Promise((r) => setTimeout(r, 50));
+  await ing.handle(newMessage(msg(-10, 1000, { outgoing: true, text: "cc Aria", sending: true })) as any);
+  await ing.handle({ _: "updateMessageSendSucceeded", old_message_id: 1000, message: msg(-10, 2000, { outgoing: true, text: "cc Aria" }) } as any);
+  expect((await done).ok).toBe(true);
+  const events: any[] = [];
+  await ing.drain({ warehouse: undefined, kernel: { event: async (e) => void events.push(e) } });
+  expect(events).toEqual([]);
 });

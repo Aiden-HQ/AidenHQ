@@ -63,6 +63,10 @@ export function formatted(content: Td.MessageContent): Td.formattedText | undefi
   return content._ === "messageText" ? c.text : c.caption;
 }
 
+/** The owner's own words: sent by them (TDLib's outgoing flag, or their user id: Saved Messages reports its messages as incoming) and not a forward, whose text is someone else's. */
+export const ownerAuthored = (m: Td.message, me: Me): boolean =>
+  !m.forward_info && (m.is_outgoing || (m.sender_id._ === "messageSenderUser" && m.sender_id.user_id === me.user_id));
+
 export function mentionsMe(m: Td.message, me: Me): boolean {
   if (m.contains_unread_mention) return true;
   const f = formatted(m.content);

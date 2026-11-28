@@ -7,11 +7,13 @@ import { createHash } from "node:crypto";
 import type { Run } from "./send.js";
 import type { Settings } from "./ingest.js";
 import type { Store } from "./store.js";
-import { TdError, type TdClient } from "./td.js";
+import { ownerAuthored } from "./filter.js";
+import { TdError, type Me, type TdClient } from "./td.js";
 
 /** How long a chat stays forwarded while muted after the kernel last touched it (the connector never learns a task closed). */
 export const WATCH_MS = 48 * 3_600_000;
 const CONTEXT_BUDGET_MS = 8_000;
+const ACK_BUDGET_MS = 2_500;
 /** Bounds one TDLib call (invoke has no timeout of its own): the call is abandoned, not cancelled. */
 const within = <T>(p: Promise<T>, ms: number): Promise<T> => Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new TdError(504, "Telegram did not answer in time")), Math.max(ms, 1)).unref())]);
 export const EMOJI: Record<string, string> = { eyes: "👀" };
@@ -44,23 +46,33 @@ function messageId(v: unknown, chat: number): number | undefined {
   return Number(m[2]);
 }
 
-export function createSummon(d: { td: () => TdClient | undefined; store: Store; settings: Pick<Settings, "exclude">; run: Run; now?: () => number }) {
+export function createSummon(d: { td: () => TdClient | undefined; store: Store; settings: Pick<Settings, "exclude">; me: () => Me | undefined; run: Run; now?: () => number }) {
   const now = d.now ?? Date.now;
   const db = d.store.db;
   const watch = db.prepare(`INSERT OR REPLACE INTO summoned_chats (chat_id, until) VALUES (?, ?)`);
   const written = db.prepare(`SELECT state, message_id FROM writes WHERE id = ?`);
+  const agentSent = db.prepare(`SELECT 1 FROM agent_sent WHERE chat_id = ? AND message_id = ?`);
   const lateId = db.prepare(`SELECT final_message_id FROM agent_pending WHERE write_id = ? AND final_message_id IS NOT NULL`);
   const settle = db.prepare(`UPDATE writes SET state = 'done', message_id = ?, text = 'Sent (confirmed late).' WHERE id = ?`);
 
+  /** The message id a summon reply was sent as: done, or TDLib confirmed it after the executor gave up waiting (then the row is settled, never re-sent). */
+  function settled(id: string): number | undefined {
+    const w = written.get(id) as { state: string; message_id: number | null } | undefined;
+    if (w?.state === "done" && w.message_id) return w.message_id;
+    const late = w?.state === "unknown" ? (lateId.get(id) as { final_message_id: number } | undefined)?.final_message_id : undefined;
+    if (late) settle.run(late, id);
+    return late;
+  }
+
   /** The chat of a call, or the refusal: bad id 400, an excluded or secret chat 403, Telegram not connected 503. */
-  async function chatOf(b: any): Promise<{ id: number; td: TdClient } | Reply> {
+  async function chatOf(b: any, ms = CONTEXT_BUDGET_MS): Promise<{ id: number; td: TdClient } | Reply> {
     const r = str(b?.resource, 22);
     if (!r || !/^-?[0-9]{1,20}$/.test(r)) return reply(400, { error: "resource must be a chat id" });
     const id = Number(r);
     if (d.settings.exclude.has(id)) return reply(403, { error: "this chat is excluded" });
     const td = d.td();
     if (!td) return reply(503, { error: "Telegram isn't connected" });
-    const chat = await within(td.invoke<any>({ _: "getChat", chat_id: id }), CONTEXT_BUDGET_MS);
+    const chat = await within(td.invoke<any>({ _: "getChat", chat_id: id }), ms);
     if (chat.type?._ === "chatTypeSecret") return reply(403, { error: "secret chats aren't supported" });
     watch.run(id, now() + WATCH_MS);
     return { id, td };
@@ -98,10 +110,11 @@ export function createSummon(d: { td: () => TdClient | undefined; store: Store; 
       }
       return names.get(s.user_id)!;
     };
+    const me = d.me();
     const messages = [];
     for (const m of got.reverse())
       messages.push({
-        id: `${c.id}:${m.id}`, author: await nameOf(m.sender_id), is_owner: !!m.is_outgoing,
+        id: `${c.id}:${m.id}`, author: await nameOf(m.sender_id), is_owner: !m.forward_info && !agentSent.get(c.id, m.id) && (me ? ownerAuthored(m, me) : !!m.is_outgoing),
         text: m.content?.text?.text ?? m.content?.caption?.text ?? `[${String(m.content?._ ?? "message").replace(/^message/, "").toLowerCase()}]`,
         ts: new Date(m.date * 1000).toISOString(),
       });
@@ -118,29 +131,27 @@ export function createSummon(d: { td: () => TdClient | undefined; store: Store; 
     // The writes row's id is the idempotency key's hash: the same key reaches the same row, which sends at most once.
     const id = `summon-${createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
     const { text: plain, entities } = renderLinks(text);
+    // A reply already sent (or confirmed late) under this key answers first: a retry never needs the original message again.
+    const done = settled(id);
+    if (done) return reply(200, { id: `${c.id}:${done}` });
     // The topic of the message replied to: in a forum, the reply must go to that topic's thread too.
     // A failed lookup fails the reply (handle: 502) rather than send it without its topic.
     const target = await c.td.invoke<any>({ _: "getMessage", chat_id: c.id, message_id: to });
     const topic = target?.topic_id?._ === "messageTopicForum" ? { _: "messageTopicForum", forum_topic_id: target.topic_id.forum_topic_id } : undefined;
     const r = await d.run({ id, kind: "telegram.reply", digest: "", idempotency_key: key, args: { action: "reply", chat_id: String(c.id), reply_to_message_id: String(to), text: plain, agent: "summon" } }, { entities, topic });
-    let w = written.get(id) as { state: string; message_id: number | null } | undefined;
-    // TDLib confirmed a send after the executor gave up waiting: the final id is in agent_pending, so the reply is done, never retried.
-    const late = w?.state === "unknown" ? (lateId.get(id) as { final_message_id: number } | undefined)?.final_message_id : undefined;
-    if (late) {
-      settle.run(late, id);
-      w = { state: "done", message_id: late };
-    }
-    if (w?.state === "done" && w.message_id) return reply(200, { id: `${c.id}:${w.message_id}` });
+    const sent = settled(id);
+    if (sent) return reply(200, { id: `${c.id}:${sent}` });
     return reply(r.text.startsWith("Send cap") ? 429 : 502, { error: r.text });
   }
 
   async function react(b: any): Promise<Reply> {
-    const c = await chatOf(b);
+    const until = now() + ACK_BUDGET_MS; // one short deadline across the chat lookup and the reaction: the 3 s ack
+    const c = await chatOf(b, ACK_BUDGET_MS);
     if ("status" in c) return c;
     const emoji = EMOJI[String(b?.emoji)];
     const mid = messageId(b?.message, c.id);
     if (!emoji || mid === undefined) return reply(400, { error: 'send { resource, message, emoji: "eyes" }' });
-    await c.td.invoke({ _: "addMessageReaction", chat_id: c.id, message_id: mid, reaction_type: { _: "reactionTypeEmoji", emoji }, is_big: false, update_recent_reactions: true });
+    await within(c.td.invoke({ _: "addMessageReaction", chat_id: c.id, message_id: mid, reaction_type: { _: "reactionTypeEmoji", emoji }, is_big: false, update_recent_reactions: true }), until - now());
     return reply(200, {});
   }
 
