@@ -220,3 +220,12 @@ asked, through the tiered settings path. The defaults are old Aria's `templates/
 - Ranking: everyone in core; then the fewest people in stretch; then the fewest outside.
 - Attendees are never excluded for hours. Times outside the owner's own hours plus stretch are excluded, so the owner
   never gets a 3 am booking (engineering call).
+
+**Colleagues' hours are inferred (2026-11-28).**
+- No Google API exposes working hours. Settings, event types, FreeBusy and the Directory were checked; the Calendar UI
+  uses private endpoints. Old Aria used only the owner's configured hours.
+- `calendar_find_times` infers a colleague's core hours from their visible free/busy over the past 28 days, using
+  robust daily start and end percentiles.
+  - It needs at least 8 busy days and a 4–14 h span; otherwise it uses the defaults.
+  - Results are cached for 7 days.
+- Hours given by the caller (learned from the person or the owner) win over inferred hours.
