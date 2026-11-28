@@ -48,6 +48,8 @@ test("the default bundle and every official module compile", () => {
       // server-manager ships a teammate but is not in the default bundle, so it is on only while the instance lists it: the roster
       // here is the modules a fresh install ships, and this entry is the one extra the every-module compile adds.
       "server-manager": ["Rolf", "Server upkeep", kit("spiky", "headset", "shield", 6)],
+      // aria is not in the default bundle either (it needs Google): the other extra of the every-module compile.
+      aria: ["Aria", "Executive assistant", { hair: "bun", accessory: "headset", body: "notepad", skin: 3, hair_color: 6, palette: 1 }],
     });
     assert.equal(r.paperclip.agents["open-loops"].teammate.first, 1);
     assert.deepEqual(["meeting-scan", "meeting-actions"].map((k) => r.paperclip.routines[k].agent), ["meetings", "meetings"]);

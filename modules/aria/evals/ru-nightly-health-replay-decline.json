@@ -1,0 +1,25 @@
+{
+  "id": "ru-nightly-health-replay-decline",
+  "kind": "ruling",
+  "source": "ruling:nightly-health",
+  "description": "The nightly pass finds a meeting the owner organizes whose only other guest declined earlier. It catches up: cancelled, owner told.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [
+      {"id":"oskar-1on1","status":"confirmed","summary":"Oskar / Owner","start":{"dateTime":"2026-11-12T10:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-12T10:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"oskar.pell@brightfield.example.com","responseStatus":"declined"}]}
+    ],
+    "contacts": [
+      {"name":"Oskar Pell","emails":["oskar.pell@brightfield.example.com"],"tier":"external","timezone":"Europe/Warsaw"}
+    ]
+  },
+  "trigger": {
+    "scheduled": "nightly"
+  },
+  "expect": [
+    {"calendarEvent":"oskar-1on1","status":"cancelled"},
+    {"messageTo":"owner"}
+  ],
+  "must_not": [
+    {"approval":{"count":1}}
+  ]
+}

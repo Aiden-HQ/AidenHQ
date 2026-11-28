@@ -1,0 +1,42 @@
+{
+  "id": "ru-report-on-path-owner",
+  "kind": "ruling",
+  "source": "ruling:report-on-path",
+  "description": "The owner asks in the DM to add a person to a meeting; Aria does it and reports to the owner in the DM.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "owner_team_domain": "{{DOMAIN}}",
+    "calendar": [
+      {"id":"review","status":"confirmed","summary":"Roadmap review","start":{"dateTime":"2026-11-12T14:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-12T15:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"tomas.brandt@{{DOMAIN}}","responseStatus":"accepted"}]}
+    ],
+    "contacts": [
+      {"name":"Ines Okafor","emails":["ines.okafor@{{DOMAIN}}"],"tier":"team","timezone":"Africa/Lagos"},
+      {"name":"Tomas Brandt","emails":["tomas.brandt@{{DOMAIN}}"],"tier":"team","timezone":"Europe/Berlin"}
+    ]
+  },
+  "trigger": {
+    "ingest": {
+      "channel": "owner",
+      "externalMessageId": "o-1",
+      "externalThreadId": "owner-dm",
+      "sender": {
+        "channel": "owner",
+        "externalId": "000000",
+        "verified": true,
+        "displayName": "Owner"
+      },
+      "text": "Add Ines to Thursday's roadmap review.",
+      "receivedAt": "2026-11-09T06:00:00Z",
+      "mentionsAria": true,
+      "isDirect": true,
+      "kind": "message"
+    }
+  },
+  "expect": [
+    {"messageTo":"owner","contains":"Ines"}
+  ],
+  "must_not": [
+    {"approval":{"count":1}},
+    {"outbox":{"kind":"delete_event"}}
+  ]
+}

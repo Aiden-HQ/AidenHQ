@@ -1,0 +1,25 @@
+{
+  "id": "ru-rsvp-external-chased-no-tap",
+  "kind": "ruling",
+  "source": "ruling:rsvps-for-organizer",
+  "status": "old-harness: approval-taps: the old per-action owner tap; calendar writes are now reviewed by the AI reviewer",
+  "description": "An external guest whose calendar Aria cannot read has not answered; she sends a reminder herself, without a tap.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [
+      {"id":"review","status":"confirmed","summary":"Partner review","start":{"dateTime":"2026-11-12T14:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-12T15:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"oskar.pell@brightfield.example.com","responseStatus":"needsAction"}]}
+    ],
+    "contacts": [
+      {"name":"Oskar Pell","emails":["oskar.pell@brightfield.example.com"],"tier":"external","timezone":"Europe/Warsaw"}
+    ]
+  },
+  "trigger": {
+    "scheduled": "chase"
+  },
+  "expect": [
+    {"messageTo":"oskar.pell@brightfield.example.com"}
+  ],
+  "must_not": [
+    {"approval":{"count":1}}
+  ]
+}

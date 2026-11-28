@@ -1,0 +1,22 @@
+{
+  "id": "ru-interview-loop-composed",
+  "kind": "ruling",
+  "source": "ruling:pick-the-tool-with-least-guessing",
+  "description": "A back-to-back loop of three interviews with three different people is not what calendar_find_times is for. Aria reads each person's busy time with calendar_free_busy, composes three consecutive 45-minute slots herself, and must verify them with calendar_check_times before booking any of them.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [],
+    "contacts": [],
+    "free_busy": { "ana@acme.example.com": { "busy": [] }, "ben@acme.example.com": { "busy": [{"start":"2026-11-12T10:30:00{{OFFSET}}","end":"2026-11-12T11:15:00{{OFFSET}}"}] }, "chen@acme.example.com": { "busy": [] } },
+    "check_times": { "ok": true }
+  },
+  "trigger": { "owner_ask": "Set up interviews with Ana, Ben and Chen for candidate dev@candidate.example.com on Thursday, back to back, 45 minutes each." },
+  "expect": [
+    { "tool": "calendar_free_busy" },
+    { "tool": "calendar_check_times", "before": "calendar_create_event" },
+    { "tool": "calendar_create_event", "times": 3 }
+  ],
+  "must_not": [
+    { "tool": "calendar_create_event", "without_prior": "calendar_check_times" }
+  ]
+}

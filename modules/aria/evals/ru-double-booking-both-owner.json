@@ -1,0 +1,50 @@
+{
+  "id": "ru-double-booking-both-owner",
+  "kind": "ruling",
+  "source": "ruling:double-bookings",
+  "description": "Both clashing meetings are the owner's own with guests; the one with the better new time moves, one occurrence, and the owner gets a report.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "owner_team_domain": "{{DOMAIN}}",
+    "calendar": [
+      {"id":"r1","status":"confirmed","summary":"Tomas / Owner","start":{"dateTime":"2026-11-11T11:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-11T12:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"tomas.brandt@{{DOMAIN}}","responseStatus":"accepted"}]}
+    ],
+    "contacts": [
+      {"name":"Tomas Brandt","emails":["tomas.brandt@{{DOMAIN}}"],"tier":"team","timezone":"Europe/Berlin"},
+      {"name":"Ines Okafor","emails":["ines.okafor@{{DOMAIN}}"],"tier":"team","timezone":"Africa/Lagos"}
+    ]
+  },
+  "trigger": {
+    "calendarChange": {
+      "eventId": "r2",
+      "created": {
+        "id": "r2",
+        "status": "confirmed",
+        "summary": "Ines / Owner",
+        "start": {
+          "dateTime": "2026-11-11T11:00:00{{OFFSET}}",
+          "timeZone": "{{TZ}}"
+        },
+        "end": {
+          "dateTime": "2026-11-11T12:00:00{{OFFSET}}",
+          "timeZone": "{{TZ}}"
+        },
+        "organizer": {
+          "email": "{{OWNER}}",
+          "self": true
+        },
+        "attendees": [
+          {"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},
+          {"email":"ines.okafor@{{DOMAIN}}","responseStatus":"accepted"}
+        ]
+      }
+    }
+  },
+  "expect": [
+    {"messageTo":"owner"}
+  ],
+  "must_not": [
+    {"approval":{"count":1}},
+    {"outbox":{"kind":"delete_event"}}
+  ]
+}

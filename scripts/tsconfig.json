@@ -26,6 +26,7 @@
     "../modules/ai-reviewer/service/src/review-files.ts",
     "../modules/ai-reviewer/service/src/review.ts",
     "../modules/ai-reviewer/service/src/server.ts",
+    "../modules/aria/service/src/main.ts",
     "../modules/ci/runner/job-started.ts",
     "../modules/ci/template/.github/code-review.ts",
     "../modules/ci/template/.github/codegenie-gate.ts",
