@@ -5,8 +5,9 @@ import { ConnectButton, useConnectNeeded, type Can, type Connectable } from "./C
 import { useEvents } from "./events";
 import { STATUS_LABEL, connectionStatus, displayName, type ConnectionRow } from "./connections";
 import { LockIcon, ModuleFacts, ModuleStatus, TurnOnCard, lockedWhy, moduleState, publisher, useModuleToggle, useSetupNeeded, useSetupPairing } from "./ModuleParts";
-import { SettingItem } from "./Settings";
-import { ChangePreview, ChangeProgress, ChangesScope, Group, useChanges } from "./settings-ui";
+import { SettingsCard } from "./SettingsForm";
+import { GENERAL_KEYS } from "./settings-layout";
+import { ChangePreview, ChangeProgress, ChangesScope, useChanges } from "./settings-ui";
 import { SetupButton } from "./SetupButton";
 import { SkeletonLines } from "./Skeleton";
 import type { Advisory, BrowseModule, ModuleDetail, ModuleRow, SettingChange, SettingRow, SharePreview, TaskRow } from "./types";
@@ -398,15 +399,17 @@ function RoutineRow({ r }: { r: NonNullable<ModuleDetail["routines"]>[number] })
 }
 
 function ModuleSettings({ m, onSignIn }: { m: ModuleRow; onSignIn: () => void }) {
-  const [rows, setRows] = useState<SettingRow[] | null>(null);
+  const [all, setAll] = useState<SettingRow[] | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
-    api.settings().then((r) => setRows(r.settings.filter((s) => s.module === m.name && !s.page && Object.entries(s.when ?? {}).every(([k, v]) => String(r.settings.find((x) => x.key === k)?.value ?? r.settings.find((x) => x.key === k)?.default) === String(v)))), (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)));
+    api.settings().then((r) => setAll(r.settings), (e) => (e instanceof SignInRequired ? onSignIn() : setError((e as Error).message)));
   }, [m.name, onSignIn]);
   if (error) return <EmptyState><strong>Couldn't load the settings.</strong> {error}</EmptyState>;
-  if (!rows) return <SkeletonLines lines={3} />;
+  if (!all) return <SkeletonLines lines={3} />;
+  // A module's own settings, less the ones its Fleet page edits and the few a general Settings page owns.
+  const rows = all.filter((s) => s.module === m.name && !s.page && !s.install && !GENERAL_KEYS.has(s.key));
   if (!rows.length) return <EmptyState><strong>Nothing to set.</strong> {m.name} works as it is; it has no settings of its own.</EmptyState>;
-  return <Group title="Settings" count={rows.length}>{rows.map((s) => <SettingItem key={s.key} s={s} />)}</Group>;
+  return <SettingsCard rows={rows} all={all} />;
 }
 
 /** A change's stage (the board's settings changes, not a task) as a dot and a word. */

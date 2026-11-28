@@ -38,6 +38,12 @@ and type, grids that add columns, never a narrow column in the middle of a big s
   overlays `#/t/<task>`, `#/r/<run>`, `#/brief`, `#/help`, `#/setup/<module>` keep the page under them, and closing one
   goes back to it. An old address (`#/c/…`, `#/agents…`, `#/modules…`, `#/fleet/…`, `#/board`, `#/sessions…`,
   `#/costs`, `#/flow…`, `#/approvals`) is rewritten once by `parseRoute`'s `redirectOld`; its view is gone.
+- **Settings** (`#/settings/<page>`, `web/src/settings-layout.ts`): **You** (Profile, Notifications), **Agents** (Autonomy, Spend),
+  **Connect** (Connections, Accounts) and **System** (Updates, Board access, Backups, Advanced). Each settings page is one card
+  (`SettingsCard`, `SettingsForm.tsx`): a row per setting with its `title`, a one-line help and one control flush right at the card's
+  one control width (a segmented choice for two to four values, on/off included), a local draft, and one Save/Discard bar that files
+  one settings change. A module's own settings are never here: they are edited on its feature page or its Settings tab, which uses the
+  same card.
 
 A new board page: add its view to `NavView`/`ITEMS` in `Shell.tsx` and to a section in `SECTIONS` (an existing one
 unless it is daily work), its route in `App.tsx` (`parseRoute`, `viewOf`), and a `VIEW_CHUNKS` entry in `queries.ts` so

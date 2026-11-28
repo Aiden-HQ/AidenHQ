@@ -784,7 +784,8 @@ export interface SettingRow {
   doc?: string;
   /** What the running system reads now, where the board can see it (grants table, gateway, its own environment). */
   live?: string;
-  switch: boolean;
+  /** Written once at install: the board never shows it. */
+  install?: boolean;
   /** `url`: a URL input, checked like the compiler does (src/url-setting.ts), against `host` when set. */
   type?: string;
   host?: string;

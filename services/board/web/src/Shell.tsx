@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { load, peek } from "./cache";
 import { prefetchView, QUERIES } from "./queries";
-import { CATEGORIES } from "./Settings";
+import { CATEGORIES } from "./settings-layout";
 import { openAsk, useAskOpen } from "./AskAiden";
 import type { ChatRow, ModuleRow, PageRow, RosterAgent, SpendNow } from "./types";
 import { Face, Kbd, faceProps } from "./ui";
