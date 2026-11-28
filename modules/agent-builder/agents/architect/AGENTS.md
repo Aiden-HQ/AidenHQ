@@ -59,6 +59,7 @@ Start from the closest template in `modules/agent-builder/templates/` (its `READ
 - A new connection or module follows [modules/AGENTS.md](../../../AGENTS.md).
 - **The handbook states the mission; how-to lives in a skill the agent lists** (rules live once, never copied into a handbook). Reuse an existing agent, skill or tool before adding one, and give an agent one way to do each job.
 - **Defaults unless the person asks otherwise:**
+  - *Simple first:* design the main path the person will use and make it work well; rare cases and extra hardening wait until one actually happens. The smallest design that keeps its promises wins.
   - *Description:* what the agent owns, when to hand it work, what it does not do (other agents route by it).
   - *Onboarding:* concrete, not a task count (step 5).
   - *Reads sized to the audience:* output that reaches a company-wide page or channel gets no Gmail, calendar or private notes unless the person asks.
