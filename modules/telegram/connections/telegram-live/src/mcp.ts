@@ -5,6 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { fence } from "./aidenhq-sdk/fence.js";
 import { chatKind, isMuted, SCOPE_TD, scopeOf, type Scope } from "./filter.js";
+import { renderTelegram } from "./format.js";
 import type { Store } from "./store.js";
 import type { Me, TdClient } from "./td.js";
 
@@ -184,7 +185,7 @@ export function buildServer(d: { td: TdClient | undefined; store: Store; me: () 
           draft_message: {
             _: "draftMessage",
             ...(a.reply_to_message_id ? { reply_to: { _: "inputMessageReplyToMessage", message_id: Number(a.reply_to_message_id) } } : {}),
-            content: { _: "draftMessageContentText", text: { _: "formattedText", text: a.text, entities: [] } },
+            content: { _: "draftMessageContentText", text: { _: "formattedText", ...renderTelegram(a.text) } },
           },
         });
         return json({ ok: true });

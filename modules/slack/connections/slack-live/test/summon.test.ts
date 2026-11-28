@@ -4,7 +4,8 @@ import { describe, expect, it } from "bun:test";
 import { toSourceEvent } from "../src/map.js";
 import { gapSync, replayQueue, type Api } from "../src/sources.js";
 import type { SourceStore } from "../src/source-store.js";
-import { attest, summon, SummonError, toSlackLinks, type Relay } from "../src/summon.js";
+import { toSlackMrkdwn } from "../src/mrkdwn.js";
+import { attest, summon, SummonError, type Relay } from "../src/summon.js";
 import { openStore } from "../src/store.js";
 
 const OWNER = "UOWNER";
@@ -120,8 +121,8 @@ describe("the summon calls", () => {
   });
 
   it("the signature link renders as Slack's, and agent text can't form mentions, broadcasts or raw links", () => {
-    expect(toSlackLinks("Sent by Aria from [AidenHQ](https://aidenhq.ai)")).toBe("Sent by Aria from <https://aidenhq.ai|AidenHQ>");
-    expect(toSlackLinks("<!channel> <@U1> <https://evil.example|go> & [x](javascript:alert(1))")).toBe("&lt;!channel&gt; &lt;@U1&gt; &lt;https://evil.example|go&gt; &amp; [x](javascript:alert(1))");
+    expect(toSlackMrkdwn("Sent by Aria from [AidenHQ](https://aidenhq.ai)", { labelled: true })).toBe("Sent by Aria from <https://aidenhq.ai|AidenHQ>");
+    expect(toSlackMrkdwn("<!channel> <@U1> <https://evil.example|go> & [x](javascript:alert(1))", { labelled: true })).toBe("&lt;!channel&gt; &lt;@U1&gt; &lt;https://evil.example|go&gt; &amp; [x](javascript:alert(1))");
   });
 
   it("context reads a thread before the message, or the channel's history when the message is its own root; oldest first, owner marked", async () => {

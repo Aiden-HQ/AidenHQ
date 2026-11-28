@@ -3,7 +3,7 @@
 // Everything is done AS THE OWNER through slack-mcp's relay (the same user token slack_send_message uses; slack-live never holds
 // it): reads over the relay's GET, the reply and the reaction over its two fixed-shape POSTs. Ids are the event ids slack-live
 // emits (`<channel>:<ts>`, map.ts), so the kernel's echo guard compares like with like; the bare ts is accepted on input too.
-import { escape } from "./mrkdwn.js";
+import { toSlackMrkdwn } from "./mrkdwn.js";
 import type { Api } from "./sources.js";
 import type { Store } from "./store.js";
 
@@ -21,12 +21,6 @@ export interface Relay {
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
 const tsOf = (id: string): string => id.slice(id.lastIndexOf(":") + 1);
 const TS = /^\d+\.\d+$/;
-
-/** Agent markdown for a message posted as the owner: everything escaped (no mentions, broadcasts or raw links an agent could
- * form), then each `[label](https://…)` becomes Slack's `<url|label>`. Not toSlackMrkdwn: that one keeps the address visible. */
-export function toSlackLinks(text: string): string {
-  return escape(text).replace(/\[([^\]\n|]+)\]\((https?:\/\/[^\s)"|]+)\)/g, (_, label: string, url: string) => `<${url}|${label}>`);
-}
 
 /** Slack's refusals as the kernel should read them: a missing scope or a gone channel is a failure to report, never a 403
  * (that one means "an excluded conversation": the kernel cancels the summons on it). */
@@ -97,7 +91,7 @@ export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv" |
     if (done) return { id: done };
     const running = inflight.get(key);
     if (running) return running;
-    const rendered = toSlackLinks(text);
+    const rendered = toSlackMrkdwn(text, { labelled: true });
     const p = (async () => {
       try {
         const pending = o.store.getKv(`summon_pending:${key}`);

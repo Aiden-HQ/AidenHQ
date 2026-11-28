@@ -140,7 +140,7 @@ outcomes:
   and to an Engineer (`profile: engineer`) whose entry's `when` admits it (only `chief-of-staff`'s Replying rule does
   today): `{id, file: prompts/<id>.md, order: first|normal|last, when, unless, lane}`. The file goes in verbatim (its
   leading blank lines included); `{{fleet_issues}}` is filled in at compile, `{{memory}}` when a job starts (and each chat lane turn), from the agent's memory, fenced as data. `when` and `unless` test `tools`
-  (`connection.tool` granted), `roles`, `modules` (enabled) and `fields` (an agent field: `true` means set and not false,
+  (every `connection.tool` granted), `tools_any` (at least one granted), `roles`, `modules` (enabled) and `fields` (an agent field: `true` means set and not false,
   anything else equal): every `when` test holds and no `unless` test. Ordered first, normal, last, then by module, then id.
   `lane: true` adds it to the fast chat lane's prompt too. A section that serves only some agents says so in `when`.
   A section is always in the handbook; what an agent needs only for some work is a skill (below), which its engine

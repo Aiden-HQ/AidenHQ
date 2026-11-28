@@ -5,6 +5,7 @@
 // never retried blind: it answers "outcome unknown".
 import type { ExecuteRequest, Executor } from "./aidenhq-sdk/executor.js";
 import { fence } from "./aidenhq-sdk/fence.js";
+import { renderTelegram } from "./format.js";
 import type { Store } from "./store.js";
 import { TdError, type TdClient } from "./td.js";
 
@@ -75,10 +76,11 @@ function infer(a: any, agent: string): SendArgs {
   throw new Error("not a telegram send: expected text, a reply, a reaction, a forward, an edit or a delete");
 }
 
-/** Runs a write record's execute; `o` is the summon path's own (links as entities, the forum topic of the replied-to message), never part of a record's args. */
-export type Run = (rec: ExecuteRequest, o?: { entities?: unknown[]; topic?: unknown }) => Promise<{ ok: boolean; text: string }>;
+/** Runs a write record's execute; `o` is the summon path's own (the forum topic of the replied-to message), never part of a record's args. */
+export type Run = (rec: ExecuteRequest, o?: { topic?: unknown }) => Promise<{ ok: boolean; text: string }>;
 const fmt = (t: number) => new Date(t).toISOString();
-const content = (text: string, entities: unknown[] = []) => ({ _: "inputMessageText", text: { _: "formattedText", text, entities } });
+/** The agent's markdown as Telegram renders it: entities, never parse modes (format.ts). */
+const content = (markdown: string) => ({ _: "inputMessageText", text: { _: "formattedText", ...renderTelegram(markdown) } });
 
 export function sender(d: {
   td: () => TdClient | undefined;
@@ -131,7 +133,7 @@ export function sender(d: {
     execute: (rec) => execute(rec),
   };
 
-  async function execute(rec: ExecuteRequest, o?: { entities?: unknown[]; topic?: unknown }): Promise<{ ok: boolean; text: string }> {
+  async function execute(rec: ExecuteRequest, o?: { topic?: unknown }): Promise<{ ok: boolean; text: string }> {
       // Everything up to the TDLib call is synchronous: no other execute can interleave with the guard, the cap and the row.
       const prev = getWrite.get(rec.id) as { state: string; text: string | null } | undefined;
       if (prev) {
@@ -181,7 +183,7 @@ export function sender(d: {
             chat_id: chatId,
             ...(o?.topic ? { topic_id: o.topic } : {}),
             ...(a.action === "reply" ? { reply_to: { _: "inputMessageReplyToMessage", message_id: Number(a.reply_to_message_id) } } : {}),
-            input_message_content: content(a.text!, o?.entities),
+            input_message_content: content(a.text!),
           });
         }
         if (typeof temp?.id !== "number") throw new TdError(500, "Telegram returned no message for the send");
