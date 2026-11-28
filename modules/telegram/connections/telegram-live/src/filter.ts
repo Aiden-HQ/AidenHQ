@@ -19,6 +19,8 @@ export interface FilterCtx {
   agentSent: boolean;
   /** Read from history (backfill): stored, never an event. */
   history: boolean;
+  /** A summons touched this chat: its messages are events even when muted (the kernel forwards them to the open task). */
+  summoned?: boolean;
 }
 
 export type Verdict = { store: boolean; event: boolean; labels: string[]; mentions_me: boolean; replies_to_me: boolean };
@@ -81,7 +83,7 @@ export function classify(m: Td.message, ctx: FilterCtx): Verdict {
   const outgoing = m.is_outgoing;
   // Service messages (joins, pins, title changes) have no text or caption: stored, never an event.
   const event = !ctx.history && !ctx.agentSent && formatted(m.content) !== undefined &&
-    (chat.type === "dm" || outgoing || !chat.muted || ctx.setting === "all" || mentions_me || replies_to_me);
+    (chat.type === "dm" || outgoing || !chat.muted || ctx.setting === "all" || mentions_me || replies_to_me || ctx.summoned === true);
   const labels = [chat.type, ...(chat.muted ? ["muted"] : []), ...(mentions_me ? ["mentions_me"] : []), ...(replies_to_me ? ["replies_to_me"] : []), ...(outgoing ? ["outgoing"] : [])];
   return { store: true, event, labels, mentions_me, replies_to_me };
 }

@@ -12,8 +12,10 @@ export type SourceEvent = {
   text?: string;
   truncated?: boolean;
   bot?: boolean;
-  thread?: string;
+  /** The message is the owner's own (TDLib's outgoing flag, never its text). The kernel honours it only from a connector with role kernel.attest-owner. */
+  from_owner?: boolean;
   labels?: string[];
+  /** No `thread`: a Telegram chat is one conversation for summons. A reply chain's root or forum topic is data.thread. */
   data?: Record<string, string | number | boolean | null>;
 };
 

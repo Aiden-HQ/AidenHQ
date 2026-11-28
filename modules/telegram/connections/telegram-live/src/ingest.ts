@@ -77,6 +77,7 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
     setAgentSent: db.prepare(`INSERT OR IGNORE INTO agent_sent (chat_id, message_id) VALUES (?, ?)`),
     // An agent's send whose success update a crash lost comes back as a plain outgoing message: its text, in that chat, within
     // the hour, from an executor record still sending or unknown, keeps it from firing an event (a stored row either way).
+    summoned: db.prepare(`SELECT 1 FROM summoned_chats WHERE chat_id = ? AND until > ?`),
     agentWrite: db.prepare(`SELECT 1 FROM writes WHERE chat_id = ? AND body = ? AND at > ? AND state IN ('sending', 'unknown') LIMIT 1`),
   };
 
@@ -190,7 +191,7 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
     const text = formatted(m.content)?.text ?? "";
     const byAgent = agentSent || !!q.agentSent.get(m.chat_id, m.id) || (m.is_outgoing && !!text && !!q.agentWrite.get(m.chat_id, text, now() - 3_600_000));
     const verdict = classify(m, {
-      chat: v, me: await meNow(), setting: settings.muted, excluded: settings.exclude, agentSent: byAgent, history: mode === "backfill",
+      chat: v, me: await meNow(), setting: settings.muted, excluded: settings.exclude, agentSent: byAgent, history: mode === "backfill", summoned: !!q.summoned.get(m.chat_id, now()),
       isOwnMessage: (chat, id) => (r && id === r.message_id ? parentOwn : isIngested(chat, id)?.outgoing === 1),
     });
     if (!verdict.store) return false;
@@ -207,8 +208,8 @@ export function createIngest(o: { td: TdClient; store: Store; me: () => Me | und
         const e: SourceEvent = {
           connection: "telegram_account", resource: String(m.chat_id), id: `${m.chat_id}:${m.id}`, kind: "message", author: senderId(m.sender_id),
           text: shown.slice(0, 2000), ...(shown.length > 2000 ? { truncated: true } : {}), bot: sender !== undefined && bots.get(sender) === true,
-          ...(thread ? { thread } : {}), labels: verdict.labels,
-          data: { chat_type: c.kind, mentions_me: verdict.mentions_me, replies_to_me: verdict.replies_to_me, outgoing: m.is_outgoing },
+          from_owner: m.is_outgoing, labels: verdict.labels,
+          data: { chat_type: c.kind, mentions_me: verdict.mentions_me, replies_to_me: verdict.replies_to_me, outgoing: m.is_outgoing, ...(thread ? { thread } : {}) },
         };
         push("kernel", e);
       }

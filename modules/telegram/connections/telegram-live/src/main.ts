@@ -12,6 +12,7 @@ import { createIngest, markAgentSend, type Ingest, type Settings } from "./inges
 import { createKernel } from "./kernel.js";
 import { buildServer } from "./mcp.js";
 import { sender } from "./send.js";
+import { createSummon } from "./summon.js";
 import { openStore } from "./store.js";
 import { openTd, TdError } from "./td.js";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
@@ -90,8 +91,11 @@ auth.setProgress((): Line | undefined => {
 
 // telegram.send's executor, made on first use (the kernel calls it with the service key).
 let executor: ReturnType<typeof serveExecutor> | undefined;
-const executorFor = () =>
-  (executor ??= serveExecutor(sender({ td: () => auth.td(), store, onAgentSend: (c, t, w) => markAgentSend(store, c, t, w) }), { key: serviceKey, kernelUrl, log: (msg, f) => log.warn(f ?? {}, msg) }));
+let send: ReturnType<typeof sender> | undefined;
+const senderOnce = () => (send ??= sender({ td: () => auth.td(), store, onAgentSend: (c, t, w) => markAgentSend(store, c, t, w) }));
+const executorFor = () => (executor ??= serveExecutor(senderOnce(), { key: serviceKey, kernelUrl, log: (msg, f) => log.warn(f ?? {}, msg) }));
+// The summon contract's three calls (module.yaml summon:), made by the kernel with the same service key.
+const summon = createSummon({ td: () => auth.td(), store, settings, run: (rec, entities) => senderOnce().run(rec, entities) });
 const jwks = kernelJwks();
 
 const bearer = (req: IncomingMessage, token: string) => {
@@ -169,6 +173,16 @@ const http = createServer(async (req, res) => {
       log.error({ err: String((err as Error)?.message ?? err).slice(0, 200) }, "executor failed");
       if (!res.headersSent) return json(res, 500, { error: "executor failed" });
       return;
+    }
+  }
+  if (url.pathname.startsWith("/summon/")) {
+    if (!bearer(req, serviceKey)) return void res.writeHead(401).end();
+    if (req.method !== "POST") return void res.writeHead(405).end();
+    try {
+      const r = await summon.handle(url.pathname.slice("/summon/".length), await body(req));
+      return json(res, r.status, r.body);
+    } catch (err) {
+      return json(res, err instanceof AuthInputError || err instanceof SyntaxError ? 400 : 500, { error: "bad request" });
     }
   }
   if (url.pathname !== "/mcp") return void res.writeHead(404).end();
