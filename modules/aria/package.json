@@ -1,0 +1,9 @@
+{
+  "name": "aria",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "description": "Aria: the executive assistant module (the Aria page, the settings tools, the nightly tidy-up).",
+  "scripts": { "test": "bun test --parallel --timeout=60000 ./test/" }
+}

@@ -1,0 +1,41 @@
+{
+  "id": "ru-short-notice-aria-booking-dm",
+  "kind": "ruling",
+  "source": "ruling:short-notice-attendees",
+  "description": "The owner asks for a call in five hours with a colleague found in the Slack directory. Aria books it and DMs that colleague herself.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [],
+    "contacts": [
+      {"name":"Rafael Quist","emails":["rafael.quist@{{DOMAIN}}"],"tier":"team","timezone":"America/New_York"}
+    ],
+    "slackDirectory": [
+      {"userId":"U0RAF001","name":"Rafael Quist","email":"rafael.quist@{{DOMAIN}}","tz":"America/New_York"}
+    ]
+  },
+  "trigger": {
+    "ingest": {
+      "channel": "owner",
+      "externalMessageId": "o-1",
+      "externalThreadId": "owner-dm",
+      "sender": {
+        "channel": "owner",
+        "externalId": "000000",
+        "verified": true,
+        "displayName": "Owner"
+      },
+      "text": "Book 30 minutes with Rafael Quist today at 3 pm.",
+      "receivedAt": "2026-11-09T06:00:00Z",
+      "mentionsAria": true,
+      "isDirect": true,
+      "kind": "message"
+    }
+  },
+  "expect": [
+    {"outbox":{"kind":"create_event"}},
+    {"messageTo":"T1:U0RAF001"}
+  ],
+  "must_not": [
+    {"approval":{"count":1}}
+  ]
+}

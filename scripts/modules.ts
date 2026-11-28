@@ -196,10 +196,16 @@ export function chatBlock(key: string, c: Obj, tools: Obj) {
   if (!(Number(out.deadline_s) >= 2 && Number(out.deadline_s) <= 30)) fail(`agent ${key}: chat.deadline_s must be 2 to 30`);
   if (typeof out.telegram !== "boolean") fail(`agent ${key}: chat.telegram is true or false`);
   if (!Array.isArray(out.tools)) fail(`agent ${key}: chat.tools must be a list of "connection.tool"`);
+  // `connection?.tool` is only for a connection the agent's own grant marks `connection?` too: it is dropped while that module is off.
+  const kept: string[] = [];
   for (const t of out.tools) {
     const [conn, tool] = String(t).split(".");
-    if (!tool || !tools[conn!]?.includes(tool)) fail(`agent ${key}: chat tool ${t} isn't one of its granted tools (write it as connection.tool)`);
+    const optional = !!conn?.endsWith("?"), name = optional ? conn!.slice(0, -1) : conn!;
+    if (optional && !tools[name]) continue;
+    if (!tool || !tools[name]?.includes(tool)) fail(`agent ${key}: chat tool ${t} isn't one of its granted tools (write it as connection.tool)`);
+    kept.push(`${name}.${tool}`);
   }
+  out.tools = kept;
   return out;
 }
 

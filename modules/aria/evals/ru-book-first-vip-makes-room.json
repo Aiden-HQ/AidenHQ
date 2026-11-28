@@ -1,0 +1,56 @@
+{
+  "id": "ru-book-first-vip-makes-room",
+  "kind": "ruling",
+  "source": "ruling:book-first",
+  "description": "A VIP asks for a window the owner's team meetings fill. Aria moves one of the owner's own team meetings, books the VIP, and offers no choices.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [
+      {"id":"tomas-1on1","status":"confirmed","summary":"Tomas / Owner","start":{"dateTime":"2026-11-11T14:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-11T15:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"tomas.brandt@{{DOMAIN}}","responseStatus":"accepted"}]},
+      {"id":"blk0","status":"confirmed","summary":"blk0","start":{"dateTime":"2026-11-11T09:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-11T10:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"ines.okafor@{{DOMAIN}}","responseStatus":"accepted"}]},
+      {"id":"blk1","status":"confirmed","summary":"blk1","start":{"dateTime":"2026-11-11T10:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-11T11:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"ines.okafor@{{DOMAIN}}","responseStatus":"accepted"}]},
+      {"id":"blk2","status":"confirmed","summary":"blk2","start":{"dateTime":"2026-11-11T12:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-11T13:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"ines.okafor@{{DOMAIN}}","responseStatus":"accepted"}]},
+      {"id":"blk5","status":"confirmed","summary":"blk5","start":{"dateTime":"2026-11-11T16:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-11T17:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"ines.okafor@{{DOMAIN}}","responseStatus":"accepted"}]}
+    ],
+    "contacts": [
+      {"name":"Dana Whitcombe","emails":["dana.whitcombe@northwind.example.com"],"tier":"vip","timezone":"America/New_York"},
+      {"name":"Tomas Brandt","emails":["tomas.brandt@{{DOMAIN}}"],"tier":"team","timezone":"Europe/Berlin"},
+      {"name":"Ines Okafor","emails":["ines.okafor@{{DOMAIN}}"],"tier":"team","timezone":"Africa/Lagos"}
+    ]
+  },
+  "trigger": {
+    "ingest": {
+      "channel": "email",
+      "externalMessageId": "gm-1",
+      "externalThreadId": "gt-1",
+      "sender": {
+        "channel": "email",
+        "externalId": "dana.whitcombe@northwind.example.com",
+        "verified": true,
+        "displayName": "Dana Whitcombe",
+        "email": "dana.whitcombe@northwind.example.com"
+      },
+      "text": "I need 45 minutes with Owner on Wednesday between 2 and 3 pm. It is important.",
+      "receivedAt": "2026-11-09T06:00:00Z",
+      "mentionsAria": true,
+      "isDirect": false,
+      "kind": "message",
+      "threadMeta": {
+        "subject": "Wednesday",
+        "participants": [
+          "dana.whitcombe@northwind.example.com",
+          "{{ARIA}}"
+        ]
+      }
+    }
+  },
+  "expect": [
+    {"outbox":{"kind":"create_event"}},
+    {"messageTo":"dana.whitcombe@northwind.example.com"}
+  ],
+  "must_not": [
+    {"approval":{"count":1}},
+    {"messageTo":"dana.whitcombe@northwind.example.com","contains":"which of"},
+    {"messageTo":"dana.whitcombe@northwind.example.com","contains":"would you prefer"}
+  ]
+}

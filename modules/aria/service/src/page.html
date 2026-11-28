@@ -1,0 +1,258 @@
+<!doctype html>
+<!-- The Aria page: an MCP Apps view (text/html;profile=mcp-app) the aria connection serves as ui://aria/page.
+     Its own parts only: the shared kit (services/shared/page-kit.css and .js) is inlined where the markers sit (mcp.ts pageHtml).
+     Calls only aria_config and aria_configure; aria_configure only proposes (the board files it on the owner's Save).
+     Layout rules: modules/AGENTS.md "Settings pages". -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/*kit:css*/
+  .wrap { width: 100%; max-width: 1360px; display: grid; gap: 14px; }
+  .sc { --ctl: 400px; --hue: #4f6bed; }
+  .sc.h2 { --hue: #14a37f; } .sc.h3 { --hue: #d9822b; } .sc.h4 { --hue: #c2437a; } .sc.h5 { --hue: #8a5cf5; } .sc.h6 { --hue: #1f9bd1; } .sc.h7 { --hue: #5b6577; }
+  .sc .top { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 14px; padding: 14px 20px; background: color-mix(in srgb, var(--hue) 7%, var(--color-background-secondary, transparent)); border-bottom: 1px solid var(--line); box-shadow: inset 3px 0 0 var(--hue); }
+  .sc .who { display: grid; gap: 2px; min-width: 0; }
+  .sc .name { font-weight: 600; font-size: 14.5px; }
+  .sc .sum { color: var(--soft); font-size: 13px; }
+  .body { padding: 0 20px 6px; }
+  .srow { display: grid; grid-template-columns: 200px minmax(0, 1fr) var(--ctl); gap: 6px 24px; align-items: center; padding: 10px 0; border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+  .srow:first-child { border-top: 0; }
+  .st { font-weight: 560; font-size: 13.5px; }
+  .sd { display: grid; gap: 6px; min-width: 0; color: var(--soft); font-size: 13px; line-height: 1.45; }
+  .sd code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 0 4px; border-radius: 4px; background: color-mix(in srgb, var(--line) 22%, transparent); color: var(--color-text-primary, CanvasText); }
+  .ctl { width: var(--ctl); min-width: 0; }
+  .ctl .seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); width: 100%; padding: 3px; gap: 3px; border-radius: 8px; }
+  .ctl .seg button { height: 30px; padding: 0 6px; font-size: 13px; border-radius: 6px; overflow: hidden; text-overflow: ellipsis; }
+  .ctl input[type=text], .ctl input[type=time] { height: 32px; }
+  .ctl textarea { width: 100%; font: inherit; line-height: 1.45; min-height: 84px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--color-background-primary, Canvas); color: inherit; resize: vertical; }
+  .day { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 8px; align-items: center; }
+  .day .twin { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+  .ctl .twin { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; align-items: center; color: var(--soft); }
+  .day input[type=time] { padding: 4px 6px; font-size: 12.5px; }
+  input[type=time] { font: inherit; width: 100%; min-width: 0; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--color-background-primary, Canvas); color: inherit; }
+  .num { display: flex; align-items: center; gap: 8px; color: var(--soft); white-space: nowrap; }
+  .num input { width: 84px; text-align: right; }
+  .num input[aria-invalid=true] { border-color: var(--color-text-danger, red); }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px 24px; padding: 14px 20px 16px; }
+  .fact { display: grid; gap: 2px; min-width: 0; }
+  .fact small { color: var(--soft); font-size: 12px; }
+  .fact b { font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
+  .fact span { color: var(--soft); font-size: 12.5px; }
+  .banner { display: flex; align-items: center; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; padding: 12px 20px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 9%, transparent); }
+  .banner p { margin: 0; max-width: 74ch; }
+  .tools { display: flex; gap: 8px; flex-wrap: wrap; padding: 4px 0 12px; }
+  .offrow { color: var(--soft); }
+  @media (max-width: 1000px) { .sc { --ctl: 100%; } .srow { grid-template-columns: minmax(0, 1fr); gap: 4px; } .ctl { margin-top: 6px; } }
+  @media (max-width: 520px) { .sc .top, .body, .facts, .banner { padding-left: 14px; padding-right: 14px; } .sc .top { grid-template-columns: minmax(0, 1fr); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<p class="intro">Aria runs your calendar: she finds a free time, books it, and tells the people involved. Everything here is what she needs to know about you. She changes your calendar through your own Google account, each change reviewed first.</p>
+<div id="rows"><div class="card"><div class="empty">Loading Aria…</div></div></div>
+<div class="note" id="note" role="status"></div>
+</div>
+<script>
+/*kit:js*/
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const DAYS = [["mon", "Monday"], ["tue", "Tuesday"], ["wed", "Wednesday"], ["thu", "Thursday"], ["fri", "Friday"], ["sat", "Saturday"], ["sun", "Sunday"]];
+  let cfg = null, draft = null, lastGood = null, sentRev = 0, notices = [];
+  const code = (t) => h("code", { textContent: t });
+  const srow = (title, desc, ctl) => h("div", { className: "srow" }, h("div", { className: "st", textContent: title }), h("div", { className: "sd" }, ...desc.map((d) => (typeof d === "string" ? h("span", { textContent: d }) : d))), h("div", { className: "ctl" }, ctl));
+  const dirty = (k) => !eq(draft[k], cfg.settings[k]);
+  const section = (n, title, summary, ...kids) => h("div", { className: `card sc h${n}` }, h("div", { className: "top" }, h("div", { className: "who" }, h("div", { className: "name", textContent: title }), summary ? h("div", { className: "sum", textContent: summary }) : null)), ...kids);
+
+  // The proposal: every setting's draft, whole; the tool leaves out what equals the saved value, so the board's bar holds exactly what differs.
+  function propose() {
+    const sent = structuredClone(draft), rev = ++sentRev;
+    inOrder(async () => {
+      try { await tool("aria_configure", { changes: sent }); lastGood = sent; say(Object.keys(sent).some((k) => !eq(sent[k], cfg.settings[k])) ? "Changes are proposed: Save in the bar above applies them." : ""); }
+      catch (e) { if (rev === sentRev) { draft = structuredClone(lastGood); redraw(); } say(e.message, true); }
+    });
+  }
+  const set = (key, value, live) => { draft[key] = value; if (!live) soon(redraw); propose(); };
+  const patch = (key, p, live) => set(key, { ...draft[key], ...p }, live);
+
+  // ---- controls
+  // A whole number in range; `optional` lets the field stay empty, which saves null: no limit.
+  const numField = (key, field, label, unit, lo, hi, optional) => {
+    const inp = h("input", { type: "text", inputMode: "numeric", value: draft[key][field] === null ? "" : String(draft[key][field]), ariaLabel: label, autocomplete: "off", placeholder: optional ? "no limit" : "" });
+    inp.dataset.f = `${key}|${field}`;
+    const ok = () => { const t = inp.value.trim(); if (t === "") return optional ? null : undefined; const n = Number(t); return Number.isInteger(n) && n >= lo && n <= hi ? n : undefined; };
+    let typing;
+    inp.addEventListener("input", () => { clearTimeout(typing); inp.ariaInvalid = String(ok() === undefined); typing = setTimeout(() => { const n = ok(); if (n !== undefined) patch(key, { [field]: n }, true); }, 200); });
+    inp.addEventListener("change", () => { clearTimeout(typing); const n = ok(); if (n !== undefined) return patch(key, { [field]: n }); inp.value = draft[key][field] === null ? "" : String(draft[key][field]); inp.ariaInvalid = "false"; say(`${label}: a whole number from ${lo} to ${hi}${optional ? ", or empty for no limit" : ""}.`, true); });
+    return h("label", { className: "num" }, inp, unit);
+  };
+  const onoff = (value, set2, label) => editor({ kind: "seg", label, f: label, value: value ? "On" : "Off", values: ["Off", "On"], set: (l) => set2(l === "On") });
+  const chips = (key, path, label, placeholder, check) => editor({ kind: "chips", label, f: `${key}|${path}`, value: path ? draft[key][path] : draft[key], placeholder, set: (v, live) => { const bad = check ? v.find((x) => !check(x)) : undefined; if (bad !== undefined) return say(`"${bad}" isn't valid here.`, true); path ? patch(key, { [path]: v }, live) : set(key, v, live); } });
+
+  // One weekday: Off/On and two times; a day Aria was given several ranges for shows them as one text field.
+  function dayControl(d, name) {
+    const v = draft.aria_working_hours[d], put = (x) => patch("aria_working_hours", { [d]: x });
+    if (v.includes(",")) { const t = h("input", { type: "text", value: v, ariaLabel: `${name} hours`, autocomplete: "off", spellcheck: false }); t.dataset.f = `hours|${d}`; t.addEventListener("change", () => put(t.value.trim() || "off")); return t; }
+    const [a, b] = v === "off" ? ["09:00", "18:00"] : v.split("-");
+    const wrap = h("div", { className: "day" });
+    const from = h("input", { type: "time", value: a, ariaLabel: `${name} from` }), to = h("input", { type: "time", value: b, ariaLabel: `${name} to` });
+    from.dataset.f = `hours|${d}|from`; to.dataset.f = `hours|${d}|to`;
+    const times = () => from.value && to.value && from.value < to.value ? `${from.value}-${to.value}` : undefined;
+    for (const el of [from, to]) el.addEventListener("change", () => { const t = times(); if (t) put(t); else { say(`${name}: it must end after it starts.`, true); redraw(); } });
+    wrap.append(onoff(v !== "off", (on) => put(on ? `${a}-${b}` : "off"), `${name} on or off`));
+    if (v !== "off") wrap.append(h("div", { className: "twin" }, from, h("span", { textContent: "to" }), to));
+    return wrap;
+  }
+
+  // ---- sections
+  function status() {
+    const t = cfg.tidy, s = cfg.suggestion;
+    const fact = (l, v, sub) => h("div", { className: "fact" }, h("small", { textContent: l }), h("b", { textContent: v }), sub ? h("span", { textContent: sub }) : null);
+    return section(1, "Status", "What Aria knows and does for you.",
+      h("div", { className: "facts" },
+        fact("Calendar", "Through Google", "Aria uses the Google connection under Settings, Connections. If she says she needs Google, connect it there."),
+        fact("Your time zone", cfg.timezone, "Set under Settings, General. Hours below are on this clock."),
+        fact("Nightly tidy-up", draft.aria_optimizer.on ? `On, at ${draft.aria_optimizer.at}` : "Off", t.last_date ? `Last ran for ${t.last_date}.` : "It has not run yet."),
+        fact("Reading your calendar", s ? "Suggestion ready" : "Not yet", s ? `Worked out from ${s.based_on.meetings} meetings.` : "Aria reads your last four weeks to propose your hours.")),
+      ...(banners.length ? banners.map((b) => h("div", { className: "banner" }, h("p", { textContent: b.text }), ...(b.act ? [b.act] : []))) : []),
+      ...(!s ? [h("div", { className: "banner" }, h("p", { textContent: "Ask Aria to read your last four weeks and propose your working hours, typical meeting lengths and calendars. You only correct them." }), (() => { const b = h("button", { type: "button", className: "primary", textContent: "Ask Aria to read my calendar" }); b.addEventListener("click", () => ask("Aria, read my last four weeks of meetings and save a suggestion for my working hours, typical meeting lengths and calendars (aria_suggest). I'll review it on your page.").catch((e) => say(e.message, true))); return b; })())] : []));
+  }
+  const banners = [];
+
+  function week() {
+    const hrs = draft.aria_working_hours, open = DAYS.filter(([d]) => hrs[d] !== "off").map(([, n]) => n.slice(0, 3));
+    const cw = (k, label, desc) => srow(label, [desc], chips("aria_call_windows", k, `${label} windows`, "Add a range like 10:00-12:00, press Enter", (x) => /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/.test(x)));
+    return section(2, "Your week", open.length ? `Works ${open.join(", ")}.` : "No working days set.",
+      h("div", { className: "body" },
+        ...DAYS.map(([d, n]) => srow(n, [hrs[d] === "off" ? h("span", { className: "offrow", textContent: "Not booked" }) : h("span", { textContent: hrs[d] })], dayControl(d, n))),
+        srow("Stretch", ["Hours before and after your working day Aria may still use, at lower priority, when nothing else fits. Nothing outside it is ever offered."], stretchField()),
+        cw("best", "Best call windows", "Tried first when Aria picks a time."), cw("ok", "Fine call windows", "Next, if no best window fits. Any other working time is the last resort, and what strangers get.")));
+  }
+
+  function meetings() {
+    const m = draft.aria_meetings, n = (f, label, unit, lo, hi, desc, title, optional) => srow(title, [desc], numField("aria_meetings", f, label, unit, lo, hi, optional));
+    return section(3, "Meetings", `${m.intro}, ${m.one_on_one} and ${m.external} minute defaults${m.buffer_min ? `, ${m.buffer_min} minutes between` : ", no buffer"}.`,
+      h("div", { className: "body" },
+        n("intro", "Intro length", "minutes", 5, 480, "A first call with someone new.", "Intro"),
+        n("one_on_one", "1:1 length", "minutes", 5, 480, "A 1:1 with a colleague.", "1:1"),
+        n("external", "External length", "minutes", 5, 480, "A call with someone outside your team.", "External"),
+        n("default", "Any other length", "minutes", 5, 480, "Anything the ask doesn't size.", "Other"),
+        n("buffer_min", "Buffer", "minutes", 0, 120, "Kept free between meetings. Empty = no limit.", "Buffer", true),
+        n("travel_buffer_min", "Travel buffer", "minutes", 0, 480, "Extra room after a meeting somewhere else. Empty = no limit.", "Travel buffer", true),
+        n("min_notice_hours", "Minimum notice", "hours", 0, 720, "Aria never books sooner than this from now. Empty = no limit.", "Minimum notice", true),
+        n("max_per_day", "Most per day", "meetings", 1, 50, "A day this full gets no more. Empty = no limit.", "Most per day", true),
+        srow("Blocking calendars", ["Calendars whose events make you busy: primary, or a calendar's address."], chips("aria_meetings", "blocking_calendars", "Blocking calendars", "Add a calendar, press Enter", (x) => x.length <= 200))));
+  }
+
+  // A "HH:MM-HH:MM" setting as two time inputs.
+  function rangeControl(key, label) {
+    const [a, b] = draft[key].split("-");
+    const from = h("input", { type: "time", value: a, ariaLabel: `${label} start` }), to = h("input", { type: "time", value: b, ariaLabel: `${label} end` });
+    from.dataset.f = `${key}|from`; to.dataset.f = `${key}|to`;
+    for (const el of [from, to]) el.addEventListener("change", () => { if (from.value && to.value && from.value < to.value) set(key, `${from.value}-${to.value}`); else { say("It must end after it starts.", true); redraw(); } });
+    return h("div", { className: "twin" }, from, h("span", { textContent: "to" }), to);
+  }
+  const stretchField = () => {
+    const inp = h("input", { type: "text", inputMode: "numeric", value: String(draft.aria_stretch_hours), ariaLabel: "Stretch hours", autocomplete: "off" });
+    inp.dataset.f = "stretch";
+    const ok = () => { const n = Number(inp.value.trim()); return inp.value.trim() !== "" && Number.isInteger(n) && n >= 0 && n <= 6 ? n : undefined; };
+    inp.addEventListener("change", () => { const n = ok(); if (n !== undefined) return set("aria_stretch_hours", n); inp.value = String(draft.aria_stretch_hours); say("Stretch hours: a whole number from 0 to 6.", true); });
+    return h("label", { className: "num" }, inp, "hours");
+  };
+
+  function people() {
+    const p = draft.aria_people;
+    return section(4, "People", `${p.vips.length} VIP${p.vips.length === 1 ? "" : "s"}, ${p.team_domains.length} team domain${p.team_domains.length === 1 ? "" : "s"}.`,
+      h("div", { className: "body" },
+        srow("VIPs", ["Their asks come first: if nothing fits, Aria moves one occurrence of a team meeting to make room. Names, emails or @domains."], chips("aria_people", "vips", "VIPs", "Add a name, email or @domain", (x) => x.length <= 200)),
+        srow("Others' core hours", ["The day Aria assumes for people whose hours she doesn't know, on their own clock. Google doesn't share anyone's hours; she replaces this once she learns a person's real ones."], rangeControl("aria_default_hours", "Others' core hours")),
+        srow("Others' stretch hours", ["Used only when nobody's core hours fit; the person is told it is early or late for them."], rangeControl("aria_default_stretch", "Others' stretch hours")),
+        srow("Team domains", ["Email domains of your colleagues: their calendars are readable, so Aria never chases them. Starts as your own organisation."], chips("aria_people", "team_domains", "Team domains", "Add a domain like acme.com", (x) => /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(x)))));
+  }
+
+  function likes() {
+    const lines = draft.aria_preferences.lines;
+    const ta = h("textarea", { rows: 4, value: lines.join("\n"), ariaLabel: "How I like my calendar", spellcheck: true, placeholder: "No meetings before 10 on Mondays\nKeep Friday afternoons free" });
+    ta.dataset.f = "preferences";
+    let typing;
+    const read = () => ta.value.split("\n").map((s) => s.trim()).filter(Boolean);
+    ta.addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => patch("aria_preferences", { lines: read() }, true), 250); });
+    ta.addEventListener("change", () => { clearTimeout(typing); patch("aria_preferences", { lines: read() }); });
+    return section(5, "How I like my calendar", lines.length ? `${lines.length} preference${lines.length === 1 ? "" : "s"}.` : "None yet.",
+      h("div", { className: "body" }, srow("In your words", ["One line each, in plain English. Aria follows these unless an ask says otherwise."], ta)));
+  }
+
+  function following() {
+    const f = draft.aria_following_up;
+    return section(6, "Following up", `One nudge after ${f.after_hours} hours, gives up after ${f.deadline_days} days.`,
+      h("div", { className: "body" },
+        srow("Nudge after", ["When someone hasn't answered while Aria is sorting out a time."], numField("aria_following_up", "after_hours", "Hours before a nudge", "hours", 1, 168)),
+        srow("Nudges at most", ["How many times she nudges the same person."], numField("aria_following_up", "max_nudges", "Nudges at most", "nudges", 0, 5)),
+        srow("Give up after", ["Then she closes it and tells you who didn't answer."], numField("aria_following_up", "deadline_days", "Days before giving up", "days", 1, 30))));
+  }
+
+  function tidy() {
+    const o = draft.aria_optimizer, on = o.on, lines = o.prompt_lines;
+    const ta = h("textarea", { rows: 6, value: lines.join("\n"), ariaLabel: "Tidy-up prompt", spellcheck: true });
+    ta.dataset.f = "prompt";
+    let typing;
+    const read = () => ta.value.split("\n").map((s) => s.trim()).filter(Boolean);
+    const put = (live) => { const l = read(); if (!l.length) return say("The prompt needs at least one line: Reset puts the default back.", true); patch("aria_optimizer", { prompt_lines: l }, live); };
+    ta.addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => put(true), 250); });
+    ta.addEventListener("change", () => { clearTimeout(typing); put(false); });
+    const reset = h("button", { type: "button", className: "sm", textContent: "Reset to default" });
+    reset.addEventListener("click", () => patch("aria_optimizer", { prompt_lines: structuredClone(cfg.defaults.aria_optimizer.prompt_lines) }));
+    const at = h("input", { type: "time", value: o.at, ariaLabel: "Tidy-up time" });
+    at.dataset.f = "plan|at";
+    at.addEventListener("change", () => at.value ? patch("aria_optimizer", { at: at.value }) : (at.value = o.at));
+    return section(7, "Nightly tidy-up", on ? `On: tidies your week at ${o.at}, up to ${o.max_moves} moves a night.` : "Off. Nothing runs and nothing is spent until you turn it on.",
+      h("div", { className: "body" },
+        srow("Tidy my week at night", ["Aria moves meetings you organise to a better window or to close gaps, one occurrence at a time, each move reviewed first. Off until you turn it on."], onoff(on, (v) => patch("aria_optimizer", { on: v }), "Nightly tidy-up")),
+        ...(on ? [
+          srow("Time", ["Your clock. If it was missed by hours, that night is skipped."], at),
+          srow("Moves a night", ["The most meetings she moves in one night, counted from the kernel's records so a retry can't go over."], numField("aria_optimizer", "max_moves", "Moves a night", "moves", 1, 20)),
+          srow("Leave alone within", ["A meeting starting sooner than this is never moved."], numField("aria_optimizer", "no_move_within_hours", "Hours before a meeting", "hours", 0, 168)),
+          srow("Look ahead", ["How many working days ahead she tidies."], numField("aria_optimizer", "horizon_working_days", "Working days ahead", "working days", 1, 30)),
+          srow("Her instructions", ["What she is asked each night. Edit it to taste."], ta),
+          h("div", { className: "tools" }, reset)] : [])));
+  }
+
+  function signature() {
+    return section(8, "Signature", "How people know Aria is writing.",
+      h("div", { className: "body" }, srow("Summons signature", ["When you bring Aria into a chat, her replies carry the signature set for summoning. It belongs to all your teammates, not to Aria, so it is set under Settings, General."], h("span", { className: "soft", textContent: "Set in Settings" }))));
+  }
+
+  function draw() {
+    closeHelp();
+    $("rows").replaceChildren(h("div", { className: "wrap" }, status(), week(), meetings(), people(), likes(), following(), tidy(), signature()));
+  }
+  const redraw = () => keepFocus(draw);
+
+  // What Aria worked out from the calendar fills the page as a proposal: working hours, lengths and calendars only while the hours are still the defaults.
+  function prefill() {
+    banners.length = 0;
+    const s = cfg.suggestion, def = cfg.defaults;
+    if (s && eq(cfg.settings.aria_working_hours, def.aria_working_hours)) {
+      draft.aria_working_hours = s.working_hours;
+      draft.aria_meetings = { ...draft.aria_meetings, ...s.durations, blocking_calendars: s.blocking_calendars };
+      banners.push({ text: `Aria read your last four weeks (${s.based_on.meetings} meetings) and filled in your hours, usual lengths and calendars. Check them, then Save in the bar above.` });
+    }
+    if (cfg.owner_team_domain && !cfg.settings.aria_people.team_domains.length) {
+      draft.aria_people = { ...draft.aria_people, team_domains: [cfg.owner_team_domain] };
+      banners.push({ text: `Your team is set to ${cfg.owner_team_domain}, your own organisation. Change it under People if it isn't.` });
+    }
+  }
+
+  async function load() {
+    try {
+      cfg = await tool("aria_config", {});
+      draft = structuredClone(cfg.settings); lastGood = structuredClone(draft);
+      prefill();
+      draw();
+      if (!eq(draft, cfg.settings)) propose();
+    } catch (e) { say(e.message, true); }
+  }
+  start("aria", load);
+</script>
+</body>
+</html>

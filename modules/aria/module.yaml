@@ -1,0 +1,206 @@
+name: aria
+description: "Aria: your executive assistant for the calendar. She answers quick asks from your calendar, mail and documents, books and moves your meetings with a free time the code computed (booking first, never a menu), sorts out the back-and-forth with the other person in the chat you summon her in, sets reminders, and can tidy your week overnight if you turn that on."
+# docs/superpowers/specs/2026-11-28-aria-module-design.md is the design of record. The service (service/) serves the Aria page and the
+# settings tools (aria_config, aria_configure), files the nightly tidy-up task and counts its moves. Aria acts through your own
+# Google account, each calendar change reviewed first; she has no accounts of her own.
+requires:
+  - google # the calendar, mail and Drive: every calendar read and change goes through it
+  - chat-lane # the fast first reply (a `chat:` block) and wake_at for reminders and nudges
+  - tasks # paperclip_tasks: her own tasks, and a task for Aiden when an ask is bigger than hers
+  - board # contributes.board.pages
+contributes:
+  # The Aria page: a module view served by the connection below, on the owner's own calls (docs/design/board-ui.md "Modules").
+  board.pages:
+    - id: aria
+      title: Aria
+      icon: chat
+      order: 20
+      connection: aria
+      view: "ui://aria/page"
+      tools: [ aria_config, aria_configure ]
+      # Edited on this page alone: the generic settings screens leave them off.
+      settings: [ aria_working_hours, aria_stretch_hours, aria_default_hours, aria_default_stretch, aria_call_windows, aria_meetings, aria_people, aria_preferences, aria_following_up, aria_optimizer ]
+roles:
+  # kernel.settings: aria_configure files an agent's settings change (writers below). kernel.tasks: the nightly tidy-up files one task
+  # for Aria a night (service/src/tidy.ts). kernel.work-read: aria_move_budget counts the night's calendar writes from the kernel's records.
+  requests: [ kernel.settings, kernel.tasks, kernel.work-read ]
+  declares:
+    - { id: aria-admin, description: "Reads Aria's settings and proposes changes to them (aria_config, aria_configure); turning the nightly tidy-up on is the owner's." }
+settings:
+  # The hours Aria books into, one entry per weekday (mon to sun): "09:00-18:00", several ranges split by a comma ("09:00-12:00,13:00-18:00"), or "off". Times are the owner's own clock (the timezone setting). The Aria page prefills it from your last weeks of meetings.
+  aria_working_hours:
+    title: Working hours
+    type: object
+    writers: [ aria-admin ]
+    default:
+      mon: "09:00-18:00"
+      tue: "09:00-18:00"
+      wed: "09:00-18:00"
+      thu: "09:00-18:00"
+      fri: "09:00-18:00"
+      sat: "off"
+      sun: "off"
+  # Which times inside the working hours Aria offers first. `best` are tried first, then `ok`; any other working time is the last resort (also what a stranger gets). Each is a list of ranges like "10:00-12:00".
+  aria_call_windows:
+    title: Call windows
+    type: object
+    writers: [ aria-admin ]
+    default:
+      best: [ "10:00-12:00", "14:00-16:00" ]
+      ok: [ "09:00-10:00", "16:00-18:00" ]
+  # How meetings are sized and spaced: the default length in minutes of an intro, a 1:1 and an external call (default is any other), the gap kept between meetings, the extra gap after travel, the notice Aria needs before a new meeting and the most meetings in a day (each of those four empty = no limit, which is how it starts), and the calendars that block time (primary, or a calendar's address).
+  aria_meetings:
+    title: Meetings
+    type: object
+    writers: [ aria-admin ]
+    default:
+      intro: 30
+      one_on_one: 30
+      external: 45
+      default: 30
+      buffer_min: null
+      travel_buffer_min: null
+      min_notice_hours: null
+      max_per_day: null
+      blocking_calendars: [ primary ]
+  # Hours before and after each working day (and each call window's day) that Aria may still use, at lower priority, when nothing fits inside your working hours. Times outside working hours plus this stretch are never offered. 0 for none.
+  aria_stretch_hours:
+    title: Stretch hours
+    default: 2
+    writers: [ aria-admin ]
+  # The core day Aria assumes for people whose hours she doesn't know, on their own clock ("09:00-18:00"). Google doesn't share anyone's hours, so this is a default she replaces once she learns a person's real ones.
+  aria_default_hours:
+    title: Others' core hours
+    default: "09:00-18:00"
+    pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$'
+    writers: [ aria-admin ]
+  # The lower-priority window for those people, on their own clock ("06:00-22:00"): a slot in it is used only when nobody's core hours fit, and the person is told it is early or late for them.
+  aria_default_stretch:
+    title: Others' stretch hours
+    default: "06:00-22:00"
+    pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]$'
+    writers: [ aria-admin ]
+  # The people who get special handling: `vips` (names, emails or @domains: their asks may displace one team meeting occurrence) and `team_domains` (email domains of your colleagues, which Aria treats as team). Aria starts you off with your own email domain as the team.
+  aria_people:
+    title: People
+    type: object
+    writers: [ aria-admin ]
+    default:
+      vips: []
+      team_domains: []
+  # How you like your calendar, one plain-English line each ("no meetings before 10 on Mondays", "keep Friday afternoons free"). Aria follows these unless an ask says otherwise.
+  aria_preferences:
+    title: How I like my calendar
+    type: object
+    writers: [ aria-admin ]
+    default:
+      lines: []
+  # How Aria follows up when she is sorting out a time with someone: hours before one nudge, how many nudges at most, and the days after which she stops waiting and tells you.
+  aria_following_up:
+    title: Following up
+    type: object
+    writers: [ aria-admin ]
+    default:
+      after_hours: 24
+      max_nudges: 2
+      deadline_days: 5
+  # The nightly tidy-up, off until the owner turns it on (`on`, the owner's own change). `at` is your clock ("02:00"); `max_moves` the most meetings moved in a night, counted from the kernel's records; `no_move_within_hours` (a meeting this close is never moved); `horizon_working_days` (how far ahead she looks); `prompt_lines` what she is asked each night, one line each, editable on the Aria page (Reset puts the default back).
+  aria_optimizer:
+    title: Nightly tidy-up
+    type: object
+    writers: [ aria-admin ]
+    default:
+      "on": false
+      at: "02:00"
+      max_moves: 3
+      no_move_within_hours: 24
+      horizon_working_days: 10
+      prompt_lines:
+        - "Tighten my next working days: move a meeting to a better call window or to close a gap between meetings, one occurrence at a time."
+        - "Move only meetings I organise, and only where everyone invited has a free time that works. Move team-only meetings without asking; leave the others be."
+        - "Leave alone any occurrence I moved or refused myself, and anything I named a time for."
+        - "Add a line to your task for each meeting you moved, with why, and one line for what you left alone."
+agents:
+  aria:
+    skills: [ aria.scheduling, aria.optimize-calendar, google.calendar-changes ]
+    department: leadership
+    model: ~deepseek/deepseek-flash-latest
+    reasoning_effort: high
+    timeout_sec: 1200
+    # Her own asks are quick; a summoned conversation and the nightly tidy-up each get their own task and run side by side.
+    max_parallel: 3
+    # The calendar tools: reads, then the four changes (each reviewed before it runs, skill google.calendar-changes). Slack, Glean and
+    # the warehouse are read only when they are connected.
+    connections:
+      google_workspace: [ calendar_list_events, calendar_search_events, calendar_get_event, calendar_find_times, drive_list_recent_files, drive_list_meeting_documents, drive_search_files, drive_read_file, gmail_search, gmail_read_thread, docs_read, calendar_create_event, calendar_update_event, calendar_delete_event, calendar_respond ]
+      slack?: read
+      glean?: read
+      apps?: [ app_view, web_view, warehouse_query ]
+      chat_lane: [ wake_at, chat_send ]
+      aria: [ aria_config, aria_configure, aria_suggest, aria_move_budget ]
+      paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_team, task_create, task_comment, task_finish, task_block, memory_note ]
+    roles: [ aria-admin ]
+    # The fast chat lane: first replies in seconds with a light model and a few read tools; a calendar change or anything slow goes
+    # to her own task (skill scheduling).
+    chat:
+      model: "~z-ai/glm-flash-latest"
+      reasoning: low
+      deadline_s: 8
+      telegram: false
+      tools:
+        - google_workspace.calendar_list_events
+        - google_workspace.calendar_search_events
+        - google_workspace.calendar_get_event
+        - google_workspace.gmail_search
+        - google_workspace.gmail_read_thread
+        - slack?.slack_search_public_and_private
+        - slack?.slack_read_thread
+        - slack?.slack_read_channel
+        - glean?.search
+        - glean?.read_document
+        - apps?.warehouse_query
+        - aria.aria_config
+        - paperclip_tasks.task_create
+        - chat_lane.wake_at
+# The Aria page's connection: the owner's reads and proposed changes to Aria's settings (service/src/config-tool.ts), and the two
+# tools Aria herself calls (aria_suggest, aria_move_budget).
+connections:
+  aria:
+    setup: "Built in: nothing to connect."
+    url: http://aria:8104/mcp
+    auth: aria_service_key
+    returns: untrusted
+    tools:
+      read: [ aria_config, aria_move_budget ]
+      write: [ aria_configure, aria_suggest ]
+services:
+  data: true
+  run:
+    aria:
+      build: ./service
+      tmp: 16m
+      port: 8104
+      egress: true # the kernel's listener is a host address
+      data: ["aria:/data"]
+      env:
+        ARIA_STATE_FILE: /data/state.json
+        ARIA_TOKEN_FILE: ${secrets.aria_token}
+        ARIA_SERVICE_KEY_FILE: ${secrets.aria_service_key}
+        OWNER_TIMEZONE: "${settings.timezone}"
+        OWNER_TIME_FORMAT: "${settings.time_format}"
+        OWNER_EMAIL: "${settings.owner_email}"
+        ARIA_WORKING_HOURS: "${settings.aria_working_hours}"
+        ARIA_CALL_WINDOWS: "${settings.aria_call_windows}"
+        ARIA_MEETINGS: "${settings.aria_meetings}"
+        ARIA_STRETCH_HOURS: "${settings.aria_stretch_hours}"
+        ARIA_DEFAULT_HOURS: "${settings.aria_default_hours}"
+        ARIA_DEFAULT_STRETCH: "${settings.aria_default_stretch}"
+        ARIA_PEOPLE: "${settings.aria_people}"
+        ARIA_PREFERENCES: "${settings.aria_preferences}"
+        ARIA_FOLLOWING_UP: "${settings.aria_following_up}"
+        ARIA_OPTIMIZER: "${settings.aria_optimizer}"
+        AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
+generated_secrets:
+  - aria_token
+  - aria_service_key
+data_version: 0 # its data dir's format: bumped by each forward-only migration (docs/configuration.md)

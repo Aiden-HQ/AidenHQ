@@ -1,0 +1,47 @@
+{
+  "id": "ru-owner-named-time-restore",
+  "kind": "ruling",
+  "source": "ruling:owner-picked-time",
+  "description": "Today's call with Ines was cancelled by mistake; 18 minutes before, the owner asks to put it back at 5:15-5:30 pm. The owner named the time: it is booked at 5:15 (short notice is the owner's own call) or the owner is asked to tap that booking; never booked at some other time on her own.",
+  "world": {
+    "now": "2026-11-12T12:57:00Z",
+    "calendar": [
+      {"id":"partner","status":"confirmed","summary":"Northwind pricing review","start":{"dateTime":"2026-11-12T15:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-12T15:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"kai@northwind.example"},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"kai@northwind.example","responseStatus":"accepted"}]},
+      {"id":"ines","status":"cancelled","summary":"Ines / Owner (weekly)","start":{"dateTime":"2026-11-12T17:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-12T17:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"ines.varga@{{DOMAIN}}","responseStatus":"accepted"}]},
+      {"id":"odin","status":"confirmed","summary":"Odin / Owner (weekly)","start":{"dateTime":"2026-11-12T17:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-12T18:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"odin.marsh@{{DOMAIN}}","responseStatus":"accepted"}]}
+    ],
+    "contacts": [
+      {"name":"Ines Varga","emails":["ines.varga@{{DOMAIN}}"],"tier":"team","timezone":"Europe/Berlin"},
+      {"name":"Odin Marsh","emails":["odin.marsh@{{DOMAIN}}"],"tier":"team","timezone":"{{TZ}}"}
+    ],
+    "slackDirectory": [
+      {"userId":"U0INE001","name":"Ines Varga","email":"ines.varga@{{DOMAIN}}","tz":"Europe/Berlin"},
+      {"userId":"U0ODI001","name":"Odin Marsh","email":"odin.marsh@{{DOMAIN}}","tz":"{{TZ}}"}
+    ]
+  },
+  "trigger": {
+    "ingest": {
+      "channel": "owner",
+      "externalMessageId": "o-1",
+      "externalThreadId": "owner-dm",
+      "sender": {
+        "channel": "owner",
+        "externalId": "000000",
+        "verified": true,
+        "displayName": "Owner"
+      },
+      "text": "my call with Ines today got cancelled by mistake, put it back for 5:15-5:30 pm please",
+      "receivedAt": "2026-11-12T12:57:00Z",
+      "mentionsAria": true,
+      "isDirect": true,
+      "kind": "message"
+    }
+  },
+  "expect": [
+    {"messageTo":"owner","contains":"5:15"}
+  ],
+  "must_not": [
+    {"outbox":{"kind":"create_event","otherThan":{"slot":{"start":"2026-11-12T13:15:00"}}}},
+    {"outbox":{"kind":"update_event"}}
+  ]
+}

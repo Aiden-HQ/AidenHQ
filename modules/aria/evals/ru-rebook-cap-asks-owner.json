@@ -1,0 +1,41 @@
+{
+  "id": "ru-rebook-cap-asks-owner",
+  "kind": "ruling",
+  "source": "ruling:everyone-declined",
+  "description": "A meeting Aria arranged was declined and re-booked twice already. She does not re-book a third time on her own; she asks the owner.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [
+      {"id":"arranged","status":"confirmed","summary":"Gareth / Owner intro","start":{"dateTime":"2026-11-13T10:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-13T10:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"gareth.lindqvist@acme.com","responseStatus":"accepted"}]}
+    ],
+    "contacts": [
+      {"name":"Gareth Lindqvist","emails":["gareth.lindqvist@acme.com"],"tier":"external","timezone":"Europe/Stockholm"}
+    ],
+    "threads": [
+      {"channel":"email","externalThreadId":"gt-gar"}
+    ],
+    "ariaSent": [
+      {"channel":"email","externalThreadId":"gt-gar","to":"gareth.lindqvist@acme.com","text":"Booked: Tuesday 10:00 am {{CITY}} time.","sentAt":"2026-11-02T08:00:00Z"},
+      {"channel":"email","externalThreadId":"gt-gar","to":"gareth.lindqvist@acme.com","text":"Re-booked after your decline: Wednesday 10:00 am {{CITY}} time.","sentAt":"2026-11-04T08:00:00Z"},
+      {"channel":"email","externalThreadId":"gt-gar","to":"gareth.lindqvist@acme.com","text":"Re-booked after your decline: Friday 10:00 am {{CITY}} time.","sentAt":"2026-11-06T08:00:00Z"}
+    ],
+    "rebooks": {
+      "arranged": 2
+    }
+  },
+  "trigger": {
+    "calendarChange": {
+      "eventId": "arranged",
+      "attendees": [
+        {"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},
+        {"email":"gareth.lindqvist@acme.com","responseStatus":"declined"}
+      ]
+    }
+  },
+  "expect": [
+    {"approval":{"count":1}}
+  ],
+  "must_not": [
+    {"outbox":{"kind":"update_event"}}
+  ]
+}

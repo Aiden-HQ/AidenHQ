@@ -1,0 +1,50 @@
+{
+  "id": "ru-double-booking-organizer-side-moves",
+  "kind": "ruling",
+  "source": "F20",
+  "description": "An external invite overlaps a 1:1 the owner organizes. The owner's 1:1 moves to the best window on the first day that fits, with no second approval.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [
+      {"id":"lena-1on1","status":"confirmed","summary":"Lena / Owner","start":{"dateTime":"2026-11-10T15:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-10T15:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"lena.voss@{{DOMAIN}}","responseStatus":"accepted"}]}
+    ],
+    "contacts": [
+      {"name":"Lena Voss","emails":["lena.voss@{{DOMAIN}}"],"tier":"team","timezone":"Europe/Berlin"},
+      {"name":"Gareth Lindqvist","emails":["gareth.lindqvist@acme.com"],"tier":"external","timezone":"Europe/Stockholm"}
+    ]
+  },
+  "trigger": {
+    "calendarChange": {
+      "eventId": "gareth-call",
+      "created": {
+        "id": "gareth-call",
+        "status": "confirmed",
+        "summary": "gareth-call",
+        "start": {
+          "dateTime": "2026-11-10T15:00:00{{OFFSET}}",
+          "timeZone": "{{TZ}}"
+        },
+        "end": {
+          "dateTime": "2026-11-10T16:00:00{{OFFSET}}",
+          "timeZone": "{{TZ}}"
+        },
+        "organizer": {
+          "email": "gareth.lindqvist@acme.com"
+        },
+        "attendees": [
+          {"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},
+          {"email":"gareth.lindqvist@acme.com","responseStatus":"accepted"},
+          {"email":"{{OWNER}}","responseStatus":"accepted"}
+        ]
+      }
+    }
+  },
+  "expect": [
+    {"calendarEvent":"lena-1on1","moved":true},
+    {"messageTo":"owner"}
+  ],
+  "must_not": [
+    {"approval":{"count":1}},
+    {"calendarEvent":"gareth-call","moved":true}
+  ]
+}

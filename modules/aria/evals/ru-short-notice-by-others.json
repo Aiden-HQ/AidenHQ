@@ -1,0 +1,45 @@
+{
+  "id": "ru-short-notice-by-others",
+  "kind": "ruling",
+  "source": "ruling:short-notice-owner",
+  "description": "A colleague adds a meeting starting in four hours. The owner gets one message about it; no question.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [],
+    "contacts": [
+      {"name":"Lena Voss","emails":["lena.voss@{{DOMAIN}}"],"tier":"team","timezone":"Europe/Berlin"}
+    ]
+  },
+  "trigger": {
+    "calendarChange": {
+      "eventId": "sudden",
+      "created": {
+        "id": "sudden",
+        "status": "confirmed",
+        "summary": "Quick sync",
+        "start": {
+          "dateTime": "2026-11-09T14:00:00{{OFFSET}}",
+          "timeZone": "{{TZ}}"
+        },
+        "end": {
+          "dateTime": "2026-11-09T14:30:00{{OFFSET}}",
+          "timeZone": "{{TZ}}"
+        },
+        "organizer": {
+          "email": "lena.voss@{{DOMAIN}}"
+        },
+        "attendees": [
+          {"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},
+          {"email":"lena.voss@{{DOMAIN}}","responseStatus":"accepted"},
+          {"email":"{{OWNER}}","responseStatus":"needsAction"}
+        ]
+      }
+    }
+  },
+  "expect": [
+    {"messageTo":"owner"}
+  ],
+  "must_not": [
+    {"approval":{"count":1}}
+  ]
+}

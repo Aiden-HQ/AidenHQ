@@ -1,0 +1,30 @@
+{
+  "id": "ru-waiting-reply-closed-with-note",
+  "kind": "ruling",
+  "source": "ruling:colleagues-not-served",
+  "description": "Aria waited twice on an external's answer to her offered times. The request is closed with a note on that thread; no owner prompt.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [],
+    "contacts": [
+      {"name":"Oskar Pell","emails":["oskar.pell@brightfield.example.com"],"tier":"external","timezone":"Europe/Warsaw"}
+    ],
+    "threads": [
+      {"channel":"email","externalThreadId":"gt-wait"}
+    ],
+    "ariaSent": [
+      {"channel":"email","externalThreadId":"gt-wait","to":"oskar.pell@brightfield.example.com","text":"I can offer Tuesday 11:00 am or Wednesday 3:00 pm {{CITY}} time for a call with Owner.","sentAt":"2026-11-02T08:00:00Z"},
+      {"channel":"email","externalThreadId":"gt-wait","to":"oskar.pell@brightfield.example.com","text":"Just checking whether either of those times works?","sentAt":"2026-11-05T08:00:00Z"}
+    ]
+  },
+  "trigger": {
+    "scheduled": "followup"
+  },
+  "expect": [
+    {"messageTo":"oskar.pell@brightfield.example.com"}
+  ],
+  "must_not": [
+    {"approval":{"count":1}},
+    {"outbox":{"kind":"create_event"}}
+  ]
+}

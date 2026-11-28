@@ -1,0 +1,52 @@
+{
+  "id": "ru-autonomy-external-reschedule",
+  "kind": "ruling",
+  "source": "ruling:autonomy",
+  "description": "An external asks to reschedule their meeting; Aria finds a time and moves it herself, without asking the owner.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [
+      {"id":"gareth-call","status":"confirmed","summary":"Gareth / Owner","start":{"dateTime":"2026-11-10T11:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-10T11:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"gareth.lindqvist@acme.com","responseStatus":"accepted"}]}
+    ],
+    "contacts": [
+      {"name":"Gareth Lindqvist","emails":["gareth.lindqvist@acme.com"],"tier":"external","timezone":"Europe/Stockholm"}
+    ],
+    "threads": [
+      {"channel":"email","externalThreadId":"gt-g3","about":"gareth-call"}
+    ]
+  },
+  "trigger": {
+    "ingest": {
+      "channel": "email",
+      "externalMessageId": "gm-1",
+      "externalThreadId": "gt-g3",
+      "sender": {
+        "channel": "email",
+        "externalId": "gareth.lindqvist@acme.com",
+        "verified": true,
+        "displayName": "Gareth Lindqvist",
+        "email": "gareth.lindqvist@acme.com"
+      },
+      "text": "Sorry, something came up. Can we move our Tuesday call to Wednesday or Thursday?",
+      "receivedAt": "2026-11-09T06:00:00Z",
+      "mentionsAria": true,
+      "isDirect": false,
+      "kind": "message",
+      "threadMeta": {
+        "subject": "Tuesday call",
+        "participants": [
+          "gareth.lindqvist@acme.com",
+          "{{ARIA}}"
+        ]
+      }
+    }
+  },
+  "expect": [
+    {"calendarEvent":"gareth-call","moved":true},
+    {"messageTo":"gareth.lindqvist@acme.com"}
+  ],
+  "must_not": [
+    {"approval":{"count":1}},
+    {"outbox":{"kind":"delete_event"}}
+  ]
+}

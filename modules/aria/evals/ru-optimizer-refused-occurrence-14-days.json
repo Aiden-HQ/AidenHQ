@@ -1,0 +1,30 @@
+{
+  "id": "ru-optimizer-refused-occurrence-14-days",
+  "kind": "ruling",
+  "source": "ruling:optimizer",
+  "description": "The owner refused moving one occurrence of a series; the optimizer leaves the whole series alone for 14 days.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [
+      {"id":"team-weekly_20261110","status":"confirmed","summary":"Tomas / Owner weekly","start":{"dateTime":"2026-11-10T22:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-10T23:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"tomas.brandt@{{DOMAIN}}","responseStatus":"accepted"}],"recurringEventId":"team-weekly"},
+      {"id":"team-weekly_20261117","status":"confirmed","summary":"Tomas / Owner weekly","start":{"dateTime":"2026-11-17T22:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-17T23:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"tomas.brandt@{{DOMAIN}}","responseStatus":"accepted"}],"recurringEventId":"team-weekly"}
+    ],
+    "contacts": [
+      {"name":"Tomas Brandt","emails":["tomas.brandt@{{DOMAIN}}"],"tier":"team","timezone":"Europe/Berlin"}
+    ],
+    "ariaSent": [
+      {"channel":"telegram","externalThreadId":"owner-dm","to":"owner","text":"Suggestion: move the Tuesday 10 Nov Tomas / Owner weekly from 10:30 pm to 11:00 am.","sentAt":"2026-11-07T04:00:00Z"}
+    ],
+    "history": [
+      {"channel":"owner","externalMessageId":"o-refuse","externalThreadId":"owner-dm","sender":{"channel":"owner","externalId":"000000","verified":true,"displayName":"Owner"},"text":"No, leave that one where it is.","receivedAt":"2026-11-07T05:00:00Z","mentionsAria":true,"isDirect":true,"kind":"message"}
+    ]
+  },
+  "trigger": {
+    "scheduled": "optimizer"
+  },
+  "expect": [],
+  "must_not": [
+    {"calendarEvent":"team-weekly_20261110","moved":true},
+    {"calendarEvent":"team-weekly_20261117","moved":true}
+  ]
+}

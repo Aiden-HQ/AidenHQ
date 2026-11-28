@@ -1,0 +1,45 @@
+{
+  "id": "ru-without-owner-handoff",
+  "kind": "ruling",
+  "source": "ruling:without-owner",
+  "status": "old-harness: multi-exec: the owner is one of several executives an assistant serves; one install is one person",
+  "description": "A colleague asks for a call between herself and another exec Aria serves; the message goes to that exec's cell, nothing is planned here.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [],
+    "contacts": [
+      {"name":"Lena Voss","emails":["lena.voss@{{DOMAIN}}"],"tier":"team","timezone":"Europe/Berlin"},
+      {"name":"Helena Marsh","emails":["helena.marsh@{{DOMAIN}}"],"tier":"team","timezone":"Europe/London"}
+    ],
+    "servedExecs": [
+      "helena.marsh@{{DOMAIN}}"
+    ]
+  },
+  "trigger": {
+    "ingest": {
+      "channel": "slack",
+      "externalMessageId": "T1:DU0LEN001:1762671600.000100",
+      "externalThreadId": "T1:DU0LEN001:1762671600.000100",
+      "sender": {
+        "channel": "slack",
+        "externalId": "T1:U0LEN001",
+        "verified": true,
+        "displayName": "Lena Voss",
+        "email": "lena.voss@{{DOMAIN}}",
+        "emailFromDirectory": true
+      },
+      "text": "Can you set up 30 min between Helena and me tomorrow? Owner is not needed.",
+      "receivedAt": "2026-11-09T06:00:00Z",
+      "mentionsAria": true,
+      "isDirect": true,
+      "kind": "message"
+    }
+  },
+  "expect": [
+    {"outbox":{"kind":"hand_off"}}
+  ],
+  "must_not": [
+    {"outbox":{"kind":"create_event"}},
+    {"approval":{"count":1}}
+  ]
+}

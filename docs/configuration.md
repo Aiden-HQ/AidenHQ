@@ -125,6 +125,7 @@ outcomes:
   The Agent Architect designs local agents (templates in `modules/agent-builder/templates/`); a new one starts with its
   designed grants, and the AI reviewer reads it at apply. The old `agents/<key>/agent.yaml` is a compile error naming
   the move.
+- **A fast-lane tool of an optional connection.** An agent's `chat.tools` entry is `connection.tool`, and must be one of its granted tools. Written `connection?.tool`, it is kept while that connection is granted (its grant is `connection?:`) and dropped while the module is off, so the lane works either way.
 - `image: engineer` on an Engineer (`profile: engineer`): every Engineer has one; its jobs run in that agent computer (a job for an
   agent without one is refused).
 - `jobcaps: [<id>]` on an Engineer (`profile: engineer`) (`<id>?` when its module is optional): the reads its jobs hold,

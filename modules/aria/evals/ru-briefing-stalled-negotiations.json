@@ -1,0 +1,36 @@
+{
+  "id": "ru-briefing-stalled-negotiations",
+  "kind": "ruling",
+  "source": "ruling:morning-briefing",
+  "status": "old-harness: own-brief: Aria no longer sends a daily brief of her own",
+  "description": "Two negotiations have waited days for answers; the briefing mentions them as stalled (with the close-stalled button).",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [
+      {"id":"today","status":"confirmed","summary":"today","start":{"dateTime":"2026-11-09T14:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-09T14:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"tomas.brandt@{{DOMAIN}}","responseStatus":"accepted"}]}
+    ],
+    "contacts": [
+      {"name":"Tomas Brandt","emails":["tomas.brandt@{{DOMAIN}}"],"tier":"team","timezone":"Europe/Berlin"},
+      {"name":"Gareth Lindqvist","emails":["gareth.lindqvist@acme.com"],"tier":"external","timezone":"Europe/Stockholm"},
+      {"name":"Oskar Pell","emails":["oskar.pell@brightfield.example.com"],"tier":"external","timezone":"Europe/Warsaw"}
+    ],
+    "threads": [
+      {"channel":"email","externalThreadId":"gt-s1"},
+      {"channel":"email","externalThreadId":"gt-s2"}
+    ],
+    "ariaSent": [
+      {"channel":"email","externalThreadId":"gt-s1","to":"gareth.lindqvist@acme.com","text":"Offered: Tuesday 11:00 am or Thursday 2:00 pm {{CITY}} time.","sentAt":"2026-11-03T08:00:00Z"},
+      {"channel":"email","externalThreadId":"gt-s2","to":"oskar.pell@brightfield.example.com","text":"Offered: Wednesday 4:00 pm or Friday 10:00 am {{CITY}} time.","sentAt":"2026-11-04T08:00:00Z"}
+    ]
+  },
+  "trigger": {
+    "scheduled": "briefing"
+  },
+  "expect": [
+    {"messageTo":"owner","contains":"stalled"}
+  ],
+  "must_not": [
+    {"outbox":{"kind":"delete_event"}},
+    {"outbox":{"kind":"create_event"}}
+  ]
+}

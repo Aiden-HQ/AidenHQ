@@ -1,0 +1,41 @@
+{
+  "id": "ru-recurring-single-occurrence",
+  "kind": "ruling",
+  "source": "ruling:recurring-single",
+  "description": "The owner asks to move \"this Friday's\" sync. Only that occurrence moves unless they say \"the whole series\".",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [
+      {"id":"ops-weekly_20261113","status":"confirmed","summary":"Ops weekly","start":{"dateTime":"2026-11-13T10:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-13T11:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"tomas.brandt@{{DOMAIN}}","responseStatus":"accepted"}],"recurringEventId":"ops-weekly"},
+      {"id":"ops-weekly_20261120","status":"confirmed","summary":"Ops weekly","start":{"dateTime":"2026-11-20T10:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-20T11:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"tomas.brandt@{{DOMAIN}}","responseStatus":"accepted"}],"recurringEventId":"ops-weekly"}
+    ],
+    "contacts": [
+      {"name":"Tomas Brandt","emails":["tomas.brandt@{{DOMAIN}}"],"tier":"team","timezone":"Europe/Berlin"}
+    ]
+  },
+  "trigger": {
+    "ingest": {
+      "channel": "owner",
+      "externalMessageId": "o-1",
+      "externalThreadId": "owner-dm",
+      "sender": {
+        "channel": "owner",
+        "externalId": "000000",
+        "verified": true,
+        "displayName": "Owner"
+      },
+      "text": "Move this Friday's Ops weekly to 2 pm.",
+      "receivedAt": "2026-11-09T06:00:00Z",
+      "mentionsAria": true,
+      "isDirect": true,
+      "kind": "message"
+    }
+  },
+  "expect": [
+    {"calendarEvent":"ops-weekly_20261113","start":"2026-11-13T14:00:00{{OFFSET}}"}
+  ],
+  "must_not": [
+    {"calendarEvent":"ops-weekly_20261120","moved":true},
+    {"outbox":{"kind":"update_event","match":{"scope":"series"}}}
+  ]
+}

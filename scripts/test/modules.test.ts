@@ -8,7 +8,7 @@ import YAML from "yaml";
 import { BUNDLE } from "./bundle.ts";
 import { ensureIdentityKeys } from "../identity.ts";
 import { productsOf } from "../modules.ts";
-import { checkEntries, checkJobs, codeReviewGated, compile, composeSecretFiles, ensureMountedSecrets, writeKinds, ensureOptionalSecrets, grantEntry, hostMounts, kernelModuleTable, LEGACY_HOST_ENV, LEGACY_LINKS, LEGACY_SECRETS, mapLimit, OPS_NETWORKS } from "../modules.ts";
+import { chatBlock, checkEntries, checkJobs, codeReviewGated, compile, composeSecretFiles, ensureMountedSecrets, writeKinds, ensureOptionalSecrets, grantEntry, hostMounts, kernelModuleTable, LEGACY_HOST_ENV, LEGACY_LINKS, LEGACY_SECRETS, mapLimit, OPS_NETWORKS } from "../modules.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const mods = join(here, "fixtures/mods");
@@ -481,4 +481,12 @@ test("subscribes: compiled from settings into the kernel's module table, kinds c
   const opt = { optional: { subscribes: { "github?": { kinds: ["push"], resources: "*" } } } };
   assert.equal(kernelModuleTable(opt, {}, new Set(["optional"])).optional?.subscribes, undefined);
   assert.deepEqual(kernelModuleTable({ github: gh, ...opt }, {}, new Set(["optional"])).optional.subscribes, { github: { kinds: ["push"], resources: "*" } });
+});
+
+test("a chat lane tool of an optional connection (`slack?.tool`) is kept while it is granted and dropped while it is off", () => {
+  const tools = ["google.read", "slack?.search", "glean?.search"];
+  assert.deepEqual(chatBlock("a", { tools }, { google: ["read"] }).tools, ["google.read"]);
+  assert.deepEqual(chatBlock("a", { tools }, { google: ["read"], slack: ["search"] }).tools, ["google.read", "slack.search"]);
+  assert.throws(() => chatBlock("a", { tools: ["slack?.nope"] }, { slack: ["search"] }), /isn't one of its granted tools/);
+  assert.throws(() => chatBlock("a", { tools: ["slack.search"] }, { google: ["read"] }), /isn't one of its granted tools/);
 });

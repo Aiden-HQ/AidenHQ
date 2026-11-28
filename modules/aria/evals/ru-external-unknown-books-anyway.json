@@ -1,0 +1,29 @@
+{
+  "id": "ru-external-unknown-books-anyway",
+  "kind": "ruling",
+  "source": "ruling:missing-data-never-blocks",
+  "description": "The owner summons Aria into a chat to book 30 minutes with an outside person whose calendar is not visible and whose time zone nobody knows. Aria books the best slot in the owner's own windows at once, says the time with its zone in the confirmation so the person can push back, asks nobody, and tells the owner about the missing free/busy permission at most once.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [
+      {"id":"standup","status":"confirmed","summary":"Team standup","start":{"dateTime":"2026-11-10T09:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-10T10:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"}]}
+    ],
+    "contacts": [],
+    "find_times": { "attendee_freebusy": "not_visible", "slots": [{"start":"2026-11-10T10:00:00{{OFFSET}}","end":"2026-11-10T10:30:00{{OFFSET}}","tier":"best"}] }
+  },
+  "trigger": {
+    "summoned": {
+      "owner_ask": "Aria, please set up 30 minutes with Priya Raman (priya@partner.example.com) this week.",
+      "conversation": "chat-thread-1"
+    }
+  },
+  "expect": [
+    { "tool": "calendar_create_event", "args": { "start": "2026-11-10T10:00:00{{OFFSET}}", "attendees": ["priya@partner.example.com"] } },
+    { "conversation_reply": { "contains": "{{CITY}}" } }
+  ],
+  "must_not": [
+    { "conversation_reply": { "contains": "which of" } },
+    { "conversation_reply": { "contains": "would you prefer" } },
+    { "task_comment_to_owner": { "asking": "time zone or availability" } }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "id": "ru-colleague-not-served-own-meetings",
+  "kind": "ruling",
+  "source": "ruling:colleagues-not-served",
+  "status": "old-harness: multi-exec: the owner is one of several executives an assistant serves; one install is one person",
+  "description": "A colleague who is not served wants their own 1:1s with two execs. Aria asks them to \"set me up\" instead of planning on the owner's calendar.",
+  "world": {
+    "now": "2026-11-09T06:00:00Z",
+    "calendar": [],
+    "contacts": [
+      {"name":"Ines Okafor","emails":["ines.okafor@{{DOMAIN}}"],"tier":"team","timezone":"Africa/Lagos"},
+      {"name":"Rafael Quist","emails":["rafael.quist@{{DOMAIN}}"],"tier":"team","timezone":"America/New_York"}
+    ],
+    "servedExecs": [
+      "helena.marsh@{{DOMAIN}}"
+    ],
+    "slackDirectory": [
+      {"userId":"U0INE001","name":"Ines Okafor","email":"ines.okafor@{{DOMAIN}}"}
+    ]
+  },
+  "trigger": {
+    "ingest": {
+      "channel": "slack",
+      "externalMessageId": "T1:DU0INE001:1762671600.000100",
+      "externalThreadId": "T1:DU0INE001:1762671600.000100",
+      "sender": {
+        "channel": "slack",
+        "externalId": "T1:U0INE001",
+        "verified": true,
+        "displayName": "Ines Okafor",
+        "email": "ines.okafor@{{DOMAIN}}",
+        "emailFromDirectory": true
+      },
+      "text": "I need separate 1:1s with Owner and with Helena this week to discuss my own plans.",
+      "receivedAt": "2026-11-09T06:00:00Z",
+      "mentionsAria": true,
+      "isDirect": true,
+      "kind": "message"
+    }
+  },
+  "expect": [
+    {"messageTo":"T1:U0INE001","contains":"set me up"}
+  ],
+  "must_not": [
+    {"outbox":{"kind":"create_event"}}
+  ]
+}
