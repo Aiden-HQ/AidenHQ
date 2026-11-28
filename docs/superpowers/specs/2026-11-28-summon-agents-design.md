@@ -108,8 +108,7 @@ live ingest, outside this build.
 
 - **One conversation, one task per agent.** It's kv-keyed `summon:<source>:<conversation>:<agent>`, the same pattern as
   `thread()`; a closed task reopens on a new summons. `thread()` folds into this path: a bound-channel @mention of the
-  bot becomes a summons by a colleague, which stays fenced as not the owner's words. Two code paths for "chat
-  message -> agent task" would break one way.
+  bot shares this filing code but keeps its own (colleague, no owner authority) labelling. See "Settled after review".
 - **The description** carries:
   - the owner's words, labelled as the owner's request;
   - the conversation's last 10 messages from `context()`, each other-person line fenced as untrusted;
@@ -196,6 +195,54 @@ Read-only from `kernel.db`. Figures are p50 / p90.
   3. If review time still dominates, review the reply and the calendar write in one record. Builder measures first.
 - Seen in passing: 54% of slack-triage batches are dropped, and some worker jobs hit the 120-minute timeout. Both are
   out of scope here and noted for a separate look.
+
+## Settled after review (builder check + Codex, 2026-11-28)
+
+**Authority**
+- **Owner attestation is a privilege.** A connector may set `from_owner` only if it holds a new role, e.g.
+  `kernel.attest-owner`, bound to its connected account. Owning the connection isn't enough.
+- Email must prove the message came from the account's own Sent mail, not a matching `From` header.
+- **The summons reaches the agent as an owner comment.** Dispatch's `ownRequest()` ignores descriptions with a
+  `source:` marker, and `speaker()` treats owner-key comments as the owner's words. So:
+  - the verified summons text is posted as the owner's comment;
+  - the context and other people's follow-ups go through the existing notice mechanism (`FOR_OTHERS`), never as
+    owner-key comments;
+  - every write review on the task is pinned to the original ask, even after a long back-and-forth;
+  - one test checks the authority both the runner and the reviewer see.
+- **Colleague @mentions of the bot in bound Slack channels keep working as today.** They're fenced and limited by the
+  channel binding. They share the task-filing code with summons but carry no owner authority. This is an engineering
+  call that drops nothing.
+
+**Roster and matching**
+- The summonable roster comes from the compiled modules config: teammate names and handles. The kernel loads it.
+- The board's `mentionedAgents()` regex can't take `@Name@AidenHQ`, so the matcher is new. It lives in the kernel and
+  the board keeps its own.
+- A user-chosen agent name that collides with a person ("cc Sam") is accepted. `@AidenHQ` disambiguates, and the owner
+  can rename the agent.
+
+**Reliability**
+- **Claim durably before acting.** The event, its routing decision and the per-agent delivery are stored in the ingest
+  transaction. Tasks are filed with the stable filing key from `kernel/src/modtasks.ts`, not `allowDuplicate`, so
+  retries and races never make two tasks.
+- **React after acceptance.** 👀 fires as soon as the event is durably accepted; the 5 s debounce then folds in more
+  lines. That keeps the 3 s ack target.
+- **Stable conversation address:** `(account, channel, thread_ts ?? ts)` for Slack channel threads, so a threaded reply
+  maps back to its summons.
+- **Durable sends.**
+  - Each `conversation_reply` is persisted before posting, and the provider message id is reconciled afterwards, even
+    after a timeout.
+  - Bindings and exclusions are rechecked at execution time.
+  - The echo guard keys on message ids, because Slack clips event text at 2,000 characters, which can cut off the
+    signature.
+- **Slack replay gap.** Gap sync must use the same owner attribution as live events. Failed forwards are kept for retry,
+  as Telegram already does.
+- **Summons are tasks, not chat-lane turns.** One route per interaction: the agent's lane chat never sees them, and the
+  outcome is posted in the source conversation. The task closes with a one-line finish on the board, and nothing
+  reaches the owner unless something needs them.
+- **Speed cut 2 (summoned jobs claimed first) is in scope.** The owner asked to fix latency, and the p90 queue wait is
+  the second-biggest delay.
+- The event field shapes, `TEXT_MAX`, and whether consumed events still go to `event_log` are left to the builder.
+  The constraint: change-feed readers keep seeing every event.
 
 ## Security notes
 

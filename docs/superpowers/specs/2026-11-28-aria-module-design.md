@@ -153,6 +153,33 @@ asked, through the tiered settings path. The defaults are old Aria's `templates/
 3. Run both for 3 days with standalone Aria's write side off.
 4. Stop standalone Aria and archive calendar-manager.
 
+## Settled after review (2026-11-28)
+
+**Bookings**
+- Confirm a booking only after Google reports success.
+- Recheck the blocking calendars right before applying, because times can change during the ~20 s review.
+- Use a stable event id for retried creates, and condition moves on the event version seen.
+- If a time the owner named becomes unavailable, report the conflict instead of moving it.
+- Each nudge (`wake_at`) is bound to the current ask and meeting, so a reopened task never sends yesterday's nudge.
+
+**Free/busy access**
+- `calendar_find_times` always uses the owner's own events, which the current `calendar.events` scope covers.
+- Other attendees' free/busy is used when the user has granted the free/busy scope, an optional checkbox on the Google
+  sign-in. Existing users aren't forced to reconnect.
+
+**Optimizer cap**
+- The nightly move cap is counted from recorded calendar-write records, so retries can't exceed it. It's a small code
+  check and the one exception to "skill + reviewer", because a retry loop could otherwise move many meetings.
+
+**Settings saves**
+- Owner edits save through the board's page-save endpoint, as every module page does.
+- `aria_configure` is the agent's proposal path.
+
+**Source material**
+- Old Aria's evals, `templates/principal/settings.yaml` and the handbook are in `~/Development/calendar-manager` and
+  the instance repo. Copy them in as inputs, never as code.
+- The current local module is the starting point: instance repo `modules/aria/`.
+
 ## Builder's calls (left open)
 
 - Exact setting keys and types. The prefill mechanism: a one-shot run on first page open, or a setup flow.
