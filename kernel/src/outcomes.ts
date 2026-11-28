@@ -105,19 +105,22 @@ export function createOutcomes({ db, plugin, delegates, finish, relay, facts, ag
   async function post(job: { id: string; agent: string; task: string }, req: PostRequest): Promise<Outcome> {
     if (!UUID.test(job.agent)) throw new OutcomeError(400, "bad-agent", "an agent is its Paperclip id");
     // A reply's body is the agent's prose: the model's own format (a role tag or chat-template header at the front, tool-call
-    // markup at the back) never reaches the comment or the owner's channel. A body that was only markup is no reply, and the
-    // sanitized body is the one `once` keys, posts and relays, so a retry reads the same reply the first call did.
+    // markup at the back) never reaches the comment or the owner's channel. The sanitized body is the one `once` keys, posts
+    // and relays, so a retry reads the same reply the first call did.
     if (typeof req.body !== "string") throw new OutcomeError(400, "bad-request", "send {kind, body}");
-    if (req.kind === "reply") {
-      const body = sanitizeReply(req.body);
-      // Only model-format markup leaves no reply at all, the empty final's path rather than a refused post.
-      if (!body.trim() && req.body.trim()) {
-        log("reply not posted: its body was only model-format markup", { job: job.id, task: job.task });
-        return { comment: null, status: null };
-      }
-      req = { ...req, body };
+    const body = req.kind === "reply" ? sanitizeReply(req.body) : req.body;
+    // Only model-format markup leaves a reply with no words: no comment and no channel copy, as an empty final. A status the
+    // caller asked for alongside it (`done`, `blocked`) is still the write, so it is not dropped with the body.
+    const wordless = req.kind === "reply" && req.body.trim() !== "" && body.trim() === "";
+    if (!wordless && !body.trim()) throw new OutcomeError(400, "bad-request", "send {kind, body}");
+    // A post with no body at all is legitimate for a status-only change (`status` is its own write), never a reply: a reply
+    // with no words is no reply (the empty final's path), not a refused post.
+    if (wordless) {
+      log("reply not posted: its body was only model-format markup", { job: job.id, task: job.task, status: req.status ?? null });
+      // Nothing else to write and nothing to relay: no reply at all.
+      const otherwise = req.status !== undefined || req.child !== undefined || req.scope !== undefined || (req.blockedBy?.length ?? 0) > 0;
+      if (!otherwise) return { comment: null, status: null };
     }
-    if (!req.body.trim()) throw new OutcomeError(400, "bad-request", "send {kind, body}");
     // `listed` is the kernel's word: the grants table naming this task for the agent (its chat task), never the caller's.
     if (req.scope === "listed" && chatTask?.(job.agent) !== job.task) throw new OutcomeError(403, "not-listed", `a listed post is only for a task the grants table names for agent ${job.agent}`);
     // A closed task takes no reply, and none is relayed: not a new comment on it, and not the channel copy of one posted
@@ -139,7 +142,7 @@ export function createOutcomes({ db, plugin, delegates, finish, relay, facts, ag
     const { value, again } = await once(key, async (retry): Promise<Outcome> => {
       const status = req.status;
       if (status === "done") await finish(job.task);
-      const params = { issueId: job.task, tag: key, body: req.body, ...(req.scope ? { scope: req.scope } : {}), ...(retry ? { again: true } : {}), ...(status ? { status } : {}), ...(status === "blocked" ? { blockedBy: req.blockedBy ?? [] } : {}), ...(status === "done" ? { gated: true } : {}), ...(req.child ? { child: req.child, delegateTo: await delegates(job.agent) } : {}) };
+      const params = { issueId: job.task, tag: key, ...(wordless ? {} : { body }), ...(req.scope ? { scope: req.scope } : {}), ...(retry ? { again: true } : {}), ...(status ? { status } : {}), ...(status === "blocked" ? { blockedBy: req.blockedBy ?? [] } : {}), ...(status === "done" ? { gated: true } : {}), ...(req.child ? { child: req.child, delegateTo: await delegates(job.agent) } : {}) };
       const r = await plugin.post(job.agent, params);
       // A 5xx (502: the plugin is down, or it threw) leaves the key pending: whether it wrote is unknown, and the retry looks.
       if (r.status >= 500) throw new OutcomeError(502, "unknown", `the post action answered ${r.status}`);
@@ -152,14 +155,14 @@ export function createOutcomes({ db, plugin, delegates, finish, relay, facts, ag
       if (r.status >= 300 || !data || data.refused) throw new OutcomeError(r.status >= 400 && r.status !== 429 ? r.status : r.status >= 300 ? 502 : 422, "refused", data?.refused ?? `the post action answered ${r.status}`);
       log("outcome posted", { job: job.id, kind: req.kind, task: job.task, status: data.status ?? null});
       if (data.comment) fact({ type: "task.commented", subject: `task:${job.task}`, version: String(data.comment), at: iso(Date.now()), actor: `agent:${agentKey(job.agent)}`, task: job.task, data: { kind: req.kind, job: job.id } });
-      return { comment: data.comment, status: data.status ?? null };
+      return { comment: data.comment ?? null, status: data.status ?? null };
     });
     // A reply also goes to the channel the owner wrote from: its own once, after the post. A read that fails now fails this call
     // (a 502), so the dispatcher's retry, which gets the post back as it was, relays it then; a 4xx is final.
-    if (req.kind === "reply" && relay) {
+    if (req.kind === "reply" && relay && !wordless) {
       await once(`${key}:relay`, async () => {
         try {
-          await relay(job, req.body);
+          await relay(job, body);
         } catch (e) {
           const status = (e as { status?: number }).status ?? 502;
           if (status >= 400 && status < 500 && status !== 429) return void log("reply relay given up", { job: job.id, task: job.task, err: (e as Error).message });

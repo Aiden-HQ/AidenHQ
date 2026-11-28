@@ -103,16 +103,23 @@ const lineStarts = (text: string) => {
   for (let nl = text.indexOf("\n"); nl !== -1; nl = text.indexOf("\n", nl + 1)) starts.push(nl + 1);
   return starts;
 };
-/** A fenced code block's opening or closing line: three or more backticks or tildes, indented at most three spaces. */
-const FENCE = /^ {0,3}(?:```|~~~)/;
-/** Which lines open inside a fenced code block: the block's own text is the reply's, so a marker there stays. */
+/** A fenced code block's opening line: a run of at least three backticks or tildes, indented at most three spaces, and an
+ * optional info string after it. */
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+/** Which lines open inside a fenced code block: the block's own text is the reply's, so a marker there stays. A closing line is
+ * a run at least as long as the opening one and nothing but spaces after it, so the three backticks inside a four-backtick
+ * block (or a content line like "```js") are its content, not its end. */
 const fenceState = (text: string, starts: number[]) => {
   const inside = new Array<boolean>(starts.length);
-  let open = false;
+  let open: { mark: string; length: number } | undefined;
   for (let i = 0; i < starts.length; i++) {
-    inside[i] = open;
+    inside[i] = open !== undefined;
     const end = i + 1 < starts.length ? starts[i + 1]! - 1 : text.length;
-    if (FENCE.test(text.slice(starts[i]!, end))) open = !open;
+    const match = FENCE.exec(text.slice(starts[i]!, end));
+    if (!match) continue;
+    const [, run, rest] = match;
+    if (!open) open = { mark: run![0]!, length: run!.length };
+    else if (run![0] === open.mark && run!.length >= open.length && /^[ \t]*$/.test(rest!)) open = undefined;
   }
   return inside;
 };
@@ -159,28 +166,25 @@ export function stripSentinels(text: string): string {
 }
 
 /**
- * DeepSeek's DSML tag, which writes tool-call markup as text: its separators are fullwidth bars (U+FF5C), so its tags are
- * spelled with them instead of the usual attribute punctuation. Any tag that opens that way is markup, whatever element it
- * names (`｜DSML｜`invoke`, `｜DSML｜`parameter`, `｜DSML｜`function_calls`).
+ * A complete tool-call element tag, as text: DeepSeek's DSML spelling (fullwidth bars as its separators, e.g. its invoke or
+ * parameter element) or a bare `<invoke>`, `</parameter>`, `<function_calls>` (attributes allowed). One definition, so the
+ * task tools' refusal and a reply's sanitizer cannot drift apart.
  */
-const DSML = /<\uff5cDSML\uff5c/i;
-/** A stray tool-call element's complete tag: `<invoke>`, `</parameter>`, `<function_calls>` (attributes allowed). */
-const ELEMENT = /<\/?(?:invoke|parameter|function_calls)\b[^>]*>/;
+const TOOL_TAG = /<\/?[\uff5c|]*(?:DSML[^<>]*|invoke|parameter|function_calls)(?:\s[^<>]*)?>/i;
 /** Whether `text` carries raw tool-call markup: the task tools refuse such an argument, and a reply's body is stripped of it. */
-export const hasToolMarkup = (text: string) => DSML.test(text) || ELEMENT.test(text);
+export const hasToolMarkup = (text: string) => TOOL_TAG.test(text);
 /** A tool-call element's name: DSML's own spelling (after its leading bars), or a bare invoke/parameter/function_calls. */
 const TOOL_NAME = /^\/?[\uff5c|]*(?:DSML[^\s<>]*|invoke|parameter|function_calls)(?=[\s/>]|$)/i;
 /** Attributes a model writes inside a tag: `name="x"`, `name='x'`, and the same cut before its closing quote. */
 const ATTRIBUTES = /^(?:\s+[^\s=<>]+\s*=\s*(?:"[^"]*"?|'[^']*'?|[^\s"'<>]*))*\s*$/;
 /**
  * Where the tool-call markup that ends exactly at `end` starts, or undefined: a complete tag ("</invoke>"), an opening tag
- * cut short with its attributes ("<invoke name=\"x\""), or a name cut short ("<DSM"). A tag never spans a line.
+ * cut short with its attributes ("<invoke name=\"x\""), or a tag's name cut short ("<｜DSML｜`DSM`").
  */
 const toolTagEndingAt = (text: string, from: number, end: number) => {
   let at = text.lastIndexOf("<", end - 1);
   let frag = at < from ? "" : text.slice(at + 1, end);
-  // Only a tag's own characters may sit between its `<` and the edge; a line break or `<` between means the tag ended before,
-  // and the rest is prose.
+  // A tag never spans a line, and `<` inside the fragment means an earlier tag ended first: the rest is prose.
   while (at >= from && end - at <= 300 && /[\n<]/.test(frag)) {
     at = text.lastIndexOf("<", at - 1);
     frag = at < from ? "" : text.slice(at + 1, end);
@@ -194,10 +198,59 @@ const toolTagEndingAt = (text: string, from: number, end: number) => {
     // A cut opening tag: its name, then only attributes (or part of one) and no `>` yet.
     return ATTRIBUTES.test(rest) ? at : undefined;
   }
-  // A name cut short is the start of one ("<DSM"): never a bare `<`.
-  const bare = frag.replace(/^\//, "").replace(/^[\uff5c|]+/, "").toLowerCase();
+  // A tag whose name is cut short: "<｜DSML｜`DSM`", or a bare "<DSML"/"<invoke"/"<param". A short prefix after prose ("x<d") is
+  // the reply's own comparison, so a DSML one needs its opening bar and any other at least four characters.
+  const opened = frag.replace(/^\//, "");
+  const dsml = /^[\uff5c|]/.test(opened);
+  const bare = opened.replace(/^[\uff5c|]+/, "").toLowerCase();
   const names = ["dsml", "invoke", "parameter", "function_calls"];
-  return /^[a-z0-9_]+$/.test(bare) && names.some((n) => n.startsWith(bare)) ? at : undefined;
+  return (dsml ? bare.length >= 3 : bare.length >= 4) && /^[a-z0-9_]+$/.test(bare) && names.some((n) => n.startsWith(bare)) ? at : undefined;
+};
+/** A complete tool-call tag's element name at `at`, or undefined: its tags are parsed to balance a trailing block. */
+const toolTag = (text: string, at: number) => {
+  const close = text.indexOf(">", at + 1);
+  if (text[at] !== "<" || close < 0) return undefined;
+  const inner = text.slice(at + 1, close);
+  const closing = inner.startsWith("/");
+  const name = sanitizeTagName(closing ? inner.slice(1) : inner);
+  return name ? { name, closing, next: close + 1 } : undefined;
+};
+/** A tag's element name, in one spelling: a DSML tag's own element, or invoke/parameter/function_calls. */
+const sanitizeTagName = (inner: string) => {
+  const bare = inner.replace(/^[\uff5c|]+/, "");
+  const dsml = /^DSML/i.test(bare);
+  const name = dsml ? bare.slice(4).replace(/^[\uff5c|]+/, "").split(/[\s/>]/)[0]!.toLowerCase() : bare.split(/[\s/>]/)[0]!.toLowerCase();
+  return dsml ? `dsml:${name}` : ["invoke", "parameter", "function_calls"].includes(name) ? name : "";
+};
+/**
+ * Where a balanced trailing tool-call block starts, or undefined: a call element with its payload, such as
+ * `<invoke><parameter>London</parameter></invoke>`, whose closing tag is at `end`. It is read from the element's opening tag, a
+ * bounded distance back, and only when an opening tag sits there, so a long run of bare closing tags stays linear.
+ */
+const toolBlockEndingAt = (text: string, from: number, end: number, fenced: boolean[], starts: number[]) => {
+  // The block must end in a closing tag: a lone opening one is a single tag, which the tag run strips.
+  const at = toolTagEndingAt(text, from, end);
+  if (at === undefined || !toolTag(text, at)?.closing) return undefined;
+  // A block the reply shows inside a fenced code block is its own text: every line of it must be inside the fence.
+  if (fenced[lineOf(starts, at)]) return undefined;
+  const limit = Math.max(from, at - 4_000);
+  // A call element's payload is at most a few tags, never a blank line: the opening tag is at most 4,000 characters back.
+  const open = text.lastIndexOf("<", at - 1);
+  if (open < limit || toolTag(text, open)?.closing) return undefined;
+  let depth = 0, cursor = open;
+  for (;;) {
+    const tag = toolTag(text, cursor);
+    if (!tag) return undefined;
+    depth += tag.closing ? -1 : 1;
+    // The opening tag must sit outside the fence too: a block that starts in prose and ends in a code sample is not one block.
+    if (depth === 0) return cursor === at && !fenced[lineOf(starts, open)] ? open : undefined;
+    cursor = tag.next;
+    while (cursor < text.length && text[cursor] !== "<") {
+      if (text.startsWith("\n\n", cursor)) return undefined;
+      cursor++;
+    }
+    if (cursor > at) return undefined;
+  }
 };
 /**
  * A model-format role tag written bare as text: `<system>`, `<|user|>`, `</assistant>`. Some templates emit it without the
@@ -212,40 +265,46 @@ const lineOf = (starts: number[], at: number) => {
   return lo;
 };
 /**
- * A reply's body without model-format markup at its edges: `stripSentinels` first, then a bare role tag at the opening edge and
- * a trailing run of tool-call tags, opening or closing, with a half-written one at the very end. A marker the reply shows on
- * purpose stays, exactly as `stripSentinels` has it: escaped, inside a fenced code block, or the whole of a blockquote line.
- * A body that was only markup comes back empty, so its dispatcher posts no reply, as at jobs.ts's stored last message.
+ * A reply's body without model-format markup at its edges: the chat-template headers and sentinels (`stripSentinels`' own
+ * policy), a bare opening role tag, and a trailing run of tool-call tags, opening or closing, with a half-written one at the
+ * very end. A marker the reply shows on purpose stays: escaped, inside a fenced code block, or the whole of a blockquote line.
+ * The fences are read before anything is cut, so a marker that was inside one keeps that fence's protection even once the
+ * text after it is gone. A body that was only markup comes back empty, so its dispatcher posts no reply, as at jobs.ts's
+ * stored last message. Each edge is walked to its end, so a long reply or a long run of tags costs its own length.
  */
 export function sanitizeReply(text: string): string {
-  for (let body = stripSentinels(text); ;) {
-    let from = 0, to = body.length;
-    const starts = lineStarts(body);
-    const fenced = fenceState(body, starts);
-    let changed = false;
-    // Each edge is walked to its end before the text is cut, so a long run of tags costs its own length.
-    for (;;) {
-      const at = skipStart(body, from, to);
-      const tag = ROLE.exec(body.slice(at, Math.min(to, at + 160)))?.[0].length ?? 0;
-      if (!tag) break;
-      const line = lineOf(starts, at);
-      if (body[at - 1] === "\\" || fenced[line] || quoted(body, at, at + tag, Math.max(starts[line]!, from), to)) break;
-      from = at + tag;
-      changed = true;
+  let from = 0, to = text.length;
+  const starts = lineStarts(text);
+  const fenced = fenceState(text, starts);
+  const line = (at: number) => lineOf(starts, at);
+  const keeps = (at: number, end: number, limit: number) => text[at - 1] === "\\" || fenced[line(at)] || quoted(text, at, end, Math.max(starts[line(at)]!, from), limit);
+  for (;;) {
+    const at = skipStart(text, from, to);
+    const after = afterHeader(text, at, to);
+    const sentinel = after !== undefined ? undefined : SENTINELS.find((s) => text.startsWith(s, at) && text[at - 1] !== "\\");
+    const reach = after ?? sentinel?.length;
+    if (reach !== undefined) {
+      if (keeps(at, at + reach, to)) break;
+      from = at + reach;
+      continue;
     }
-    for (;;) {
-      const end = skipEnd(body, from, to);
-      const start = toolTagEndingAt(body, from, end);
-      if (start === undefined || body[start - 1] === "\\") break;
-      const line = lineOf(starts, start);
-      if (fenced[line] || quoted(body, start, end, Math.max(starts[line]!, from), to)) break;
-      to = start;
-      changed = true;
-    }
-    const cut = body.slice(skipStart(body, from, to), skipEnd(body, from, to));
-    // Removing one piece can expose another at the other edge (a sentinel behind a tool tag): settle both again.
-    const next = changed ? stripSentinels(cut) : cut;
-    if (next === body) return next;
-    body = next;
+    const role = ROLE.exec(text.slice(at, Math.min(to, at + 160)))?.[0].length ?? 0;
+    if (!role || keeps(at, at + role, to)) break;
+    from = at + role;
   }
+  for (;;) {
+    const end = skipEnd(text, from, to);
+    const head = beforeHeader(text, from, end);
+    if (head !== undefined) {
+      if (keeps(head, end, to)) break;
+      to = head;
+      continue;
+    }
+    const sentinel = SENTINELS.find((s) => end - s.length >= from && text.startsWith(s, end - s.length) && text[end - s.length - 1] !== "\\");
+    // A whole call element at the edge goes with its payload, not just its closing tag; otherwise the tag run is stripped.
+    const start = sentinel ? end - sentinel.length : toolBlockEndingAt(text, from, end, fenced, starts) ?? toolTagEndingAt(text, from, end);
+    if (start === undefined || keeps(start, end, to)) break;
+    to = start;
+  }
+  return text.slice(skipStart(text, from, to), skipEnd(text, from, to));
 }

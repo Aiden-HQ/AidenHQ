@@ -228,3 +228,24 @@ test("a half-written tool-call tag at the very end goes with the block", async (
   await o.post(JOB, { kind: "reply", body: `Published, closing it now.\n\n<${"parameter"} name="x"` });
   assert.equal(pc.comments[0].body, `Published, closing it now.\n\n${tag(JOB.id, "reply")}`, "the cut tag is not prose");
 });
+
+test("a reply of only markup still carries its requested status; an empty reply posts nothing at all", async (t) => {
+  const pc = await paperclip(t);
+  const o = kernelOf(pc.url);
+  // Only markup, with `done`: the finish gate runs and the task closes, and no comment body reaches the board.
+  const r = await o.post(JOB, { kind: "reply", body: `${element("invoke", true)}`, status: "done" });
+  assert.equal(r.comment, null, "a wordless reply leaves no comment");
+  assert.equal(r.status, "done", "the status the caller asked for is still written");
+  assert.equal(pc.issues[TASK].status, "done", "the task closed through the finish gate");
+  assert.deepEqual(pc.comments, [], "no markup-only comment");
+  assert.equal(pc.seen().at(-1).body, undefined, "the plugin was asked for the status, not a body");
+  // Only markup and nothing else: no reply at all, and the plugin is never asked. (The task is open again, as a done reply
+  // closes it: a closed task takes no reply at all, which is its own path.)
+  pc.issues[TASK].status = "in_progress";
+  const before = pc.seen().length;
+  const none = await kernelOf(pc.url).post({ ...JOB, id: "j-0123456789abcde3" }, { kind: "reply", body: `${element("parameter", true)}` });
+  assert.equal(none.comment, null);
+  assert.equal(pc.seen().length, before, "no write for a reply with no words and nothing else to say");
+  // An empty reply body is still refused: that is not model markup, it is a caller mistake.
+  await assert.rejects(o.post({ ...JOB, id: "j-0123456789abcde4" }, { kind: "reply", body: "   " }), { status: 400, code: "bad-request" });
+});
