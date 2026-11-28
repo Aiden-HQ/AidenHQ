@@ -50,7 +50,31 @@ summon path). slack-live is the Slack side of the contract:
 - `slack_live` (advanced): read `slack_owner` (the paired account, else the sign-in's), `slack_channel_context`; write `slack_post` and
   `channel_memory`, granted per agent.
 - Every agent post is a record the AI reviewer reads first. A channel outside `slack_post_channels` needs your approval too.
-- One Slack thread bound to an agent is one task for it; its text is fenced data.
+- One Slack thread bound to an agent is one conversation for it (`conversation_reply` answers in it); its text is fenced data.
+
+## How people reach an agent (advanced only)
+
+Every entry point is an event with `to_agent` on the kernel's summon path (`src/map.ts` classifies a message once, `src/reach.ts`
+runs the apps). The precedence is the same live and on a gap replay: the owner's command DM (Aiden's chat), a bound channel (a
+mention of the bot there goes to the bound agent, 30 an hour per channel), an addressed bot (a DM, or a mention), else a plain event.
+`message` and `app_mention` for one message are one event (`reach_seen`).
+
+- **The instance bot (the default).** Anyone's DM or @mention is `to_agent: "*"`, `entry: slack:bot`: a name in the message picks
+  the agent, otherwise Aiden hands it on. The reply (`reply_as: agent`) is posted by the bot with `username` set to the agent's name
+  (bot scope `chat:write.customize`, in the advanced manifest; an app made before needs "Update your bot app" and a reinstall).
+  The bot's avatar stays (Slack needs a public `icon_url`, and the board's faces aren't public); `icon_emoji` is used when the kernel
+  sends the agent an emoji. `users:read` names the sender (`author_name`).
+- **An agent's own Slack app (opt-in).** List the agent in the setting `slack_agent_apps` (`{ agent }`), make its app with slack-live's
+  `/setup/app` route (`agent` in the body: the app is named after the agent and has no user token, events or `/aiden`; the board's
+  setup form for it comes with the teammate page's "How to reach" card), and paste
+  its two tokens into the secret `slack_agent_apps`: `{"aria": {"app_token": "xapp-…", "bot_token": "xoxb-…"}}`. slack-live reads the map every
+  30 s: one installation record per app (`inst:<app id>`), one Socket Mode worker per record, each with its own socket, token and
+  state (`/healthz` `agent_apps`). A pair is checked first and refused unless proven (both tokens one app, which needs the bot scope `users:read`; the
+  instance bot's workspace; not an app already in use, the instance's own included); a changed pair stops its old worker before the new one starts. Events carry `to_agent: <key>`,
+  `entry: slack:app:<app id>`, and the owner is the same Slack user id as the pairing. Replies, context and 👀 use that app's bot token.
+  Cutting over an existing app: stop its old Socket Mode consumer first, since two consumers split events.
+- Every call the kernel makes names the conversation's `entry`; the entry picks the token. An owner chat (`cc <Agent>`, no entry) is
+  unchanged: as the owner, through slack-mcp's relay.
 
 ## New installs
 

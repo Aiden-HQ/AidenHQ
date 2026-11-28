@@ -1,7 +1,7 @@
 // @slack/socket-mode is CommonJS: default import, then destructure.
 import socketMode from "@slack/socket-mode";
 import type { Logger } from "pino";
-import { toSourceEvent, type SourceEvent } from "./map.js";
+import { toSourceEvent, type Route, type SourceEvent } from "./map.js";
 import { carriesCode } from "./pair.js";
 import type { Store } from "./store.js";
 
@@ -15,8 +15,12 @@ interface Deps {
   /** A pairing DM (pair.ts): true when it was one, and then it goes no further. `ack` lets it acknowledge as soon as the
    * decision is durable, so posting the reply never holds the ack past Slack's 3 s deadline. */
   pair?: (body: unknown, ack: () => Promise<void>) => Promise<boolean>;
-  /** Channel binding (bind.ts): `/aiden …` answered to the person who typed it, and @mentions in bound channels. */
-  bind?: { command: (body: any) => Promise<string>; mention: (ev: any) => Promise<boolean> };
+  /** Channel binding (bind.ts): `/aiden …` answered to the person who typed it. A bound channel's @mentions are classified in map.ts. */
+  bind?: { command: (body: any) => Promise<string> };
+  /** Where a message is addressed (map.ts), read per event: the instance bot's route. */
+  route?: () => Route;
+  /** Looks up who an owner's own DM is with (it throws when it can't, so the event is redelivered, never classified without it). */
+  learnDm?: (channel: string) => Promise<void>;
   tee?: (body: unknown) => void; // src_slack (sources.ts): every event that is not a pairing DM; never throws or blocks
   /** The kernel's event router (POST /v1/events): throws only when the kernel didn't take it (transport, 429, 5xx). */
   forward?: (e: SourceEvent) => Promise<void>;
@@ -39,11 +43,50 @@ export function ingressLine(msgType: string, body: unknown): Record<string, stri
   return line;
 }
 
+/** A running Socket Mode consumer for one app token: `stop` closes it (and ends a start that is still retrying) and resolves once it is down. */
+export interface Listener {
+  stop: () => Promise<void>;
+}
+
+/**
+ * One Socket Mode connection: `onEvent` gets every envelope and decides about the ack. The connect and disconnect states are
+ * reported (a routine refresh closes the socket and reconnects without a "disconnected", so "close" drops the state too).
+ */
+export function listen({ appToken, onEvent, onState, log }: { appToken: string; onEvent: (msg: { type: string; body: unknown; ack: () => Promise<void> }) => Promise<void>; onState?: Deps["onState"]; log: Logger }): Listener {
+  const client = new SocketModeClient({ appToken });
+  let stopped = false;
+  client.on("slack_event", (msg: { type: string; body: unknown; ack: () => Promise<void> }) => (stopped ? Promise.resolve() : onEvent(msg)));
+  client.on("connected", () => { onState?.("connected"); log.info("socket mode connected"); });
+  const down = (why: string) => { onState?.("disconnected"); log.warn(why); };
+  client.on("disconnected", () => down("socket mode disconnected"));
+  client.on("close", () => down(stopped ? "socket mode stopped" : "socket mode closed; reconnecting"));
+  // Initial start only: 30 s doubling to 5 min. After that the client reconnects itself.
+  const running = (async () => {
+    for (let backoff = 30_000; !stopped; backoff = Math.min(backoff * 2, 300_000)) {
+      try {
+        await client.start();
+        return;
+      } catch (err) {
+        if (stopped) return;
+        log.error({ err: String(err), retryMs: backoff }, "socket mode start failed");
+        await new Promise((r) => setTimeout(r, backoff));
+      }
+    }
+  })();
+  return {
+    async stop() {
+      stopped = true;
+      await running.catch(() => undefined);
+      await (client as unknown as { disconnect?: () => Promise<unknown> }).disconnect?.().catch(() => undefined);
+      onState?.("disconnected");
+    },
+  };
+}
+
 // Persist BEFORE ack: if the insert throws we do not ack, so Slack redelivers; a duplicate
 // event_id is a no-op. Events during a disconnect are lost (accepted; the scout scan covers it).
-export async function startSocket({ appToken, store, chat, pair, bind, tee, forward, onState, log }: Deps): Promise<void> {
-  const client = new SocketModeClient({ appToken });
-  client.on("slack_event", async (msg: { type: string; body: unknown; ack: () => Promise<void> }) => {
+export function startSocket({ appToken, store, chat, pair, bind, route, learnDm, tee, forward, onState, log }: Deps): Listener {
+  return listen({ appToken, onState, log, onEvent: async (msg) => {
     // Before any filter: "a DM arrived" is observable, whatever the pairing, chat and routing rules then do with it.
     const ingress = ingressLine(msg.type, msg.body);
     if (ingress) log.info(ingress, "slack event in");
@@ -80,34 +123,17 @@ export async function startSocket({ appToken, store, chat, pair, bind, tee, forw
         await msg.ack().catch(() => undefined);
         return;
       }
-      // An @mention in a channel bound to an agent is that agent's task, not triage's; a failure leaves it unacked so Slack redelivers.
-      if (bind && msg.type === "events_api" && (await bind.mention(ev))) {
-        await msg.ack().catch(() => undefined);
-        return;
-      }
-      // Routines' events (bot posts too, flagged): a kernel that didn't take it leaves the envelope unacked, so Slack redelivers.
-      const source = msg.type === "events_api" ? toSourceEvent(msg.body, owner?.user) : null;
+      // Routines' events (bot posts too, flagged), and the messages addressed to one of our bots (`to_agent`, classified once here:
+      // owner command DM, bound channel, addressed bot, else plain): a kernel that didn't take it leaves the envelope unacked, so Slack redelivers.
+      // The owner's own DM (a user-token event, no bot among its authorizations) may be with an agent's app: who it is with is known first.
+      const auths = (msg.body as { authorizations?: { is_bot?: boolean }[] } | null)?.authorizations ?? [];
+      if (learnDm && msg.type === "events_api" && ev?.type === "message" && ev.channel_type === "im" && ev.channel && ev.channel !== owner?.channel && !auths.some((a) => a?.is_bot === true)) await learnDm(ev.channel);
+      const source = msg.type === "events_api" ? toSourceEvent(msg.body, owner?.user, { ...route?.(), ...(owner?.channel ? { ownerChannel: owner.channel } : {}) }) : null;
       if (source && forward) await forward(source);
     } catch (err) {
       log.error({ err: String(err) }, "event forward failed; not acking so Slack redelivers");
       return;
     }
     await msg.ack().catch((err: unknown) => log.warn({ err: String(err) }, "socket ack failed"));
-  });
-  client.on("connected", () => { onState?.("connected"); log.info("socket mode connected"); });
-  // A routine refresh closes the socket and reconnects without ever emitting "disconnected": the state must drop on "close"
-  // too, or /healthz would report a live listener that is not listening.
-  const down = (why: string) => { onState?.("disconnected"); log.warn(why); };
-  client.on("disconnected", () => down("socket mode disconnected"));
-  client.on("close", () => down("socket mode closed; reconnecting"));
-  // Initial start only: 30 s doubling to 5 min. After that the client reconnects itself.
-  for (let backoff = 30_000; ; backoff = Math.min(backoff * 2, 300_000)) {
-    try {
-      await client.start();
-      return;
-    } catch (err) {
-      log.error({ err: String(err), retryMs: backoff }, "socket mode start failed");
-      await new Promise((r) => setTimeout(r, backoff));
-    }
-  }
+  } });
 }

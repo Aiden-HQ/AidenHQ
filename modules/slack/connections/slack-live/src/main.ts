@@ -8,9 +8,11 @@ import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import pino from "pino";
-import { binder, mention, slashCommand } from "./bind.js";
+import { admit, bindings, binder, slashCommand } from "./bind.js";
 import { buildServer } from "./mcp.js";
 import { memoryWriter } from "./memory.js";
+import { BOT_ENTRY, type Route, type SourceEvent } from "./map.js";
+import { appIdOf, identity, namer, once, readTokens, reach } from "./reach.js";
 import { poster } from "./post.js";
 import { startSocket } from "./socket.js";
 import { createPairing, handlePairingDm } from "./pair.js";
@@ -22,6 +24,7 @@ import { SourceStore } from "./source-store.js";
 import { replayQueue, slackApi as relayApi, slackTee, startGapSync } from "./sources.js";
 import { attest, postedByAgent, relayWrites, summon, SummonError } from "./summon.js";
 import { AppError, apps as appsOf, type Part } from "./apps.js";
+import { adoptLegacy } from "./installs.js";
 import { ownerReader } from "./signin.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "slack-live" }, redact: ["authorization", "*.authorization", "token", "*.token", "config_token"] });
@@ -73,9 +76,45 @@ const appToken = env("SLACK_APP_TOKEN");
 const slackMcp = (process.env.SLACK_MCP_URL ?? "http://slack-mcp:8082").replace(/\/$/, "");
 const relayKey = env("RELAY_KEY");
 const owner = ownerReader(slackMcp, relayKey);
-// Summoning (summon.ts): reads and writes as the owner through slack-mcp's relay; off without the relay key.
-const summoning = relayKey ? summon({ relay: { read: relayApi(slackMcp, relayKey), write: relayWrites(slackMcp, relayKey) }, store, owner: () => cfg.ownerId || undefined, signedIn: async () => (await owner())?.user_id ?? null }) : undefined;
+// The instance bot's own identity, and every dedicated agent app (reach.ts): one Socket Mode worker per app, all feeding `forward`.
+const botIdentity = identity(cfg.botToken);
+const retryIdentity = () => void botIdentity.load().catch((err: unknown) => log.warn({ err: String(err) }, "bot identity not known yet"));
+const settingList = (name: string): { agent?: unknown }[] => { try { const v = JSON.parse(process.env[name] || "[]") as unknown; return Array.isArray(v) ? v : []; } catch { return []; } };
+const agentApps = reach({
+  store, log, owner: () => cfg.ownerId || undefined,
+  agents: () => settingList("SLACK_AGENT_APPS").map((e) => String(e?.agent ?? "")),
+  tokens: () => readTokens(process.env.SLACK_AGENT_APPS_FILE),
+  instance: { app_id: appIdOf(appToken), identity: botIdentity },
+  forward: (e) => forward(e),
+});
+/** The bot token an entry's calls use: the instance bot's (`slack:bot`), or a running agent app's. */
+const botFor = (entry: string): string | undefined => (entry === BOT_ENTRY ? cfg.botToken || undefined : agentApps.token(entry));
+/** Where a message is addressed (map.ts): the instance bot and every agent app's bot by user id, the channel bindings, the owner's command DM. */
+const peers = new Map<string, string>();
+/** Who the owner's DM `channel` is with (the relay reads as the owner), once; only while an agent has an app of its own. */
+const learnDm = async (channel: string) => {
+  if (!relayKey || peers.has(channel) || !Object.keys(agentApps.bots()).length) return;
+  try {
+    const user = ((await relayApi(slackMcp, relayKey)("conversations.info", { channel })).channel as { user?: string } | undefined)?.user;
+    peers.set(channel, user ?? "");
+  } catch (err) {
+    // A refusal that will repeat (no scope, a conversation Slack won't describe) leaves the DM a plain one; anything else is retried.
+    if (!/missing_scope|not_allowed_token_type|channel_not_found|access_denied|invalid_auth|token_revoked/.test(String(err))) throw err;
+    peers.set(channel, "");
+  }
+};
+const route = (): Route => ({
+  peers,
+  receiver: { to: "*", entry: BOT_ENTRY },
+  bots: { ...(botIdentity.user ? { [botIdentity.user]: { to: "*", entry: BOT_ENTRY } } : {}), ...agentApps.bots() },
+  bound: (channel) => bindings(store).get(channel)?.agent,
+  ...(pairing.owner()?.channel ? { ownerChannel: pairing.owner()!.channel } : {}),
+});
+// Summoning (summon.ts): an owner chat reads and writes as the owner through slack-mcp's relay (off without the relay key); a
+// conversation that came through a bot (its `entry`) uses that bot's token.
+const summoning = summon({ ...(relayKey ? { relay: { read: relayApi(slackMcp, relayKey), write: relayWrites(slackMcp, relayKey) }, signedIn: async () => (await owner())?.user_id ?? null } : {}), store, owner: () => cfg.ownerId || undefined, bot: botFor });
 // The Slack app made or updated from a pasted App Configuration Token (the board's setup page, with the pair token).
+adoptLegacy(store);
 const slackApps = appsOf(store);
 // Whether the bot is set up (the board's Connections shows it): booleans only, never a token. Once the owner uses Slack (signed
 // in) but has no bot, the connection needs them: Slack triage and 📌 tasks (Intake) come only from the bot's live events.
@@ -107,7 +146,8 @@ const health = async () => {
   const ok = bot || !ownerNow;
   const app = slackApps.status();
   // The app made or updated for the bot lists the summon user scopes: slack-mcp's Connect pre-selects them then (and only then).
-  return JSON.stringify({ ok, summon_scopes: app.part === "advanced" && app.current, ...(detail ? { detail } : {}), channels, socket, paired, ...(paired && pairedAt ? { paired_at: pairedAt } : {}) });
+  // The dedicated agent apps, from their installation records and workers (reach.ts): the board's "How to reach" card reads this.
+  return JSON.stringify({ ok, summon_scopes: app.part === "advanced" && app.current, ...(detail ? { detail } : {}), channels, socket, paired, agent_apps: agentApps.status(), ...(paired && pairedAt ? { paired_at: pairedAt } : {}) });
 };
 
 const http = createServer(async (req, res) => {
@@ -130,14 +170,23 @@ const http = createServer(async (req, res) => {
     const expected = Buffer.from(pairToken);
     if (!pairToken || presented.length !== expected.length || !timingSafeEqual(presented, expected)) return void res.writeHead(401).end();
     const json = (status: number, body: unknown) => void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
-    if (req.method === "GET") return json(200, slackApps.status());
+    // ?agent=<key>: that agent's dedicated app (reach.ts); without it, the instance's own.
+    const agentKey = url.searchParams.get("agent") ?? undefined;
+    if (req.method === "GET") return json(200, slackApps.status(agentKey));
     if (req.method !== "POST") return void res.writeHead(405).end();
     try {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);
-      const b = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { token?: unknown; part?: unknown; app_id?: unknown };
-      if (typeof b.token !== "string" || (b.part !== "basic" && b.part !== "advanced") || (b.app_id !== undefined && typeof b.app_id !== "string")) return json(400, { error: "token and part are required" });
-      return json(200, await slackApps.apply({ token: b.token, part: b.part as Part, ...(b.app_id ? { app_id: b.app_id } : {}) }));
+      const b = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { token?: unknown; part?: unknown; app_id?: unknown; agent?: unknown };
+      if (typeof b.token !== "string" || (b.part !== "basic" && b.part !== "advanced") || (b.app_id !== undefined && typeof b.app_id !== "string") || (b.agent !== undefined && typeof b.agent !== "string")) return json(400, { error: "token and part are required" });
+      // An agent's own app is named after the agent: the kernel knows its name.
+      let agent: { key: string; name: string } | undefined;
+      if (b.agent) {
+        const found = Object.values((await kernelGet("/v1/agents").catch(() => ({}))).agents ?? {}).find((x: any) => x?.key === b.agent) as { key: string; name?: string } | undefined;
+        if (!found) return json(404, { error: `no agent ${b.agent}` });
+        agent = { key: found.key, name: found.name ?? found.key };
+      }
+      return json(200, await slackApps.apply({ token: b.token, part: b.part as Part, ...(b.app_id ? { app_id: b.app_id } : {}), ...(agent ? { agent } : {}) }));
     } catch (err) {
       // Never the request (it holds the token): only the words made for the owner.
       if (err instanceof AppError) return json(err.status, { error: err.message });
@@ -166,9 +215,9 @@ const http = createServer(async (req, res) => {
     // The kernel's summon calls (summon.ts), with the connection's key.
     if (!authorized(req)) return void res.writeHead(401).end();
     if (req.method !== "POST") return void res.writeHead(405).end();
-    const call = summoning?.[url.pathname.slice("/summon/".length) as "context" | "reply" | "react"];
+    const call = summoning[url.pathname.slice("/summon/".length) as "context" | "reply" | "react"];
     const json = (status: number, body: unknown) => void res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
-    if (!call) return json(summoning ? 404 : 503, { error: summoning ? "unknown call" : "summoning needs the relay key (RELAY_KEY)" });
+    if (!call) return json(404, { error: "unknown call" });
     try {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);
@@ -226,11 +275,10 @@ const pair = (body: unknown, ack?: () => Promise<void>) =>
 const sources = SourceStore.fromEnv("slack");
 const tee = sources ? slackTee(sources, log) : undefined;
 // Missed messages go on to the event router (triage) only with the bot: without it, triage is off, as the setup page says.
-if (sources && relayKey) startGapSync(sources, relayApi(slackMcp, relayKey), owner, log, channelToken && bot ? (e) => forward(e) : undefined, undefined, () => cfg.ownerId || undefined, replayQueue(store));
+if (sources && relayKey) startGapSync(sources, relayApi(slackMcp, relayKey), owner, log, channelToken && bot ? (e) => forward(e) : undefined, undefined, () => cfg.ownerId || undefined, replayQueue(store), route);
 else log.warn(sources ? "RELAY_KEY not set; src_slack gets live events only (no gap sync)" : "warehouse not configured; src_slack is off");
 
-// Channel binding: the owner's /aiden commands (a kernel record each) and @mentions in bound channels (a task each).
-const slackApi = (method: string, body: unknown) => fetch(`https://slack.com/api/${method}`, { method: "POST", headers: { authorization: `Bearer ${cfg.botToken}`, "content-type": "application/json; charset=utf-8" }, body: JSON.stringify(body) });
+// Channel binding: the owner's /aiden commands (a kernel record each).
 const binding = cfg.botToken ? {
   command: (b: any) => slashCommand(b, { store, ownerId: cfg.ownerId, // read at the call: pairing sets it after start
     file: async (args) => {
@@ -239,18 +287,43 @@ const binding = cfg.botToken ? {
     if (!res.ok) throw new Error(String(typeof r.error === "object" ? r.error?.message : r.error ?? res.status));
     return { state: String(r.state) };
   } }),
-  mention: (ev: any) => mention(ev, { store, thread: (b) => kernel("/v1/channel/thread", b, channelToken), react: async (channel, timestamp, name) => void (await slackApi("reactions.add", { channel, timestamp, name })) }),
 } : undefined;
 
-// Routines' events: each kept event to the kernel's event router with this module's own token (role kernel.events). Any 2xx is
-// taken (queued, skipped or dropped); a 429 or 5xx throws so Slack redelivers; any other refusal is logged and passed.
+// Routines' events, and every message addressed to an agent (`to_agent`, whichever entry it came through: the instance bot, a bound
+// channel, an agent's own app): each kept event to the kernel's event router with this module's own token (role kernel.events). Any
+// 2xx is taken (queued, skipped or dropped); a 429 or 5xx throws so Slack redelivers; any other refusal is logged and passed.
+// An addressed message is one event: its `message` and `app_mention` envelopes, and a gap replay, share the id and the seen mark.
 const agentPosted = postedByAgent(slackMcp, relayKey);
-const forward = async (event: { id: string; resource: string; text?: string; from_owner?: boolean }) => {
-  const e = await attest(event, agentPosted);
+const nameOf = namer();
+const slackApi = (method: string, body: unknown) => fetch(`https://slack.com/api/${method}`, { method: "POST", headers: { authorization: `Bearer ${cfg.botToken}`, "content-type": "application/json; charset=utf-8" }, body: JSON.stringify(body) });
+const seen = once(store);
+const forward = async (event: SourceEvent) => {
+  if (event.to_agent && !seen.begin(event.id)) return;
+  try {
+    await deliver(event);
+  } catch (err) {
+    if (event.to_agent) seen.abandon(event.id);
+    throw err;
+  }
+};
+const deliver = async (event: SourceEvent) => {
+  // A bound channel's mentions are rate limited: over it, a reaction and no task.
+  const bound = event.to_agent && event.entry === BOT_ENTRY && event.to_agent !== "*" && bindings(store).get(event.resource)?.agent === event.to_agent;
+  if (bound && !admit(event.resource)) {
+    await slackApi("reactions.add", { channel: event.resource, timestamp: event.id.slice(event.id.lastIndexOf(":") + 1), name: "hourglass_flowing_sand" }).catch(() => undefined);
+    return void seen.done(event.id);
+  }
+  const named = event.to_agent ? { ...event, ...(await nameOf(botFor(event.entry ?? ""), event.author).then((n) => (n ? { author_name: n } : {}))) } : event;
+  const e = await attest(named, agentPosted);
   const res = await fetch(`${kernelUrl}/v1/events`, { method: "POST", headers: { authorization: `Bearer ${channelToken}`, "content-type": "application/json" }, body: JSON.stringify(e), signal: AbortSignal.timeout(15_000) });
   if (res.status === 429 || res.status >= 500) throw new Error(`POST /v1/events -> ${res.status}`);
   if (!res.ok) log.warn({ status: res.status }, "the kernel refused an event; passed");
+  if (!event.to_agent) return;
+  seen.done(event.id);
 };
 
-if (appToken) void startSocket({ appToken, store, chat, pair, ...(binding ? { bind: binding } : {}), ...(tee ? { tee } : {}), ...(channelToken ? { forward } : {}), onState: (s) => void (socketState = s), log });
+if (appToken) startSocket({ appToken, store, chat, pair, route, learnDm, ...(binding ? { bind: binding } : {}), ...(tee ? { tee } : {}), ...(channelToken ? { forward } : {}), onState: (s) => void (socketState = s), log });
 else log.warn("SLACK_APP_TOKEN not set; not listening to Slack");
+// The bot's own user id (so a mention of it is known) and the agents' own apps, checked and started on a timer.
+if (cfg.botToken) { retryIdentity(); setInterval(retryIdentity, 30_000).unref(); }
+agentApps.run();

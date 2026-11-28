@@ -1,5 +1,5 @@
 // Channel binding: the owner binds a Slack channel to an agent (`/aiden assign-channel <agent>`), and from then on an
-// @mention of the bot in that channel becomes a task for that agent, one Slack thread per task. Only mentions wake the agent;
+// @mention of the bot in that channel is addressed to that agent (`to_agent`, map.ts), one Slack thread per task. Only mentions wake the agent;
 // it reads the channel's history and the thread through slack_channel_context, which answers only for the channel bound to
 // the calling agent. A binding is changed only by the owner's own command: the listener files `slack.bind` (Tier 0,
 // a kernel record, so every change is on the record) after checking the Slack user id against the paired owner, and the
@@ -7,13 +7,11 @@
 import { randomBytes } from "node:crypto";
 import type { Executor } from "./aidenhq-sdk/executor.js";
 import { fence } from "./aidenhq-sdk/fence.js";
-import { permalink } from "./map.js";
-import { clearMemory, channelMemoryOf, noteTask } from "./memory.js";
+import { clearMemory, channelMemoryOf } from "./memory.js";
 import type { Store } from "./store.js";
 
 export const CHANNEL = /^[CG][A-Z0-9]{6,}$/;
 const AGENT = /^[a-z][a-z0-9-]{0,63}$/;
-const USER = /^[UW][A-Z0-9]{2,}$/;
 export type Binding = { agent: string; by: string; at: number };
 export type Agents = () => Promise<Record<string, { key?: string }>>;
 
@@ -102,29 +100,18 @@ export async function slashCommand(body: Slash, { store, ownerId, file }: { stor
 
 const MENTIONS_PER_HOUR = 30;
 const recent = new Map<string, number[]>();
-type Ev = { type?: string; subtype?: string; bot_id?: string; app_id?: string; user?: string; channel?: string; ts?: string; thread_ts?: string; text?: string };
 /**
- * An @mention in a bound channel: one Slack thread is one task for the bound agent (the kernel keys it by channel:thread_ts and
- * fences the text). Mentions only; bots and apps (so an agent never wakes itself or another agent), edits and joins are
- * ignored. A channel over its mention rate gets a reaction and no task. True when the event was this module's to handle.
+ * The bound-channel rate limit: at most 30 mentions an hour per channel reach the agent. A mention over it gets a reaction and no
+ * task (the caller reacts). The mention itself is classified in map.ts (toSourceEvent) and travels as `to_agent: <key>` on the
+ * one summon path.
  */
-export async function mention(ev: Ev | undefined, { store, thread, react, now = Date.now() }: { store: Store; thread: (b: Record<string, string>) => Promise<any>; react: (channel: string, ts: string, name: string) => Promise<void>; now?: number }): Promise<boolean> {
-  if (ev?.type !== "app_mention" || ev.subtype || ev.bot_id || ev.app_id || !ev.channel || !ev.ts || !ev.text?.trim() || !USER.test(ev.user ?? "")) return false;
-  const bound = bindings(store).get(ev.channel);
-  if (!bound) return false;
-  if (store.getKv(`bind_seen:${ev.channel}:${ev.ts}`)) return true;
-  const window = (recent.get(ev.channel) ?? []).filter((t) => now - t < 3_600_000);
+export function admit(channel: string, now = Date.now()): boolean {
+  const window = (recent.get(channel) ?? []).filter((t) => now - t < 3_600_000);
   if (window.length >= MENTIONS_PER_HOUR) {
-    recent.set(ev.channel, window);
-    await react(ev.channel, ev.ts, "hourglass_flowing_sand").catch(() => undefined);
-    return true;
+    recent.set(channel, window);
+    return false;
   }
-  recent.set(ev.channel, [...window, now]);
-  const threadTs = ev.thread_ts ?? ev.ts;
-  const t = await thread({ agent: bound.agent, thread: `${ev.channel}:${threadTs}`, from: ev.user!, text: ev.text.trim(), link: permalink(ev.channel, ev.ts) });
-  noteTask(store, t?.task, `${ev.channel}:${threadTs}`); // which tasks are this channel's threads: channel_memory is allowed from those only
-  store.setKv(`bind_seen:${ev.channel}:${ev.ts}`, "1");
-  await react(ev.channel, ev.ts, "eyes").catch(() => undefined);
+  recent.set(channel, [...window, now]);
   return true;
 }
 

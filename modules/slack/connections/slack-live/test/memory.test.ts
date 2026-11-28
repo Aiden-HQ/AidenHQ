@@ -1,8 +1,8 @@
 // Channel memory: written only by the bound agent from a thread task of that same channel, whole-note replace with a revision,
 // returned fenced by slack_channel_context, cleared on unbind or reassign.
 import { afterEach, describe, expect, it } from "bun:test";
-import { channelContext, mention } from "../src/bind.js";
-import { memoryWriter } from "../src/memory.js";
+import { channelContext } from "../src/bind.js";
+import { memoryWriter, noteTask } from "../src/memory.js";
 import { openStore } from "../src/store.js";
 
 const realFetch = globalThis.fetch;
@@ -15,13 +15,9 @@ async function setup() {
   const store = openStore(":memory:");
   store.setKv("bind:C0BOUND01", JSON.stringify({ agent: "roadmap-keeper", by: OWNER, at: 1 }));
   store.setKv("bind:C0BOUND02", JSON.stringify({ agent: "roadmap-keeper", by: OWNER, at: 1 }));
-  const calls = { n: 0 };
-  // Each mention is a distinct thread task, as the kernel's thread call answers it.
-  const thread = async (b: Record<string, string>) => ({ task: { id: `task-${b.thread}`, identifier: `WOR-${++calls.n}` } });
-  const react = async () => undefined;
-  const ev = (channel: string, ts: string) => ({ type: "app_mention", user: "U0COLLEAG", channel, ts, text: "<@UBOT> hi" });
-  await mention(ev("C0BOUND01", "1700000000.000100"), { store, thread, react });
-  await mention(ev("C0BOUND02", "1700000000.000200"), { store, thread, react });
+  // Each bound-channel thread is a distinct task, as the kernel names the one it opened (slack-live's forward notes it).
+  noteTask(store, { id: "task-C0BOUND01:1700000000.000100", identifier: "WOR-1" }, "C0BOUND01:1700000000.000100");
+  noteTask(store, { id: "task-C0BOUND02:1700000000.000200", identifier: "WOR-2" }, "C0BOUND02:1700000000.000200");
   return { store, ex: memoryWriter(store) };
 }
 const write = async (ex: ReturnType<typeof memoryWriter>, args: any, req: any) => {

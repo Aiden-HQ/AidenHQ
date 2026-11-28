@@ -4,6 +4,7 @@
 // Install stays on the app's own page in Slack: an OAuth install of the bot can't return to every board (see
 // slack-app-manifest.yml), and no Slack API makes the app-level token (xapp-).
 import { createHash } from "node:crypto";
+import { installs } from "./installs.js";
 import manifests from "./manifests.json" with { type: "json" };
 import type { Store } from "./store.js";
 
@@ -75,6 +76,39 @@ export function named(manifest: unknown, slug: string): unknown {
   };
 }
 
+/**
+ * The manifest of an agent's dedicated app: the advanced one without what only the instance's app uses (the owner's user token
+ * and events, the `/aiden` command, the PKCE sign-in). It listens for the bot's DMs and mentions and answers as itself.
+ */
+export function agentManifest(advanced: unknown): unknown {
+  if (!isMap(advanced)) return advanced;
+  const oauth = isMap(advanced.oauth_config) ? advanced.oauth_config : {};
+  const scopes = isMap(oauth.scopes) ? oauth.scopes : {};
+  const { redirect_urls: _r, pkce_enabled: _p, ...oauthRest } = oauth;
+  const settings = isMap(advanced.settings) ? advanced.settings : {};
+  const events = isMap(settings.event_subscriptions) ? settings.event_subscriptions : {};
+  const { user_events: _u, ...eventsRest } = events;
+  const features = isMap(advanced.features) ? advanced.features : {};
+  const { slash_commands: _s, ...featuresRest } = features;
+  return {
+    ...advanced,
+    oauth_config: { ...oauthRest, scopes: { bot: ((scopes.bot as string[] | undefined) ?? []).filter((x) => x !== "commands") } },
+    settings: { ...settings, event_subscriptions: eventsRest },
+    features: featuresRest,
+  };
+}
+
+/** An agent app's names: the app is "<Agent> · AidenHQ" (35 at most) and its bot is the agent's own name (21 at most, which Slack builds the @handle from). */
+export function agentNamed(manifest: unknown, agentName: string): unknown {
+  if (!isMap(manifest)) return manifest;
+  const name = agentName.trim() || "Agent";
+  return {
+    ...manifest,
+    display_information: { ...(isMap(manifest.display_information) ? manifest.display_information : {}), name: `${name} · AidenHQ`.slice(0, APP_NAME_MAX) },
+    features: { ...(isMap(manifest.features) ? manifest.features : {}), bot_user: { ...(isMap(manifest.features) && isMap(manifest.features.bot_user) ? manifest.features.bot_user : {}), display_name: name.slice(0, BOT_NAME_MAX) } },
+  };
+}
+
 export const CONFIG_TOKEN = /^xoxe\.xoxp-[A-Za-z0-9-]{20,400}$/;
 const APP_ID = /^A[A-Z0-9]{6,20}$/;
 
@@ -128,18 +162,27 @@ export function apps(store: Store, fetchImpl: typeof fetch = fetch) {
     const detail = Array.isArray(r.errors) ? ` (${r.errors.slice(0, 3).map((e: any) => `${String(e?.pointer ?? "")}: ${String(e?.message ?? "")}`.slice(0, 120)).join("; ")})` : "";
     throw new AppError(400, `${WORDS[code] ?? `Slack refused it: ${code}.`}${detail}`);
   };
-  const status = (): AppStatus => {
-    const last = store.getKv("app:last");
-    const { id, part } = last ? (JSON.parse(last) as { id: string; part: Part }) : { id: null, part: null };
-    return { app_id: id, part, current: Boolean(id && part && store.getKv(`app:${id}`) === hash(MANIFESTS[part])), url: id ? `https://api.slack.com/apps/${id}` : null };
+  const records = installs(store);
+  const base = (part: Part, agent: boolean): unknown => (agent ? agentManifest(MANIFESTS.advanced) : MANIFESTS[part]);
+  /** The instance's app, or (with an agent key) that agent's dedicated app. */
+  const status = (agent?: string): AppStatus => {
+    const r = agent ? records.ofAgent(agent) : records.instance();
+    const part = (r?.part as Part | undefined) ?? null;
+    return { app_id: r?.app_id ?? null, part, current: Boolean(r && part && r.hash === hash(base(part, Boolean(agent)))), url: r ? `https://api.slack.com/apps/${r.app_id}` : null };
   };
   return {
     status,
-    /** Makes the app for `part`, or updates `app_id` to it. Answers the public client id a new app has, as the board saves it. */
-    async apply(input: { token: string; part: Part; app_id?: string }): Promise<AppStatus & { secrets?: { slack_client_id: string } }> {
+    /**
+     * Makes the app for `part`, or updates `app_id` to it. With `agent` it is that agent's dedicated app: the advanced manifest for
+     * a bot of its own, named after the agent. Answers the public client id a new app has, as the board saves it.
+     */
+    async apply(input: { token: string; part: Part; app_id?: string; agent?: { key: string; name: string } }): Promise<AppStatus & { secrets?: { slack_client_id: string } }> {
       if (!CONFIG_TOKEN.test(input.token)) throw new AppError(400, "That isn't an App Configuration Token: paste the Access Token (it starts xoxe.xoxp-).");
       if (input.app_id !== undefined && !APP_ID.test(input.app_id)) throw new AppError(400, "An App ID starts with A, then letters and digits (Basic Information, App ID).");
-      const manifest = MANIFESTS[input.part];
+      const agent = input.agent;
+      if (agent && input.part !== "advanced") throw new AppError(400, "An agent's own app has a bot: the advanced part.");
+      const manifest = base(input.part, Boolean(agent));
+      const instanceName = slugOf(process.env.INSTANCE_NAME || process.env.OWNER_NAME);
       let id = input.app_id;
       let clientId: string | undefined;
       if (id) {
@@ -149,20 +192,19 @@ export function apps(store: Store, fetchImpl: typeof fetch = fetch) {
         // like a new app. An app that already has a bot keeps both its handle and its label (Slack won't change a handle after
         // install, and the owner may have renamed it): only the rest of our bot settings are added.
         const hasBot = hasBotUser(current);
-        const overlay = input.part === "advanced" && !hasBot ? named(manifest, slugOf(process.env.INSTANCE_NAME || process.env.OWNER_NAME)) : hasBot ? withoutBotName(manifest) : manifest;
+        const overlay = hasBot ? withoutBotName(manifest) : agent ? agentNamed(manifest, agent.name) : input.part === "advanced" ? named(manifest, instanceName) : manifest;
         await call("apps.manifest.update", input.token, { app_id: id, manifest: JSON.stringify(onto(current, overlay)) });
       }
       else {
-        // A new app is named after this instance: Slack fixes its @handle at this first install, so it must be distinct now.
-        const created = named(manifest, slugOf(process.env.INSTANCE_NAME || process.env.OWNER_NAME));
+        // A new app is named after this instance (or its agent): Slack fixes its @handle at this first install, so it must be distinct now.
+        const created = agent ? agentNamed(manifest, agent.name) : named(manifest, instanceName);
         const r = await call("apps.manifest.create", input.token, { manifest: JSON.stringify(created) });
         id = String(r.app_id ?? "");
         clientId = typeof r.credentials?.client_id === "string" ? r.credentials.client_id : undefined;
-        if (!APP_ID.test(id) || !clientId) throw new AppError(502, "Slack made the app but its answer was incomplete. Open api.slack.com/apps, find the new AidenHQ app and copy its Client ID.");
+        if (!APP_ID.test(id) || (!clientId && !agent)) throw new AppError(502, "Slack made the app but its answer was incomplete. Open api.slack.com/apps, find the new AidenHQ app and copy its Client ID.");
       }
-      store.setKv(`app:${id}`, hash(manifest));
-      store.setKv("app:last", JSON.stringify({ id, part: input.part }));
-      return { ...status(), ...(clientId ? { secrets: { slack_client_id: clientId } } : {}) };
+      records.put(id, { part: input.part, hash: hash(manifest), ...(agent ? { agent: agent.key } : {}) });
+      return { ...status(agent?.key), ...(clientId && !agent ? { secrets: { slack_client_id: clientId } } : {}) };
     },
   };
 }

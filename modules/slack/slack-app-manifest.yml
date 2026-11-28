@@ -12,7 +12,9 @@
 #     (emoji, files, canvases, lists, profiles, user groups, reactions), and slack-live's src_slack gap sync through slack-mcp
 #     (users.list, users.conversations, conversations.history, .replies, .info). Acting as the person (chat:write, reactions:write, ...)
 #     is opt-in: add those User Token Scopes by hand only when you want it (the module page says how).
-#   - advanced, bot: DMs and posts (chat:write, chat:write.public), emoji acknowledgements (reactions:write), mentions and the
+#   - advanced, bot: DMs and posts (chat:write, chat:write.public), a reply under an agent's name (chat:write.customize: the
+#     instance bot answers people as the agent they named) and the sender's name on it (users:read, which also lets a dedicated
+#     agent app's two tokens be checked as one app), emoji acknowledgements (reactions:write), mentions and the
 #     /aiden command, DMs to the bot (im:history, im:read) and opening the owner's DM with it (im:write: conversations.open
 #     in slack-live main.ts), a bound channel's history for its agent (channels:history, groups:history, read by
 #     slack_channel_context), and the channel membership events channel binding uses (channels:read, groups:read: Slack
@@ -91,6 +93,8 @@ advanced:
       bot:
         - chat:write
         - chat:write.public
+        - chat:write.customize
+        - users:read
         - reactions:write
         - app_mentions:read
         - commands

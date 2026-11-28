@@ -87,6 +87,8 @@
         "bot": [
           "chat:write",
           "chat:write.public",
+          "chat:write.customize",
+          "users:read",
           "reactions:write",
           "app_mentions:read",
           "commands",
