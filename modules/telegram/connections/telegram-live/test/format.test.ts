@@ -25,3 +25,7 @@ test("offsets count UTF-16 units after an emoji", () => {
   const r = renderTelegram("👀 **x**");
   expect(r.entities[0]).toMatchObject({ offset: 3, length: 1 });
 });
+
+test("a code block keeps its blank lines", () => {
+  expect(renderTelegram("```\na\n\n\n\nb\n```").text).toBe("a\n\n\n\nb");
+});

@@ -43,7 +43,7 @@ export function toSlackMrkdwn(text: string, o: { boardUrl?: string; labelled?: b
               i % 2 === 1
                 ? part
                 : part
-                    .replace(/\[([^\]\n|]+)\]\((https?:\/\/[^\s)"<>|]+)\)/g, (_, label: string, url: string) => (o.labelled ? hold(`<${url}|${label}>`) : `${label} (${hold(`<${url}>`)})`))
+                    .replace(/\[([^\]\n|]+)\]\((https?:\/\/(?:[^\s()"<>|]|\([^\s()"<>|]*\))+)\)/g, (_, label: string, url: string) => (o.labelled ? hold(`<${url}|${label}>`) : `${label} (${hold(`<${url}>`)})`))
                     // An in-app route: the same visible address, resolved against the board's own configured origin.
                     .replace(ROUTE_LINK, (_, label: string, route: string) => (board ? `${label} (${hold(`<${board}/#/${route}>`)})` : `[${label}](#/${route})`))
                     .replace(/\*\*([^*\n]+)\*\*/g, "*$1*")

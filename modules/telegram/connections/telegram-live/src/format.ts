@@ -71,9 +71,10 @@ function tidy(text: string, entities: Entity[]): Out {
   // Drop positions: every char at index i is kept unless it is a newline that would make 3+ in a row, or trailing/leading.
   const keep: boolean[] = [];
   let run = 0;
+  const inPre = (i: number) => entities.some((e) => (e.type as { _: string })._ === "textEntityTypePre" && i >= e.offset && i < e.offset + e.length); // a code block keeps its blank lines
   for (let i = 0; i < text.length; i++) {
     run = text[i] === "\n" ? run + 1 : 0;
-    keep.push(!(text[i] === "\n" && (run > 2 || i === 0 || /^\n*$/.test(text.slice(i)))));
+    keep.push(!(text[i] === "\n" && !inPre(i) && (run > 2 || i === 0 || /^\n*$/.test(text.slice(i)))));
   }
   const map: number[] = [0];
   for (let i = 0; i < text.length; i++) map.push(map[i]! + (keep[i] ? 1 : 0));

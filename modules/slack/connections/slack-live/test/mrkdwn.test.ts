@@ -20,3 +20,7 @@ test("the bot's own posts keep the mentions and links the agent wrote", () => {
 test("link addresses and whole-line blocks survive inline code and emphasis marks", () => {
   expect(toSlackMrkdwn("> Run `cmd` to see [docs](https://a.b/_docs_)", { labelled: true })).toBe("> Run `cmd` to see <https://a.b/_docs_|docs>");
 });
+
+test("a link address keeps one level of balanced parentheses", () => {
+  expect(toSlackMrkdwn("[Mercury](https://en.wikipedia.org/wiki/Mercury_(planet)).", { labelled: true })).toBe("<https://en.wikipedia.org/wiki/Mercury_(planet)|Mercury>.");
+});
