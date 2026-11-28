@@ -59,6 +59,8 @@ test("a handoff: all PR shows its status as it changes, waits included; a merge 
   await round(w.deps, w.pr(), { do: "wait", why: "waiting for required review" });
   assert.equal(w.sent.length, 2);
   assert.match(w.sent[1]!.body, /Waiting for a required review\./);
+  await round(w.deps, w.pr({ labels: ["ship:stop"] }), { do: "wait", why: "checks are still running on its head" });
+  assert.match(w.sent.at(-1)!.body, /Paused by the `ship:stop` label/);
   const q = world("all");
   await round(q.deps, q.pr({ state: "merged" }), { do: "done" });
   assert.equal(q.sent.length, 0);

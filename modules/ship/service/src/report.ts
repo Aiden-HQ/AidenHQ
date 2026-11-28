@@ -18,6 +18,7 @@ const FIXED = {
   base: "Ship merges only into the default branch. A person merges this PR.",
   stacked: "Waiting for the PR below it in the stack to merge.",
   queued: "In the merge queue.",
+  paused: "Paused.",
   approval: "Waiting for an approval on the latest commit.",
   person_merge: "Ready to merge. Merge is off for this PR, so a person merges it.",
   checks: "A required check never reported on the latest commit. A person reruns it or fixes the workflow.",
