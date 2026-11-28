@@ -1,14 +1,14 @@
-// The aria service: the Aria page and its tools on :8104 (MCP connection `aria`), and the nightly tidy-up's trigger (tidy.ts).
+// The aria service: the Aria page and its tools on :8104 (MCP connection `aria`) and the settings validate hook.
 // Settings come from the environment compose sets, so a saved change reaches it with the apply that recreates the service.
 import { readFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import { kernelClient } from "./aidenhq-sdk/kernel-client.ts";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 import { configTools } from "./config-tool.ts";
 import { createMcp, pageHtml, serveMcp } from "./mcp.ts";
-import { readSettings } from "./settings.ts";
+import { KEYS, problem, readSettings, type Key } from "./settings.ts";
 import { openState } from "./state.ts";
-import { tidyLook } from "./tidy.ts";
 
 const env = process.env;
 const file = (p: string | undefined) => { try { return p ? readFileSync(p, "utf8").trim() : ""; } catch { return ""; } };
@@ -30,25 +30,24 @@ const mcp = serveMcp(createMcp("aria", configTools({
     if (r.status >= 300) throw new Error(`Refused: ${String(r.json?.error?.message ?? r.json?.error ?? r.status).slice(0, 1000)}`);
     return r.json;
   },
-  work: async (since) => ((await kernel().call("GET", `/v1/work?since=${encodeURIComponent(since)}`)).records ?? []),
 }), [{ uri: "ui://aria/page", html: pageHtml(new URL("./", import.meta.url)) }]), () => file(env.ARIA_SERVICE_KEY_FILE), async (req) => ({ ...(await verifyCaller(req, jwks, "aria")), assertion: String(req.headers["x-aidenhq-caller"] ?? "") }));
 
-// The tidy-up: one look a minute. Nothing runs while it is off, and a token the kernel writes later is picked up without a restart.
-const opt = settings.aria_optimizer as { on: boolean; at: string; max_moves: number; no_move_within_hours: number; horizon_working_days: number; prompt_lines: string[] };
-let looking = false;
-setInterval(() => {
-  if (looking || !token()) return;
-  looking = true;
-  void tidyLook({
-    now: () => new Date(), timeZone: timezone, state, log,
-    settings: () => ({ on: opt.on, at: opt.at, prompt: opt.prompt_lines, plan: opt }),
-    file: async (title, description, source) => {
-      try { const r = await kernel().call("POST", "/v1/tasks", { title, description, role: "aria-admin", source }); return { id: String(r.id ?? "") }; } catch { return false; }
-    },
-  }).catch((e) => log("tidy-up look failed", { err: String(e) })).finally(() => { looking = false; });
-}, 60_000).unref();
+/** POST /validate: the kernel posts a settings change here (the owner's MCP, the module screen) with the service key; each Aria key is checked whole. */
+async function serveValidate(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+  if (req.method !== "POST" || (req.url ?? "").split("?")[0] !== "/validate") return false;
+  const want = Buffer.from(file(env.ARIA_SERVICE_KEY_FILE)), got = Buffer.from(String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
+  if (!want.length || got.length !== want.length || !timingSafeEqual(got, want)) return void res.writeHead(401).end(), true;
+  const chunks: Buffer[] = [];
+  let n = 0;
+  for await (const c of req) { n += (c as Buffer).length; if (n > 256 * 1024) return void res.writeHead(413).end(), true; chunks.push(c as Buffer); }
+  let body: { settings?: Record<string, unknown> };
+  try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { return void res.writeHead(400).end(), true; }
+  const errors = KEYS.flatMap((k: Key) => (body?.settings && k in body.settings ? [{ field: k, message: problem(k, body.settings[k]) }] : [])).filter((e) => e.message);
+  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(errors.length ? { ok: false, errors } : { ok: true }));
+  return true;
+}
 
 createServer(async (req, res) => {
-  if (await mcp(req, res)) return;
+  if (await mcp(req, res) || await serveValidate(req, res)) return;
   res.writeHead(req.url === "/healthz" ? 200 : 404).end();
 }).listen(8104, "0.0.0.0", () => log("aria listening", { port: 8104 }));

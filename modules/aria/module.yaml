@@ -19,13 +19,12 @@ contributes:
       view: "ui://aria/page"
       tools: [ aria_config, aria_configure ]
       # Edited on this page alone: the generic settings screens leave them off.
-      settings: [ aria_working_hours, aria_stretch_hours, aria_default_hours, aria_default_stretch, aria_call_windows, aria_meetings, aria_people, aria_preferences, aria_following_up, aria_optimizer ]
+      settings: [ aria_working_hours, aria_stretch_hours, aria_default_hours, aria_default_stretch, aria_call_windows, aria_meetings, aria_people, aria_preferences, aria_following_up, aria_optimizer_prompt ]
 roles:
-  # kernel.settings: aria_configure files an agent's settings change (writers below). kernel.tasks: the nightly tidy-up files one task
-  # for Aria a night (service/src/tidy.ts). kernel.work-read: aria_move_budget counts the night's calendar writes from the kernel's records.
-  requests: [ kernel.settings, kernel.tasks, kernel.work-read ]
+  # kernel.settings: aria_configure files an agent's settings change (writers below).
+  requests: [ kernel.settings ]
   declares:
-    - { id: aria-admin, description: "Reads Aria's settings and proposes changes to them (aria_config, aria_configure); turning the nightly tidy-up on is the owner's." }
+    - { id: aria-admin, description: "Reads Aria's settings and proposes changes to them (aria_config, aria_configure)." }
 settings:
   # The hours Aria books into, one entry per weekday (mon to sun): "09:00-18:00", several ranges split by a comma ("09:00-12:00,13:00-18:00"), or "off". Times are the owner's own clock (the timezone setting). The Aria page prefills it from your last weeks of meetings.
   aria_working_hours:
@@ -104,22 +103,12 @@ settings:
       after_hours: 24
       max_nudges: 2
       deadline_days: 5
-  # The nightly tidy-up, off until the owner turns it on (`on`, the owner's own change). `at` is your clock ("02:00"); `max_moves` the most meetings moved in a night, counted from the kernel's records; `no_move_within_hours` (a meeting this close is never moved); `horizon_working_days` (how far ahead she looks); `prompt_lines` what she is asked each night, one line each, editable on the Aria page (Reset puts the default back).
-  aria_optimizer:
-    title: Nightly tidy-up
-    type: object
+  # What Aria is asked each night when the nightly tidy-up routine is on (Settings, Modules, Aria: Resume), as one paragraph of at most 500 characters, in your own words. Put the limits in it: how many working days ahead, how close a meeting may be and still move, the most moves a night. The routine reads this each night; the Aria page edits it.
+  aria_optimizer_prompt:
+    title: Tidy-up prompt
     writers: [ aria-admin ]
-    default:
-      "on": false
-      at: "02:00"
-      max_moves: 3
-      no_move_within_hours: 24
-      horizon_working_days: 10
-      prompt_lines:
-        - "Tighten my next working days: move a meeting to a better call window or to close a gap between meetings, one occurrence at a time."
-        - "Move only meetings I organise, and only where everyone invited has a free time that works. Move team-only meetings without asking; leave the others be."
-        - "Leave alone any occurrence I moved or refused myself, and anything I named a time for."
-        - "Add a line to your task for each meeting you moved, with why, and one line for what you left alone."
+    default: "Tighten my next 10 working days: move a meeting to a better call window or to close a gap, one occurrence at a time. Move only meetings I organise, never one starting within 24 hours, and only where everyone invited is free; move team-only meetings without asking and leave the rest. Leave alone anything I moved, refused or named a time for. Move at most 3 meetings a night. Note each move and what you left alone on your task."
+    pattern: '^[^$\n\r]{1,500}$'
 agents:
   aria:
     skills: [ aria.scheduling, aria.optimize-calendar, google.calendar-changes ]
@@ -139,7 +128,7 @@ agents:
       chat_lane: [ wake_at, chat_send ]
       # The summoned conversation's read and reply (tasks module, kernel summon feature): present once that feature is.
       conversation?: [ conversation_context, conversation_reply ]
-      aria: [ aria_config, aria_configure, aria_suggest, aria_move_budget ]
+      aria: [ aria_config, aria_configure, aria_suggest ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_team, task_create, task_comment, task_finish, task_block, memory_note ]
     roles: [ aria-admin ]
     # The fast chat lane: first replies in seconds with a light model and a few read tools; a calendar change or anything slow goes
@@ -175,8 +164,19 @@ routines:
     description: |
       Today is {{date}}. Follow "Setting up" in your skill scheduling: read the owner's last four weeks of meetings and call aria_suggest
       with them. Then close this task with one line saying how many meetings you read.
-# The Aria page's connection: the owner's reads and proposed changes to Aria's settings (service/src/config-tool.ts), and the two
-# tools Aria herself calls (aria_suggest, aria_move_budget).
+  # The nightly tidy-up, declared like any routine: paused until the owner resumes it (Settings, Modules, Aria; quiet start keeps it
+  # paused anyway), so nothing runs and nothing is spent while it is off. Its prompt is the owner's setting.
+  optimize-calendar:
+    title: Aria nightly calendar tidy-up
+    agent: aria
+    status: paused
+    concurrency: skip_if_active
+    description: |
+      Today is {{date}}. Follow your skill optimize-calendar. The owner's tidy-up prompt: ${settings.aria_optimizer_prompt}
+    schedules:
+      - { cron: "0 2 * * *", timezone: "${settings.timezone}", label: "nightly" }
+# The Aria page's connection: the owner's reads and proposed changes to Aria's settings (service/src/config-tool.ts), and the
+# tool Aria herself calls to save a proposal (aria_suggest).
 connections:
   aria:
     setup: "Built in: nothing to connect."
@@ -184,8 +184,12 @@ connections:
     auth: aria_service_key
     returns: untrusted
     tools:
-      read: [ aria_config, aria_move_budget ]
+      read: [ aria_config ]
       write: [ aria_configure, aria_suggest ]
+# The generic settings paths (the owner's MCP, the module screen) check a value here before it is saved, as the page's own tool does.
+validate:
+  post: http://aria:8104/validate
+  auth: aria_service_key
 services:
   data: true
   run:
@@ -211,7 +215,7 @@ services:
         ARIA_PEOPLE: "${settings.aria_people}"
         ARIA_PREFERENCES: "${settings.aria_preferences}"
         ARIA_FOLLOWING_UP: "${settings.aria_following_up}"
-        ARIA_OPTIMIZER: "${settings.aria_optimizer}"
+        ARIA_OPTIMIZER_PROMPT: "${settings.aria_optimizer_prompt}"
         AIDENHQ_KERNEL_URL: http://10.231.0.1:3130
 generated_secrets:
   - aria_token

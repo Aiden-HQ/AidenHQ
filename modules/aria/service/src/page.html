@@ -45,7 +45,7 @@
   .tools { display: flex; gap: 8px; flex-wrap: wrap; padding: 4px 0 12px; }
   .offrow { color: var(--soft); }
   @media (max-width: 1000px) { .sc { --ctl: 100%; } .srow { grid-template-columns: minmax(0, 1fr); gap: 4px; } .ctl { margin-top: 6px; } }
-  @media (max-width: 520px) { .sc .top, .body, .facts, .banner { padding-left: 14px; padding-right: 14px; } .sc .top { grid-template-columns: minmax(0, 1fr); } }
+  @media (max-width: 520px) { .day { grid-template-columns: minmax(0, 1fr); } .day input[type=time] { font-size: 16px; padding: 4px 8px; } .sc .top, .body, .facts, .banner { padding-left: 14px; padding-right: 14px; } .sc .top { grid-template-columns: minmax(0, 1fr); } }
 </style>
 </head>
 <body>
@@ -81,9 +81,8 @@
     const inp = h("input", { type: "text", inputMode: "numeric", value: draft[key][field] === null ? "" : String(draft[key][field]), ariaLabel: label, autocomplete: "off", placeholder: optional ? "no limit" : "" });
     inp.dataset.f = `${key}|${field}`;
     const ok = () => { const t = inp.value.trim(); if (t === "") return optional ? null : undefined; const n = Number(t); return Number.isInteger(n) && n >= lo && n <= hi ? n : undefined; };
-    let typing;
-    inp.addEventListener("input", () => { clearTimeout(typing); inp.ariaInvalid = String(ok() === undefined); typing = setTimeout(() => { const n = ok(); if (n !== undefined) patch(key, { [field]: n }, true); }, 200); });
-    inp.addEventListener("change", () => { clearTimeout(typing); const n = ok(); if (n !== undefined) return patch(key, { [field]: n }); inp.value = draft[key][field] === null ? "" : String(draft[key][field]); inp.ariaInvalid = "false"; say(`${label}: a whole number from ${lo} to ${hi}${optional ? ", or empty for no limit" : ""}.`, true); });
+    inp.addEventListener("input", () => { inp.ariaInvalid = String(ok() === undefined); const n = ok(); if (n !== undefined) patch(key, { [field]: n }, true); });
+    inp.addEventListener("change", () => { const n = ok(); if (n !== undefined) return patch(key, { [field]: n }); inp.value = draft[key][field] === null ? "" : String(draft[key][field]); inp.ariaInvalid = "false"; say(`${label}: a whole number from ${lo} to ${hi}${optional ? ", or empty for no limit" : ""}.`, true); });
     return h("label", { className: "num" }, inp, unit);
   };
   const onoff = (value, set2, label) => editor({ kind: "seg", label, f: label, value: value ? "On" : "Off", values: ["Off", "On"], set: (l) => set2(l === "On") });
@@ -106,18 +105,17 @@
 
   // ---- sections
   function status() {
-    const t = cfg.tidy, s = cfg.suggestion;
+    const s = cfg.suggestion;
     const fact = (l, v, sub) => h("div", { className: "fact" }, h("small", { textContent: l }), h("b", { textContent: v }), sub ? h("span", { textContent: sub }) : null);
     return section(1, "Status", "What Aria knows and does for you.",
       h("div", { className: "facts" },
         fact("Calendar", "Through Google", "Aria uses the Google connection under Settings, Connections. If she says she needs Google, connect it there."),
         fact("Your time zone", cfg.timezone, "Set under Settings, General. Hours below are on this clock."),
-        fact("Nightly tidy-up", draft.aria_optimizer.on ? `On, at ${draft.aria_optimizer.at}` : "Off", t.last_date ? `Last ran for ${t.last_date}.` : "It has not run yet."),
+        fact("Nightly tidy-up", "At 2:00 AM, once resumed", "Off until you resume it under Settings, Modules, Aria. It runs on your clock."),
         fact("Reading your calendar", s ? "Suggestion ready" : "Not yet", s ? `Worked out from ${s.based_on.meetings} meetings.` : "Aria reads your last four weeks to propose your hours.")),
-      ...(banners.length ? banners.map((b) => h("div", { className: "banner" }, h("p", { textContent: b.text }), ...(b.act ? [b.act] : []))) : []),
+      ...offered.map((o) => h("div", { className: "banner" }, h("p", { textContent: o.text }), (() => { const b = h("button", { type: "button", className: "primary", textContent: "Use these" }); b.addEventListener("click", () => use(o)); return b; })())),
       ...(!s ? [h("div", { className: "banner" }, h("p", { textContent: "Ask Aria to read your last four weeks and propose your working hours, typical meeting lengths and calendars. You only correct them." }), (() => { const b = h("button", { type: "button", className: "primary", textContent: "Ask Aria to read my calendar" }); b.addEventListener("click", () => ask("Aria, read my last four weeks of meetings and save a suggestion for my working hours, typical meeting lengths and calendars (aria_suggest). I'll review it on your page.").catch((e) => say(e.message, true))); return b; })())] : []));
   }
-  const banners = [];
 
   function week() {
     const hrs = draft.aria_working_hours, open = DAYS.filter(([d]) => hrs[d] !== "off").map(([, n]) => n.slice(0, 3));
@@ -174,10 +172,9 @@
     const lines = draft.aria_preferences.lines;
     const ta = h("textarea", { rows: 4, value: lines.join("\n"), ariaLabel: "How I like my calendar", spellcheck: true, placeholder: "No meetings before 10 on Mondays\nKeep Friday afternoons free" });
     ta.dataset.f = "preferences";
-    let typing;
     const read = () => ta.value.split("\n").map((s) => s.trim()).filter(Boolean);
-    ta.addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => patch("aria_preferences", { lines: read() }, true), 250); });
-    ta.addEventListener("change", () => { clearTimeout(typing); patch("aria_preferences", { lines: read() }); });
+    ta.addEventListener("input", () => patch("aria_preferences", { lines: read() }, true));
+    ta.addEventListener("change", () => patch("aria_preferences", { lines: read() }));
     return section(5, "How I like my calendar", lines.length ? `${lines.length} preference${lines.length === 1 ? "" : "s"}.` : "None yet.",
       h("div", { className: "body" }, srow("In your words", ["One line each, in plain English. Aria follows these unless an ask says otherwise."], ta)));
   }
@@ -192,29 +189,21 @@
   }
 
   function tidy() {
-    const o = draft.aria_optimizer, on = o.on, lines = o.prompt_lines;
-    const ta = h("textarea", { rows: 6, value: lines.join("\n"), ariaLabel: "Tidy-up prompt", spellcheck: true });
+    const text = draft.aria_optimizer_prompt;
+    const ta = h("textarea", { rows: 7, value: text, ariaLabel: "Tidy-up prompt", spellcheck: true, maxLength: 500 });
     ta.dataset.f = "prompt";
-    let typing;
-    const read = () => ta.value.split("\n").map((s) => s.trim()).filter(Boolean);
-    const put = (live) => { const l = read(); if (!l.length) return say("The prompt needs at least one line: Reset puts the default back.", true); patch("aria_optimizer", { prompt_lines: l }, live); };
-    ta.addEventListener("input", () => { clearTimeout(typing); typing = setTimeout(() => put(true), 250); });
-    ta.addEventListener("change", () => { clearTimeout(typing); put(false); });
+    // Proposed on every keystroke (no pause), so the board's Save always carries the latest words.
+    const read = () => ta.value.replace(/[\r\n$]+/g, " ").trim();
+    const put = (live) => { const t = read(); if (!t) return say("The prompt can't be empty: Reset puts the default back.", true); set("aria_optimizer_prompt", t, live); };
+    ta.addEventListener("input", () => put(true));
+    ta.addEventListener("change", () => put(false));
     const reset = h("button", { type: "button", className: "sm", textContent: "Reset to default" });
-    reset.addEventListener("click", () => patch("aria_optimizer", { prompt_lines: structuredClone(cfg.defaults.aria_optimizer.prompt_lines) }));
-    const at = h("input", { type: "time", value: o.at, ariaLabel: "Tidy-up time" });
-    at.dataset.f = "plan|at";
-    at.addEventListener("change", () => at.value ? patch("aria_optimizer", { at: at.value }) : (at.value = o.at));
-    return section(7, "Nightly tidy-up", on ? `On: tidies your week at ${o.at}, up to ${o.max_moves} moves a night.` : "Off. Nothing runs and nothing is spent until you turn it on.",
+    reset.addEventListener("click", () => set("aria_optimizer_prompt", cfg.defaults.aria_optimizer_prompt));
+    return section(7, "Nightly tidy-up", "A routine that runs at 2:00 AM on your clock. It stays off until you resume it.",
       h("div", { className: "body" },
-        srow("Tidy my week at night", ["Aria moves meetings you organise to a better window or to close gaps, one occurrence at a time, each move reviewed first. Off until you turn it on."], onoff(on, (v) => patch("aria_optimizer", { on: v }), "Nightly tidy-up")),
-        ...(on ? [
-          srow("Time", ["Your clock. If it was missed by hours, that night is skipped."], at),
-          srow("Moves a night", ["The most meetings she moves in one night, counted from the kernel's records so a retry can't go over."], numField("aria_optimizer", "max_moves", "Moves a night", "moves", 1, 20)),
-          srow("Leave alone within", ["A meeting starting sooner than this is never moved."], numField("aria_optimizer", "no_move_within_hours", "Hours before a meeting", "hours", 0, 168)),
-          srow("Look ahead", ["How many working days ahead she tidies."], numField("aria_optimizer", "horizon_working_days", "Working days ahead", "working days", 1, 30)),
-          srow("Her instructions", ["What she is asked each night. Edit it to taste."], ta),
-          h("div", { className: "tools" }, reset)] : [])));
+        srow("Turn it on", ["Aria moves meetings you organise to a better window or to close gaps, one occurrence at a time, each move reviewed first. Resume or pause it under Settings, Modules, Aria: it is off, and nothing runs or is spent, until you do. The time is fixed at 2:00 AM for now."], h("span", { className: "soft", textContent: "Settings, Modules, Aria" })),
+        srow("Her instructions", ["What she is asked each night, in your words. Put the limits in it: how far ahead, how close a meeting may be and still move, the most moves a night. One paragraph, 500 characters at most."], ta),
+        h("div", { className: "tools" }, reset)));
   }
 
   function signature() {
@@ -228,31 +217,28 @@
   }
   const redraw = () => keepFocus(draw);
 
-  // What Aria worked out from the calendar fills the page as a proposal: working hours, lengths and calendars only while the hours are still the defaults.
-  function prefill() {
-    banners.length = 0;
-    const s = cfg.suggestion, def = cfg.defaults;
-    if (s && eq(cfg.settings.aria_working_hours, def.aria_working_hours)) {
+  // What Aria worked out from the calendar is offered, never applied by itself: a Discard on the board's bar must stay discarded, so
+  // nothing is drafted until the owner presses "Use these". Lengths and calendars only replace values still at their defaults.
+  function offers() {
+    const s = cfg.suggestion, def = cfg.defaults, out = [];
+    if (s && eq(cfg.settings.aria_working_hours, def.aria_working_hours)) out.push({ text: `Aria read your last four weeks (${s.based_on.meetings} meetings) and worked out your hours, usual lengths and calendars.`, apply() {
       draft.aria_working_hours = s.working_hours;
-      // Only what is still the default: a length or calendar the owner already set stays theirs.
       const dm = def.aria_meetings, m = draft.aria_meetings;
       for (const k of ["one_on_one", "external", "default"]) if (s.durations[k] && m[k] === dm[k]) m[k] = s.durations[k];
       if (eq(m.blocking_calendars, dm.blocking_calendars)) m.blocking_calendars = s.blocking_calendars;
-      banners.push({ text: `Aria read your last four weeks (${s.based_on.meetings} meetings) and filled in your hours, usual lengths and calendars. Check them, then Save in the bar above.` });
-    }
-    if (cfg.owner_team_domain && !cfg.settings.aria_people.team_domains.length) {
-      draft.aria_people = { ...draft.aria_people, team_domains: [cfg.owner_team_domain] };
-      banners.push({ text: `Your team is set to ${cfg.owner_team_domain}, your own organisation. Change it under People if it isn't.` });
-    }
+    } });
+    if (cfg.owner_team_domain && !cfg.settings.aria_people.team_domains.length) out.push({ text: `Set your team to ${cfg.owner_team_domain}, your own organisation.`, apply() { draft.aria_people = { ...draft.aria_people, team_domains: [cfg.owner_team_domain] }; } });
+    return out;
   }
+  const use = (o) => { o.apply(); offered = offered.filter((x) => x !== o); redraw(); propose(); };
+  let offered = [];
 
   async function load() {
     try {
       cfg = await tool("aria_config", {});
       draft = structuredClone(cfg.settings); lastGood = structuredClone(draft);
-      prefill();
+      offered = offers();
       draw();
-      if (!eq(draft, cfg.settings)) propose();
     } catch (e) { say(e.message, true); }
   }
   start("aria", load);

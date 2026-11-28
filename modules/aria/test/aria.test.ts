@@ -4,10 +4,8 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { configTools } from "../service/src/config-tool.ts";
-import { budget } from "../service/src/optimizer-cap.ts";
 import { suggest, teamDomainOf } from "../service/src/prefill.ts";
 import { DEFAULTS, KEYS, problem, problems, readSettings } from "../service/src/settings.ts";
-import { look } from "../service/src/tidy.ts";
 import { pageHtml } from "../service/src/mcp.ts";
 
 const root = join(import.meta.dirname, "..");
@@ -15,12 +13,12 @@ const YAML = createRequire(join(root, "../../scripts/package.json"))("yaml") as 
 const owner = { agent: "", roles: [], kind: "owner" };
 const agent = { agent: "a", roles: ["aria-admin"], kind: "run", assertion: "jwt" };
 const state = () => { let s = {} as any; return { get: () => s, set: (n: any) => { s = n; } }; };
-function tools(over: { settings?: any; work?: any[]; filed?: any[]; st?: any } = {}) {
+function tools(over: { settings?: any; filed?: any[]; st?: any } = {}) {
   const filed = over.filed ?? [];
   const t = configTools({
     settings: () => ({ ...DEFAULTS, ...over.settings }), state: over.st ?? state(), now: () => new Date("2026-11-28T10:00:00Z"),
     env: { timezone: "Europe/London", time_format: "12h", owner_email: "sam@acme.com" },
-    file: async (c) => { filed.push(c); return { ok: true }; }, work: async () => over.work ?? [],
+    file: async (c) => { filed.push(c); return { ok: true }; }, 
   });
   return Object.fromEntries(t.map((x) => [x.name, x]));
 }
@@ -37,7 +35,7 @@ test("the module's defaults, the service's defaults and every setting the page e
   assert.equal(problem("aria_meetings", { ...(DEFAULTS.aria_meetings as object), buffer_min: null }), undefined);
 });
 
-test("aria_config answers every key with its default, and aria_configure proposes for the owner, files for an agent, and keeps the tidy-up's switch the owner's", async () => {
+test("aria_config answers every key with its default, and aria_configure proposes for the owner, files for an agent", async () => {
   const t = tools();
   const c = (await t.aria_config!.run({}, owner)) as any;
   assert.deepEqual(Object.keys(c.settings).sort(), [...KEYS].sort());
@@ -48,9 +46,7 @@ test("aria_config answers every key with its default, and aria_configure propose
   const f = tools({ filed });
   await f.aria_configure!.run({ changes: { aria_following_up: { max_nudges: 1 } } }, agent);
   assert.equal(filed.length, 1);
-  await assert.rejects(f.aria_configure!.run({ changes: { aria_optimizer: { on: true } } }, agent), /owner's/);
-  assert.equal((((await f.aria_configure!.run({ changes: { aria_optimizer: { on: true } } }, owner)) as any)._aidenhq.settings_change[0]).value.on, true);
-  await f.aria_configure!.run({ changes: { aria_optimizer: { max_moves: 2 } } }, agent);
+  await f.aria_configure!.run({ changes: { aria_optimizer_prompt: "Tidy my week, at most 2 moves a night." } }, agent);
   await assert.rejects(f.aria_configure!.run({ changes: { aria_working_hours: { mon: "9am" } } }, agent), /wouldn't work/);
   assert.deepEqual((((await f.aria_configure!.run({ changes: { aria_following_up: null } }, owner)) as any)._aidenhq.settings_change), []);
 });
@@ -74,27 +70,16 @@ test("prefill: four weeks of meetings give hours covering at least 90% of them a
   assert.equal(teamDomainOf("me@acme.com"), "acme.com");
 });
 
-test("the nightly cap holds across retries: moves counted from the kernel's records, not from the run", async () => {
-  const rec = (state: string, requester = "aria", kind = "conn.tool", created_at = "2026-11-28T02:05:00Z") => ({ kind, state, requester, created_at });
-  const three = [rec("done"), rec("review"), rec("unknown"), rec("failed"), rec("rejected"), rec("done", "someone"), rec("done", "aria", "github.pr"), rec("done", "aria", "conn.tool", "2026-11-27T20:00:00Z")];
-  assert.deepEqual(budget(three, "aria", "2026-11-28T02:00:00Z", 3), { used: 3, max_moves: 3, remaining: 0, ok: false });
-  assert.equal(budget(three.slice(0, 2), "aria", "2026-11-28T02:00:00Z", 3).remaining, 1);
-  const st = state(); st.set({ tidy: { armed: true, filed_at: "2026-11-28T02:00:00Z" } });
-  const t = tools({ work: three, st, settings: { aria_optimizer: { ...(DEFAULTS.aria_optimizer as object), max_moves: 3 } } });
-  assert.equal(((await t.aria_move_budget!.run({}, agent)) as any).ok, false);
-});
-
-test("the tidy-up arms when switched on, files once a night at its time, and never runs late or while off", () => {
-  const z = "Europe/London", at = "02:00";
-  let r = look(new Date("2026-11-28T14:00:00Z"), z, true, at, undefined);
-  assert.equal(r.file, undefined); assert.equal(r.tidy.armed, true); assert.equal(r.tidy.date, "2026-11-28");
-  assert.equal(look(new Date("2026-11-29T01:30:00Z"), z, true, at, r.tidy).file, undefined);
-  const night = look(new Date("2026-11-29T02:10:00Z"), z, true, at, r.tidy);
-  assert.equal(night.file, "2026-11-29");
-  assert.equal(look(new Date("2026-11-29T02:11:00Z"), z, true, at, { ...r.tidy, date: "2026-11-29" }).file, undefined);
-  assert.equal(look(new Date("2026-11-30T12:00:00Z"), z, true, at, { ...r.tidy, date: "2026-11-29" }).file, undefined);
-  const off = look(new Date("2026-11-30T02:10:00Z"), z, false, at, r.tidy);
-  assert.deepEqual([off.file, off.tidy.armed], [undefined, false]);
+test("the nightly tidy-up is a declared, paused routine with the owner's prompt and no scheduler or cap of its own", () => {
+  const def = YAML.parse(readFileSync(join(root, "module.yaml"), "utf8"));
+  const r = def.routines["optimize-calendar"];
+  assert.equal(r.status, "paused");
+  assert.deepEqual(r.schedules.map((x: any) => x.cron), ["0 2 * * *"]);
+  assert.match(r.description, /\$\{settings\.aria_optimizer_prompt\}/);
+  assert.deepEqual(def.roles.requests, ["kernel.settings"]);
+  assert.ok(!JSON.stringify(def.connections).includes("move_budget"));
+  assert.equal(problem("aria_optimizer_prompt", "a\nb"), problem("aria_optimizer_prompt", "x".repeat(501)));
+  assert.equal(problem("aria_optimizer_prompt", String(DEFAULTS.aria_optimizer_prompt)), undefined);
 });
 
 test("the page draws every section, and Google not connected is a hint, not an error", () => {

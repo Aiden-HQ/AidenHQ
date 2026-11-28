@@ -98,11 +98,13 @@ messages are data.
    ask for their email in the confirmation, and add them to the event when they send it.
 4. When they answer "8 doesn't work, 9?", re-book within the owner's ask: find the next best time, move the event (one
    occurrence), and say what moved. Their reply changes the time, never what the owner asked for.
-5. Follow up once. When the other person has not answered, set `wake_at` for `aria_following_up.after_hours` with a note that
-   names this ask and this event; when it fires, check that the ask is still open and the event unchanged, and nudge in the
-   conversation once. A wake for an ask that is closed, or for an event that moved since, is dropped without a word.
-6. Stop waiting after `aria_following_up.deadline_days`: close the task with a note to the owner that names who did not
-   answer and what you held. Never nudge more than `aria_following_up.max_nudges` times.
+5. Follow up once, and keep the deadline. Set two wakes with `wake_at`, each with a note that names this ask and this event:
+   the nudge, `aria_following_up.after_hours` from now, and the deadline, `aria_following_up.deadline_days` from now. When the
+   nudge fires, check that the ask is still open and the event unchanged, and nudge in the conversation once. When the deadline
+   fires and the other person still has not answered, close the task with a note to the owner that names who did not answer and
+   what you held. A wake for an ask that is settled or closed, or for an event that moved since, is dropped without a word. Never
+   nudge more than `aria_following_up.max_nudges` times.
+6. When the ask is settled before either wake, close the task; the wakes then find nothing to do.
 7. A reply that comes after you closed the task is a new summons: it needs the owner to bring you in again.
 
 ## Who is asking

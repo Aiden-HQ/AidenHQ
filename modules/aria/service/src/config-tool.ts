@@ -1,8 +1,7 @@
 // Aria's tools on the module's MCP connection `aria`: the owner's page reads (`aria_config`) and proposes (`aria_configure`), and
-// Aria's own `aria_suggest` (save a proposal for the page) and `aria_move_budget` (the nightly cap, optimizer-cap.ts).
+// Aria's own `aria_suggest` (save a proposal for the page).
 // A change is validated whole. The owner's call (the Aria page) only proposes: it comes back as a typed settings change the board
-// shows in its Save bar. An agent's call files the change itself (POST /v1/settings/agent), except turning the tidy-up on.
-import { budget, type WorkRecord } from "./optimizer-cap.ts";
+// shows in its Save bar. An agent's call files the change itself (POST /v1/settings/agent).
 import { suggest, teamDomainOf, type Meeting } from "./prefill.ts";
 import { DEFAULTS, KEYS, problem, problems, type Key } from "./settings.ts";
 import type { Store } from "./state.ts";
@@ -18,8 +17,6 @@ export interface Deps {
   now: () => Date;
   /** POST /v1/settings/agent as the calling job (its assertion goes along). */
   file: (changes: Dict[], assertion: string) => Promise<unknown>;
-  /** GET /v1/work?since=: the kernel's write records since an instant. */
-  work: (since: string) => Promise<WorkRecord[]>;
 }
 
 /** The setting after `change`: an object setting merges field by field, anything else is replaced, null puts the default back. */
@@ -29,25 +26,23 @@ export function applyChange(current: unknown, change: unknown, key: Key): unknow
 }
 
 export function configTools(d: Deps): Tool[] {
-  const plan = () => d.settings().aria_optimizer as { on: boolean; at: string; max_moves: number };
   return [
     {
       name: "aria_config", roles: ["aria-admin"],
-      description: "Aria's settings as the owner has them (working hours, call windows, meeting lengths and buffers, VIPs and team domains, preferences, follow-up timing, the nightly tidy-up and its limits), their defaults, any problems, the owner's time zone and the proposal Aria last saved from reading their calendar.",
+      description: "Aria's settings as the owner has them (working hours, call windows, meeting lengths and buffers, VIPs and team domains, preferences, follow-up timing, the nightly tidy-up prompt), their defaults, any problems, the owner's time zone and the proposal Aria last saved from reading their calendar.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       run: async () => {
-        const settings = d.settings(), t = d.state.get().tidy;
+        const settings = d.settings();
         return {
           settings, defaults: DEFAULTS, problems: problems(settings), timezone: d.env.timezone, time_format: d.env.time_format,
           owner_team_domain: teamDomainOf(d.env.owner_email) ?? null,
           suggestion: d.state.get().suggestion ?? null,
-          tidy: { on: plan().on, at: plan().at, last_date: t?.date ?? null, last_task: t?.task ?? null },
         };
       },
     },
     {
       name: "aria_configure", roles: ["aria-admin"],
-      description: `Propose changes to Aria's settings, in one settings change: { changes: { <setting>: <value> | null } }, null putting the default back. Settings: ${KEYS.join(", ")}. A map setting takes only the fields you name (the rest stay); a list inside it is replaced whole. Refused whole when the result wouldn't be valid. Turning the nightly tidy-up on (aria_optimizer.on) is the owner's own change from the Aria page.`,
+      description: `Propose changes to Aria's settings, in one settings change: { changes: { <setting>: <value> | null } }, null putting the default back. Settings: ${KEYS.join(", ")}. A map setting takes only the fields you name (the rest stay); a list inside it is replaced whole. Refused whole when the result wouldn't be valid.`,
       inputSchema: { type: "object", properties: { changes: { type: "object" } }, required: ["changes"], additionalProperties: false },
       run: async (a, caller) => {
         if (!isMap(a.changes) || !Object.keys(a.changes).length) throw new Error("say what to change: { changes: { <setting>: <value> } }");
@@ -58,7 +53,6 @@ export function configTools(d: Deps): Tool[] {
           const bad = problem(key, next);
           if (bad) throw new Error(`that wouldn't work: ${bad}`);
           if (JSON.stringify(next) === JSON.stringify(current[key])) continue;
-          if (caller.kind !== "owner" && key === "aria_optimizer" && (next as { on: boolean }).on && !plan().on) throw new Error("turning the nightly tidy-up on is the owner's: ask them to switch it on from the Aria page");
           out.push({ kind: "setting", key, value: next });
           summary.push(`${key} changed`);
         }
@@ -81,17 +75,6 @@ export function configTools(d: Deps): Tool[] {
         if (bad) throw new Error(`that calendar gave a proposal the settings can't hold: ${bad}`);
         d.state.set({ ...d.state.get(), suggestion: { ...s, at: d.now().toISOString() } });
         return { saved: true, ...s };
-      },
-    },
-    {
-      name: "aria_move_budget", roles: ["aria-admin"],
-      description: "How many meetings the nightly tidy-up may still move tonight: the cap (aria_optimizer.max_moves) less the reviewed calendar writes you have filed since tonight's tidy-up began, counted from the kernel's records. Call it before every move; at remaining 0, stop.",
-      inputSchema: { type: "object", properties: {}, additionalProperties: false },
-      run: async () => {
-        const t = d.state.get().tidy;
-        // The night began when the task was filed; with no tidy-up on record (an owner's own ask), the last twelve hours.
-        const since = t?.filed_at ?? new Date(d.now().getTime() - 12 * 3_600_000).toISOString();
-        return { since, ...budget(await d.work(since), "aria", since, plan().max_moves) };
       },
     },
   ];

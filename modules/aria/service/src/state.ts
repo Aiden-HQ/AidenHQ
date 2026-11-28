@@ -1,12 +1,10 @@
-// The service's own durable state (ARIA_STATE_FILE): the proposal Aria saved for the page, and the tidy-up's bookkeeping.
+// The service's own durable state (ARIA_STATE_FILE): the proposal Aria saved for the page.
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Suggestion } from "./prefill.ts";
 
 export interface State {
   suggestion?: Suggestion & { at: string };
-  /** The tidy-up: whether it was on at the last look, the owner-local date it last filed for, and when that run began (the night's start). */
-  tidy?: { armed: boolean; date?: string; filed_at?: string; task?: string };
 }
 
 export function openState(file: string) {

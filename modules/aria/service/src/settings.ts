@@ -4,7 +4,7 @@
 type Dict = Record<string, unknown>;
 
 export const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
-export const KEYS = ["aria_working_hours", "aria_stretch_hours", "aria_default_hours", "aria_default_stretch", "aria_call_windows", "aria_meetings", "aria_people", "aria_preferences", "aria_following_up", "aria_optimizer"] as const;
+export const KEYS = ["aria_working_hours", "aria_stretch_hours", "aria_default_hours", "aria_default_stretch", "aria_call_windows", "aria_meetings", "aria_people", "aria_preferences", "aria_following_up", "aria_optimizer_prompt"] as const;
 export type Key = (typeof KEYS)[number];
 
 /** The module's defaults: modules/aria/module.yaml `settings:` carries the same values (test/settings.test.ts keeps them equal). */
@@ -18,15 +18,7 @@ export const DEFAULTS: Record<Key, unknown> = {
   aria_people: { vips: [], team_domains: [] },
   aria_preferences: { lines: [] },
   aria_following_up: { after_hours: 24, max_nudges: 2, deadline_days: 5 },
-  aria_optimizer: {
-    on: false, at: "02:00", max_moves: 3, no_move_within_hours: 24, horizon_working_days: 10,
-    prompt_lines: [
-      "Tighten my next working days: move a meeting to a better call window or to close a gap between meetings, one occurrence at a time.",
-      "Move only meetings I organise, and only where everyone invited has a free time that works. Move team-only meetings without asking; leave the others be.",
-      "Leave alone any occurrence I moved or refused myself, and anything I named a time for.",
-      "Add a line to your task for each meeting you moved, with why, and one line for what you left alone.",
-    ],
-  },
+  aria_optimizer_prompt: "Tighten my next 10 working days: move a meeting to a better call window or to close a gap, one occurrence at a time. Move only meetings I organise, never one starting within 24 hours, and only where everyone invited is free; move team-only meetings without asking and leave the rest. Leave alone anything I moved, refused or named a time for. Move at most 3 meetings a night. Note each move and what you left alone on your task.",
 };
 
 const isMap = (v: unknown): v is Dict => !!v && typeof v === "object" && !Array.isArray(v);
@@ -115,17 +107,8 @@ export function problem(key: Key, value: unknown): string | undefined {
         if (typeof value !== "string" || !RANGE.test(value)) return "that is one range like 09:00-18:00";
         try { ranges(value); } catch (e) { return (e as Error).message; }
         return undefined;
-      case "aria_optimizer": {
-        if (!isMap(value)) return "the nightly tidy-up is a map";
-        only(value, ["on", "at", "max_moves", "no_move_within_hours", "horizon_working_days", "prompt_lines"], key);
-        if (typeof value.on !== "boolean") return "the nightly tidy-up is on or off";
-        if (!strings(value.prompt_lines, 12, 500) || (value.prompt_lines as string[]).length < 1) return "the tidy-up prompt is 1 to 12 lines of at most 500 characters (Reset puts the default back)";
-        if (typeof value.at !== "string" || !HM.test(value.at)) return "the tidy-up time is HH:MM, like 02:00";
-        if (!int(value.max_moves, 1, 20)) return "moves a night is 1 to 20";
-        if (!int(value.no_move_within_hours, 0, 168)) return "the no-move window is 0 to 168 hours";
-        if (!int(value.horizon_working_days, 1, 30)) return "the tidy-up looks 1 to 30 working days ahead";
-        return undefined;
-      }
+      case "aria_optimizer_prompt":
+        return typeof value === "string" && value.trim() === value && value.length >= 1 && value.length <= 500 && !/[$\r\n]/.test(value) ? undefined : "the tidy-up prompt is one paragraph of 1 to 500 characters, without a line break or a dollar sign";
     }
   } catch (e) { return (e as Error).message; }
 }
@@ -141,7 +124,7 @@ const parse = (text: string | undefined): unknown => { try { return text === und
 
 /** The settings from the service's environment (the instance's values, else the defaults). */
 export function readSettings(env: NodeJS.ProcessEnv = process.env): Record<Key, unknown> {
-  const text = new Set<Key>(["aria_default_hours", "aria_default_stretch"]);
+  const text = new Set<Key>(["aria_default_hours", "aria_default_stretch", "aria_optimizer_prompt"]);
   const from = (name: string, key: Key) => {
     const raw = env[name];
     const v = text.has(key) ? raw || undefined : parse(raw);
