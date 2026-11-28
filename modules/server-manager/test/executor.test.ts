@@ -38,7 +38,7 @@ const REBOOT_STATE = {
 };
 
 /** A stand-in ssh over the recorded fixture, with the answers the write path asks for (the exact-list simulation, dpkg, units). */
-function fakeHost(i: { simulate?: string; estimate?: string; audit?: string; auditCode?: number; auditErr?: string; bootId?: string; units?: string; ua?: string; uaCode?: number; uaErr?: string; disk?: string; rebootPkgs?: string; installed?: string; lockBusy?: boolean; rebootLockBusy?: boolean; installedSeq?: string[] } = {}) {
+function fakeHost(i: { simulate?: string; estimate?: string; audit?: string; auditCode?: number; auditErr?: string; bootId?: string; units?: string; ua?: string; uaCode?: number; uaErr?: string; disk?: string; rebootPkgs?: string; installed?: string; lockBusy?: boolean; rebootLockBusy?: boolean; aptLock?: boolean; installedSeq?: string[] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "sm-exec-"));
   mkdirSync(join(root, "tmp"));
   mkdirSync(join(root, "state"), { recursive: true });
@@ -57,6 +57,8 @@ function fakeHost(i: { simulate?: string; estimate?: string; audit?: string; aud
     "apt-config dump": { out: i.ua === "enabled" ? g("apt-config dump") : "" },
     "systemctl is-enabled unattended-upgrades": { out: i.ua ?? "disabled", code: i.uaCode, err: i.uaErr },
     "dpkg --audit": { out: i.audit ?? "", code: i.auditCode, err: i.auditErr },
+    // apt's own fcntl lock, which flock cannot see: only lslocks shows it.
+    "sudo -n lslocks -n -r -o PATH": { out: i.aptLock ? "/run/systemd/x\n/var/lib/dpkg/lock-frontend\n" : "/run/systemd/x\n" },
   };
   const prefixes: [string, { out: string }][] = [
     ["apt-cache policy", { out: g("apt-cache policy") }],
@@ -443,6 +445,17 @@ test("§6 a package writer holding the dpkg lock refuses the reboot instead of r
   assert.ok(!h.read().some((c) => c.cmd.includes("systemctl reboot")), "nothing rebooted");
   assert.equal(wakes.length, 1);
   assert.match(wakes[0]!.title, /waited on the package manager/);
+});
+
+test("§6 apt's own fcntl lock (invisible to flock) refuses the reboot", async () => {
+  const h = fakeHost({ aptLock: true });
+  const { d } = deps(h);
+  const ex = createExecutor(d);
+  const plan = await ex.plan({ kind: "server-manager.reboot", args: { machine: "vm-one" }, requester: module(), task: "" } as never);
+  const out = await ex.execute({ id: "k-0123456789abcdef", kind: "server-manager.reboot", args: { ...(plan.args as Record<string, unknown>), quiet_window: { start: "00:00", end: "00:00" } }, digest: "d", idempotency_key: "i", tier: 0 } as never);
+  assert.equal(out.ok, false);
+  assert.match(out.text, /package manager was writing/);
+  assert.ok(!h.read().some((c) => c.cmd.includes("systemctl reboot")), "nothing rebooted");
 });
 
 test("§11.12 a package writer that takes the dpkg lock just before the reboot refuses it, without a proof wait", async () => {

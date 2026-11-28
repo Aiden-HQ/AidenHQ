@@ -50,6 +50,7 @@ function patchCard(rec: PatchArgs): Record<string, string> {
   const n = rec.packages.length;
   return {
     target: rec.machine,
+    count: String(n),
     sentence: `Installs ${n} ${rec.mode === "security" ? "security update" : "update"}${n === 1 ? "" : "s"} on ${rec.machine}, revalidated and re-derived over SSH at execution.`,
     changes: n ? rec.packages.slice(0, 12).join(", ") + (n > 12 ? `, and ${n - 12} more` : "") : "nothing: the last read found no upgrade left",
     reads: `Re-reads the upgradable set first and refuses if its hash is not ${rec.hash.slice(0, 12)}…; simulates the exact list; checks disk on / and /boot, dpkg's state, held packages, and never a release upgrade.`,

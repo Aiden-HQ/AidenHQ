@@ -59,6 +59,7 @@ Start from the closest template in `modules/agent-builder/templates/` (its `READ
 - A new connection or module follows [modules/AGENTS.md](../../../AGENTS.md).
 - **The handbook states the mission; how-to lives in a skill the agent lists** (rules live once, never copied into a handbook). Reuse an existing agent, skill or tool before adding one, and give an agent one way to do each job.
 - **Defaults unless the person asks otherwise:**
+  - *Simple first:* design the main path the person will use and make it work well; rare cases and extra hardening wait until one actually happens. The smallest design that keeps its promises wins.
   - *Description:* what the agent owns, when to hand it work, what it does not do (other agents route by it).
   - *Onboarding:* concrete, not a task count (step 5).
   - *Reads sized to the audience:* output that reaches a company-wide page or channel gets no Gmail, calendar or private notes unless the person asks.
@@ -85,6 +86,8 @@ Then review it with the person where they chose (**in review**):
 - A change to an agent that already exists is the same task, titled "Change agent: <name>": the agent's key (the Engineer finds its module under `modules/` in the instance repo), the exact edits, and the done condition "the commit changes only these lines".
 - When its task wakes you, read the diff it shows (`task_comments`) and **compare it line by line with your design**: grants, `reports_to`, the handbook text, schedules. If anything differs, comment on that same task with the exact correction; its next commit replaces the card. At most **3 rounds**; then tell the person what is stuck in one sentence.
 - Its change waits as an approval card, filed when its turn ends and tiered by code; the AI reviewer decides it, and if it reaches the person the card itself tells them. Review the diff before it lands either way: when it differs from your design, correct it on that task (its next commit replaces the card).
+
+- **A module or product capability** is built in slices: the first is the smallest version the owner can use end to end, walked through in a browser before the next. Each Engineer task lists the locked design's promises as checks, and when a slice merges you confirm the code keeps each one.
 
 ### 4. Applied (ready for your OK)
 
