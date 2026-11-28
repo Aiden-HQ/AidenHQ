@@ -196,6 +196,18 @@ Read-only from `kernel.db`. Figures are p50 / p90.
 - Seen in passing: 54% of slack-triage batches are dropped, and some worker jobs hit the 120-minute timeout. Both are
   out of scope here and noted for a separate look.
 
+## Slack tiers (owner, 2026-11-28)
+
+- Summoning in Slack needs the **advanced** tier (the user's own Slack app). Basic, which signs in through a shared app
+  and Slack's MCP, ingests nothing: its app's events go to the app's owner, not to each instance. Polling search could
+  catch only the owner's own messages, so it would be a second ingest path with up to 60 s of delay.
+- **Slack setup steers users to advanced.** The two options already sit side by side. Advanced is marked recommended,
+  with the differences highlighted: live triage, the `src_slack` warehouse, the bot DM, channel binding, and summoning.
+  Basic stays available for users who only want agents to read Slack on demand.
+- Coverage on advanced: live events cover every conversation the owner is in, plus public channels they aren't in
+  (`slack-live/src/sources.ts`). Gap sync and backfill cover only conversations they're in. Summoning only needs the
+  owner's own messages, which are always in conversations they're in.
+
 ## Settled after review (builder check + Codex, 2026-11-28)
 
 **Authority**
