@@ -205,15 +205,15 @@ const GONE_THREAD = /thread_not_found/;
 
 /** Events a gap pass replayed that the kernel didn't take (transport, 429, 5xx): kept, and retried on the next pass. */
 export type ReplayQueue = { keep: (e: SourceEvent) => void; pending: () => SourceEvent[]; done: (id: string) => void };
-/** An event is retried for this long, then dropped: a message from yesterday must not become a task today. */
+/** A message older than this is never replayed or retried (by its own Slack timestamp): a message from yesterday must not become a task today. */
 export const REPLAY_KEEP_MS = 6 * 3_600_000;
 /** The queue in slack-live's own sqlite kv (store.ts), keyed `replay:<event id>`. */
 export function replayQueue(kv: Pick<Store, "getKv" | "setKv" | "delKv" | "listKv">, now = () => Date.now()): ReplayQueue {
   return {
-    keep: (e) => { if (!kv.getKv(`replay:${e.id}`)) kv.setKv(`replay:${e.id}`, JSON.stringify({ at: now(), e })); },
+    keep: (e) => { if (!kv.getKv(`replay:${e.id}`)) kv.setKv(`replay:${e.id}`, JSON.stringify({ e })); },
     pending: () => kv.listKv("replay:").flatMap(({ k, v }) => {
-      const { at, e } = JSON.parse(v) as { at: number; e: SourceEvent };
-      if (now() - at <= REPLAY_KEEP_MS) return [e];
+      const { e } = JSON.parse(v) as { e: SourceEvent };
+      if (now() - Number(e.id.slice(e.id.lastIndexOf(":") + 1)) * 1000 <= REPLAY_KEEP_MS) return [e];
       kv.delKv(k);
       return [];
     }),
@@ -292,6 +292,7 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
   // the event id is the message's, so the router drops one that also arrived live. Best effort: a failure is logged, never fails the pass.
   const replay = async (id: string, type: string | undefined, m: Record<string, any>, r: string, baseline: boolean, fresh: boolean) => {
     if (!forward || baseline || !fresh || r !== "new" || m.subtype === "tombstone") return;
+    if (now - Number(m.ts) * 1000 > REPLAY_KEEP_MS) return; // too old to become a task now
     // A pairing code is a live credential: the warehouse row is blanked, and the router must not see its raw text either. An
     // unknown type may be a DM, so it is skipped too; a public or private channel keeps and replays its ordinary text.
     if ((type === "im" || type === "mpim" || type === undefined) && carriesCode(m)) return;

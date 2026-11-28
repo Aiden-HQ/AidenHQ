@@ -66,7 +66,8 @@ describe("gap sync", () => {
       if (method === "conversations.history") return { ok: true, messages: history.filter((m) => Number(m.ts) > Number(p.oldest)) };
       return { ok: true, members: [], messages: [] };
     };
-    const queue = replayQueue(openStore(":memory:"));
+    const clock = { t: 260_000 };
+    const queue = replayQueue(openStore(":memory:"), () => clock.t);
     const sent: any[] = [];
     let down = true;
     const forward = async (e: unknown) => { if (down) throw new Error("POST /v1/events -> 503"); sent.push(e); };
@@ -79,6 +80,11 @@ describe("gap sync", () => {
     expect(sent).toEqual([expect.objectContaining({ id: "C1:150.0", from_owner: true, thread: "150.0", text: "ok, cc Aria" })]);
     await gapSync(store, api, 380_000, undefined, undefined, forward, OWNER, queue);
     expect(sent).toHaveLength(1); // delivered once
+    // A message older than the cutoff by its own timestamp is never replayed, first time or retry.
+    history.push({ ts: "1000.0", text: "cc Aria", user: OWNER });
+    clock.t = 1000_000 + 7 * 3_600_000;
+    await gapSync(store, api, clock.t, undefined, undefined, forward, OWNER, queue);
+    expect(sent).toHaveLength(1);
   });
 });
 

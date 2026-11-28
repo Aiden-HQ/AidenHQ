@@ -4,21 +4,34 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "bun:test";
 import { relay } from "../src/relay.js";
-import { postedMessage, postedStore } from "../src/posted.js";
+import { postAt, postedMessage, postedStore } from "../src/posted.js";
 
-it("remembers what it posted for an agent (7 days) and finds a message from a tool answer", () => {
+it("remembers what it posted for an agent: its ts for 7 days, its words only while the send is in flight, a scheduled one until delivered", () => {
   const dir = mkdtempSync(join(tmpdir(), "posted-"));
-  let t = 0;
+  let t = 1_000_000_000_000;
   const p = postedStore(join(dir, "p.json"), () => t);
   p.record("C1", "5.5");
-  p.recordText("C1", "Booked! cc [Aria](https://x)");
-  expect(p.has("C1", "9.9", "booked cc Aria https x")).toBe(true); // by its words, whatever Slack's markup did to it
-  expect(p.has("C2", "9.9", "booked cc Aria https x")).toBe(false);
   expect(p.has("C1", "5.5")).toBe(true);
   expect(p.has("C1", "6.6")).toBe(false);
   expect(postedStore(join(dir, "p.json"), () => t).has("C1", "5.5")).toBe(true);
-  t = 8 * 86_400_000;
-  expect(p.has("C1", "5.5")).toBe(false);
+  // In flight: matched by its words, whatever Slack's markup did to them, in that channel only; then no more.
+  p.sending("C1", "Booked! cc [Aria](https://x)");
+  expect(p.has("C1", "9.9", "booked cc Aria https x")).toBe(true);
+  expect(p.has("C2", "9.9", "booked cc Aria https x")).toBe(false);
+  t += 41_000;
+  expect(p.has("C1", "9.9", "booked cc Aria https x")).toBe(false); // the owner typing the same words later is the owner's
+  // Scheduled for a week on: still known when it is delivered about its time, not another message.
+  const due = t / 1000 + 7 * 86_400;
+  p.scheduled("C1", due);
+  t += 7 * 86_400_000;
+  expect(p.has("C1", String(due + 3))).toBe(true);
+  expect(p.has("C1", String(due + 600))).toBe(false);
+  expect(p.has("C2", String(due + 3))).toBe(false);
+  expect(postAt("1900000000")).toBe(1900000000);
+  expect(postAt("2030-01-01T00:00:00Z")).toBe(1893456000);
+  expect(postAt("2030-01-01T09:00:00")).toBeUndefined(); // no offset: not guessed
+  t += 2 * 86_400_000;
+  expect(p.has("C1", String(due + 3))).toBe(false);
   expect(postedMessage({ content: [{ type: "text", text: '{"channel":"C3","ts":"2.2","text":"see https://x.slack.com/archives/C1/p1700000000123456"}' }] })).toEqual({ channel: "C3", ts: "2.2" }); // echoed text is not the answer
   expect(postedMessage({ content: [{ type: "text", text: "Sent https://x.slack.com/archives/C1/p1700000000123456" }] })).toEqual({ channel: "C1", ts: "1700000000.123456" });
   expect(postedMessage({ content: [{ type: "text", text: '{"channel":"C2","ts":"1.2"}' }] })).toEqual({ channel: "C2", ts: "1.2" });

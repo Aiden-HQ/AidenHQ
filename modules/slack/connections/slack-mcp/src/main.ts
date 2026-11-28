@@ -8,7 +8,7 @@ import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { servedTool, type Ask } from "./admission.js";
 import { interceptReactionSearch } from "./reactions.js";
 import { connectScopes, READ_SCOPES, slackAnswer, upstreamArgs, WRITE_SCOPES } from "./slack.js";
-import { postedMessage, postedStore, POSTING_TOOLS } from "./posted.js";
+import { postAt, postedMessage, postedStore, POSTING_TOOLS } from "./posted.js";
 import { relay } from "./relay.js";
 import { oauth } from "./vendor/oauth.js";
 import { createVendorProxy } from "./vendor/proxy.js";
@@ -74,10 +74,14 @@ const http = createVendorProxy({
   stateDir,
   hooks: {
     args: (name, args) => {
-      // What an agent posts as the owner comes back as an owner-authored event: remember its words before the call (posted.ts), so it
-      // is never attested, even if Slack delivers it before the answer returns or a scheduled one arrives later.
+      // What an agent posts as the owner comes back as an owner-authored event: remember it before the call (posted.ts), so it is
+      // never attested: by its words while the send is in flight, by its due time if scheduled; its ts once Slack answers.
       const channel = args.channel_id ?? args.channel, text = args.message ?? args.text;
-      if (POSTING_TOOLS.has(name) && typeof channel === "string" && typeof text === "string") posted.recordText(channel, text);
+      if (POSTING_TOOLS.has(name) && typeof channel === "string") {
+        if (typeof text === "string") posted.sending(channel, text);
+        const due = name === "slack_schedule_message" ? postAt(args.post_at) : undefined;
+        if (due) posted.scheduled(channel, due);
+      }
       return upstreamArgs(name, args);
     },
     result: (result, name) => {
