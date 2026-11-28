@@ -12,6 +12,8 @@ import { TdError, type TdClient } from "./td.js";
 /** How long a chat stays forwarded while muted after the kernel last touched it (the connector never learns a task closed). */
 export const WATCH_MS = 48 * 3_600_000;
 const CONTEXT_BUDGET_MS = 8_000;
+/** Bounds one TDLib call (invoke has no timeout of its own): the call is abandoned, not cancelled. */
+const within = <T>(p: Promise<T>, ms: number): Promise<T> => Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new TdError(504, "Telegram did not answer in time")), Math.max(ms, 1)).unref())]);
 export const EMOJI: Record<string, string> = { eyes: "👀" };
 // A link's url may hold one level of balanced parentheses (Wikipedia's `Mercury_(planet)`).
 const LINK = /\[([^\]\n]+)\]\((https?:\/\/(?:[^\s()]|\([^\s()]*\))+)\)/g;
@@ -58,7 +60,7 @@ export function createSummon(d: { td: () => TdClient | undefined; store: Store; 
     if (d.settings.exclude.has(id)) return reply(403, { error: "this chat is excluded" });
     const td = d.td();
     if (!td) return reply(503, { error: "Telegram isn't connected" });
-    const chat = await td.invoke<any>({ _: "getChat", chat_id: id });
+    const chat = await within(td.invoke<any>({ _: "getChat", chat_id: id }), CONTEXT_BUDGET_MS);
     if (chat.type?._ === "chatTypeSecret") return reply(403, { error: "secret chats aren't supported" });
     watch.run(id, now() + WATCH_MS);
     return { id, td };
@@ -67,6 +69,7 @@ export function createSummon(d: { td: () => TdClient | undefined; store: Store; 
   async function context(b: any): Promise<Reply> {
     const c = await chatOf(b);
     if ("status" in c) return c;
+    const until = now() + CONTEXT_BUDGET_MS; // one deadline for the history pages and the sender names (an id when time is out)
     const n = Number.isInteger(b?.n) && b.n > 0 ? Math.min(b.n, 100) : 20;
     let from = 0;
     if (b?.before !== undefined) {
@@ -76,10 +79,12 @@ export function createSummon(d: { td: () => TdClient | undefined; store: Store; 
     }
     // TDLib may answer a page short of the limit: ask again from the oldest until n, the history ends or the budget runs out.
     const got: any[] = [];
-    const until = now() + CONTEXT_BUDGET_MS;
     while (got.length < n && now() < until) {
-      const page = await c.td.invoke<{ messages?: (any | null)[] }>({ _: "getChatHistory", chat_id: c.id, from_message_id: got.length ? got[got.length - 1].id : from, offset: 0, limit: n - got.length, only_local: false });
-      const ms = (page.messages ?? []).filter(Boolean);
+      const page = await within(c.td.invoke<{ messages?: (any | null)[] }>({ _: "getChatHistory", chat_id: c.id, from_message_id: got.length ? got[got.length - 1].id : from, offset: 0, limit: n - got.length, only_local: false }), until - now()).catch((e) => {
+        if (got.length && e instanceof TdError && e.code === 504) return undefined; // the budget ran out: the messages read so far are the context
+        throw e;
+      });
+      const ms = (page?.messages ?? []).filter(Boolean);
       if (!ms.length) break;
       got.push(...ms);
     }
@@ -87,7 +92,8 @@ export function createSummon(d: { td: () => TdClient | undefined; store: Store; 
     const nameOf = async (s: any): Promise<string> => {
       if (s?._ !== "messageSenderUser") return String(s?.chat_id ?? "");
       if (!names.has(s.user_id)) {
-        const u = await c.td.invoke<any>({ _: "getUser", user_id: s.user_id }).catch(() => undefined);
+        if (now() >= until) return String(s.user_id);
+        const u = await within(c.td.invoke<any>({ _: "getUser", user_id: s.user_id }), until - now()).catch(() => undefined);
         names.set(s.user_id, [u?.first_name, u?.last_name].filter(Boolean).join(" ") || String(s.user_id));
       }
       return names.get(s.user_id)!;
