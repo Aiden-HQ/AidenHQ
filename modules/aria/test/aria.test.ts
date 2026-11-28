@@ -49,7 +49,16 @@ test("aria_config answers every key with its default, and aria_configure propose
   assert.equal(filed.length, 1);
   await f.aria_configure!.run({ changes: { aria_optimizer_prompt: "Tidy my week, at most 2 moves a night." } }, agent);
   await assert.rejects(f.aria_configure!.run({ changes: { aria_working_hours: { mon: "9am" } } }, agent), /wouldn't work/);
-  assert.deepEqual((((await f.aria_configure!.run({ changes: { aria_stretch_hours: null } }, owner)) as any)._aidenhq.settings_change), []);
+  assert.deepEqual((((await tools().aria_configure!.run({ changes: { aria_stretch_hours: null } }, owner)) as any)._aidenhq.settings_change), []);
+});
+
+test("a second agent change builds on the first one still waiting to apply, not on the startup settings", async () => {
+  const filed: any[] = [];
+  const t = tools({ filed });
+  await t.aria_configure!.run({ changes: { aria_working_hours: { sat: "10:00-12:00" } } }, agent);
+  await t.aria_configure!.run({ changes: { aria_working_hours: { sun: "10:00-12:00" } } }, agent);
+  assert.deepEqual([filed[1][0].value.sat, filed[1][0].value.sun], ["10:00-12:00", "10:00-12:00"]);
+  assert.equal(((await t.aria_config!.run({}, owner)) as any).settings.aria_working_hours.sat, "10:00-12:00");
 });
 
 test("prefill: four weeks of meetings give hours covering at least 90% of them", () => {

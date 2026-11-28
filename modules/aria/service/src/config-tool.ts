@@ -26,13 +26,17 @@ export function applyChange(current: unknown, change: unknown, key: Key): unknow
 }
 
 export function configTools(d: Deps): Tool[] {
+  // What this process has filed for an agent and the instance has not yet applied (the service runs on the settings it started with,
+  // until the apply recreates it): a second change builds on the first, never on the startup snapshot.
+  const filed: Partial<Record<Key, unknown>> = {};
+  const current = () => ({ ...d.settings(), ...filed });
   return [
     {
       name: "aria_config", roles: ["aria-admin"],
       description: "Aria's settings as the owner has them (working hours, stretch hours, blocking calendars, preferences, the nightly tidy-up prompt), their defaults, any problems, the owner's time zone, the owner's own organisation domain (their team) and the proposal Aria last saved from reading their calendar.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       run: async () => {
-        const settings = d.settings();
+        const settings = current();
         return {
           settings, defaults: DEFAULTS, problems: problems(settings), timezone: d.env.timezone, time_format: d.env.time_format,
           owner_team_domain: teamDomainOf(d.env.owner_email) ?? null,
@@ -46,20 +50,22 @@ export function configTools(d: Deps): Tool[] {
       inputSchema: { type: "object", properties: { changes: { type: "object" } }, required: ["changes"], additionalProperties: false },
       run: async (a, caller) => {
         if (!isMap(a.changes) || !Object.keys(a.changes).length) throw new Error("say what to change: { changes: { <setting>: <value> } }");
-        const current = d.settings(), out: Dict[] = [], summary: string[] = [];
+        const now = current(), out: Dict[] = [], summary: string[] = [];
         for (const [k, v] of Object.entries(a.changes)) {
           if (!(KEYS as readonly string[]).includes(k)) throw new Error(`there is no setting ${k.slice(0, 40)} (${KEYS.join(", ")})`);
-          const key = k as Key, next = applyChange(current[key], v, key);
+          const key = k as Key, next = applyChange(now[key], v, key);
           const bad = problem(key, next);
           if (bad) throw new Error(`that wouldn't work: ${bad}`);
-          if (JSON.stringify(next) === JSON.stringify(current[key])) continue;
+          if (JSON.stringify(next) === JSON.stringify(now[key])) continue;
           out.push({ kind: "setting", key, value: next });
           summary.push(`${key} changed`);
         }
         if (!out.length) return { changes: ["no changes"], _aidenhq: { settings_change: [] } };
         // The owner's own call (the Aria page) only proposes: the board shows it and files it on his Save.
         if (caller.kind === "owner") return { changes: summary, _aidenhq: { settings_change: out } };
-        return { filed: await d.file(out, caller.assertion ?? ""), changes: summary };
+        const answer = await d.file(out, caller.assertion ?? "");
+        for (const o of out) filed[o.key as Key] = o.value;
+        return { filed: answer, changes: summary };
       },
     },
     {

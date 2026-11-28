@@ -64,6 +64,8 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
   // so a Save pressed right after the last keystroke carries it.
   const inflight = useRef(new Set<Promise<unknown>>());
   const newest = useRef<Proposal | null | undefined>(undefined);
+  const calls = useRef(0);
+  const proposedSeq = useRef(0);
   const [saving, setSaving] = useState(false);
   const [said, setSaid] = useState("");
   // A page proposes from the settings as applied, so a proposal built while another change to the same settings is still under way
@@ -141,15 +143,25 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
         return answer(m, { result: {} });
       }
       if (m.method !== "tools/call") return; // ui/notifications/initialized needs nothing; anything else isn't offered
-      const call = api.viewCall(id!, String(m.params?.name ?? ""), m.params?.arguments).catch((err: Error) => {
-        if (err instanceof SignInRequired) onSignIn();
-        return { error: { code: -32000, message: err.message } };
-      }) as Promise<{ result?: unknown; error?: { code?: number; message?: string } }>;
-      inflight.current.add(call);
-      const r = await call.finally(() => inflight.current.delete(call));
-      // A settings change the tool proposed: shown on the bar below, saved only by the owner's click (/save checks it).
-      const changes = (r.result as { structuredContent?: { _aidenhq?: { settings_change?: unknown } } } | undefined)?.structuredContent?._aidenhq?.settings_change;
-      if (live && Array.isArray(changes)) changes.length ? (newest.current = { changes: changes as Proposal["changes"] }, setProposal(newest.current), setSaid("")) : (newest.current = null, setProposal(null)); // an explicit empty proposal (every edit put back) clears the bar
+      // The calls run side by side, each numbered as it arrives: a proposal counts only if no later call's proposal has landed, so the
+      // newest edit wins however the answers are ordered, and a Save waits for every call, answer applied, before it sends.
+      const seq = ++calls.current;
+      const work = (async () => {
+        const res = (await api.viewCall(id!, String(m.params?.name ?? ""), m.params?.arguments).catch((err: Error) => {
+          if (err instanceof SignInRequired) onSignIn();
+          return { error: { code: -32000, message: err.message } };
+        })) as { result?: unknown; error?: { code?: number; message?: string } };
+        // A settings change the tool proposed: shown on the bar below, saved only by the owner's click (/save checks it).
+        const changes = (res.result as { structuredContent?: { _aidenhq?: { settings_change?: unknown } } } | undefined)?.structuredContent?._aidenhq?.settings_change;
+        if (live && Array.isArray(changes) && seq > proposedSeq.current) {
+          proposedSeq.current = seq;
+          // An explicit empty proposal (every edit put back) clears the bar.
+          if (changes.length) { newest.current = { changes: changes as Proposal["changes"] }; setProposal(newest.current); setSaid(""); } else { newest.current = null; setProposal(null); }
+        }
+        return res;
+      })();
+      inflight.current.add(work);
+      const r = await work.finally(() => inflight.current.delete(work));
       if (live && loads.current <= 1) answer(m, r.error ? { error: { code: r.error.code ?? -32000, message: String(r.error.message ?? "failed") } } : { result: r.result });
     }
     window.addEventListener("message", onMessage);

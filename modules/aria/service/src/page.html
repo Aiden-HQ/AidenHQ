@@ -63,12 +63,13 @@
   const section = (n, title, summary, ...kids) => h("div", { className: `card sc h${n}` }, h("div", { className: "top" }, h("div", { className: "who" }, h("div", { className: "name", textContent: title }), summary ? h("div", { className: "sum", textContent: summary }) : null)), ...kids);
 
   // The proposal: every setting's draft, whole; the tool leaves out what equals the saved value, so the board's bar holds exactly what differs.
+  // Every edit is sent at once (the board numbers them and keeps the newest, and its Save waits for them all), never queued behind an answer.
+  let okRev = 0;
   function propose() {
     const sent = structuredClone(draft), rev = ++sentRev;
-    inOrder(async () => {
-      try { await tool("aria_configure", { changes: sent }); lastGood = sent; say(Object.keys(sent).some((k) => !eq(sent[k], cfg.settings[k])) ? "Changes are proposed: Save in the bar above applies them." : ""); }
-      catch (e) { if (rev === sentRev) { draft = structuredClone(lastGood); redraw(); } say(e.message, true); }
-    });
+    tool("aria_configure", { changes: sent }).then(
+      () => { if (rev > okRev) { okRev = rev; lastGood = sent; } if (rev === sentRev) say(Object.keys(sent).some((k) => !eq(sent[k], cfg.settings[k])) ? "Changes are proposed: Save in the bar above applies them." : ""); },
+      (e) => { if (rev === sentRev) { draft = structuredClone(lastGood); redraw(); } say(e.message, true); });
   }
   const set = (key, value, live) => { draft[key] = value; if (!live) soon(redraw); propose(); };
   const patch = (key, p, live) => set(key, { ...draft[key], ...p }, live);
