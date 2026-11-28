@@ -256,3 +256,21 @@ Complex asks checked against the toolkit:
 - holds then release.
 
 Each is either one `find_times` call, or `free_busy` plus model planning followed by `check_times`.
+
+## Settings cut to what most people use (owner, 2026-11-28)
+
+Aria's page keeps five settings:
+- working hours per weekday;
+- stretch hours;
+- blocking calendars;
+- free-text preferences ("In your words");
+- the nightly tidy-up instructions.
+
+Removed:
+- call windows; default durations; buffer, travel buffer, minimum notice and daily cap;
+- other people's assumed hours (fixed at 09:00–18:00, stretch 06:00–22:00);
+- VIPs; team domains (derived from the owner's domain);
+- follow-up timings (fixed: one nudge after 24 h, give up after 5 days).
+
+Anything else the owner wants goes in "In your words" or the ask. The calendar tools keep their optional args, so Aria can
+honour such a request.
