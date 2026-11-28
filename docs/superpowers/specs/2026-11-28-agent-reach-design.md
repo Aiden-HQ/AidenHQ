@@ -116,3 +116,35 @@ How to reach Aria
 
 - Exact field names. Persona avatar handling. Poller query vs the Gmail history API (start with a query and a cursor).
 - How the board card links to each module's settings and secret map.
+
+## Settled after Codex review (2026-11-28)
+
+1. **Authorship is kept per message, end to end.** That covers filing, debounce, Aiden's handoff and the reviewer card.
+   - A non-owner opening is never posted as owner-typed, and the reviewer is told who wrote each line.
+   - `to_agent` is honoured only from the attested connector for that connection, and only for an agent on the
+     reachable roster.
+   - Test: a stranger's DM followed by an owner message.
+2. **Each conversation stores a connector-owned entry-point id**, e.g. `slack:bot`, `slack:app:<id>` or
+   `gmail:<account>:<alias>`. It's copied into the reviewed reply record and used for context, react, reply and retry.
+   - For Gmail, the anchor message, the account, the verified alias and the exact reply-all recipients are frozen
+     before review. A Cc added during review never widens the audience.
+3. **Every outbound Gmail write gets durable provenance**, including `gmail_send`.
+   - An ambiguous timeout is reconciled against it before any retry.
+   - Echoes are dropped before owner attestation, so an agent's own send never comes back as the owner's words.
+4. **Slack messages are classified before dedupe.** `message` and `app_mention` share `channel:ts`, so classification
+   decides one event per message.
+   - The precedence is the same live and on replay: owner command DM, then bound channel, then addressed bot, then a
+     plain event.
+   - Only an addressed opening creates a task. Later unnamed lines in that DM go to the agent that's already active.
+   - Kept: the bound-channel rate limit and the `noteTask()` link for channel memory. Existing thread tasks get a fresh
+     start, per the owner's no-migration rule.
+5. **One consumer per Gmail message.** One account-scoped scan classifies mail for an agent's address before Intake
+   sees it.
+   - It dedupes by message id, durably, and advances the cursor after the kernel accepts the event.
+   - The scan includes the owner's sent mail, for summons, and keeps group deliveries that the `List-Id` filter would
+     drop.
+   - The card's "your chats" line names email only where the owner has an agent address to cc.
+6. **One installation record per Slack app.** The board list and the socket workers are derived from it.
+   - The token pair's app and workspace are validated, and duplicates, including the instance app, are rejected.
+   - On rotation, the old consumer stops before the new one starts.
+   - The card shows reachability from real installation state, so a basic-tier install advertises no bot.
