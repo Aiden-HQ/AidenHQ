@@ -383,21 +383,25 @@ async function ownerUserId() {
 /** One of setup's log tasks (the kernel's directory, from the grants table): an agent holds it, but it is a log, not work. */
 const isLogTask = (i: Json) => (cx().dir.log_tasks ?? []).some((x: Json) => x === i.id || x === i.identifier);
 
-/** One of the user's own tasks: assigned to them, or theirs to answer for. */
-async function isUsersTask(id: Json) {
+/** One of the user's own tasks (assigned to them, or theirs to answer for): the task, else undefined. */
+async function usersTask(id: Json) {
   const owner = await ownerUserId();
   const p = await api("GET", `/api/issues/${issueRef(id)}`);
-  return Boolean(owner) && (p.assigneeUserId === owner || p.responsibleUserId === owner);
+  return owner && (p.assigneeUserId === owner || p.responsibleUserId === owner) ? p : undefined;
 }
 
-/** The calling agent's own part of one of the user's tasks: a sub-task the owner gave it. */
-async function isOwnPart(issue: Json) {
-  if (!issue.parentId || !issue.assigneeAgentId) return false;
+/**
+ * The calling agent's own part of one of the user's tasks (a sub-task the owner gave it): `open` while that task is open,
+ * `closed` once the user closed it (nobody waits on the part any more), else undefined.
+ */
+async function ownPart(issue: Json): Promise<"open" | "closed" | undefined> {
+  if (!issue.parentId || !issue.assigneeAgentId) return undefined;
   const me = (await api("GET", "/api/agents/me")).id;
   // A task an agent filed (another agent's delegation, or this agent's own follow-up) is the agent's to
-  // finish: done closes it. Only a part the owner gave this agent stays open for the owner's replies.
-  if (issue.createdByAgentId) return false;
-  return me === issue.assigneeAgentId && (await isUsersTask(issue.parentId));
+  // finish: done closes it. Only a part the owner gave this agent stays open for the owner's replies, while their task is open.
+  const parent = issue.createdByAgentId || me !== issue.assigneeAgentId ? undefined : await usersTask(issue.parentId);
+  if (!parent) return undefined;
+  return ["done", "cancelled"].includes(String(parent.status ?? "")) ? "closed" : "open";
 }
 
 async function findByMarker(marker: string, statuses = OPEN_STATUSES) {
@@ -1507,7 +1511,7 @@ const TOOLS: Record<string, Tool> = {
     run: async ({ parent, title, description }: Args) => {
       if (!COMPANY()) throw new Error("no company for this agent");
       const p = await api("GET", `/api/issues/${issueRef(parent)}`);
-      if (!(await isUsersTask(p.id))) throw new Error("the parent must be one of the user's tasks");
+      if (!(await usersTask(p.id))) throw new Error("the parent must be one of the user's tasks");
       const me = await api("GET", "/api/agents/me");
       const q = new URLSearchParams({ parentId: p.id, status: `${OPEN_STATUSES},done,cancelled`, limit: "50" });
       const kids = await api("GET", `/api/companies/${encodeURIComponent(COMPANY())}/issues?${q}`);
@@ -1772,15 +1776,18 @@ const TOOLS: Record<string, Tool> = {
       if (!owner) throw new Error("could not determine the task owner");
       // Read the task before posting any part of the comment: a settler's refusal must leave no trace on it.
       const current = await api("GET", `/api/issues/${issueRef(issue)}`);
-      const ownPart = await isOwnPart(current);
+      const part = await ownPart(current);
+      // The user closed their task: nobody waits on this part any more, so it is finished or cancelled, never handed back.
+      if (part === "closed") throw new Error(`Refused: the user closed the task ${current.identifier ?? current.id} is part of, so nobody waits on it any more. Finish it with task_finish, or cancel it with task_cancel.`);
+      const isOwn = part === "open";
       // A closed part is not handed off: the handoff would post its comment and then move the task to `todo`, reopening work
       // the owner already closed. Refuse before the comment, naming the paths a closed task has.
-      if (ownPart && ["done", "cancelled"].includes(String(current.status ?? ""))) {
+      if (isOwn && ["done", "cancelled"].includes(String(current.status ?? ""))) {
         throw new Error(`Refused: ${current.identifier ?? current.id} is ${current.status}, and a handoff moves your part to todo, which would reopen it. Leave it closed, file a new task for anything still wanted, or comment on it with task_comment.`);
       }
       // A fleet settler never reaches the owner through a handoff: its part of the user's task is the one thing it hands
       // off, and anything else it settles itself (or routes to the agent that does the work).
-      if (!ownPart && grant().roles.includes(SETTLE)) {
+      if (!isOwn && grant().roles.includes(SETTLE)) {
         // Name only the paths this task actually has: a closed task takes none of them (a settler moves open work only,
         // and task_route refuses a closed task), a settler's finish on another agent's task waits for `in_review`, and
         // a task no agent filed (the owner's own) takes no status change at all.
@@ -1799,13 +1806,13 @@ const TOOLS: Record<string, Tool> = {
       }
       // A settler's own part is handed off on the task this run is working on: the wait is recorded on the run's task, so
       // another part would go to `todo` with no wait and the idle sweep would pick it up again.
-      if (ownPart && current.id !== CURRENT() && grant().roles.includes(SETTLE)) {
+      if (isOwn && current.id !== CURRENT() && grant().roles.includes(SETTLE)) {
         throw new Error(`Refused: your part of the user's task is handed off on the task this run is working on; ${current.identifier ?? current.id} is another task. End this run's own part, or comment on that one with task_comment.`);
       }
       const body = await postLeadingParts(issue, comment);
       // The crew: an agent's sub-task on the user's task stays the agent's, as `todo` (a valid
       // ending for Paperclip, unlike in_progress), so the user's next comment there wakes it again.
-      if (ownPart) {
+      if (isOwn) {
         // The owner can close the part while this comment posts, and the board has no conditional update (the kernel's
         // closed-task guard covers `settleScope` only, and an owner-made part is not in it). So read the status again
         // right before the write: a part closed meanwhile stays closed, and only the report it already posted stands.
@@ -1917,7 +1924,7 @@ const TOOLS: Record<string, Tool> = {
     },
   },
   task_finish: {
-    description: "Mark a task done, with a summary comment: the task this run is working on, another task assigned to you (a fleet settler: an agent-filed task waiting in review), or an owner task you filed (or made a part of; a fleet settler: any agent-filed owner task) once its source shows it finished (skill owner-triage): the comment cites the evidence (the link to the owner's reply, the delivery, the merged PR, or the task that supersedes it), and the close shows on the owner's Home with one-tap Reopen. Not your part of the owner's task: it stays open for their replies, so finish it with `task_handoff` when it is this run's task; a different one named with `issue` takes a `task_comment` instead (a named handoff does not record the owner wait).",
+    description: "Mark a task done, with a summary comment: the task this run is working on, another task assigned to you (a fleet settler: an agent-filed task waiting in review), or an owner task you filed (or made a part of; a fleet settler: any agent-filed owner task) once its source shows it finished (skill owner-triage): the comment cites the evidence (the link to the owner's reply, the delivery, the merged PR, or the task that supersedes it), and the close shows on the owner's Home with one-tap Reopen. Not your part of the owner's open task: it stays open for their replies, so finish it with `task_handoff` when it is this run's task; a different one named with `issue` takes a `task_comment` instead (a named handoff does not record the owner wait).",
     inputSchema: { type: "object", properties: { issue: { type: "string", description: "a task assigned to you, or an owner task you filed (with its evidence); default: the current task" }, comment: { type: "string" } }, required: ["comment"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ issue, comment }: Args) => {
@@ -1925,7 +1932,7 @@ const TOOLS: Record<string, Tool> = {
       if (!target) throw new Error("no current task");
       // Your part of the user's task stays open for their replies.
       const current = issue ? await requireHeld(issue) : await api("GET", `/api/issues/${issueRef(CURRENT())}`);
-      if (await isOwnPart(current)) throw new Error("this is your part of the user's task: it stays open for their replies. Finish with task_handoff instead; the user closes the task.");
+      if ((await ownPart(current)) === "open") throw new Error("this is your part of the user's task: it stays open for their replies. Finish with task_handoff instead; the user closes the task.");
       const leading = await postLeadingParts(target, comment);
       // An owner task an agent filed closes on its evidence, labelled so the owner's Home shows the close.
       return brief(await patchIssue(target, { status: "done", comment: leading, ...(ownerFiled(current) ? { labelIds: await withAutoClosed(current) } : {}) }));
@@ -1952,14 +1959,14 @@ const TOOLS: Record<string, Tool> = {
     },
   },
   task_cancel: {
-    description: "Cancel a task that is no longer needed, with a `comment` saying why: the current run's task, or with `issue` another task assigned to you or one you delegated (a fleet settler: an agent-filed task, stale or superseded); an owner task you filed that duplicates another says `Duplicate of <identifier>` (skill owner-triage). Only a task you filed, one assigned to you, or (a fleet settler) any agent-filed stale or superseded task can be cancelled: a task the owner created and holds themselves is not yours. Your part of the owner's task stays open for their replies: finish it with task_handoff.",
+    description: "Cancel a task that is no longer needed, with a `comment` saying why: the current run's task, or with `issue` another task assigned to you or one you delegated (a fleet settler: an agent-filed task, stale or superseded); an owner task you filed that duplicates another says `Duplicate of <identifier>` (skill owner-triage). Only a task you filed, one assigned to you, or (a fleet settler) any agent-filed stale or superseded task can be cancelled: a task the owner created and holds themselves is not yours. Your part of the owner's open task stays open for their replies: finish it with task_handoff (once the owner closed their task, finish or cancel your part).",
     inputSchema: { type: "object", properties: { issue: { type: "string", description: "a task you filed, one assigned to you, or (a fleet settler) any agent-filed stale or superseded task; default: the current task" }, comment: { type: "string" } }, required: ["comment"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async ({ issue, comment }: Args) => {
       const target = issue ?? CURRENT();
       if (!target) throw new Error("no current task");
       const t = issue ? await requireHeld(issue) : await api("GET", `/api/issues/${issueRef(CURRENT())}`);
-      if (await isOwnPart(t)) throw new Error("this is your part of the user's task: it stays open for their replies. Finish with task_handoff instead; the user closes the task.");
+      if ((await ownPart(t)) === "open") throw new Error("this is your part of the user's task: it stays open for their replies. Finish with task_handoff instead; the user closes the task.");
       const leading = await postLeadingParts(target, comment);
       return brief(await patchIssue(target, { status: "cancelled", comment: leading, ...(issue && ownerFiled(t) ? { labelIds: await withAutoClosed(t) } : {}) }));
     },

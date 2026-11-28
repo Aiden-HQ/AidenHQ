@@ -6,11 +6,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { bridge, waits } from "./helpers.ts";
 
-async function call(tool, args, createdByAgentId, status = "in_progress", roles = []) {
+async function call(tool, args, createdByAgentId, status = "in_progress", roles = [], parentStatus = "todo") {
   const patches = [];
   const issues = {
     cur: { id: "cur", identifier: "WOR-2", title: "Follow up the review", status, parentId: "par", assigneeAgentId: "me", createdByAgentId },
-    par: { id: "par", identifier: "WOR-1", title: "Ship the schema", status: "todo", assigneeUserId: "owner", assigneeAgentId: null },
+    par: { id: "par", identifier: "WOR-1", title: "Ship the schema", status: parentStatus, assigneeUserId: "owner", assigneeAgentId: null },
   };
   const handler = (req, res) => {
     let body = "";
@@ -93,6 +93,19 @@ test("a part the owner gave the agent still stays open for the owner's replies",
   const { error, patches } = await call("task_finish", { comment: "Done." }, null);
   assert.match(error, /your part of the user's task/);
   assert.deepEqual(patches, []);
+});
+
+test("once the owner closes their task, the agent's part of it is finished or cancelled, never handed back", async () => {
+  // The owner's own parent: its part, parked on their reply, is the agent's to close once nobody waits on it.
+  for (const [tool, status] of [["task_finish", "done"], ["task_cancel", "cancelled"]]) {
+    const { error, patches } = await call(tool, { comment: "The owner closed the task." }, null, "backlog", [], "done");
+    assert.equal(error, undefined);
+    assert.deepEqual(patches, [{ issue: "cur", status, comment: "The owner closed the task." }]);
+  }
+  const before = waits.length;
+  const { error, patches } = await call("task_handoff", { issue: "cur", comment: "Over to you." }, null, "backlog", [], "cancelled");
+  assert.match(error, /the user closed the task WOR-2 is part of.*task_finish.*task_cancel/);
+  assert.deepEqual([patches, waits.length], [[], before]);
 });
 
 test("a handoff whose wait the kernel refuses says so, so the agent can record the wait itself", async () => {

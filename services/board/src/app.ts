@@ -679,7 +679,10 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       ownComments.set(part.id, { stamp, at });
       return at;
     };
-    const leftover = await partsToClose(open, known, ctx.assignees, ownCommentAt);
+    // A parked part's kernel state says whether it waits on an answer (waitsOnItsOwn).
+    const parked = open.filter((i) => i.parentId && crew(i) && (i.status === "backlog" || i.status === "blocked") && closedIssue(known.get(i.parentId) ?? i));
+    const states = await statesOf(taskStates, parked.map((i) => i.id));
+    const leftover = await partsToClose(open, known, ctx.assignees, ownCommentAt, states);
     if (!leftover.length) return open;
     const busy = (await working(ctx)).map;
     const gone = new Set<string>();
@@ -2449,7 +2452,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // Done or cancelled closes the crew's open parts too, except one an agent is busy with or one waiting on its own trigger.
         if ((update.status === "done" || update.status === "cancelled") && issue.assigneeUserId === ctx.me) {
           const [kids, busy] = await Promise.all([pc.children(issue.id), working(ctx)]);
-          const open = kids.filter((k) => !["done", "cancelled"].includes(k.status) && !waitsOnItsOwn(k) && !busy.map.has(k.identifier) && ctx.assignees.some((a) => a.kind !== "me" && a.key === k.assigneeAgentId));
+          const states = await statesOf(taskStates, kids.filter((k) => k.status === "backlog" || k.status === "blocked").map((k) => k.id));
+          const open = kids.filter((k) => !["done", "cancelled"].includes(k.status) && !waitsOnItsOwn(k, states.get(k.id)) && !busy.map.has(k.identifier) && ctx.assignees.some((a) => a.kind !== "me" && a.key === k.assigneeAgentId));
           for (const k of open) await pc.updateIssue(k.id, { status: update.status });
         }
         return issueView(issue.id);

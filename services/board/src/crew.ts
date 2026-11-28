@@ -48,8 +48,12 @@ export function foldedChildren(issues: Issue[], assignees: Assignee[]): Map<stri
   return out;
 }
 
-/** A part waiting on its own trigger: `backlog` and `blocked` are open, but the task's close doesn't release them. */
-export const waitsOnItsOwn = (part: Issue) => part.status === "backlog" || part.status === "blocked";
+/**
+ * A part waiting on its own trigger: `backlog` and `blocked` are open, but the task's close doesn't release them. A part
+ * parked on an answer to its question (`state.wait_since`: the kernel parks a wait in backlog) is not: the closed task is
+ * what it asked about, so nobody will answer it.
+ */
+export const waitsOnItsOwn = (part: Issue, state: { wait_since?: string } | undefined) => (part.status === "backlog" || part.status === "blocked") && !state?.wait_since;
 
 /**
  * Crew parts left open on a task closed somewhere other than the board (a scout's "Answered in Telegram",
@@ -58,18 +62,19 @@ export const waitsOnItsOwn = (part: Issue) => part.status === "backlog" || part.
  * the task closed (a comment of theirs there reopens it) stays open; an agent's reply that lands after the
  * close (a run still going when the PR merged, PEN-3516) doesn't keep it. A part parked on its own trigger
  * (`waitsOnItsOwn`) is never the parent's to close. `parents` holds every parent the caller found; `ownCommentAt`
- * gives the time of the user's last own comment on a part.
+ * gives the time of the user's last own comment on a part; `states` the kernel's state of each parked part.
  */
 export async function partsToClose(
   open: Issue[],
   parents: Map<string, Issue>,
   assignees: Assignee[],
   ownCommentAt: (part: Issue) => Promise<string | undefined>,
+  states: Map<string, { wait_since?: string }>,
 ): Promise<{ part: Issue; status: "done" | "cancelled" }[]> {
   const out: { part: Issue; status: "done" | "cancelled" }[] = [];
   for (const part of open) {
     const parent = part.parentId ? parents.get(part.parentId) : undefined;
-    if (!parent || !crewAgent(part, assignees) || waitsOnItsOwn(part) || (parent.status !== "done" && parent.status !== "cancelled")) continue;
+    if (!parent || !crewAgent(part, assignees) || waitsOnItsOwn(part, states.get(part.id)) || (parent.status !== "done" && parent.status !== "cancelled")) continue;
     const closedAt = (parent.status === "done" ? parent.completedAt : parent.cancelledAt) ?? parent.updatedAt;
     if ((part.lastActivityAt ?? part.updatedAt) > closedAt && ((await ownCommentAt(part)) ?? "") > closedAt) continue;
     out.push({ part, status: parent.status });
