@@ -5,8 +5,9 @@
 //
 // It needs no key and touches no machine: the container is the host, and the argv runs there directly rather than over the
 // module's Connection. The container has no network at all (`--network none`), so the only apt source is a repository the script
-// builds inside it. Where no container runtime is available the test is skipped, so a bare `bun run test` still runs; in CI it fails
-// instead of skipping, because a smoke test that silently never runs is not the test §14 asks for.
+// builds inside it. Where no container runtime is available, or the pinned image is not already local, the test is skipped, so a bare
+// `bun run test` stays offline-safe; in CI it fails instead of skipping, because a smoke test that silently never runs is not the test
+// §14 asks for.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -37,6 +38,11 @@ function runtime(): string | undefined {
   return undefined;
 }
 
+/** Whether the pinned image is already local: an offline `bun run test` must not make the runtime pull it. */
+function imagePresent(bin: string): boolean {
+  try { execFileSync(bin, ["image", "inspect", IMAGE], { stdio: "ignore" }); return true; } catch { return false; }
+}
+
 /** The argv as the host's shell receives it: each word quoted, joined with single spaces (ssh.ts quoteWords). */
 const line = (argv: string[]) => quoteWords(argv).join(" ");
 
@@ -51,11 +57,16 @@ function section(out: string, name: string): string {
 
 const bin = runtime();
 const required = process.env.CI === "true" || process.env.CI === "1";
+const haveImage = bin ? imagePresent(bin) : false;
 
 test("§14 live smoke: the exact UPDATE_ARGV and installCommand run against real apt on a throwaway Ubuntu container", {
-  skip: bin ? false : required
-    ? false
-    : "no container runtime (docker or podman) on PATH: the live apt smoke test needs one to start a throwaway Ubuntu container",
+  skip: bin
+    ? !haveImage && !required
+      ? `the pinned image ${IMAGE} is not local: pull it first (docker pull ${IMAGE}) to run the live apt smoke test offline`
+      : false
+    : required
+      ? false
+      : "no container runtime (docker or podman) on PATH: the live apt smoke test needs one to start a throwaway Ubuntu container",
   timeout: 150_000,
 }, () => {
   assert.ok(bin, "a container runtime is required in CI: the modules/server-manager job must run this test, not skip it");
@@ -143,12 +154,12 @@ test("§14 live smoke: the exact UPDATE_ARGV and installCommand run against real
     };
     // What the module's own read yields on real apt: no estimate, so the gate refuses rather than guess the space. This is the
     // defect the separate fix addresses; the test records it rather than papering over it with a made-up zero.
-    const refused = verifyPatch(rec, { ...fresh, downloaded_bytes: downloadEstimate(sim), audit: auditClean });
+    const refused = verifyPatch(rec, { ...fresh, downloaded_bytes: downloadEstimate(sim), audit: { code: 0, stdout: auditClean } });
     assert.equal(refused.ok, false);
     assert.equal(refused.ok === false ? refused.code : "", "disk_unknown", "the gate refuses when apt's `-s` output carries no estimate");
-    const clean = verifyPatch(rec, { ...fresh, audit: auditClean });
+    const clean = verifyPatch(rec, { ...fresh, audit: { code: 0, stdout: auditClean } });
     assert.deepEqual(clean, { ok: true }, "given a real estimate for the exact list, the clean container passes the run's own gate");
-    const broken = verifyPatch(rec, { ...fresh, audit: auditBroken });
+    const broken = verifyPatch(rec, { ...fresh, audit: { code: 0, stdout: auditBroken } });
     assert.equal(broken.ok, false);
     assert.equal(broken.ok === false ? broken.code : "", "dpkg_broken", "the run refuses a host whose dpkg --audit is not empty");
 

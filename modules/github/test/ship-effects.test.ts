@@ -22,7 +22,7 @@ const listen = (handler) => new Promise((ok) => { const s = createServer(handler
 const REPO = "acme-agents/widget";
 const SHIP = { kind: "module", module: "ship", roles: [] };
 
-async function setup(t, { generation = 2, queue = {}, asyncMerge = { put: () => ({ status: 202, body: { status: "pending", details: { uuid: "u-d" } } }), get: () => ({ status: 200, body: { status: "enqueued", details: {} } }) }, app = true, appOps = ["pr"], appTokens = undefined, toolsDir = false, fleetOrg = "acme-agents", listed = [], connected = () => true, reviewGate = async () => undefined, queueRead = () => undefined, signedBranches = () => false, baseAhead = false } = {}) {
+async function setup(t, { generation = 2, queue = {}, asyncMerge = { put: () => ({ status: 202, body: { status: "pending", details: { uuid: "u-d" } } }), get: () => ({ status: 200, body: { status: "enqueued", details: {} } }) }, app = true, appOps = ["pr"], appTokens = undefined, toolsDir = false, fleetOrg = "acme-agents", listed = [], connected = () => true, reviewGate = async () => undefined, queueRead = () => undefined, signedBranches = () => false, classicSigned = () => false, baseAhead = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "ship-effects-"));
   const origin = join(root, "github", REPO, "..", "widget.git");
   mkdirSync(origin, { recursive: true });
@@ -147,6 +147,11 @@ async function setup(t, { generation = 2, queue = {}, asyncMerge = { put: () => 
       if (path === "/graphql" && wrote.body.data?.createCommitOnBranch && body.variables.input.branch.branchName === "contrib") pr.head = wrote.body.data.createCommitOnBranch.commit.oid;
       if (path === "/graphql" && wrote.body.data?.updateRefs) for (const u of body.variables.input.refUpdates) if (u.name === "refs/heads/contrib") pr.head = u.afterOid;
       return wrote;
+    }
+    // Classic branch protection's commit-signature switch, read as the owner: a separate check from the rulesets endpoint.
+    if (method === "GET" && /\/branches\/[^/]+\/protection\/required_signatures$/.test(path)) {
+      const branch = decodeURIComponent(path.split("/branches/")[1]!.split("/protection/")[0]!);
+      return { status: 200, body: { enabled: classicSigned(branch) } };
     }
     // The asynchronous merge REST API: the one way into the queue.
     if (asyncMerge && method === "PUT" && path === `/repos/${REPO}/pulls/7/merge-async`) return asyncMerge.put(body);
@@ -331,14 +336,43 @@ test("a push that merges the base after a conflict lands as one merge commit Git
   assert.equal(pr.head, head);
 });
 
-test("a base merge whose commit GitHub didn't sign (the owner's sign-in) is refused, and the branch stays", async (t) => {
+test("a base merge made with the owner's sign-in lands unsigned where the branch accepts it", async (t) => {
   const { ws, origin, c1, run, calls } = await setup(t);
   const { done } = conflictedMerge(ws, origin);
   const args = { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: done }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 };
-  // The owner's sign-in: GitHub makes the commit but doesn't sign it, so it is never written.
+  // The owner's sign-in: GitHub makes the REST commit but doesn't sign it. `contrib` has neither a required_signatures rule nor
+  // classic signature protection, so it is accepted; before this, the App-only signature check refused every owner-token merge.
   const unsigned = await run("k-00000000000000ac", "github.push", args);
-  assert.equal(unsigned.ok, false);
-  assert.match(unsigned.text, /^ship-refused: .*GitHub didn't sign the merge commit \(unsigned\).*Nothing was pushed/, unsigned.text);
+  assert.equal(unsigned.ok, true, unsigned.text);
+  const head = sh(origin, "rev-parse", "refs/heads/contrib");
+  assert.notEqual(head, c1, "the merge is written");
+  assert.equal(sh(origin, "rev-list", "--parents", "-n", "1", head).split(" ").length, 3, "one merge commit of the head and the base");
+  // The REST commit is the owner's (no `as` mark), and the fake GitHub reports it unsigned — exactly the path that used to refuse.
+  const commits = calls.filter((c) => c.method === "POST" && c.path === `/repos/${REPO}/git/commits`);
+  assert.deepEqual(commits.map((c) => [c.as, c.body.parents]), [[undefined, [c1, sh(origin, "rev-parse", "main")]]]);
+  assert.equal(calls.filter((c) => c.path === "/graphql" && String(c.body?.query).includes("updateRefs")).length, 1, "the branch moves to the merge");
+});
+
+test("a base merge whose commit GitHub didn't sign is still refused where the branch requires signed commits", async (t) => {
+  const { ws, origin, c1, run, calls } = await setup(t, { signedBranches: () => true });
+  const { done } = conflictedMerge(ws, origin);
+  const args = { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: done }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 };
+  const refused = await run("k-00000000000000ae", "github.push", args);
+  assert.equal(refused.ok, false);
+  assert.match(refused.text, /^ship-refused: .*requires signed commits.*Nothing was pushed/, refused.text);
+  assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "the branch is unchanged");
+  assert.equal(calls.filter((c) => c.path === "/graphql" && String(c.body?.query).includes("updateRefs")).length, 0, "no ref write");
+});
+
+test("classic branch protection's required signatures also refuse the unsigned owner merge", async (t) => {
+  const { ws, origin, c1, run, calls } = await setup(t, { classicSigned: () => true });
+  const { done } = conflictedMerge(ws, origin);
+  const args = { workspace: "TASK-1", only: [{ repo: REPO, branch: "contrib", sha: done }], pr: { repo: REPO, number: 7 }, expected: c1, generation: 2 };
+  // No ruleset requires signatures, but the branch's classic protection does. The owner can bypass it, so GitHub would not refuse
+  // the unsigned REST commit: the service must read that switch and refuse before it moves the branch.
+  const refused = await run("k-00000000000000af", "github.push", args);
+  assert.equal(refused.ok, false);
+  assert.match(refused.text, /^ship-refused: .*requires signed commits.*Nothing was pushed/, refused.text);
   assert.equal(sh(origin, "rev-parse", "refs/heads/contrib"), c1, "the branch is unchanged");
   assert.equal(calls.filter((c) => c.path === "/graphql" && String(c.body?.query).includes("updateRefs")).length, 0, "no ref write");
 });

@@ -1386,7 +1386,14 @@ export function createService(o: Options) {
     const sha = String(c.body?.sha ?? "");
     const parents = ((c.body?.parents ?? []) as { sha?: unknown }[]).map((p) => String(p?.sha));
     if (!/^[0-9a-f]{40}$/.test(sha) || c.body?.tree?.sha !== wantTree || parents.length !== 2 || parents[0] !== m.head || parents[1] !== m.baseSha) return { text: refusedPush(at, `GitHub's commit \`${sha.slice(0, 12)}\` isn't the planned merge of \`${m.baseSha.slice(0, 12)}\` into \`${m.head.slice(0, 12)}\` with tree \`${wantTree.slice(0, 12)}\``) };
-    if (c.body?.verification?.verified !== true) return { text: refusedPush(at, `GitHub didn't sign the merge commit (${String(c.body?.verification?.reason ?? "no verification")}), so it isn't written`) };
+    if (c.body?.verification?.verified !== true) {
+      const why = String(c.body?.verification?.reason ?? "no verification");
+      // GitHub signs a REST commit only for the App. The owner's own sign-in (the actor chosen when the App isn't installed)
+      // gets an unsigned commit: that is acceptable where the branch doesn't require signatures, and still refused where it does.
+      // The App path keeps the strict check, because nobody else is expected to make its commits unsigned.
+      if (at.actor.kind !== "owner") return { text: refusedPush(at, `GitHub didn't sign the merge commit (${why}), so it isn't written`) };
+      if (await signedOnly(at.s.slug, at.ref)) return { text: refusedPush(at, `GitHub didn't sign the merge commit (${why}), and \`${at.ref}\` requires signed commits, so it isn't written`) };
+    }
     const repo = await gh("GET", `/repos/${at.into}`);
     if (repo.status >= 300 || !repo.body?.node_id) throw fail(502, `GitHub GET ${at.into}: ${repo.status}`);
     // The write's authority and the base it records, read once the commit is ready, right before the one write that moves the branch.
@@ -1420,17 +1427,26 @@ export function createService(o: Options) {
   }
 
   /**
-   * Whether a branch must hold signed commits: a `required_signatures` rule among the rules GitHub applies to that branch name
-   * (rulesets target patterns, so a branch not created yet has its rules too). The one answer for every push here: such a branch
-   * takes only commits GitHub makes and signs, any other a git push. Any other read GitHub doesn't answer refuses the push with its
-   * reason, never a guess.
+   * Whether a branch must hold signed commits. Two GitHub mechanisms can require them, and the owner's token can bypass classic
+   * protection, so both are checked: a `required_signatures` rule among the rulesets that apply to the branch name (rulesets target
+   * patterns, so a branch not created yet has its rules too), and classic branch protection's commit-signature setting. The one
+   * answer for every push here: such a branch takes only commits GitHub makes and signs, any other a git push. Any other read
+   * GitHub doesn't answer refuses the push with its reason, never a guess.
    */
   async function signedOnly(slug: string, branch: string): Promise<boolean> {
     const r = await gh("GET", `/repos/${slug}/rules/branches/${branch.split("/").map(encodeURIComponent).join("/")}?per_page=100`);
     // A private repository on a plan without rulesets: GitHub says no ruleset can apply to it (a 403 naming the plan), so none does.
-    if (r.status === 403 && /upgrade to github pro|make this repository public/i.test(String(r.body?.message ?? ""))) return false;
-    if (r.status >= 300 || !Array.isArray(r.body)) throw fail(409, refusedPush({ url: `${slug} \`${branch}\``, publish: true }, `GitHub didn't say whether the branch requires signed commits (its rules read: ${r.status} ${String(r.body?.message ?? "")})`));
-    return (r.body as { type?: unknown }[]).some((x) => x?.type === "required_signatures");
+    const planLimited = (x: { status: number; body?: any }) => x.status === 403 && /upgrade to github pro|make this repository public/i.test(String(x.body?.message ?? ""));
+    if (!planLimited(r)) {
+      if (r.status >= 300 || !Array.isArray(r.body)) throw fail(409, refusedPush({ url: `${slug} \`${branch}\``, publish: true }, `GitHub didn't say whether the branch requires signed commits (its rules read: ${r.status} ${String(r.body?.message ?? "")})`));
+      if ((r.body as { type?: unknown }[]).some((x) => x?.type === "required_signatures")) return true;
+    }
+    // Classic protection is a separate switch. It is read as the owner because an App installation never asks for administration,
+    // and the owner's token can bypass it: GitHub would not refuse the unsigned write for us. A 404 is an unprotected branch.
+    const p = await gh("GET", `/repos/${slug}/branches/${encodeURIComponent(branch)}/protection/required_signatures`);
+    if (p.status === 404 || planLimited(p)) return false;
+    if (p.status >= 300 || typeof p.body?.enabled !== "boolean") throw fail(409, refusedPush({ url: `${slug} \`${branch}\``, publish: true }, `GitHub didn't say whether the branch requires signed commits (its branch protection read: ${p.status} ${String(p.body?.message ?? "")})`));
+    return p.body.enabled === true;
   }
   /**
    * The ws-cache refs a publish keeps per branch (under refs/ws/, so tidy.ts prunes them with the jobs' heads): the box commit the

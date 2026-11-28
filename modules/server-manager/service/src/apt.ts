@@ -165,15 +165,30 @@ export function parseAptConfig(text: string): Map<string, string> {
   return out;
 }
 
+/** What `systemctl is-enabled` answered, or that its answer could not be understood. */
+export type UnattendedUpgrades = "on" | "off" | "unknown";
+
 /**
  * Whether unattended upgrades are actually on. The effective APT setting decides: an owner who sets
  * `APT::Periodic::Unattended-Upgrade "0"` has turned it off even while the unit is enabled and `20auto-upgrades` is still there.
  * The unit's state is only the fallback for a host whose `apt-config dump` does not carry the key.
+ *
+ * The unit probe's exit status is part of the answer. `systemctl is-enabled` exits 0 for an installed unit (enabled/static/…),
+ * and non-zero for disabled/masked *and* for a unit that is not installed; the latter prints an empty stdout and a "could not be
+ * found"/"No such file or directory" diagnostic on stderr. An absent unit is off. Any other non-zero answer is `unknown`, never
+ * `on`: a probe that failed for another reason must not become a silent skip.
  */
-export function unattendedUpgradesOn(config: Map<string, string>, unitState = ""): boolean {
+export function unattendedUpgrades(config: Map<string, string>, unit: { code: number; stdout: string; stderr?: string }): UnattendedUpgrades {
   const v = config.get("APT::Periodic::Unattended-Upgrade");
-  if (v !== undefined) return Number(v) > 0;
-  return !/^disabled|^masked|^not-found/i.test(unitState.trim());
+  if (v !== undefined) return Number(v) > 0 ? "on" : "off";
+  const state = unit.stdout.trim().toLowerCase();
+  if (/^(disabled|masked|not-found)/.test(state)) return "off";
+  if (unit.code === 0) return state ? "on" : "unknown";
+  // A unit that does not exist is not a failed probe: it is a host where this module does the patching. Only a diagnostic that
+  // names the unit as missing counts: `Failed to get unit file state ...: Access denied` is a probe that could not answer, not an
+  // absent unit, and must stay unknown.
+  if (/not[- ]?found|no such file|does not exist|could not be found/i.test(`${state} ${unit.stderr ?? ""}`)) return "off";
+  return "unknown";
 }
 
 /** What one read pass saw, as the report and the status row use it. */
@@ -188,7 +203,8 @@ export interface Readout {
   holds: string[];
   disk: { root_free_gb: number | null; boot_free_gb: number | null };
   boot_id: string;
-  unattended_upgrades: boolean;
+  /** `null` when the probe could not say whether the unit is on: not the same answer as off. */
+  unattended_upgrades: boolean | null;
   /** The one honest limit, said once: backported fixes in a normal archive are not flagged as security. */
   security_note: string;
 }
@@ -219,7 +235,7 @@ export function classify(policy: Map<string, { installed?: string; candidate?: s
 }
 
 /** The readout built from one recorded read pass (the fixtures are exactly these inputs). */
-export function readoutFrom(i: { os: OsRelease; policy: string; simulated?: string; rebootRequired: boolean; units: string; holds?: string; securityStatus?: string; freeRootGb: number | null; freeBootGb: number | null; bootId: string; unattendedUpgrades: boolean }): Readout | { unsupported: string } {
+export function readoutFrom(i: { os: OsRelease; policy: string; simulated?: string; rebootRequired: boolean; units: string; holds?: string; securityStatus?: string; freeRootGb: number | null; freeBootGb: number | null; bootId: string; unattendedUpgrades: boolean | null }): Readout | { unsupported: string } {
   const d = detect(i.os);
   if ("unsupported" in d) return d;
   const holds = parseHolds(i.holds ?? "");
