@@ -380,16 +380,21 @@ const modules = () => [
   moduleRow("apps-platform", "Runs the apps agents build, each in its own sandbox.", "dependency", { neededBy: ["engineering"] }),
   moduleRow("google", "Gmail and Calendar for every agent you grant.", "on", { connections: ["google_workspace"], setup: "google" }),
   moduleRow("ci", "Self-hosted CI runners and a code review job for your repos.", "on"),
+  moduleRow("hubspot", "Your HubSpot CRM, live and in the warehouse.", "on"),
   moduleRow("github", "Your GitHub orgs and repos, for agents and the code host.", "on", { connections: ["github"] }),
   moduleRow("owner-channel", "How the fleet reaches you.", "on"),
   // Hiring's modules (below): off until a module change for them goes live; a third-party listing is a browse row.
   ...HIRE.filter((h) => h.module !== "core").map((h) => ({ ...moduleRow(h.module, h.description, hired(h) ? "on" : "off", { agents: [h.key], requires: h.requires }), id: h.id, marketplace: h.marketplace, tier: h.browse ? "declared" : "official", browse: h.browse && !hired(h) })),
 ];
 
+// Settings the owner saved from a Settings page: filed, applying, then live (the new value shows from the next read).
+const settingMock = { filed: [] as { at: number; n: number; items: { kind: string; key?: string; value?: unknown }[] }[] };
+const settingChanges = () => settingMock.filed.map((f) => { const age = Date.now() - f.at; return { identifier: `WOR-${f.n}`, title: "Settings change", createdAt: new Date(f.at).toISOString(), items: f.items, stage: age < 1_500 ? "working" : age < 6_000 ? "applying" : "applied", tier: 2 }; });
+const applied = (key: string, value: unknown) => settingMock.filed.filter((f) => Date.now() - f.at >= 6_000).flatMap((f) => f.items).filter((i) => i.kind === "setting" && i.key === key).at(-1)?.value ?? value;
 const settingsData = () => ({
   compiled: true, owner: { name: "Alex" },
   instance: { product: "9c1496b", instance: "acme", lastChangeAt: ago(300), boardTimezone: "Asia/Dubai", node: "v24.11.0" },
-  settings: [
+  settings: ([
     { key: "owner_name", module: "kernel", title: "Your name", value: "Alex", set: true, known: true, required: true, doc: "The owner's name: handbooks say \"the owner\", and one line names them." },
     { key: "owner_email", module: "kernel", title: "Board sign-in email", value: "alex@acme.example", set: true, known: true, required: true, doc: "The owner's board account (the only one setup creates)." },
     { key: "timezone", module: "kernel", title: "Timezone", value: "Asia/Dubai", set: true, known: true, required: true, doc: "The instance's timezone (schedules and the owner's day)." },
@@ -406,11 +411,12 @@ const settingsData = () => ({
     { key: "notify_transports", module: "owner-channel", title: "Message channels", value: null, set: false, known: true, default: ["slack", "channel-telegram"], doc: "The channels a message tries, in order: the first one set up that delivers it gets it." },
     { key: "notify_fyi", module: "owner-channel", title: "FYI messages", value: null, set: false, known: true, default: "send", values: ["send", "mute"], doc: "FYI messages (news to read later): send, or mute." },
     { key: "summon", module: "kernel", title: "Summon agents", value: "on", set: false, known: true, default: "on", values: ["on", "off"], doc: "Let the owner's own chats summon an agent." },
-    { key: "summon_signature", module: "kernel", title: "Summon signature", value: null, set: false, known: true, default: "", doc: "Signs what a summoned agent writes in the owner's chats." },
+    { key: "summon_signature", module: "kernel", title: "Summon signature", value: null, set: false, known: true, default: "Sent by {agent} from [AidenHQ](https://aidenhq.ai)", doc: "The line every summoned teammate's reply ends with ({agent} is its name). Never empty." },
     { key: "app_login", module: "apps-platform", title: "Shared apps sign-in", value: "access", set: false, known: true, default: "access", values: ["access", "password", "header-jwt"], doc: "Shared apps' sign-in (with `edge`): \"access\" = Cloudflare Access on every gate host; \"password\" = a shared password; \"header-jwt\" = an identity header from your own front door." },
     { key: "ci_runner_repos", module: "ci", title: "Repos with CI runners", value: "Aiden-HQ/AidenHQ Aiden-HQ/aidenhq-distro", set: false, known: true, default: "Aiden-HQ/AidenHQ Aiden-HQ/aidenhq-distro", pattern: "^[\\w.-]+/[\\w.-]+( [\\w.-]+/[\\w.-]+)*$", doc: "Repos besides the fleet org that get self-hosted CI runners." },
     { key: "ci_org_runner_group", module: "ci", title: "Runner group", value: "ex44", set: true, known: true, default: "", doc: "The org runner group CI runners register in." },
     { key: "ci_review_model", module: "ci", title: "CI review model", value: "~deepseek/deepseek-flash-latest:high", set: false, known: true, default: "~deepseek/deepseek-flash-latest:high", doc: "The model and reasoning effort of the template's code review." },
+    { key: "hubspot_objects", module: "hubspot", title: "HubSpot objects to ingest", value: ["contacts", "companies", "deals"], set: true, known: true, default: ["contacts", "companies", "deals", "activities"], values: ["contacts", "companies", "deals", "activities"], doc: "Which object types the warehouse ingests." },
     { key: "github_orgs", module: "github", title: "Allowed GitHub orgs", value: ["Aiden-HQ", "acme-labs"], set: true, known: true, default: [], doc: "GitHub orgs and users, besides the fleet org, the owner allows." },
     { key: "github_fleet_org", module: "github", title: "Fleet GitHub org", value: "acme-agents", set: true, known: true, doc: "The org the fleet's repositories live in." },
     { key: "github_mcp_url", module: "github", title: "GitHub MCP address", value: "https://api.githubcopilot.com/mcp/", set: false, known: true, default: "https://api.githubcopilot.com/mcp/", type: "url", host: "api.githubcopilot.com", doc: "GitHub's own MCP server." },
@@ -419,7 +425,7 @@ const settingsData = () => ({
     { key: "review_skip", module: "code-review", value: ["Docs-only PRs"], set: true, known: true, doc: "Skips. Pull requests that get no review." },
     { key: "ui_testing", module: "design", title: "Apps the UI Reviewer tests", value: { apps: [{ name: "invoices", url: "https://invoices.acme.example", live_mode: "read" }, { name: "hiring-board", url: "https://hiring.acme.example" }, { name: "crm-lite", url: "https://crm.acme.example" }, { name: "notes", url: "https://notes.acme.example" }] }, set: true, known: true, doc: "The apps the UI Reviewer tests: { apps: [{ name (lowercase, 2-31: a-z 0-9 -), url (where a pass opens it), repo? (owner/name: a local build uses its default branch, never a PR head), live_mode: read | test-write | any }] }." },
     { key: "some_flag", module: "design", value: true, set: true, known: true, doc: "A flag with no title." },
-  ],
+  ] as ({ key: string; value: unknown } & Record<string, unknown>)[]).map((s) => ({ ...s, value: applied(s.key, s.value) })),
   agents: [{
     recurring: [],
     key: "chief-of-staff", name: "Aiden", module: "core", model: "deepseek-flash", models: [], effort: "high", heartbeatHours: 4, canHeartbeat: true, efforts: ["low", "medium", "high"], department: OPS, graded: false, roles: [], connections: [], defaults: {},
@@ -763,6 +769,8 @@ function route(method: string, url: URL): [number, unknown] {
   if (method === "POST" && /^\/api\/setup-flows\/[^/]+\/dismiss$/.test(p)) return (hireMock.dismissed.add(p.split("/")[3]!), [200, { ok: true }]);
   if (method === "POST" && p === "/api/settings/change") {
     for (const ch of lastBody.changes ?? []) if (ch.kind === "module" && ch.on && HIRE.some((h) => h.id === ch.name) && !hireMock.filed.has(ch.name)) hireMock.filed.set(ch.name, { at: Date.now(), n: 880 + hireMock.filed.size });
+    const items = (lastBody.changes ?? []).filter((c: { kind: string }) => c.kind === "setting");
+    if (items.length) settingMock.filed.push({ at: Date.now(), n: 910 + settingMock.filed.length, items });
     return [200, { identifier: "WOR-900" }];
   }
   if (method === "POST" && p === "/api/chats" && lastBody.agent === "architect") return (hireMock.chats.set("WOR-860", { at: Date.now(), text: String(lastBody.text ?? "") }), [200, { identifier: "WOR-860" }]);
@@ -804,7 +812,7 @@ function route(method: string, url: URL): [number, unknown] {
     case "/api/modules/browse": return [200, { modules: [{ name: "hiring", id: "hiring", browse: false, description: "Screens candidates and schedules interviews.", marketplace: "aidenhq", tier: "official", adds: ["agent", "app"], installed: false }] }];
     case "/api/marketplaces": return [200, { marketplaces: [{ name: "aidenhq", source: "github:aidenhq/modules", sha: "a1b2c3d", modules: 14, newer: false }] }];
     case "/api/settings": return [200, settingsData()];
-    case "/api/settings/changes": return [200, { changes: [...hireChanges(), ...notesChange()] }];
+    case "/api/settings/changes": return [200, { changes: [...hireChanges(), ...notesChange(), ...settingChanges()] }];
     case "/api/settings/connections": return [200, connections()];
     case "/api/accounts": return [200, { accounts: [{ id: "u1", email: "alex@example.com", name: "Alex", role: "admin", owner: true, twoFactorEnabled: true, disabled: false, lockedUntil: null, createdAt: ago(40000) }], me: "u1" }];
     case "/api/accounts/sessions": return [200, { sessions: [{ id: "s1", userAgent: "Safari on macOS", ipAddress: "192.0.2.10", createdAt: ago(2000), updatedAt: ago(1), current: true }] }];

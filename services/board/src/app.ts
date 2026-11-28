@@ -1563,9 +1563,9 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
       pendingApprovals: pending.length,
       updates: readUpdates(join(dirname(process.env.AIDENHQ_GENERATIONS_FILE ?? "/generations/generations.jsonl"), "updates.json")),
     });
-    // A setting its own module's Fleet page lists (board.pages settings) is edited there alone: the generic screens leave it off.
+    // A setting a module's Fleet page lists (board.pages settings) is edited there alone: the generic screens leave it off.
     const pages = opts.views?.pages() ?? [];
-    return { ...view, settings: view.settings.map((x) => { const p = pages.find((pg) => pg.module === x.module && (pg.settings ?? []).includes(x.key)); return p ? { ...x, page: p.id } : x; }) };
+    return { ...view, settings: view.settings.map((x) => { const p = pages.find((pg) => (pg.settings ?? []).includes(x.key)); return p ? { ...x, page: p.id } : x; }) };
   }
 
   // Each HTTP connection's /healthz, asked at most every 20 s (the page polls); when it last answered ok, since the board started.

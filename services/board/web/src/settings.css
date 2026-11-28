@@ -225,23 +225,22 @@ button.st-row-hit:hover { background: var(--hover); }
 .st-card-wrap { --st-ctl: 300px; display: grid; gap: 12px; align-content: start; min-width: 0; }
 .st-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--st-radius); overflow: hidden; box-shadow: var(--shadow); }
 .st-set-wrap.edited { box-shadow: inset var(--st-rail) 0 0 var(--accent); background: color-mix(in srgb, var(--accent) 4%, var(--surface)); }
-.st-set { display: flex; align-items: center; gap: 20px; padding: 13px 16px; min-width: 0; }
-.st-card > * + *, .st-card > .st-set-wrap + .st-set-wrap { border-top: 1px solid var(--border); }
-.st-set-wrap > .st-set { border-top: 0; }
-.st-set-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
-.st-set-title { font-size: var(--text-body); font-weight: 600; }
-.st-set-sub { font-size: var(--text-base); color: var(--muted); }
+.st-card > * + * { border-top: 1px solid var(--border); }
+.st-card .ui-field-row { grid-template-columns: minmax(0, 1fr) var(--st-ctl); gap: 6px 20px; }
+.st-card .ui-field-row-control { width: 100%; }
+.st-card .ui-field-row-control > .ui-seg { display: flex; width: 100%; }
+.st-card .ui-field-row-control > .ui-seg button { flex: 1; }
+.st-card .ui-field-row-control > .btn { text-decoration: none; margin-left: auto; }
+.st-card .ui-field-row-control > .ui-checks { justify-content: flex-end; }
+.st-card .ui-field-row-text > span { display: grid; gap: 2px; }
 .st-set-note { font-size: var(--text-sm); color: var(--warn-text); }
 .st-set-note.bad { color: var(--bad-text); }
-.st-set-ctl { flex: none; width: var(--st-ctl); min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
-.st-set-ctl > .ui-seg { display: flex; width: 100%; justify-self: stretch; }
-.st-set-ctl > .ui-seg button { flex: 1; }
-.st-set-ctl > .ui-select, .st-set-ctl > .ui-input, .st-set-ctl > .st-numfield, .st-set-ctl > .ui-checks, .st-set-ctl > .st-order { width: 100%; }
-.st-set-ctl > .ui-checks { justify-content: flex-end; }
-.st-set-ctl > .btn { text-decoration: none; }
-.st-set-full { display: block; }
+.st-set-full { padding: 4px 8px; }
 .st-set-full .st-hint { margin-bottom: 10px; }
-.st-numfield { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.st-advanced .ui-disc-btn { padding: 12px 16px; width: 100%; }
+.st-advanced .ui-disc-inner { padding: 0; }
+.st-advanced .ui-disc-body .st-set-wrap { border-top: 1px solid var(--border); }
+.st-numfield { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
 .st-prefix { color: var(--muted); }
 .st-versions { display: grid; justify-items: end; gap: 2px; font-size: var(--text-base); text-align: right; }
 .muted { color: var(--muted); }
@@ -263,9 +262,7 @@ button.st-row-hit:hover { background: var(--hover); }
 .st-bar-actions { flex: none; display: flex; gap: 8px; }
 
 @media (max-width: 760px) {
-  .st-card-wrap { --st-ctl: 100%; }
-  .st-set { flex-direction: column; align-items: stretch; gap: 10px; }
-  .st-set-ctl { width: 100%; }
+  .st-card .ui-field-row { grid-template-columns: minmax(0, 1fr); }
   .st-bar { flex-direction: column; align-items: stretch; bottom: 8px; }
   .st-bar-actions { justify-content: flex-end; }
   .st-bar-text > span { white-space: normal; }

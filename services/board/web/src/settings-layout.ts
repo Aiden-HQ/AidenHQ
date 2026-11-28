@@ -12,7 +12,6 @@ export const CATEGORIES = [
   { key: "updates", name: "Updates", group: "System" },
   { key: "access", name: "Board access", group: "System" },
   { key: "backups", name: "Backups", group: "System" },
-  { key: "advanced", name: "Advanced", group: "System" },
 ] as const;
 export type Category = (typeof CATEGORIES)[number]["key"];
 export const isCategory = (s: string | null | undefined): s is Category => CATEGORIES.some((c) => c.key === s);
@@ -26,8 +25,9 @@ export const PAGE_SETTINGS = {
   updates: ["auto_update"],
   access: ["exposure"],
   backups: ["backup_repository"],
-  advanced: ["computers_max"],
 } as const satisfies Partial<Record<Category, readonly string[]>>;
+/** The settings kept under a page's collapsed Advanced row. */
+export const ADVANCED_SETTINGS = { access: ["computers_max"] } as const satisfies Partial<Record<Category, readonly string[]>>;
 
 /** Every module setting a general page owns: kept off its module's Settings tab. */
-export const GENERAL_KEYS = new Set<string>(Object.values(PAGE_SETTINGS).flat());
+export const GENERAL_KEYS = new Set<string>([...Object.values(PAGE_SETTINGS).flat(), ...Object.values(ADVANCED_SETTINGS).flat()]);

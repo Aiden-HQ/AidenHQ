@@ -11,6 +11,7 @@ import { stubGlobal, unstubAllGlobals } from "../stubs";
 
 const row = (over: Partial<SettingRow>): SettingRow => ({ key: "k", module: "kernel", value: null, set: false, known: true, ...over });
 const rows = [
+  row({ key: "owner_name", title: "Your name", value: "Alex" }),
   row({ key: "spend_day_usd", title: "Daily spend limit", value: 50, default: 50 }),
   row({ key: "time_format", title: "Time format", value: null, default: "12h", values: ["12h", "24h"] }),
 ];
@@ -34,11 +35,22 @@ describe("a settings card", () => {
     root = createRoot(el);
     await act(async () => root!.render(createElement(ChangesScope, { onSignIn: () => {}, children: createElement(SettingsCard, { rows }) })));
     expect(el.querySelector(".st-bar")).toBeNull();
+    // Typing keeps the raw text (a trailing space is not trimmed away), and only a touched row is a change.
+    const name = el.querySelector<HTMLInputElement>("input[aria-label='Your name']")!;
+    const setName = (v: string) => Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, v);
+    await act(async () => { setName("Alex "); name.dispatchEvent(new Event("input", { bubbles: true })); });
+    expect(name.value).toBe("Alex ");
+    await act(async () => { setName("Alex"); name.dispatchEvent(new Event("input", { bubbles: true })); });
+    expect(el.querySelector(".st-bar")).toBeNull();
     const input = el.querySelector<HTMLInputElement>("input[aria-label='Daily spend limit']")!;
     const set = (v: string) => Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, v);
     await act(async () => { set("75"); input.dispatchEvent(new Event("input", { bubbles: true })); });
     await act(async () => void [...el.querySelectorAll<HTMLButtonElement>(".ui-seg button")].find((b) => b.textContent === "24h")!.click());
     expect(el.querySelector(".st-bar")?.textContent).toContain("2 changes");
+    // An emptied number is a problem, not a $0 limit: Save is off.
+    await act(async () => { set(""); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    expect([...el.querySelectorAll<HTMLButtonElement>(".st-bar button")].find((b) => b.textContent === "Save")!.disabled).toBe(true);
+    await act(async () => { set("75"); input.dispatchEvent(new Event("input", { bubbles: true })); });
     // Discard: the draft is gone and so is the bar.
     await act(async () => void [...el.querySelectorAll<HTMLButtonElement>(".st-bar button")].find((b) => b.textContent === "Discard")!.click());
     expect(el.querySelector(".st-bar")).toBeNull();

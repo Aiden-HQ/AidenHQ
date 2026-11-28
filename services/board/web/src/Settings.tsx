@@ -6,12 +6,12 @@ import { needsAttention, type ConnectionsData } from "./connections";
 import { useEvents } from "./events";
 import { askForNotifications, notificationsSupported } from "./notify";
 import { ConnectionsPage, RowsSkeleton } from "./SettingsConnections";
-import { CATEGORIES, PAGE_SETTINGS, type Category } from "./settings-layout";
-import { SetRow, SettingsCard, type RowOpts } from "./SettingsForm";
+import { ADVANCED_SETTINGS, CATEGORIES, PAGE_SETTINGS, type Category } from "./settings-layout";
+import { SettingsCard, type RowOpts } from "./SettingsForm";
 import { Changes, IN_FLIGHT, Page, Toasts } from "./settings-ui";
 import type { FiledChange, SettingChange, SettingRow, SettingsData } from "./types";
 import "./settings.css";
-import { Banner, Button, Disclosure, LinkButton, StatusDot, safeHref } from "./ui";
+import { Banner, Button, Disclosure, FieldRow, LinkButton, Select, StatusDot, safeHref } from "./ui";
 import { Steps } from "./SetupFlow";
 import { clockOpts, clockText } from "./util";
 
@@ -172,7 +172,8 @@ function Pane({ cat, data, conns, session, onSignIn, can, checking, check }: { c
         <RowsSkeleton />
       </Page>
     );
-  const rows = (page: keyof typeof PAGE_SETTINGS) => PAGE_SETTINGS[page].map((k) => data.settings.find((s) => s.key === k)).filter((s): s is SettingRow => Boolean(s));
+  const find = (keys: readonly string[]) => keys.map((k) => data.settings.find((s) => s.key === k)).filter((s): s is SettingRow => Boolean(s));
+  const rows = (page: keyof typeof PAGE_SETTINGS) => find(PAGE_SETTINGS[page]);
   const card = (page: keyof typeof PAGE_SETTINGS, opts?: Record<string, RowOpts>) => <SettingsCard rows={rows(page)} all={data.settings} opts={opts} />;
   switch (cat) {
     case "profile":
@@ -207,10 +208,14 @@ function Pane({ cat, data, conns, session, onSignIn, can, checking, check }: { c
         <Page title="Board access" sub="How this board is reached from outside the server.">
           <SettingsCard
             rows={rows("access")}
+            advanced={find(ADVANCED_SETTINGS.access)}
             all={data.settings}
-            opts={{ exposure: { sub: "Public, a tailnet, a Cloudflare tunnel, or this machine only.", labels: { public: "Public", tailscale: "Tailnet", cloudflare: "Cloudflare", local: "Local" } } }}
+            opts={{
+              exposure: { sub: "Public, a tailnet, a Cloudflare tunnel, or this machine only.", labels: { public: "Public", tailscale: "Tailnet", cloudflare: "Cloudflare", local: "Local" } },
+              computers_max: { sub: "How many agent jobs run at once, 1 to 64.", min: 1, max: 64 },
+            }}
             trail={
-              <div className="st-set st-set-full">
+              <div className="st-set-full">
                 <Disclosure summary="Connect your Claude">
                   <p className="st-hint">Your own Claude can check status, talk to Aiden, change settings and decide approvals as you, and can help finish anything you skipped in setup.</p>
                   <Steps text={mcpSteps(location.origin)} />
@@ -224,12 +229,6 @@ function Pane({ cat, data, conns, session, onSignIn, can, checking, check }: { c
       return (
         <Page title="Backups" sub="Every night the server keeps a local backup. An off-host repository keeps a copy that survives losing the machine.">
           {card("backups", { backup_repository: { sub: "A restic repository, for example a storage box. Empty means no off-host backup.", placeholder: "sftp://user@host:23/aidenhq" } })}
-        </Page>
-      );
-    case "advanced":
-      return (
-        <Page title="Advanced" sub="Rarely changed. The defaults suit most servers.">
-          {card("advanced", { computers_max: { sub: "How many agent jobs run at once. Empty: one per 1.5 GB of the host's memory.", placeholder: "Automatic" } })}
         </Page>
       );
   }
@@ -295,10 +294,7 @@ function OrderControl({ value, set, candidates, ready }: { value: string[]; set:
         ))}
       </ol>
       {rest.length > 0 && (
-        <select className="ui-select" value="" aria-label="Add a channel" onChange={(e) => e.target.value && set([...value, e.target.value])}>
-          <option value="">Add a channel…</option>
-          {rest.map((c) => <option key={c} value={c}>{transportName(c)}</option>)}
-        </select>
+        <Select value="" aria-label="Add a channel" options={[["", "Add a channel…"], ...rest.map((c) => [c, transportName(c)] as const)]} onChange={(c) => c && set([...value, c])} />
       )}
     </div>
   );
@@ -325,16 +321,16 @@ function NotificationsPage({ rows, all, conns }: { rows: SettingRow[]; all: Sett
         all={all}
         opts={opts}
         lead={
-          <SetRow
+          <FieldRow
             title="Browser alerts"
-            sub={perm === "denied" ? "Blocked: allow notifications for this site in the browser's settings." : "A notification when something needs you, while the board is open."}
+            help={perm === "denied" ? "Blocked: allow notifications for this site in the browser's settings." : "A notification when something needs you, while the board is open."}
           >
             {perm === "default" ? (
               <Button onClick={() => void askForNotifications().then(setPerm)}>Turn on</Button>
             ) : (
               <StatusDot tone={perm === "granted" ? "ok" : perm === "denied" ? "needs" : "idle"}>{perm === "granted" ? "On" : perm === "denied" ? "Blocked" : perm === "unsupported" ? "Not supported" : "Off"}</StatusDot>
             )}
-          </SetRow>
+          </FieldRow>
         }
       />
     </Page>
@@ -379,18 +375,18 @@ function UpdatesPage({ data }: { data: SettingsData }) {
         all={data.settings}
         opts={{ auto_update: { sub: "New releases install by themselves overnight; turn it off to install when you choose.", labels: { on: "On", off: "Off" } } }}
         lead={
-          <SetRow title="Version" sub={u ? (u.error ? `Update check: ${u.error}` : a ? `${u.current?.name} is running; ${a.name} is available.` : `${u.current?.name} is running, the newest release.`) : "Pinned by hand."}>
+          <FieldRow title="Version" help={u ? (u.error ? `Update check: ${u.error}` : a ? `${u.current?.name} is running; ${a.name} is available.` : `${u.current?.name} is running, the newest release.`) : "Pinned by hand."}>
             <span className="st-versions">
               {i.product ? <code title={i.product}>{i.product.slice(0, 12)}</code> : <span className="muted">unknown</span>}
               <span className="muted">last change {when(i.lastChangeAt)}</span>
             </span>
-          </SetRow>
+          </FieldRow>
         }
         trail={
           u ? (
-            <SetRow title="Update now" sub="Install the newest release now, on the kernel's own page.">
+            <FieldRow title="Update now" help="Install the newest release now, on the kernel's own page.">
               <LinkButton href={`${admin.url}/updates`}>Update now</LinkButton>
-            </SetRow>
+            </FieldRow>
           ) : undefined
         }
       />
