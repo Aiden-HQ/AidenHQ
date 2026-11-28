@@ -270,7 +270,7 @@ export class Workspace {
     if (e.etag && held.etag && e.etag !== held.etag) throw new EventChanged();
     // A partial time change is checked as the whole interval it makes with the event's other boundary.
     const [start, end] = [e.start ?? held.start?.dateTime, e.end ?? held.end?.dateTime];
-    if ((e.start || e.end) && start && end) await this.assertFree({ start, end, timezone: e.timezone ?? held.start?.timeZone }, held.id, e.allow_conflict);
+    if ((e.start || e.end) && start && end) await this.assertFree({ start, end, timezone: e.timezone }, held.id, e.allow_conflict);
     if (e.add_attendees?.length || e.remove_attendees?.length) {
       const gone = new Set((e.remove_attendees ?? []).map((a) => a.toLowerCase()));
       // Google left some attendees out of the event it returned (a large event): a PATCH of the list would drop them.
