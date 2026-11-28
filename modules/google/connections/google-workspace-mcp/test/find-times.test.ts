@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
 import { MultiWorkspace } from "../src/accounts.js";
-import { findTimes, type FindTimesArgs } from "../src/find-times.js";
+import { checkTimes, findTimes, type FindTimesArgs, minutes, type PersonInput } from "../src/find-times.js";
 import { renderInZone } from "../src/zones.js";
 import { SCOPES } from "../src/google.js";
 
@@ -13,7 +13,11 @@ const OLD_SCOPES = SCOPES.filter((x) => !x.includes("freebusy"));
 import { EventChanged, EventConflict, eventIdFor, type GEvent } from "../src/workspace.js";
 
 const week = (w: [string, string][]) => ({ mon: w, tue: w, wed: w, thu: w, fri: w, sat: w, sun: w });
+/** A person the search knows the hours of (core and stretch as HH:MM on their own clock). */
+const P = (email: string, zone: string, core: [string, string], stretch: [string, string], extra: Partial<PersonInput> = {}): PersonInput => ({ email, required: true, zone, core: [minutes(core[0]), minutes(core[1])], stretch: [minutes(stretch[0]), minutes(stretch[1])], ...extra });
+const DUBAI = (email = "dana@example.com", extra: Partial<PersonInput> = {}) => P(email, "Asia/Dubai", ["09:00", "18:00"], ["06:00", "22:00"], extra);
 const base = (over: Partial<FindTimesArgs> = {}): FindTimesArgs => ({
+  required: [],
   duration_min: 30,
   window_start: "2026-12-02T00:00:00+04:00",
   window_end: "2026-12-03T00:00:00+04:00",
@@ -41,7 +45,7 @@ describe("findTimes", () => {
     expect(findTimes(base({ max_per_day: 1 }), events, [], NOW)).toEqual([]);
     expect(findTimes(base({ max_per_day: 2 }), events, [], NOW).length).toBeGreaterThan(0);
     // Their busy time blocks too.
-    const theirs = findTimes(base(), [], [{ start: "2026-12-02T09:00:00+04:00", end: "2026-12-02T16:30:00+04:00" }], NOW);
+    const theirs = findTimes(base(), [], [{ email: "x@y.org", required: true, busy: [{ start: "2026-12-02T09:00:00+04:00", end: "2026-12-02T16:30:00+04:00" }] }], NOW);
     expect(theirs.map((s) => hm(s.start))).toEqual(["16:30"]);
   });
 
@@ -73,25 +77,20 @@ describe("findTimes", () => {
 
   it("an unset attendee in Dubai while the owner is in London: 06:00-09:00 their time ranks below core and above outside", () => {
     // London is 4 hours behind Dubai in December. Owner 00:00-10:00 London = 04:00-14:00 Dubai.
-    const args = base({ timezone: "Europe/London", window_start: "2026-12-02T00:00:00+00:00", window_end: "2026-12-03T00:00:00+00:00", working_hours: week([["00:00", "10:00"]]), attendees: ["dana@example.com"], attendees_local: { "dana@example.com": { timezone: "Asia/Dubai" } } });
-    const slots = findTimes(args, [], [], NOW);
+    const args = base({ timezone: "Europe/London", window_start: "2026-12-02T00:00:00+00:00", window_end: "2026-12-03T00:00:00+00:00", working_hours: week([["00:00", "10:00"]]) });
+    const slots = findTimes(args, [], [DUBAI()], NOW);
     const bands = slots.map((x) => bandOf(x.start, "Asia/Dubai", ["09:00", "18:00"], ["06:00", "22:00"]));
     expect(bands).toEqual([...bands].sort());
     expect(new Set(bands)).toEqual(new Set([0, 1, 2]));
     // Unknown or invalid zones are ignored: the ranking is the owner's alone (earliest first here).
-    const plain = findTimes({ ...args, attendees_local: undefined }, [], [], NOW);
-    expect(findTimes({ ...args, attendees_local: { "dana@example.com": { timezone: "Not/AZone" } } }, [], [], NOW)).toEqual(plain);
+    const plain = findTimes(args, [], [], NOW);
+    expect(findTimes(args, [], [{ email: "dana@example.com", required: true, busy: [] }], NOW).map((x) => x.start)).toEqual(plain.map((x) => x.start));
     expect(plain[0]!.start).toContain("T00:00");
   });
 
-  it("counts a person once however often they are listed", () => {
-    const a = base({ timezone: "Europe/London", window_start: "2026-12-02T00:00:00+00:00", window_end: "2026-12-03T00:00:00+00:00", working_hours: week([["00:00", "10:00"]]), attendees_local: { "dana@example.com": { timezone: "Asia/Dubai" } } });
-    expect(findTimes({ ...a, attendees: ["dana@example.com", "DANA@example.com"] }, [], [], NOW)).toEqual(findTimes({ ...a, attendees: ["dana@example.com"] }, [], [], NOW));
-  });
-
   it("an attendee with hours 10-16 and stretch_hours 2 stretches over 08-10 and 16-18", () => {
-    const args = base({ stretch_hours: 2, working_hours: week([["06:00", "20:00"]]), attendees: ["dana@example.com"], attendees_local: { "DANA@example.com": { timezone: "Asia/Dubai", hours: ["10:00", "16:00"] } } });
-    const slots = findTimes({ ...args, stretch_hours: 2, working_hours: week([["08:00", "18:00"]]) }, [], [], NOW);
+    const args = base({ stretch_hours: 2, working_hours: week([["08:00", "18:00"]]) });
+    const slots = findTimes(args, [], [P("dana@example.com", "Asia/Dubai", ["10:00", "16:00"], ["08:00", "18:00"])], NOW);
     const hours = (xs: typeof slots) => xs.map((x) => hm(x.start));
     const bands = slots.map((x) => bandOf(x.start, "Asia/Dubai", ["10:00", "16:00"], ["08:00", "18:00"]));
     // Owner 08-18 with a 2 h stretch also offers 06-08 and 18-20, which are outside for the attendee.
@@ -136,7 +135,7 @@ describe("findTimes", () => {
   it("an own working-location entry in another zone shifts that day's hours; someone else's does not", () => {
     const where = (id: string, extra: Partial<GEvent>): GEvent => ({ id, summary: "London", eventType: "workingLocation", start: { date: "2026-12-02", timeZone: "Europe/London" }, end: { date: "2026-12-03", timeZone: "Europe/London" }, ...extra });
     const own = findTimes(base({ working_hours: week([["09:00", "09:30"]]) }), [where("w", { organizer: { self: true } })], [], NOW);
-    expect(own).toEqual([{ start: "2026-12-02T09:00:00+00:00", end: "2026-12-02T09:30:00+00:00", tier: "best", timezone: "Europe/London" }]);
+    expect(own).toEqual([{ start: "2026-12-02T09:00:00+00:00", end: "2026-12-02T09:30:00+00:00", tier: "best", timezone: "Europe/London", people: [], optional_free: 0 }]);
     const theirs = findTimes(base({ working_hours: week([["09:00", "09:30"]]) }), [where("w", { organizer: { self: false } })], [], NOW);
     expect(theirs[0]).toMatchObject({ start: "2026-12-02T09:00:00+04:00", timezone: "Asia/Dubai" });
     // A flight the owner organised lands in Lisbon: from then on Lisbon's clock.
@@ -190,7 +189,7 @@ const args = (over: Partial<FindTimesArgs> = {}) => base({ window_start: "2026-1
 describe("calendar_find_times attendees", () => {
   it("without the free/busy scope it answers from the owner's calendar and says not_granted", async () => {
     const g = google({ [`GET ${EV}`]: { items: [] } });
-    const r = await new MultiWorkspace(creds(OLD_SCOPES), "primary", g.impl).findTimes(args({ attendees: ["dana@example.com"] }), NOW);
+    const r = await new MultiWorkspace(creds(OLD_SCOPES), "primary", g.impl).findTimes(args({ required: ["dana@example.com"] }), NOW);
     expect(r.attendee_freebusy).toBe("not_granted");
     expect(r.attendees).toEqual([{ email: "dana@example.com", freebusy: "not_granted", timezone_known: false }]);
     expect(r.slots.length).toBeGreaterThan(0);
@@ -200,11 +199,11 @@ describe("calendar_find_times attendees", () => {
   it("with it, their busy time shapes the slots; a calendar Google hides is not_visible", async () => {
     const free = google({ [`GET ${EV}`]: { items: [] }, "POST /calendar/v3/freeBusy": { calendars: { "dana@example.com": { busy: [{ start: "2026-12-09T05:00:00Z", end: "2026-12-09T05:30:00Z" }] } } } });
     const ws = new MultiWorkspace(creds(SCOPES), "primary", free.impl);
-    const used = await ws.findTimes(args({ attendees: ["dana@example.com"], duration_min: 30 }), NOW);
+    const used = await ws.findTimes(args({ required: ["dana@example.com"], duration_min: 30 }), NOW);
     expect(used.attendee_freebusy).toBe("used");
     expect(used.slots.map((s) => hm(s.start))).toEqual(["09:30"]);
     const hidden = google({ [`GET ${EV}`]: { items: [] }, "POST /calendar/v3/freeBusy": { calendars: { "eve@example.com": { errors: [{ reason: "notFound" }] } } } });
-    expect((await new MultiWorkspace(creds(SCOPES), "primary", hidden.impl).findTimes(args({ attendees: ["eve@example.com"] }), NOW)).attendee_freebusy).toBe("not_visible");
+    expect((await new MultiWorkspace(creds(SCOPES), "primary", hidden.impl).findTimes(args({ required: ["eve@example.com"] }), NOW)).attendee_freebusy).toBe("not_visible");
   });
 });
 
@@ -214,7 +213,7 @@ describe("people we cannot see never block the answer", () => {
 
   it("a colleague's busy time counts and an external calendar (notFound) is skipped", async () => {
     const g = google({ [`GET ${EV}`]: { items: [] }, [FB]: { calendars: { "col@work.com": { busy: [{ start: "2026-12-09T05:00:00Z", end: "2026-12-09T05:30:00Z" }] }, "ext@other.org": { errors: [{ domain: "global", reason: "notFound" }] } } } });
-    const r = await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(at({ attendees: ["col@work.com", "ext@other.org"], attendees_local: { "col@work.com": { timezone: "Asia/Dubai" } } }), NOW);
+    const r = await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(at({ required: ["col@work.com", "ext@other.org"], attendees_local: { "col@work.com": { timezone: "Asia/Dubai" } } }), NOW);
     expect(r.slots.map((x) => hm(x.start))).toEqual(["09:30"]);
     expect(r.attendees).toEqual([{ email: "col@work.com", freebusy: "used", timezone_known: true, hours: { core: ["09:00", "18:00"], source: "default" } }, { email: "ext@other.org", freebusy: "not_visible", timezone_known: false }]);
     expect(r.attendee_freebusy).toBe("not_visible");
@@ -222,18 +221,18 @@ describe("people we cannot see never block the answer", () => {
 
   it("a free/busy request that fails outright still returns slots, every attendee not_visible", async () => {
     const g = google({ [`GET ${EV}`]: { items: [] }, [FB]: new Response("boom", { status: 500 }) });
-    const r = await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(at({ attendees: ["a@x.org", "b@y.org"] }), NOW);
+    const r = await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(at({ required: ["a@x.org", "b@y.org"] }), NOW);
     expect(r.slots.length).toBeGreaterThan(0);
     expect(r.attendees.map((x) => x.freebusy)).toEqual(["not_visible", "not_visible"]);
     // A 403 on the call is the same: skipped, not the owner's sign-in failing.
     const g2 = google({ [`GET ${EV}`]: { items: [] }, [FB]: new Response("forbidden", { status: 403 }) });
-    expect((await new MultiWorkspace(creds(SCOPES), "primary", g2.impl).findTimes(at({ attendees: ["a@x.org"] }), NOW)).attendee_freebusy).toBe("not_visible");
+    expect((await new MultiWorkspace(creds(SCOPES), "primary", g2.impl).findTimes(at({ required: ["a@x.org"] }), NOW)).attendee_freebusy).toBe("not_visible");
   });
 });
 
 describe("attendee hours inferred from busy history", () => {
   const FB = "POST /calendar/v3/freeBusy";
-  const at = () => args({ duration_min: 30, attendees: ["col@work.com"], attendees_local: { "col@work.com": { timezone: "Asia/Dubai" } } });
+  const at = () => args({ duration_min: 30, required: ["col@work.com"], attendees_local: { "col@work.com": { timezone: "Asia/Dubai" } } });
   /** 10:00-17:00 Dubai (06:00Z-13:00Z) on `n` days from 3 November. */
   const days = (n: number) => Array.from({ length: n }, (_x, i) => { const d = String(3 + i).padStart(2, "0"); return { start: `2026-11-${d}T06:00:00Z`, end: `2026-11-${d}T13:00:00Z` }; });
   const history = (b: Record<string, unknown> | undefined) => Date.parse(String(b?.timeMin)) < NOW;
@@ -278,6 +277,93 @@ describe("attendee hours inferred from busy history", () => {
     const a = { ...at(), attendees_local: { "col@work.com": { timezone: "Asia/Dubai", hours: ["08:00", "16:00"] as [string, string] } } };
     expect((await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(a, NOW)).attendees[0]!.hours).toEqual({ core: ["08:00", "16:00"], source: "given" });
     expect(g.calls.filter((c) => c.url.pathname.endsWith("/freeBusy"))).toHaveLength(1);
+  });
+});
+
+describe("a scheduling agent's signals", () => {
+  const FB = "POST /calendar/v3/freeBusy";
+  const wide = { window_start: "2026-12-02T00:00:00+04:00", window_end: "2026-12-03T00:00:00+04:00" };
+
+  it("only required people must be free; optional ones are annotated and raise the rank", async () => {
+    const g = google({ [`GET ${EV}`]: { items: [] }, [FB]: { calendars: { "req@work.com": { busy: [] }, "opt@work.com": { busy: [{ start: "2026-12-09T05:00:00Z", end: "2026-12-09T05:30:00Z" }] } } } });
+    const r = await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(args({ duration_min: 30, required: ["req@work.com"], optional: ["opt@work.com"] }), NOW);
+    // The optional person is busy at 09:00: still offered, but 09:30 (they are free) ranks first.
+    expect(r.slots.map((x) => hm(x.start))).toEqual(["09:30", "09:00"]);
+    expect(r.slots[0]).toMatchObject({ optional_free: 1, people: [{ email: "req@work.com", status: "free", tier: "unknown" }, { email: "opt@work.com", status: "free", tier: "unknown" }] });
+    expect(r.slots[1]).toMatchObject({ optional_free: 0, people: [{ status: "free" }, { email: "opt@work.com", status: "busy" }] });
+    expect(r.attendees.find((x) => x.email === "opt@work.com")!.optional).toBe(true);
+    // A required person's busy time does exclude.
+    const req = findTimes(base(), [], [{ email: "r@x.org", required: true, busy: [{ start: "2026-12-02T09:00:00+04:00", end: "2026-12-02T16:30:00+04:00" }] }, { email: "o@x.org", required: false, busy: [{ start: "2026-12-02T16:30:00+04:00", end: "2026-12-02T17:00:00+04:00" }] }], NOW);
+    expect(req.map((x) => hm(x.start))).toEqual(["16:30"]);
+    expect(req[0]!.people.map((x) => x.status)).toEqual(["free", "busy"]);
+  });
+
+  it("owner_hours any offers the small hours, ranked last; the default stretch does not", () => {
+    const strict = findTimes(base({ ...wide, owner_hours: "strict", stretch_hours: 2 }), [], [], NOW);
+    expect(strict.every((x) => hm(x.start) >= "09:00" && hm(x.end) <= "17:00")).toBe(true);
+    const stretch = findTimes(base({ ...wide, stretch_hours: 2 }), [], [], NOW);
+    expect(stretch.some((x) => hm(x.start) === "03:00")).toBe(false);
+    const any = findTimes(base({ ...wide, owner_hours: "any" }), [], [], NOW);
+    expect(any.some((x) => hm(x.start) === "03:00")).toBe(true);
+    expect(hm(any[0]!.start)).toBe("09:00");
+    expect(hm(any.at(-1)!.start) < "09:00" || hm(any.at(-1)!.start) >= "17:00").toBe(true);
+  });
+
+  it("a movable event's time counts as free; preferred and days steer the choice", () => {
+    const events = [meeting("m", "2026-12-02T09:00:00+04:00", "2026-12-02T17:00:00+04:00")];
+    expect(findTimes(base(), events, [], NOW)).toEqual([]);
+    expect(findTimes(base({ movable_event_ids: ["m"] }), events, [], NOW).length).toBeGreaterThan(0);
+    expect(hm(findTimes(base({ preferred: [["15:00", "16:00"]] }), [], [], NOW)[0]!.start)).toBe("15:00");
+    expect(findTimes(base({ window_start: "2026-12-02T00:00:00+04:00", window_end: "2026-12-04T00:00:00+04:00", days: ["thu"] }), [], [], NOW).every((x) => x.start.startsWith("2026-12-03"))).toBe(true);
+  });
+
+  it("weeks 3 needs the same weekday and time free in each of the next three weeks", () => {
+    // 09:00 is taken on 16 December, two weeks on; 09:30 is free every week.
+    const events = [meeting("later", "2026-12-16T09:00:00+04:00", "2026-12-16T09:30:00+04:00")];
+    const one = findTimes(base({ working_hours: week([["09:00", "10:00"]]), weeks: 1 }), events, [], NOW);
+    const three = findTimes(base({ working_hours: week([["09:00", "10:00"]]), weeks: 3 }), events, [], NOW);
+    expect(one.some((x) => hm(x.start) === "09:00")).toBe(true);
+    expect(three.map((x) => hm(x.start))).toEqual(["09:30"]);
+    expect(() => findTimes(base({ weeks: 9 }), [], [], NOW)).toThrow(/weeks/);
+  });
+
+  it("check_times flags a busy required person and the owner's conflicting events", async () => {
+    const taken = { id: "board", summary: "Board prep", start: { dateTime: "2026-12-09T09:00:00+04:00" }, end: { dateTime: "2026-12-09T09:30:00+04:00" } };
+    const g = google({ [`GET ${EV}`]: { items: [taken] }, [FB]: { calendars: { "dana@work.com": { busy: [{ start: "2026-12-09T05:30:00Z", end: "2026-12-09T06:00:00Z" }] } } } });
+    const r = await new MultiWorkspace(creds(SCOPES), "primary", g.impl).checkTimes({ candidates: [{ start: "2026-12-09T09:00:00+04:00", end: "2026-12-09T09:30:00+04:00" }, { start: "2026-12-09T09:30:00+04:00", end: "2026-12-09T10:00:00+04:00" }], people: ["dana@work.com"], people_local: { "dana@work.com": { timezone: "Asia/Dubai", hours: ["09:00", "18:00"] } } }, NOW);
+    expect(r.candidates[0]).toMatchObject({ owner_conflicts: [{ event_id: "board", title: "Board prep" }], people: [{ email: "dana@work.com", status: "free", tier: "core" }] });
+    expect(r.candidates[1]).toMatchObject({ owner_conflicts: [], people: [{ status: "busy", tier: "core" }] });
+    expect(checkTimes([{ start: "2026-12-09T03:00:00+04:00", end: "2026-12-09T03:30:00+04:00" }], [], [DUBAI("e@x.org")], "Asia/Dubai")[0]!.people).toEqual([{ email: "e@x.org", status: "unknown", tier: "outside" }]);
+  });
+
+  it("free_busy returns busy blocks, hours and where people are; a hidden person is just not_visible", async () => {
+    const mine = [
+      { id: "m1", summary: "Sync", start: { dateTime: "2026-12-09T10:00:00+04:00" }, end: { dateTime: "2026-12-09T11:00:00+04:00" } },
+      { id: "w1", summary: "Home", eventType: "workingLocation", organizer: { self: true }, workingLocationProperties: { type: "homeOffice" }, start: { date: "2026-12-09" }, end: { date: "2026-12-10" } },
+    ];
+    const g = google({
+      [`GET ${EV}`]: { items: mine, timeZone: "Asia/Dubai" },
+      [FB]: { calendars: { "col@work.com": { busy: [{ start: "2026-12-09T06:00:00Z", end: "2026-12-09T07:00:00Z" }] }, "ext@other.org": { errors: [{ reason: "notFound" }] } } },
+      "GET /calendar/v3/calendars/col%40work.com/events": { items: [{ start: { date: "2026-12-10" }, workingLocationProperties: { type: "officeLocation", officeLocation: { label: "Dubai HQ" } } }] },
+    });
+    const r = await new MultiWorkspace(creds(SCOPES), "primary", g.impl).freeBusyView({ people: ["me@work.com", "col@work.com", "ext@other.org"], window_start: "2026-12-09T00:00:00+04:00", window_end: "2026-12-11T00:00:00+04:00", people_local: { "col@work.com": { timezone: "Asia/Dubai", hours: ["09:00", "17:00"] } } }, NOW);
+    const by = (e: string) => r.people.find((x) => x.email === e)!;
+    expect(by("me@work.com")).toMatchObject({ freebusy: "used", busy: [{ end: "2026-12-09T07:00:00.000Z" }], working_location: [{ date: "2026-12-09", kind: "home" }] });
+    expect(by("col@work.com")).toMatchObject({ freebusy: "used", timezone: "Asia/Dubai", hours: { core: ["09:00", "17:00"], stretch: ["07:00", "19:00"], source: "given" }, working_location: [{ date: "2026-12-10", kind: "office", label: "Dubai HQ" }] });
+    expect(by("ext@other.org")).toEqual({ email: "ext@other.org", freebusy: "not_visible", busy: [] });
+  });
+});
+
+describe("optional guests written to Google", () => {
+  const input = { title: "Plan", start: "2026-12-09T09:00:00+04:00", end: "2026-12-09T09:30:00+04:00", request_key: "opt-1" };
+  it("create and update carry Google's optional flag", async () => {
+    const held = { id: "ev1", etag: '"e1"', summary: "Sync", start: { dateTime: "2026-12-09T10:00:00+04:00" }, end: { dateTime: "2026-12-09T10:30:00+04:00" }, attendees: [{ email: "me@work.com", self: true }] };
+    const g = google({ [`GET ${EV}`]: { items: [] }, [`POST ${EV}`]: { ...held, id: "new" }, [`GET ${EV}/ev1`]: held, [`PATCH ${EV}/ev1`]: held });
+    const ws = new MultiWorkspace(creds(SCOPES), "primary", g.impl);
+    await ws.createEvent({ ...input, attendees: [{ email: "opt@work.com", optional: true }, "req@work.com"] }, "all");
+    expect(g.calls.find((c) => c.method === "POST")!.body!.attendees).toEqual([{ email: "opt@work.com", optional: true }, { email: "req@work.com" }]);
+    await ws.updateEvent("ev1", { add_attendees: [{ email: "late@work.com", optional: true }] }, "all");
+    expect(g.calls.find((c) => c.method === "PATCH")!.body!.attendees).toEqual([{ email: "me@work.com", self: true }, { email: "late@work.com", optional: true }]);
   });
 });
 

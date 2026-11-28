@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { needsOwner } from "./aidenhq-sdk/needs.js";
 import { type AuthStatus, FREEBUSY, GoogleAuthError, GoogleClient, type StoredCredentials, WRITE_SCOPE } from "./google.js";
-import { DEFAULT_HOURS, HISTORY_DAYS, inferHours, type AttendeeFreebusy, type AttendeeStatus, findTimes, type FindTimesArgs, type FoundTimes, LOOKBACK_MS, windowOf } from "./find-times.js";
-import { type DriveFile, type EventInput, type MailInput, type NormalizedEvent, type SendUpdates, Workspace } from "./workspace.js";
+import { blocksOf, checkTimes, DEFAULT_HOURS, DEFAULT_STRETCH, DEFAULT_STRETCH_HOURS, HISTORY_DAYS, hhmm, inferHours, locationsOf, minutes, type AttendeeFreebusy, type AttendeeStatus, findTimes, type FindTimesArgs, type FoundTimes, LOOKBACK_MS, type LocationDay, type PersonInput, type PersonView, windowOf } from "./find-times.js";
+import { type DriveFile, type EventInput, type MailInput, type NormalizedEvent, type SendUpdates, Workspace, type Attendee } from "./workspace.js";
 import { validZone } from "./zones.js";
 import { type Cursor, INBOX_BUDGET_MS, startOf } from "./inbox.js";
 
@@ -237,59 +237,119 @@ export class MultiWorkspace {
   }
 
   /**
-   * Meeting times for the owner (calendar_find_times, find-times.ts). Attendees' busy time needs the optional freebusy scope: an
-   * account without it still answers, from the owner's own calendar, and says `not_granted`.
+   * How each invited person can be read, for find_times, free_busy and check_times: their calendar's busy time over `win` (the
+   * optional free/busy scope; the owner's own calendar is read from events instead), their zone and hours. A person whose
+   * calendar we can't read (an external one, a missing scope, a failed call) is `not_visible`/`not_granted`, never an error.
+   * Hours: given by the caller, else inferred from their last 28 days of busy time (zone known, calendar visible), else the
+   * defaults; the stretch is core +/- stretch_hours, or default_stretch for the defaults.
    */
-  async findTimes(args: FindTimesArgs, now = Date.now()): Promise<FoundTimes> {
-    const [name] = this.one(args.account);
-    const [from, to] = windowOf(args);
-    const { events, timeZone } = (await this.in(name, (w) => w.rawEvents(new Date(from - LOOKBACK_MS).toISOString(), new Date(to + 86_400_000).toISOString()))) as Awaited<ReturnType<Workspace["rawEvents"]>>;
-    // An attendee whose busy time we can't get is skipped, never an error: external people are the common case.
-    const listed = args.attendees ?? [];
-    const others = listed.filter((a) => a.toLowerCase() !== name.toLowerCase());
-    const state = new Map<string, AttendeeFreebusy>(listed.map((a) => [a, "used"]));
-    let busy: { start: string; end: string }[] = [];
-    if (others.length && !this.granted(name, FREEBUSY) && !this.granted(name, "calendar.freebusy")) for (const a of others) state.set(a, "not_granted");
+  private async personViews(name: string, emails: string[], localIn: FindTimesArgs["attendees_local"], win: [string, string], now: number, d: { default_hours?: [string, string]; default_stretch?: [string, string]; stretch_hours?: number }): Promise<PersonView[]> {
+    const listed = [...new Map(emails.map((e) => [e.toLowerCase(), e])).values()];
+    const isSelf = (e: string) => e.toLowerCase() === name.toLowerCase();
+    const others = listed.filter((e) => !isSelf(e));
+    const state = new Map<string, AttendeeFreebusy>(listed.map((e) => [e, "used"]));
+    const busyBy = new Map<string, { start: string; end: string }[]>();
+    if (others.length && !this.granted(name, FREEBUSY) && !this.granted(name, "calendar.freebusy")) for (const e of others) state.set(e, "not_granted");
     else if (others.length) {
       try {
-        const r = (await this.in(name, (w) => w.freeBusy(others, args.window_start, args.window_end))) as Awaited<ReturnType<Workspace["freeBusy"]>>;
-        busy = r.busy;
-        for (const a of r.hidden) state.set(a, "not_visible");
+        const r = (await this.in(name, (w) => w.freeBusy(others, win[0], win[1]))) as Awaited<ReturnType<Workspace["freeBusy"]>>;
+        for (const e of others) if (r.byEmail[e]) busyBy.set(e, r.byEmail[e]!);
+        for (const e of r.hidden) state.set(e, "not_visible");
       } catch {
-        for (const a of others) state.set(a, "not_visible");
+        for (const e of others) state.set(e, "not_visible");
       }
     }
-    const local = new Map(Object.entries(args.attendees_local ?? {}).map(([e, v]) => [e.toLowerCase(), v]));
-    // Hours of a visible attendee with a zone and none given: from their last 28 days of busy time, one call for all of them.
-    // Any failure leaves the defaults; it never fails the call.
-    const used = (a: string) => state.get(a) === "used" && a.toLowerCase() !== name.toLowerCase();
-    const needing = [...new Set(listed.filter((a) => used(a) && validZone(local.get(a.toLowerCase())?.timezone) && !local.get(a.toLowerCase())!.hours).map((a) => a.toLowerCase()))];
-    // Per account (it is that account's view of the attendee) and zone (the wall-clock hours depend on it); only fresh entries count.
-    const key = (e: string) => `${name}|${e}|${local.get(e)!.timezone}`;
+    const local = new Map(Object.entries(localIn ?? {}).map(([e, v]) => [e.toLowerCase(), v]));
+    const zoneOf = (e: string) => (validZone(local.get(e.toLowerCase())?.timezone) ? local.get(e.toLowerCase())!.timezone! : undefined);
+    // Hours of a visible attendee with a zone and none given: one history call for all of them. Any failure leaves the defaults.
+    const key = (e: string) => `${name}|${e.toLowerCase()}|${zoneOf(e)}`;
     const fresh = (e: string) => (this.inferred.get(key(e))?.at ?? 0) >= now - 7 * 86_400_000;
-    const stale = needing.filter((e) => !fresh(e));
+    const needing = listed.filter((e) => !isSelf(e) && state.get(e) === "used" && zoneOf(e) && !local.get(e.toLowerCase())!.hours);
+    const stale = [...new Set(needing.filter((e) => !fresh(e)).map((e) => e.toLowerCase()))];
     if (stale.length) {
       try {
         const r = (await this.in(name, (w) => w.freeBusy(stale, new Date(now - HISTORY_DAYS * 86_400_000).toISOString(), new Date(now).toISOString()))) as Awaited<ReturnType<Workspace["freeBusy"]>>;
-        for (const e of stale) if (r.byEmail[e]) this.inferred.set(key(e), { at: now, hours: inferHours(r.byEmail[e]!, local.get(e)!.timezone!) });
+        for (const e of stale) if (r.byEmail[e]) this.inferred.set(key(e), { at: now, hours: inferHours(r.byEmail[e]!, zoneOf(e)!) });
       } catch {
         // defaults
       }
     }
-    const enriched: NonNullable<FindTimesArgs["attendees_local"]> = { ...(args.attendees_local ?? {}) };
-    const attendees: AttendeeStatus[] = listed.map((email) => {
-      const l = local.get(email.toLowerCase());
-      const known = validZone(l?.timezone);
-      if (!known) return { email, freebusy: state.get(email)!, timezone_known: false };
-      const e = email.toLowerCase();
-      const inferred = !l!.hours && used(email) && fresh(e) ? this.inferred.get(key(e))?.hours ?? undefined : undefined;
-      if (inferred) enriched[email] = { ...l!, hours: inferred };
-      const dflt = args.default_hours ?? DEFAULT_HOURS;
-      return { email, freebusy: state.get(email)!, timezone_known: true, hours: { core: l!.hours ?? inferred ?? dflt, source: l!.hours ? "given" : inferred ? "inferred" : "default" } };
+    const stretchMin = (d.stretch_hours ?? DEFAULT_STRETCH_HOURS) * 60;
+    const around = (c: [string, string]): [string, string] => [hhmm(Math.max(0, minutes(c[0]) - stretchMin)), hhmm(Math.min(1440, minutes(c[1]) + stretchMin))];
+    return listed.map((email) => {
+      const zone = zoneOf(email);
+      const view: PersonView = { email, freebusy: state.get(email)!, ...(busyBy.has(email) ? { busy: busyBy.get(email)! } : {}), ...(zone ? { timezone: zone } : {}) };
+      if (!zone || isSelf(email)) return view;
+      const given = local.get(email.toLowerCase())!.hours;
+      const inferred = !given && state.get(email) === "used" && fresh(email) ? this.inferred.get(key(email))?.hours ?? undefined : undefined;
+      const core = given ?? inferred ?? d.default_hours ?? DEFAULT_HOURS;
+      return { ...view, hours: { core, stretch: given || inferred ? around(core) : d.default_stretch ?? DEFAULT_STRETCH, source: given ? "given" : inferred ? "inferred" : "default" } };
     });
-    const all = attendees.map((x) => x.freebusy);
-    const summary: AttendeeFreebusy = all.every((x) => x === "used") ? "used" : all.includes("not_granted") ? "not_granted" : "not_visible";
-    return { slots: findTimes({ ...args, attendees_local: enriched }, events, busy, now, timeZone), attendee_freebusy: summary, attendees };
+  }
+
+  /** The search's view of a person (find-times.ts PersonInput), the owner excluded: they are read from events. */
+  private inputOf(v: PersonView, required: boolean, name: string): PersonInput[] {
+    if (v.email.toLowerCase() === name.toLowerCase()) return [];
+    return [{ email: v.email, required, ...(v.busy ? { busy: v.busy } : {}), ...(v.timezone ? { zone: v.timezone } : {}), ...(v.hours ? { core: [minutes(v.hours.core[0]), minutes(v.hours.core[1])], stretch: [minutes(v.hours.stretch[0]), minutes(v.hours.stretch[1])] } : {}) } as PersonInput];
+  }
+
+  private summary(views: PersonView[]): AttendeeFreebusy {
+    const all = views.map((x) => x.freebusy);
+    return all.every((x) => x === "used") ? "used" : all.includes("not_granted") ? "not_granted" : "not_visible";
+  }
+
+  /** Meeting times for the owner (calendar_find_times, find-times.ts). */
+  async findTimes(args: FindTimesArgs, now = Date.now()): Promise<FoundTimes> {
+    const [name] = this.one(args.account);
+    const [from, to] = windowOf(args);
+    const horizon = to + ((args.weeks ?? 1) - 1) * 7 * 86_400_000;
+    const { events, timeZone } = (await this.in(name, (w) => w.rawEvents(new Date(from - LOOKBACK_MS).toISOString(), new Date(horizon + 86_400_000).toISOString()))) as Awaited<ReturnType<Workspace["rawEvents"]>>;
+    const optional = (args.optional ?? []).filter((o) => !args.required.some((r) => r.toLowerCase() === o.toLowerCase()));
+    const views = await this.personViews(name, [...args.required, ...optional], args.attendees_local, [args.window_start, new Date(horizon).toISOString()], now, args);
+    const isOptional = (v: PersonView) => optional.some((o) => o.toLowerCase() === v.email.toLowerCase());
+    const people = views.flatMap((v) => this.inputOf(v, !isOptional(v), name));
+    const attendees: AttendeeStatus[] = views.map((v) => ({ email: v.email, freebusy: v.freebusy, timezone_known: !!v.timezone, ...(v.hours ? { hours: { core: v.hours.core, source: v.hours.source } } : {}), ...(isOptional(v) ? { optional: true as const } : {}) }));
+    return { slots: findTimes(args, events, people, now, timeZone), attendee_freebusy: this.summary(views), attendees };
+  }
+
+  /** Busy time, hours and (if cheap) working locations for people over a window (calendar_free_busy); the owner's own calendar when listed. */
+  async freeBusyView(a: { people: string[]; window_start: string; window_end: string; people_local?: FindTimesArgs["attendees_local"]; account?: string }, now = Date.now()) {
+    const [name] = this.one(a.account);
+    windowOf(a);
+    const views = await this.personViews(name, a.people, a.people_local, [a.window_start, a.window_end], now, {});
+    const self = views.find((v) => v.email.toLowerCase() === name.toLowerCase());
+    let own: { events: Awaited<ReturnType<Workspace["rawEvents"]>>["events"]; timeZone: string } | undefined;
+    if (self) own = (await this.in(name, (w) => w.rawEvents(new Date(Date.parse(a.window_start) - 86_400_000).toISOString(), new Date(Date.parse(a.window_end) + 86_400_000).toISOString()))) as typeof own;
+    let looked = 0;
+    return {
+      people: await Promise.all(
+        views.map(async (v) => {
+          const base = { email: v.email, freebusy: v.freebusy, ...(v.timezone ? { timezone: v.timezone } : {}), ...(v.hours ? { hours: v.hours } : {}) };
+          if (v === self && own) {
+            const busy = blocksOf(own.events, own.timeZone).map((b) => ({ start: new Date(b.start).toISOString(), end: new Date(b.end).toISOString() }));
+            return { ...base, timezone: base.timezone ?? own.timeZone, busy, working_location: locationsOf(own.events, own.timeZone) };
+          }
+          // A colleague's working-location entries, when their calendar shares them: best effort, a few people, never an error.
+          let working_location: LocationDay[] | undefined;
+          if (v.freebusy === "used" && looked < 10) {
+            looked++;
+            working_location = await this.in(name, (w) => w.workingLocations(v.email, a.window_start, a.window_end)).then((x) => x as LocationDay[]).catch(() => undefined);
+          }
+          return { ...base, busy: v.busy ?? [], ...(working_location?.length ? { working_location } : {}) };
+        }),
+      ),
+    };
+  }
+
+  /** The verifier for candidate times the caller composed (calendar_check_times): the owner's conflicts and each person's status and hours-tier. */
+  async checkTimes(a: { candidates: { start: string; end: string }[]; people: string[]; people_local?: FindTimesArgs["attendees_local"]; account?: string }, now = Date.now()) {
+    const [name] = this.one(a.account);
+    const spans = a.candidates.map((c) => windowOf({ window_start: c.start, window_end: c.end }));
+    const [lo, hi] = [Math.min(...spans.map((x) => x[0])), Math.max(...spans.map((x) => x[1]))];
+    if (hi - lo > 62 * 86_400_000) throw new Error("the candidates span more than 62 days: check them in groups");
+    const { events, timeZone } = (await this.in(name, (w) => w.rawEvents(new Date(lo - 86_400_000).toISOString(), new Date(hi + 86_400_000).toISOString()))) as Awaited<ReturnType<Workspace["rawEvents"]>>;
+    const views = await this.personViews(name, a.people, a.people_local, [new Date(lo).toISOString(), new Date(hi).toISOString()], now, {});
+    return { candidates: checkTimes(a.candidates, events, views.flatMap((v) => this.inputOf(v, true, name)), timeZone), attendee_freebusy: this.summary(views) };
   }
 
   async meetingDocuments(since: string, hints: string[], max = 50, account?: string) {
@@ -348,11 +408,11 @@ export class MultiWorkspace {
     return this.in(name, fn).then((r) => ({ ...(r as T), account: name }));
   }
 
-  createEvent(e: EventInput & { attendees?: string[]; meet?: boolean; request_key: string; allow_conflict?: boolean }, sendUpdates: SendUpdates, account?: string) {
+  createEvent(e: EventInput & { attendees?: Attendee[]; meet?: boolean; request_key: string; allow_conflict?: boolean }, sendUpdates: SendUpdates, account?: string) {
     return this.write(account, WRITE_SCOPE.calendar, (w) => w.createEvent(e, sendUpdates));
   }
 
-  updateEvent(id: string, e: EventInput & { add_attendees?: string[]; remove_attendees?: string[]; etag?: string; allow_conflict?: boolean }, sendUpdates: SendUpdates, account?: string) {
+  updateEvent(id: string, e: EventInput & { add_attendees?: Attendee[]; remove_attendees?: string[]; etag?: string; allow_conflict?: boolean }, sendUpdates: SendUpdates, account?: string) {
     return this.write(account, WRITE_SCOPE.calendar, (w) => w.updateEvent(id, e, sendUpdates));
   }
 

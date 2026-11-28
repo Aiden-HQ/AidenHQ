@@ -11,7 +11,9 @@ export interface FindTimesArgs {
   duration_min: number;
   window_start: string;
   window_end: string;
-  attendees?: string[];
+  /** The owner is always required. `required` must be free for a slot to be offered; `optional` only count in `optional_free`. */
+  required: string[];
+  optional?: string[];
   working_hours: Record<Day, Windows>;
   call_windows?: { best?: Windows; ok?: Windows };
   /** Each omitted constraint is none: no buffer, no notice, no daily cap. */
@@ -26,22 +28,41 @@ export interface FindTimesArgs {
   default_stretch?: [string, string];
   /** How far beyond core a person with known hours stretches, and the owner beyond working_hours (default 2). */
   stretch_hours?: number;
+  /** strict: working_hours only; stretch (default): up to stretch_hours beyond them; any: any hour. */
+  owner_hours?: "strict" | "stretch" | "any";
+  /** The owner's busy time from these events (ids) counts as free: the owner is willing to move them. */
+  movable_event_ids?: string[];
+  /** A slot must also be free at the same weekday and time in each of the next N weeks (default 1: this one only). */
+  weeks?: number;
+  /** Only these weekdays. */
+  days?: Day[];
+  /** Owner-local ranges ranked higher. */
+  preferred?: Windows;
   timezone: string;
   account?: string;
 }
 
 export type Tier = "best" | "ok" | "last_resort";
-export interface FoundSlot { start: string; end: string; tier: Tier; timezone: string }
 export type AttendeeFreebusy = "used" | "not_granted" | "not_visible";
+export type PersonStatus = "free" | "busy" | "unknown";
+export type PersonTier = "core" | "stretch" | "outside" | "unknown";
+export interface PersonSlot { email: string; status: PersonStatus; tier: PersonTier }
+export interface FoundSlot { start: string; end: string; tier: Tier; timezone: string; people: PersonSlot[]; optional_free: number }
+export type HoursSource = "given" | "inferred" | "default";
+/** What the search knows of one invited person: their busy time (undefined: not visible), zone and hours (minutes of their day). */
+export interface PersonInput { email: string; required: boolean; busy?: { start: string; end: string }[]; zone?: string; core?: [number, number]; stretch?: [number, number] }
+export interface CheckedCandidate { start: string; end: string; owner_conflicts: { event_id: string; title: string }[]; people: PersonSlot[] }
 /** `hours`: the core hours used for an attendee with a known zone: given by the caller, inferred from their busy history, or the default. */
-export interface AttendeeStatus { email: string; freebusy: AttendeeFreebusy; timezone_known: boolean; hours?: { core: [string, string]; source: "given" | "inferred" | "default" } }
+export interface AttendeeStatus { email: string; freebusy: AttendeeFreebusy; timezone_known: boolean; hours?: { core: [string, string]; source: HoursSource }; optional?: true }
 export interface FoundTimes { slots: FoundSlot[]; attendee_freebusy: AttendeeFreebusy; attendees: AttendeeStatus[] }
+/** A person as the tools show them: how their calendar was read, their zone, and the hours used (core and stretch) with where they came from. */
+export interface PersonView { email: string; freebusy: AttendeeFreebusy; busy?: { start: string; end: string }[]; timezone?: string; hours?: { core: [string, string]; stretch: [string, string]; source: HoursSource } }
 export const DEFAULT_HOURS: [string, string] = ["09:00", "18:00"];
 /** Hours are inferred from this many past days of busy time, needing at least MIN_BUSY_DAYS days with a block and a span of 4 to 14 hours. */
 export const HISTORY_DAYS = 28;
 const MIN_BUSY_DAYS = 8;
-const DEFAULT_STRETCH: [string, string] = ["06:00", "22:00"];
-const DEFAULT_STRETCH_HOURS = 2;
+export const DEFAULT_STRETCH: [string, string] = ["06:00", "22:00"];
+export const DEFAULT_STRETCH_HOURS = 2;
 
 /** Candidate starts fall on this many minutes of the local wall clock. */
 const GRANULARITY_MIN = 15;
@@ -58,7 +79,7 @@ export const LOOKBACK_MS = FLIGHT_LAPSE_MS + DAY_MS;
 const FLIGHT = /\bflight\b/i;
 const STAY = /hotel|airbnb|\bstay\b|accommodation|\btrip\b/i;
 
-export interface Block { start: number; end: number; title: string; /** A meeting of the owner's (not a flight, an absence or someone else's busy time). */ meeting: boolean }
+export interface Block { id: string; start: number; end: number; title: string; /** A meeting of the owner's (not a flight, an absence or someone else's busy time). */ meeting: boolean }
 
 const isFlight = (e: GEvent) => FLIGHT.test(e.summary ?? "");
 /** Working-location entries, Gmail's travel reservations and all-day "Hotel"/"Trip" markers say where the owner is; they do not block time. A timed meeting with such a word in its title is still a meeting. */
@@ -85,7 +106,7 @@ export function blocksOf(events: GEvent[], zone: string, except?: string): Block
     if (except && (e.id === except || e.recurringEventId === except)) continue;
     const s = span(e, zone);
     if (!s || !(s[1] > s[0])) continue;
-    out.push({ start: s[0], end: s[1], title: e.summary ?? "", meeting: !!e.start?.dateTime && !isFlight(e) && e.eventType !== "outOfOffice" });
+    out.push({ id: e.id, start: s[0], end: s[1], title: e.summary ?? "", meeting: !!e.start?.dateTime && !isFlight(e) && e.eventType !== "outOfOffice" });
   }
   return out;
 }
@@ -130,97 +151,132 @@ export function windowOf(args: { window_start: string; window_end: string }): [n
   return w;
 }
 
-const minutes = (hhmm: string) => {
+export const minutes = (hhmm: string) => {
   const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm);
   if (!m || Number(m[1]) > 24 || Number(m[2]) > 59) throw new Error(`"${hhmm}" is not a time: use HH:MM`);
   return Number(m[1]) * 60 + Number(m[2]);
 };
 const weekday = (date: string): Day => DAYS[(new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7]!;
 
-interface Candidate { start: number; end: number; tier: Tier; zone: string; sides: number; /** People (the owner and attendees with a known zone) in their stretch hours, and outside their hours. */ stretch: number; outside: number }
+interface Candidate { start: number; end: number; tier: Tier; zone: string; sides: number; /** People (the owner and the required with a known zone) in their stretch hours, and outside their hours. */ stretch: number; outside: number; preferred: boolean; people: PersonSlot[]; optionalFree: number }
 const TIER_RANK: Record<Tier, number> = { best: 0, ok: 1, last_resort: 2 };
+const BAND_NAME = ["core", "stretch", "outside"] as const;
+
+/** 0: inside `core`, 1: inside `stretch`, 2: outside, for a slot on `zone`'s wall clock. */
+function band(start: number, end: number, zone: string, core: readonly [number, number], stretch: readonly [number, number]): 0 | 1 | 2 {
+  const [s, e] = [renderInZone(new Date(start).toISOString(), zone), renderInZone(new Date(end).toISOString(), zone)];
+  const endMin = s.slice(0, 10) === e.slice(0, 10) ? minutes(e.slice(11, 16)) : e.slice(0, 10) === nextDate(s.slice(0, 10)) && e.slice(11, 16) === "00:00" ? 1440 : Infinity;
+  const sm = minutes(s.slice(11, 16));
+  return sm >= core[0] && endMin <= core[1] ? 0 : sm >= stretch[0] && endMin <= stretch[1] ? 1 : 2;
+}
+
+const addDays = (date: string, n: number) => new Date(Date.parse(`${date}T00:00:00Z`) + n * DAY_MS).toISOString().slice(0, 10);
+
+/** One person's status and hours-tier for the slot [start, end). */
+function personAt(p: PersonInput, start: number, end: number): PersonSlot {
+  const status: PersonStatus = p.busy === undefined ? "unknown" : p.busy.some((b) => start < Date.parse(b.end) && end > Date.parse(b.start)) ? "busy" : "free";
+  const tier: PersonTier = p.zone && p.core && p.stretch ? BAND_NAME[band(start, end, p.zone, p.core, p.stretch)] : "unknown";
+  return { email: p.email, status, tier };
+}
 
 /**
- * Slots of `duration_min` inside `working_hours` (the owner's wall clock on each day, in the zone the owner is in that day),
- * clear of busy time plus `buffer_min` either side and of the attendees' busy time, at least `min_notice_hours` away, on days
- * with fewer than `max_per_day` meetings (each constraint optional, none when omitted). The owner may be offered `stretch_hours` beyond working_hours, never further. Ranked: everyone in core hours, then fewer people outside their hours, then fewer in stretch (attendees with a known zone only; never excluded for hours), then tier (inside a best call window, an ok one, else last resort), then
- * back-to-back with a meeting of the owner's (both sides before one side), then earliest. Overlapping slots are thinned to the
- * best of each, so the list is distinct choices rather than every quarter-hour of one gap.
+ * Slots of `duration_min` that fit the owner's calendar and the `required` people's busy time, clear of busy time plus
+ * `buffer_min` either side, at least `min_notice_hours` away, on days with fewer than `max_per_day` meetings (each constraint
+ * optional, none when omitted). Owner hours: `owner_hours` strict (working_hours only), stretch (the default: up to
+ * `stretch_hours` beyond), or any. `movable_event_ids` free the owner's time; `weeks` N needs the same time free in the next
+ * N weeks; `days` limits the weekdays. Ranked: everyone required in core hours, then fewer people outside their hours, then
+ * fewer in stretch (only people with a known zone; never excluded for hours), then inside `preferred`, then tier (inside a
+ * best call window, an ok one, else last resort), then back-to-back with a meeting of the owner's (both sides before one side),
+ * then more optional people free, then earliest. Overlapping slots are thinned to the best of each.
  */
-export function findTimes(args: FindTimesArgs, events: GEvent[], attendeeBusy: { start: string; end: string }[], now = Date.now(), calendarZone = args.timezone): FoundSlot[] {
+export function findTimes(args: FindTimesArgs, events: GEvent[], people: PersonInput[], now = Date.now(), calendarZone = args.timezone): FoundSlot[] {
   if (!validZone(args.timezone)) throw new Error(`unknown timezone ${args.timezone}`);
   const [from, to] = windowOf(args);
   if (!(args.duration_min > 0)) throw new Error("duration_min must be positive");
+  const weeks = args.weeks ?? 1;
+  if (!Number.isInteger(weeks) || weeks < 1 || weeks > 8) throw new Error("weeks must be 1 to 8");
   const home = args.timezone;
   const durMs = args.duration_min * 60_000;
   const buf = (args.buffer_min ?? 0) * 60_000;
-  const busy = blocksOf(events, calendarZone);
-  const theirs = attendeeBusy.map((b) => ({ start: Date.parse(b.start), end: Date.parse(b.end) })).filter((b) => b.end > b.start);
+  const movable = new Set(args.movable_event_ids ?? []);
+  const busy = blocksOf(movable.size ? events.filter((e) => !movable.has(e.id) && !(e.recurringEventId && movable.has(e.recurringEventId))) : events, calendarZone);
+  const mustBeFree = people.filter((p) => p.required && p.busy).flatMap((p) => p.busy!.map((b) => ({ start: Date.parse(b.start), end: Date.parse(b.end) }))).filter((b) => b.end > b.start);
   const earliest = now + (args.min_notice_hours ?? 0) * 3_600_000;
   const calls = args.call_windows;
   const windowsOf = (w?: Windows) => (w ?? []).map(([a, b]) => [minutes(a), minutes(b)] as const);
-  const [best, ok] = [windowsOf(calls?.best), windowsOf(calls?.ok)];
+  const [best, ok, preferred] = [windowsOf(calls?.best), windowsOf(calls?.ok), windowsOf(args.preferred)];
   const tiered = best.length + ok.length > 0;
-
-  // Each person with a known zone has core hours and wider stretch hours; an attendee without a valid zone is ignored.
+  const mode = args.owner_hours ?? "stretch";
   const stretchMin = (args.stretch_hours ?? DEFAULT_STRETCH_HOURS) * 60;
-  const span2 = (w: readonly [string, string]) => [minutes(w[0]), minutes(w[1])] as const;
-  const known = new Map(Object.entries(args.attendees_local ?? {}).map(([e, v]) => [e.toLowerCase(), v]));
-  const people = [...new Set((args.attendees ?? []).map((a) => a.toLowerCase()))].flatMap((a) => {
-    const v = known.get(a);
-    if (!validZone(v?.timezone)) return [];
-    const core = span2(v!.hours ?? args.default_hours ?? DEFAULT_HOURS);
-    const stretch = v!.hours ? ([Math.max(0, core[0] - stretchMin), Math.min(1440, core[1] + stretchMin)] as const) : span2(args.default_stretch ?? DEFAULT_STRETCH);
-    return [{ zone: v!.timezone!, core, stretch }];
-  });
-  /** 0: inside `core`, 1: inside `stretch`, 2: outside, for a slot on `zone`'s wall clock. */
-  const band = (start: number, end: number, zone: string, core: readonly [number, number], stretch: readonly [number, number]) => {
-    const [s, e] = [renderInZone(new Date(start).toISOString(), zone), renderInZone(new Date(end).toISOString(), zone)];
-    const endMin = s.slice(0, 10) === e.slice(0, 10) ? minutes(e.slice(11, 16)) : e.slice(0, 10) === nextDate(s.slice(0, 10)) && e.slice(11, 16) === "00:00" ? 1440 : Infinity;
-    const sm = minutes(s.slice(11, 16));
-    return sm >= core[0] && endMin <= core[1] ? 0 : sm >= stretch[0] && endMin <= stretch[1] ? 1 : 2;
-  };
-  const workings = (day: Day) => (args.working_hours[day] ?? []).map((w) => span2(w));
+  const ownerStretch = mode === "stretch" ? stretchMin : 0;
+  const free = (start: number, end: number) => !busy.some((x) => start < x.end + buf && end > x.start - buf) && !mustBeFree.some((x) => start < x.end && end > x.start);
+  const workings = (day: Day) => (args.working_hours[day] ?? []).map((w) => [minutes(w[0]), minutes(w[1])] as const);
 
   const found = new Map<number, Candidate>();
   // One day either side: a day's hours in another zone can reach into the window from a neighbouring date.
   for (let date = dateIn(from - DAY_MS, home), last = dateIn(to + DAY_MS, home); date <= last; date = nextDate(date)) {
+    if (args.days && !args.days.includes(weekday(date))) continue;
     const zone = zoneOn(date, home, events, calendarZone);
     const todays = busy.filter((b) => b.meeting && dateIn(b.start, zone) === date).length;
     if (args.max_per_day !== undefined && todays >= args.max_per_day) continue;
     const ownerCore = workings(weekday(date));
-    for (const [coreOpen, coreClose] of ownerCore) {
-      // The owner's stretch: slots beyond working hours by stretch_hours are offered (ranked lower), never further.
-      const [open, close] = [Math.max(0, coreOpen - stretchMin), Math.min(1440, coreClose + stretchMin)];
+    // The owner's hours: working hours, stretched by stretch_hours, or the whole day.
+    const ranges = mode === "any" ? [[0, 1440] as const] : ownerCore.map(([a, b]) => [Math.max(0, a - ownerStretch), Math.min(1440, b + ownerStretch)] as const);
+    for (const [open, close] of ranges) {
       const closeAt = wallOn(date, close, zone);
       if (closeAt === undefined) continue;
       for (let t = Math.ceil(open / GRANULARITY_MIN) * GRANULARITY_MIN; t < close; t += GRANULARITY_MIN) {
         const start = wallOn(date, t, zone);
         if (start === undefined) continue;
         const end = start + durMs;
-        if (end > closeAt || start < from || end > to || start < earliest || found.has(start)) continue;
-        if (busy.some((x) => start < x.end + buf && end > x.start - buf) || theirs.some((x) => start < x.end && end > x.start)) continue;
+        if (end > closeAt || start < from || end > to || start < earliest || found.has(start) || !free(start, end)) continue;
+        // The same wall-clock time in each of the next weeks must be free too.
+        let repeats = true;
+        for (let k = 1; k < weeks && repeats; k++) {
+          const s2 = wallOn(addDays(date, 7 * k), t, zone);
+          repeats = s2 !== undefined && free(s2, s2 + durMs);
+        }
+        if (!repeats) continue;
         const inside = (ws: readonly (readonly [number, number])[]) => ws.some(([x, y]) => x <= t && t + args.duration_min <= y);
         const tier: Tier = !tiered || inside(best) ? "best" : inside(ok) ? "ok" : "last_resort";
         const slack = buf + ADJACENT_SLACK_MS;
         const sides = (busy.some((m) => m.meeting && start >= m.end && start - m.end <= slack) ? 1 : 0) + (busy.some((m) => m.meeting && m.start >= end && m.start - end <= slack) ? 1 : 0);
-        // Generated only within the owner's stretch, so the owner is in core or in stretch.
-        const bands = [ownerCore.some((c) => band(start, end, zone, c, c) === 0) ? 0 : 1, ...people.map((p) => band(start, end, p.zone, p.core, p.stretch))];
-        found.set(start, { start, end, tier, zone, sides, stretch: bands.filter((x) => x === 1).length, outside: bands.filter((x) => x === 2).length });
+        const ownerBand = ownerCore.length ? Math.min(...ownerCore.map((c) => band(start, end, zone, c, [Math.max(0, c[0] - ownerStretch), Math.min(1440, c[1] + ownerStretch)] as const))) : 2;
+        const seen = people.map((p) => personAt(p, start, end));
+        const rated = [ownerBand, ...people.flatMap((p, i) => (p.required && seen[i]!.tier !== "unknown" ? [BAND_NAME.indexOf(seen[i]!.tier as "core")] : []))];
+        found.set(start, {
+          start, end, tier, zone, sides, preferred: inside(preferred), people: seen,
+          stretch: rated.filter((x) => x === 1).length, outside: rated.filter((x) => x === 2).length,
+          optionalFree: people.reduce((n, p, i) => n + (!p.required && seen[i]!.status === "free" ? 1 : 0), 0),
+        });
       }
     }
   }
 
-  const ranked = [...found.values()].sort((x, y) => Number(!!(x.stretch + x.outside)) - Number(!!(y.stretch + y.outside)) || x.outside - y.outside || x.stretch - y.stretch || TIER_RANK[x.tier] - TIER_RANK[y.tier] || y.sides - x.sides || x.start - y.start);
+  const ranked = [...found.values()].sort((x, y) => Number(!!(x.stretch + x.outside)) - Number(!!(y.stretch + y.outside)) || x.outside - y.outside || x.stretch - y.stretch || Number(!x.preferred) - Number(!y.preferred) || TIER_RANK[x.tier] - TIER_RANK[y.tier] || y.sides - x.sides || y.optionalFree - x.optionalFree || x.start - y.start);
   const picked: Candidate[] = [];
   for (const c of ranked) {
     if (picked.length >= MAX_SLOTS) break;
     if (!picked.some((p) => c.start < p.end && c.end > p.start)) picked.push(c);
   }
-  return picked.map((c) => ({ start: renderInZone(new Date(c.start).toISOString(), c.zone), end: renderInZone(new Date(c.end).toISOString(), c.zone), tier: c.tier, timezone: c.zone }));
+  return picked.map((c) => ({ start: renderInZone(new Date(c.start).toISOString(), c.zone), end: renderInZone(new Date(c.end).toISOString(), c.zone), tier: c.tier, timezone: c.zone, people: c.people, optional_free: c.optionalFree }));
 }
 
-const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+/** The verifier for slots composed by hand: per candidate, the owner's overlapping events and each person's status and hours-tier. */
+export function checkTimes(candidates: { start: string; end: string }[], events: GEvent[], people: PersonInput[], calendarZone: string): CheckedCandidate[] {
+  const busy = blocksOf(events, calendarZone);
+  return candidates.map((c) => {
+    const [start, end] = [Date.parse(c.start), Date.parse(c.end)];
+    return {
+      start: c.start,
+      end: c.end,
+      owner_conflicts: busy.filter((b) => start < b.end && end > b.start).map((b) => ({ event_id: b.id, title: b.title })),
+      people: people.map((p) => personAt(p, start, end)),
+    };
+  });
+}
+
+export const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 const percentile = (sorted: number[], p: number) => sorted[Math.floor(p * (sorted.length - 1))]!;
 
 /**
@@ -243,4 +299,26 @@ export function inferHours(busy: { start: string; end: string }[], zone: string)
   const ends = [...days.values()].map((d) => d.last).sort((a, b) => a - b);
   const [open, close] = [Math.round(percentile(starts, 0.1) / 15) * 15, Math.round(percentile(ends, 0.9) / 15) * 15];
   return close - open >= 4 * 60 && close - open <= 14 * 60 ? [hhmm(open), hhmm(Math.min(close, 1440))] : null;
+}
+
+export interface LocationDay { date: string; kind: "home" | "office" | "custom"; label?: string }
+/** Where the owner is, per day, from their own working-location entries, flights (the arrival day) and stays. */
+export function locationsOf(events: GEvent[], zone: string): LocationDay[] {
+  const out: LocationDay[] = [];
+  const clean = (t?: string) => (t ? t.replace(/[\r\n\t]+/g, " ").trim().slice(0, 200) : undefined);
+  for (const e of events) {
+    if (!ownTravel(e) && e.organizer?.self !== true) continue;
+    const label = clean(e.workingLocationProperties?.officeLocation?.label ?? e.workingLocationProperties?.customLocation?.label ?? e.summary);
+    if (e.eventType === "workingLocation" && e.start?.date) {
+      const t = e.workingLocationProperties?.type;
+      out.push({ date: e.start.date, kind: t === "homeOffice" ? "home" : t === "officeLocation" ? "office" : "custom", ...(label ? { label } : {}) });
+    } else if (isFlight(e)) {
+      const s = span(e, zone);
+      if (s) out.push({ date: dateIn(s[1], e.end?.timeZone && validZone(e.end.timeZone) ? e.end.timeZone : zone), kind: "custom", ...(clean(e.summary) ? { label: clean(e.summary) } : {}) });
+    } else if (isStay(e) && e.eventType !== "workingLocation") {
+      const s = span(e, zone);
+      if (s) for (let d = dateIn(s[0], zone), last = dateIn(s[1] - 1, zone); d <= last; d = nextDate(d)) out.push({ date: d, kind: "custom", ...(clean(e.summary) ? { label: clean(e.summary) } : {}) });
+    }
+  }
+  return out.sort((a, b) => a.date.localeCompare(b.date));
 }

@@ -42,7 +42,7 @@ const meetingNameHints = (process.env.MEETING_DOC_NAME_HINTS ?? "Transcript,Note
 
 // MultiWorkspace (real Google, one or more accounts) or FixtureWorkspace (tests).
 type WorkspaceLike = Pick<MultiWorkspace, "listEvents" | "getEvent" | "recentFiles" | "meetingDocuments" | "searchFiles" | "readFile"> &
-  Partial<Pick<MultiWorkspace, "readDoc" | "gmailSearch" | "gmailInbox" | "gmailThread" | "accounts" | "findTimes" | "createEvent" | "updateEvent" | "deleteEvent" | "respondToEvent" | "gmailDraft" | "gmailSend" | "gmailLabel">> & { primary?: string };
+  Partial<Pick<MultiWorkspace, "readDoc" | "gmailSearch" | "gmailInbox" | "gmailThread" | "accounts" | "findTimes" | "freeBusyView" | "checkTimes" | "createEvent" | "updateEvent" | "deleteEvent" | "respondToEvent" | "gmailDraft" | "gmailSend" | "gmailLabel">> & { primary?: string };
 let workspace: WorkspaceLike | undefined;
 let multi: MultiWorkspace | undefined;
 let authError: unknown;
@@ -152,24 +152,35 @@ function buildServer(caller?: Caller): McpServer {
   );
   const hhmm = z.string().regex(/^\d{1,2}:\d{2}$/).describe("HH:MM on the owner's wall clock");
   const windows = z.array(z.tuple([hhmm, hhmm])).max(8);
+  const email = z.string().email().max(320);
+  const day = z.enum(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);
+  const peopleLocal = z.record(email, z.object({ timezone: z.string().max(64).optional(), hours: z.tuple([hhmm, hhmm]).optional() })).optional().describe("What you know of each person (Slack profile, memory): IANA timezone and, if known, their own working hours. Leave out what you don't know: no zone or hours are guessed. A person with a zone and no hours whose calendar is visible has hours inferred from their last 28 days of busy time (8+ busy days, a 4-14 h span), else the defaults; `hours.source` says which");
+  const iso = (what: string) => z.string().describe(`${what}: ISO-8601 date-time with offset, e.g. 2026-12-02T00:00:00+04:00`);
+  const PEOPLE = "Each person is read from their own calendar's free/busy when the owner allowed it (used) and Google shows it (external people usually not: not_visible; not_granted when the owner has not allowed it yet). A person we can't read is unknown, never an error.";
   server.registerTool(
     "calendar_find_times",
     {
       description:
-        "Meeting times that fit the owner's calendar: inside working_hours (the owner's wall clock on each day, in the zone the owner is in that day: flights, stays and working locations that carry their own time zone, organised or accepted by the owner, move it), clear of busy time plus buffer_min either side and of the attendees' busy time, at least min_notice_hours away, on days under max_per_day meetings (buffer_min, min_notice_hours and max_per_day are optional: none when omitted). Returns ranked, distinct slots: everyone in core hours first, then fewer people outside their hours, then fewer in stretch hours (the owner's core is working_hours and the owner may stretch stretch_hours beyond, never further; attendees count only when attendees_local gives a zone, and are never excluded for hours), then tier (best, ok, then last_resort: working hours but outside the call windows), then back-to-back with an existing meeting, then earliest; each slot's own timezone. `attendees` says per attendee whether their calendar was used (used), the owner has not allowed that yet (not_granted) or Google hid it (not_visible: external people usually), and whether their zone was known; attendee_freebusy is the summary (used only if every attendee was used). An attendee we can't see is skipped, never an error.",
+        "Candidate meeting times, ranked. Every constraint is a signal you may weigh against the situation, not a rule: ask again with other settings when the first answer is too thin. A slot needs the owner and `required` people free (their calendars: " + "see below); `optional` people only raise optional_free. Owner hours: owner_hours strict (working_hours only), stretch (default: up to stretch_hours, default 2, beyond them) or any. Times are on the owner's wall clock in the zone the owner is in that day (flights, stays and working locations that carry their own time zone, organised or accepted by the owner, move it). Also: buffer_min, min_notice_hours, max_per_day (none when omitted), days (weekdays), preferred (owner-local ranges ranked higher), movable_event_ids (the owner's events whose time counts as free), weeks N (the same weekday and time must be free in each of the next N weeks). Ranking: everyone required in core hours, then fewer people outside their hours, then fewer in stretch (people with a known zone only, never excluded for hours), then preferred, then tier (best, ok, last_resort: outside the call windows), then back-to-back with a meeting, then more optional people free, then earliest. Each slot has its own timezone, `people` ({email, status free|busy|unknown, tier core|stretch|outside|unknown}) and optional_free. " + PEOPLE + " `attendees` gives each person's freebusy state, whether their zone was known and the hours used; attendee_freebusy is the summary (used only if everyone was read).",
       inputSchema: {
         duration_min: z.number().int().min(5).max(480),
-        window_start: z.string().describe("ISO-8601 date-time with offset, e.g. 2026-12-02T00:00:00+04:00"),
-        window_end: z.string().describe("ISO-8601 date-time with offset; at most 62 days after window_start"),
-        attendees: z.array(z.string().email().max(320)).max(20).optional(),
+        window_start: iso("First possible start"),
+        window_end: iso("Last possible end; at most 62 days after window_start"),
+        required: z.array(email).max(20).describe("Must be free (the owner is always required)"),
+        optional: z.array(email).max(20).optional(),
         working_hours: z.object({ mon: windows, tue: windows, wed: windows, thu: windows, fri: windows, sat: windows, sun: windows }),
         call_windows: z.object({ best: windows.optional(), ok: windows.optional() }).optional(),
         buffer_min: z.number().int().min(0).max(240).optional(),
         min_notice_hours: z.number().min(0).max(24 * 60).optional(),
         max_per_day: z.number().int().min(1).max(50).optional(),
-        attendees_local: z.record(z.string().email().max(320), z.object({ timezone: z.string().max(64).optional(), hours: z.tuple([hhmm, hhmm]).optional() })).optional().describe("What you know of each attendee (Slack profile, memory): IANA timezone and, if known, their own working hours. Leave out what you don't know: no zone or hours are guessed. An attendee with a zone and no hours whose calendar is visible has hours inferred from their last 28 days of busy time (8+ busy days, a 4-14 h span), else the defaults; `attendees[].hours.source` says which"),
-        default_hours: z.tuple([hhmm, hhmm]).optional().describe("Core hours of an attendee with a timezone but no hours; default 09:00-18:00"),
-        default_stretch: z.tuple([hhmm, hhmm]).optional().describe("Stretch hours of such an attendee; default 06:00-22:00"),
+        owner_hours: z.enum(["strict", "stretch", "any"]).optional(),
+        movable_event_ids: z.array(z.string().max(1024)).max(50).optional(),
+        weeks: z.number().int().min(1).max(8).optional(),
+        days: z.array(day).max(7).optional(),
+        preferred: windows.optional().describe("Owner-local ranges ranked higher"),
+        attendees_local: peopleLocal,
+        default_hours: z.tuple([hhmm, hhmm]).optional().describe("Core hours of a person with a timezone but no hours; default 09:00-18:00"),
+        default_stretch: z.tuple([hhmm, hhmm]).optional().describe("Stretch hours of such a person; default 06:00-22:00"),
         stretch_hours: z.number().min(0).max(12).optional().describe("How far beyond their hours a person with known hours stretches, and the owner beyond working_hours; default 2"),
         timezone: z.string().max(64).describe("The owner's home IANA zone, e.g. Asia/Dubai"),
         account,
@@ -179,6 +190,30 @@ function buildServer(caller?: Caller): McpServer {
     run("calendar_find_times", (ws, a: FindTimesArgs) => {
       if (!ws.findTimes) throw new Error("calendar_find_times is not available in fixture mode");
       return ws.findTimes(a);
+    }),
+  );
+  server.registerTool(
+    "calendar_free_busy",
+    {
+      description: "The raw data behind scheduling: per person their busy blocks over a window, timezone and hours used (core, stretch and where they came from: given, inferred from 28 days of their calendar, or default), and working-location entries (home, office, custom per day) when their calendar shares them; for the owner's own email, their calendar's busy blocks and where they are per day (working locations, flights, stays). " + PEOPLE,
+      inputSchema: { people: z.array(email).min(1).max(20), window_start: iso("Window start"), window_end: iso("Window end; at most 62 days after the start"), people_local: peopleLocal, account },
+      annotations: ro,
+    },
+    run("calendar_free_busy", (ws, a: { people: string[]; window_start: string; window_end: string; people_local?: FindTimesArgs["attendees_local"]; account?: string }) => {
+      if (!ws.freeBusyView) throw new Error("calendar_free_busy is not available in fixture mode");
+      return ws.freeBusyView(a);
+    }),
+  );
+  server.registerTool(
+    "calendar_check_times",
+    {
+      description: "Verify candidate times you composed yourself: per candidate, the owner's overlapping events (owner_conflicts: event_id and title, so you can name or move them) and for each person their status (free, busy, unknown) and tier (core, stretch, outside, unknown) in their own hours. " + PEOPLE,
+      inputSchema: { candidates: z.array(z.object({ start: iso("Start"), end: iso("End") })).min(1).max(50), people: z.array(email).max(20), people_local: peopleLocal, account },
+      annotations: ro,
+    },
+    run("calendar_check_times", (ws, a: { candidates: { start: string; end: string }[]; people: string[]; people_local?: FindTimesArgs["attendees_local"]; account?: string }) => {
+      if (!ws.checkTimes) throw new Error("calendar_check_times is not available in fixture mode");
+      return ws.checkTimes(a);
     }),
   );
   server.registerTool(

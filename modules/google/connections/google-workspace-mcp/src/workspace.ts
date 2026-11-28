@@ -12,6 +12,7 @@ const DRIVE = "https://www.googleapis.com/drive/v3";
 export interface GEvent {
   id: string;
   eventType?: string;
+  workingLocationProperties?: { type?: string; customLocation?: { label?: string }; officeLocation?: { label?: string } };
   transparency?: string;
   recurringEventId?: string;
   summary?: string;
@@ -112,6 +113,11 @@ export class EventChanged extends Error {
   }
 }
 
+/** An attendee: an email, or with `optional` Google's flag that the guest is optional. */
+export type Attendee = string | { email: string; optional?: boolean };
+const guest = (a: Attendee) => (typeof a === "string" ? { email: a } : { email: a.email, ...(a.optional ? { optional: true } : {}) });
+const emailOf = (a: Attendee) => (typeof a === "string" ? a : a.email);
+
 /** A stable Google event id for (calendar, key): base32hex characters only, so the same key always names the same event. */
 export function eventIdFor(calendar: string, key: string): string {
   return createHash("sha256").update(`${calendar}\n${key}`).digest("hex").slice(0, 40);
@@ -179,7 +185,7 @@ export class Workspace {
         orderBy: "startTime",
         maxResults: 250,
         pageToken,
-        fields: "timeZone,items(id,recurringEventId,summary,status,eventType,transparency,start,end,organizer(self),attendees(email,self,responseStatus,resource)),nextPageToken",
+        fields: "timeZone,items(id,recurringEventId,summary,status,eventType,transparency,workingLocationProperties(type,customLocation(label),officeLocation(label)),start,end,organizer(self),attendees(email,self,responseStatus,resource)),nextPageToken",
       });
       events.push(...(page.items ?? []));
       if (page.timeZone) timeZone = page.timeZone;
@@ -206,6 +212,24 @@ export class Workspace {
       }
     }
     return { busy, byEmail, hidden };
+  }
+
+  /** A colleague's working-location entries (their calendar must share events with the owner): date, kind and label per day. */
+  async workingLocations(email: string, start: string, end: string): Promise<{ date: string; kind: "home" | "office" | "custom"; label?: string }[]> {
+    const page = await this.g.get<{ items?: GEvent[] }>(`${CAL}/calendars/${encodeURIComponent(email)}/events`, {
+      timeMin: new Date(start).toISOString(),
+      timeMax: new Date(end).toISOString(),
+      eventTypes: "workingLocation",
+      singleEvents: true,
+      maxResults: 100,
+      fields: "items(start,workingLocationProperties(type,customLocation(label),officeLocation(label)))",
+    });
+    return (page.items ?? []).flatMap((e) => {
+      if (!e.start?.date) return [];
+      const t = e.workingLocationProperties?.type;
+      const label = (e.workingLocationProperties?.officeLocation?.label ?? e.workingLocationProperties?.customLocation?.label)?.replace(/[\r\n\t]+/g, " ").trim().slice(0, 200);
+      return [{ date: e.start.date, kind: t === "homeOffice" ? ("home" as const) : t === "officeLocation" ? ("office" as const) : ("custom" as const), ...(label ? { label } : {}) }];
+    });
   }
 
   /**
@@ -236,7 +260,7 @@ export class Workspace {
    * Creates the event under an id derived from `request_key` (a retried create finds it: Google answers 409, and the existing
    * event is returned), after checking the time is free.
    */
-  async createEvent(e: EventInput & { attendees?: string[]; meet?: boolean; request_key: string; allow_conflict?: boolean }, sendUpdates: SendUpdates): Promise<NormalizedEvent> {
+  async createEvent(e: EventInput & { attendees?: Attendee[]; meet?: boolean; request_key: string; allow_conflict?: boolean }, sendUpdates: SendUpdates): Promise<NormalizedEvent> {
     const id = eventIdFor(this.calendarId, e.request_key);
     // A retry finds its own event first: it must not fail as a conflict with itself, nor create a second one.
     const done = await this.rawEvent(id).catch((err) => (err instanceof GoogleApiError && err.status === 404 ? undefined : Promise.reject(err)));
@@ -245,7 +269,7 @@ export class Workspace {
     const body = {
       id,
       ...eventFields(e),
-      ...(e.attendees?.length ? { attendees: e.attendees.map((email) => ({ email })) } : {}),
+      ...(e.attendees?.length ? { attendees: e.attendees.map(guest) } : {}),
       ...(e.meet ? { conferenceData: { createRequest: { requestId: id, conferenceSolutionKey: { type: "hangoutsMeet" } } } } : {}),
     };
     try {
@@ -266,7 +290,7 @@ export class Workspace {
    * only to the version it was checked against (If-Match): `etag` is the one the caller read, else the one just fetched. A
    * move first checks the new time is free.
    */
-  async updateEvent(id: string, e: EventInput & { add_attendees?: string[]; remove_attendees?: string[]; etag?: string; allow_conflict?: boolean }, sendUpdates: SendUpdates): Promise<NormalizedEvent> {
+  async updateEvent(id: string, e: EventInput & { add_attendees?: Attendee[]; remove_attendees?: string[]; etag?: string; allow_conflict?: boolean }, sendUpdates: SendUpdates): Promise<NormalizedEvent> {
     const body: Record<string, unknown> = eventFields(e);
     if (!Object.keys(body).length && !e.add_attendees?.length && !e.remove_attendees?.length) throw new Error("nothing to change: pass a new title, time, description, location or attendees");
     const held = await this.rawEvent(id);
@@ -280,7 +304,7 @@ export class Workspace {
       if (held.attendeesOmitted) throw new Error("Google didn't return this event's full guest list, so attendees can't be changed safely here");
       const kept = (held.attendees ?? []).filter((a) => !gone.has(String(a.email).toLowerCase()));
       const have = new Set(kept.map((a) => String(a.email).toLowerCase()));
-      body.attendees = [...kept, ...(e.add_attendees ?? []).filter((a) => !have.has(a.toLowerCase())).map((email) => ({ email }))];
+      body.attendees = [...kept, ...(e.add_attendees ?? []).filter((a) => !have.has(emailOf(a).toLowerCase())).map(guest)];
     }
     try {
       return normalizeEvent(await this.g.request<GEvent>("PATCH", this.eventUrl(id), { sendUpdates }, body, held.etag));

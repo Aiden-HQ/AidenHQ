@@ -15,7 +15,7 @@ sign-in. By hand: `scripts/google-auth.sh <client.json>`.
 
 ## What agents get
 
-The `google_workspace` connection. Read: `calendar_list_events`, `calendar_search_events`, `calendar_get_event`, `calendar_today`, `calendar_find_times`,
+The `google_workspace` connection. Read: `calendar_list_events`, `calendar_search_events`, `calendar_get_event`, `calendar_today`, `calendar_find_times`, `calendar_free_busy`, `calendar_check_times`,
 `drive_list_recent_files`, `drive_list_meeting_documents`, `drive_search_files`, `drive_read_file`, `gmail_search`,
 `gmail_read_thread`, `docs_read`, and `gmail_inbox_new` (the inbox since the caller's cursor, automated mail set aside in
 code) with `gmail_inbox_ack` (moves that cursor). Glean finds Drive documents faster; read them here for the exact current text.
@@ -23,7 +23,7 @@ code) with `gmail_inbox_ack` (moves that cursor). Glean finds Drive documents fa
 Write, as you on one account (`account`, default the primary), granted only by name: `calendar_create_event`,
 `calendar_update_event`, `calendar_delete_event`, `calendar_respond`, `gmail_draft` and `gmail_send`, each a record the
 AI reviewer decides first; and `gmail_label` (your own existing labels only, never system ones), which runs at once.
-`calendar_find_times` proposes ranked meeting slots from your working hours, buffers, notice and call windows, in the zone
+`calendar_free_busy` returns people's busy blocks, hours and working locations, and `calendar_check_times` verifies candidate times you composed (the owner's conflicts, each person's status and hours-tier). `calendar_find_times` proposes ranked meeting slots (`required` people must be free, `optional` ones only raise `optional_free`; `owner_hours` strict/stretch/any, `movable_event_ids`, `weeks`, `days`, `preferred`) from your working hours, buffers, notice and call windows, in the zone
 you are in each day (flights, stays and working locations you organised or accepted move it, when they carry their own time zone). Creates refuse a time another
 event holds and make one event per `request_key` on a retry; moves are refused when the event changed since it was read.
 Agents that hold them list the skills `google.calendar-changes` and `google.gmail-writes`. Scopes: `calendar.events`,
