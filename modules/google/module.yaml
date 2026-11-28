@@ -24,7 +24,7 @@ contributes:
         - https://www.googleapis.com/auth/calendar.events
         - https://www.googleapis.com/auth/drive.readonly
         - https://www.googleapis.com/auth/gmail.modify
-        - https://www.googleapis.com/auth/calendar.freebusy
+        - https://www.googleapis.com/auth/calendar.events.freebusy
       steps: |
         AidenHQ needs **one Google app per Workspace**: the app is what Google shows when you approve access. Pick the way that fits you; only its steps show.
       ways:

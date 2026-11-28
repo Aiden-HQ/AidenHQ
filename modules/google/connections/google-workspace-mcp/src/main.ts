@@ -156,11 +156,11 @@ function buildServer(caller?: Caller): McpServer {
     "calendar_find_times",
     {
       description:
-        "Meeting times that fit the owner's calendar: inside working_hours (the owner's wall clock on each day, in the zone the owner is in that day: flights, stays and working locations they organised or accepted move it), clear of busy time plus buffer_min either side and of the attendees' busy time, at least min_notice_hours away, on days under max_per_day meetings. Returns ranked, distinct slots: tier first (best, ok, then last_resort: working hours but outside the call windows), then back-to-back with an existing meeting, then earliest; each slot's own timezone. attendee_freebusy says whether the attendees' calendars were used (used), the owner has not allowed that yet (not_granted) or Google hid some (not_visible); the answer is still the owner's own availability.",
+        "Meeting times that fit the owner's calendar: inside working_hours (the owner's wall clock on each day, in the zone the owner is in that day: flights, stays and working locations that carry their own time zone, organised or accepted by the owner, move it), clear of busy time plus buffer_min either side and of the attendees' busy time, at least min_notice_hours away, on days under max_per_day meetings. Returns ranked, distinct slots: tier first (best, ok, then last_resort: working hours but outside the call windows), then back-to-back with an existing meeting, then earliest; each slot's own timezone. attendee_freebusy says whether the attendees' calendars were used (used), the owner has not allowed that yet (not_granted) or Google hid some (not_visible); the answer is still the owner's own availability.",
       inputSchema: {
         duration_min: z.number().int().min(5).max(480),
-        window_start: z.string().describe("ISO-8601 date-time with offset"),
-        window_end: z.string().describe("ISO-8601 date-time with offset"),
+        window_start: z.string().describe("ISO-8601 date-time with offset, e.g. 2026-12-02T00:00:00+04:00"),
+        window_end: z.string().describe("ISO-8601 date-time with offset; at most 62 days after window_start"),
         attendees: z.array(z.string().email().max(320)).max(20).optional(),
         working_hours: z.object({ mon: windows, tue: windows, wed: windows, thu: windows, fri: windows, sat: windows, sun: windows }),
         call_windows: z.object({ best: windows.optional(), ok: windows.optional() }).optional(),

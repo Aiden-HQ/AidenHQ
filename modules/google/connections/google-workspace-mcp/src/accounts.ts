@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { needsOwner } from "./aidenhq-sdk/needs.js";
 import { type AuthStatus, GoogleAuthError, GoogleClient, type StoredCredentials, WRITE_SCOPE } from "./google.js";
-import { type AttendeeFreebusy, findTimes, type FindTimesArgs, type FoundTimes, LOOKBACK_MS } from "./find-times.js";
+import { type AttendeeFreebusy, findTimes, type FindTimesArgs, type FoundTimes, LOOKBACK_MS, windowOf } from "./find-times.js";
 import { type DriveFile, type EventInput, type MailInput, type NormalizedEvent, type SendUpdates, Workspace } from "./workspace.js";
 import { type Cursor, INBOX_BUDGET_MS, startOf } from "./inbox.js";
 
@@ -236,21 +236,20 @@ export class MultiWorkspace {
    * Meeting times for the owner (calendar_find_times, find-times.ts). Attendees' busy time needs the optional freebusy scope: an
    * account without it still answers, from the owner's own calendar, and says `not_granted`.
    */
-  async findTimes(args: FindTimesArgs): Promise<FoundTimes> {
+  async findTimes(args: FindTimesArgs, now = Date.now()): Promise<FoundTimes> {
     const [name] = this.one(args.account);
-    const from = Date.parse(args.window_start), to = Date.parse(args.window_end);
-    if (Number.isNaN(from) || Number.isNaN(to)) throw new Error("window_start and window_end must be ISO-8601 date-times");
-    const events = (await this.in(name, (w) => w.rawEvents(new Date(from - LOOKBACK_MS).toISOString(), new Date(to + 86_400_000).toISOString()))) as Awaited<ReturnType<Workspace["rawEvents"]>>;
+    const [from, to] = windowOf(args);
+    const { events, timeZone } = (await this.in(name, (w) => w.rawEvents(new Date(from - LOOKBACK_MS).toISOString(), new Date(to + 86_400_000).toISOString()))) as Awaited<ReturnType<Workspace["rawEvents"]>>;
     const others = (args.attendees ?? []).filter((a) => a.toLowerCase() !== name.toLowerCase());
     let used: AttendeeFreebusy = "used";
     let busy: { start: string; end: string }[] = [];
-    if (others.length && !this.granted(name, "calendar.freebusy")) used = "not_granted";
+    if (others.length && !this.granted(name, "calendar.events.freebusy") && !this.granted(name, "calendar.freebusy")) used = "not_granted";
     else if (others.length) {
       const r = (await this.in(name, (w) => w.freeBusy(others, args.window_start, args.window_end))) as Awaited<ReturnType<Workspace["freeBusy"]>>;
       busy = r.busy;
       if (r.hidden.length) used = "not_visible";
     }
-    return { slots: findTimes(args, events, busy), attendee_freebusy: used };
+    return { slots: findTimes(args, events, busy, now, timeZone), attendee_freebusy: used };
   }
 
   async meetingDocuments(since: string, hints: string[], max = 50, account?: string) {

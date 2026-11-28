@@ -50,6 +50,20 @@ describe("findTimes", () => {
     expect(findTimes(base(), events, [], NOW)[0]!.start).toContain("T09:00");
   });
 
+  it("needs a window with explicit offsets, not longer than 62 days", () => {
+    expect(() => findTimes(base({ window_start: "2026-12-02T00:00:00" }), [], [], NOW)).toThrow(/offset/);
+    expect(() => findTimes(base({ window_end: "2027-06-03T00:00:00+04:00" }), [], [], NOW)).toThrow(/62 days/);
+  });
+
+  it("an accepted meeting titled like a hotel still blocks; an all-day hold starts at midnight in the calendar's zone", () => {
+    const hotel = meeting("Hotel contract review", "2026-12-02T09:00:00+04:00", "2026-12-02T17:00:00+04:00");
+    expect(findTimes(base(), [hotel], [], NOW)).toEqual([]);
+    const hold: GEvent = { id: "h", summary: "Offsite", start: { date: "2026-12-03" }, end: { date: "2026-12-04" } };
+    // Dubai's 3 December opens at 20:00Z on the 2nd: 01:00 Dubai belongs to the hold, 23:00 on the 2nd does not.
+    const slots = findTimes(base({ window_start: "2026-12-02T00:00:00+04:00", window_end: "2026-12-04T00:00:00+04:00", working_hours: week([["00:00", "24:00"]]) }), [hold], [], NOW, "Asia/Dubai");
+    expect(slots.every((s) => Date.parse(s.end) <= Date.parse("2026-12-03T00:00:00+04:00"))).toBe(true);
+  });
+
   it("keeps local wall time over a DST boundary", () => {
     // New York falls back on Sunday 2026-11-01: 09:00 is -04:00 before and -05:00 after.
     const args = base({ duration_min: 60, timezone: "America/New_York", window_start: "2026-10-30T00:00:00-04:00", window_end: "2026-11-03T00:00:00-05:00", working_hours: week([["09:00", "10:00"]]) });
@@ -114,7 +128,7 @@ const args = (over: Partial<FindTimesArgs> = {}) => base({ window_start: "2026-1
 describe("calendar_find_times attendees", () => {
   it("without the free/busy scope it answers from the owner's calendar and says not_granted", async () => {
     const g = google({ [`GET ${EV}`]: { items: [] } });
-    const r = await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(args({ attendees: ["dana@example.com"] }));
+    const r = await new MultiWorkspace(creds(SCOPES), "primary", g.impl).findTimes(args({ attendees: ["dana@example.com"] }), NOW);
     expect(r.attendee_freebusy).toBe("not_granted");
     expect(r.slots.length).toBeGreaterThan(0);
     expect(g.calls.some((c) => c.url.pathname.endsWith("/freeBusy"))).toBe(false);
@@ -123,11 +137,11 @@ describe("calendar_find_times attendees", () => {
   it("with it, their busy time shapes the slots; a calendar Google hides is not_visible", async () => {
     const free = google({ [`GET ${EV}`]: { items: [] }, "POST /calendar/v3/freeBusy": { calendars: { "dana@example.com": { busy: [{ start: "2026-12-09T05:00:00Z", end: "2026-12-09T05:30:00Z" }] } } } });
     const ws = new MultiWorkspace(creds([...SCOPES, FREEBUSY_SCOPE]), "primary", free.impl);
-    const used = await ws.findTimes(args({ attendees: ["dana@example.com"], duration_min: 30 }));
+    const used = await ws.findTimes(args({ attendees: ["dana@example.com"], duration_min: 30 }), NOW);
     expect(used.attendee_freebusy).toBe("used");
     expect(used.slots.map((s) => hm(s.start))).toEqual(["09:30"]);
     const hidden = google({ [`GET ${EV}`]: { items: [] }, "POST /calendar/v3/freeBusy": { calendars: { "eve@example.com": { errors: [{ reason: "notFound" }] } } } });
-    expect((await new MultiWorkspace(creds([...SCOPES, FREEBUSY_SCOPE]), "primary", hidden.impl).findTimes(args({ attendees: ["eve@example.com"] }))).attendee_freebusy).toBe("not_visible");
+    expect((await new MultiWorkspace(creds([...SCOPES, FREEBUSY_SCOPE]), "primary", hidden.impl).findTimes(args({ attendees: ["eve@example.com"] }), NOW)).attendee_freebusy).toBe("not_visible");
   });
 });
 
@@ -169,6 +183,24 @@ describe("safer calendar writes", () => {
     expect(await mws.updateEvent("ev1", { start: "2026-12-09T09:30:00+04:00", end: "2026-12-09T10:00:00+04:00" }, "none").catch((e) => e)).toBeInstanceOf(EventConflict);
     await mws.updateEvent("ev1", { start: "2026-12-09T08:00:00+04:00", end: "2026-12-09T08:30:00+04:00" }, "none");
     expect(mv.calls.filter((c) => c.method === "PATCH")).toHaveLength(1);
+  });
+
+  it("a move checks the whole interval and spares only its own occurrence, not its siblings", async () => {
+    const mine = { id: "daily_20261209", recurringEventId: "daily", etag: '"e1"', summary: "Daily", start: { dateTime: "2026-12-09T08:00:00+04:00" }, end: { dateTime: "2026-12-09T08:30:00+04:00" } };
+    const sibling = { id: "daily_20261210", recurringEventId: "daily", summary: "Daily", start: { dateTime: "2026-12-10T08:00:00+04:00" }, end: { dateTime: "2026-12-10T08:30:00+04:00" } };
+    const next = { id: "n", summary: "Next", start: { dateTime: "2026-12-09T08:30:00+04:00" }, end: { dateTime: "2026-12-09T09:00:00+04:00" } };
+    const g = google({ [`GET ${EV}`]: { items: [mine, sibling, next] }, [`GET ${EV}/daily_20261209`]: mine, [`PATCH ${EV}/daily_20261209`]: mine });
+    const ws = new MultiWorkspace(creds(SCOPES), "primary", g.impl);
+    // Only `end` changes: it runs into the next meeting.
+    expect(await ws.updateEvent("daily_20261209", { end: "2026-12-09T08:45:00+04:00" }, "none").catch((e) => e)).toBeInstanceOf(EventConflict);
+    // Onto the sibling occurrence: refused.
+    expect(await ws.updateEvent("daily_20261209", { start: "2026-12-10T08:00:00+04:00", end: "2026-12-10T08:30:00+04:00" }, "none").catch((e) => e)).toBeInstanceOf(EventConflict);
+  });
+
+  it("a key whose booking was cancelled does not answer success", async () => {
+    const dead = { id, status: "cancelled", summary: "Plan", start: { dateTime: input.start }, end: { dateTime: input.end } };
+    const g = google({ [`GET ${EV}`]: { items: [] }, [`GET ${EV}/${id}`]: dead, [`POST ${EV}`]: new Response("exists", { status: 409 }) });
+    await expect(new MultiWorkspace(creds(SCOPES), "primary", g.impl).createEvent(input, "none")).rejects.toThrow(/cancelled/);
   });
 
   it("a move whose etag changed is refused, and every move is If-Match", async () => {

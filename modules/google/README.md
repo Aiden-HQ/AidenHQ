@@ -24,10 +24,10 @@ Write, as you on one account (`account`, default the primary), granted only by n
 `calendar_update_event`, `calendar_delete_event`, `calendar_respond`, `gmail_draft` and `gmail_send`, each a record the
 AI reviewer decides first; and `gmail_label` (your own existing labels only, never system ones), which runs at once.
 `calendar_find_times` proposes ranked meeting slots from your working hours, buffers, notice and call windows, in the zone
-you are in each day (flights, stays and working locations you organised or accepted move it). Creates refuse a time another
+you are in each day (flights, stays and working locations you organised or accepted move it, when they carry their own time zone). Creates refuse a time another
 event holds and make one event per `request_key` on a retry; moves are refused when the event changed since it was read.
 Agents that hold them list the skills `google.calendar-changes` and `google.gmail-writes`. Scopes: `calendar.events`,
-`drive.readonly`, `gmail.modify`, and the optional `calendar.freebusy`, which lets `calendar_find_times` read other
+`drive.readonly`, `gmail.modify`, and the optional `calendar.events.freebusy`, which lets `calendar_find_times` read other
 people's free/busy (without it the tool answers from your own calendar and says `not_granted`). An account connected before the optional scope keeps working and is never asked to reconnect for it. An account connected before writes existed keeps reading; Settings, Connections asks you
 to reconnect it once, and a write on it asks for that reconnect too.
 

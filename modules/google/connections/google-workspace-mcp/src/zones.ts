@@ -82,10 +82,10 @@ export function wallOn(date: string, minutes: number, zone: string): number | un
 
 /** The instant of a zone-less date-time ("2026-11-24T15:00" or with seconds) read on `zone`'s wall clock. */
 export function wallInstant(dateTime: string, zone: string): number {
-  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/.exec(dateTime);
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?$/.exec(dateTime);
   const t = m ? wallOn(m[1]!, Number(m[2]) * 60 + Number(m[3]), zone) : undefined;
-  if (t === undefined) throw new Error(`${dateTime} does not exist on ${zone}'s clock`);
-  return t;
+  if (t === undefined) throw new Error(`${dateTime} is not a time that exists on ${zone}'s clock`);
+  return t + Number(m![4] ?? 0) * 1000 + Math.round(Number(m![5] ?? 0) * 1000);
 }
 
 /** The calendar date (YYYY-MM-DD) at the instant `at` in `zone`. */

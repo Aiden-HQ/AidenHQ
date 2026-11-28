@@ -13,7 +13,7 @@ export const SCOPES = [
  * Asked for at consent, never required: the owner may untick it. It lets calendar_find_times read other people's free/busy,
  * so an account signed in without it keeps working (no reconnect); find_times answers `attendee_freebusy: "not_granted"`.
  */
-export const FREEBUSY_SCOPE = "https://www.googleapis.com/auth/calendar.freebusy";
+export const FREEBUSY_SCOPE = "https://www.googleapis.com/auth/calendar.events.freebusy";
 /** SCOPES plus the optional one: what the sign-in asks for. */
 export const REQUEST_SCOPES = [...SCOPES, FREEBUSY_SCOPE];
 /** The scope each write needs, by its short name (the needs_owner `scope`). */

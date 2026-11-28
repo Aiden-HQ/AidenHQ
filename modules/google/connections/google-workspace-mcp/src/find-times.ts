@@ -44,8 +44,8 @@ const STAY = /hotel|airbnb|\bstay\b|accommodation|\btrip\b/i;
 export interface Block { start: number; end: number; title: string; /** A meeting of the owner's (not a flight, an absence or someone else's busy time). */ meeting: boolean }
 
 const isFlight = (e: GEvent) => FLIGHT.test(e.summary ?? "");
-/** Working-location entries and Gmail's travel reservations (hotels, trips) say where the owner is; they do not block time. */
-const isStay = (e: GEvent) => !isFlight(e) && (e.eventType === "workingLocation" || e.eventType === "fromGmail" || STAY.test(e.summary ?? ""));
+/** Working-location entries, Gmail's travel reservations and all-day "Hotel"/"Trip" markers say where the owner is; they do not block time. A timed meeting with such a word in its title is still a meeting. */
+const isStay = (e: GEvent) => !isFlight(e) && (e.eventType === "workingLocation" || e.eventType === "fromGmail" || (!e.start?.dateTime && STAY.test(e.summary ?? "")));
 const declined = (e: GEvent) => e.attendees?.some((a) => a.self && a.responseStatus === "declined") ?? false;
 /** Only the owner's own travel moves the owner: entries they organised or accepted. Someone else's invitation is just text. */
 const ownTravel = (e: GEvent) => e.status !== "cancelled" && !declined(e) && (e.organizer?.self === true || e.attendees?.some((a) => a.self && a.responseStatus === "accepted") === true);
@@ -81,7 +81,7 @@ export const conflictWith = (blocks: Block[], start: number, end: number) => blo
  * accepted by the owner) that left by noon and landed within 14 days; else the zone of a stay or working location covering the
  * day; else `home`. An entry carries its zone on its own start/end `timeZone`; one without a known zone changes nothing.
  */
-export function zoneOn(date: string, home: string, events: GEvent[]): string {
+export function zoneOn(date: string, home: string, events: GEvent[], calendarZone = home): string {
   const noon = wallOn(date, 12 * 60, home)!;
   const dayStart = wallOn(date, 0, home) ?? noon - 12 * 3_600_000;
   const dayEnd = dayStart + DAY_MS;
@@ -89,17 +89,28 @@ export function zoneOn(date: string, home: string, events: GEvent[]): string {
   for (const e of events) {
     if (!isFlight(e) || !ownTravel(e)) continue;
     const zone = e.end?.timeZone ?? e.start?.timeZone;
-    const s = span(e, home);
+    const s = span(e, calendarZone);
     if (!validZone(zone) || !s || s[0] > noon || s[1] < noon - FLIGHT_LAPSE_MS) continue;
     if (!best || s[0] > best.at) best = { at: s[0], zone };
   }
   if (best) return best.zone;
   const stay = events
     .filter((e) => isStay(e) && ownTravel(e) && validZone(e.start?.timeZone))
-    .map((e) => ({ zone: e.start!.timeZone!, s: span(e, home) }))
+    .map((e) => ({ zone: e.start!.timeZone!, s: span(e, calendarZone) }))
     .filter((x) => x.s && x.s[0] < dayEnd && x.s[1] > dayStart)
     .sort((a, b) => b.s![0] - a.s![0])[0];
   return stay?.zone ?? home;
+}
+
+const OFFSET = /(?:[zZ]|[+-]\d\d(?::?\d\d)?)$/;
+const MAX_WINDOW_DAYS = 62;
+/** The window's instants: ISO-8601 with an explicit offset (a bare time would be read in the server's zone), at most 62 days. */
+export function windowOf(args: { window_start: string; window_end: string }): [number, number] {
+  for (const t of [args.window_start, args.window_end]) if (!t.includes("T") || !OFFSET.test(t) || Number.isNaN(Date.parse(t))) throw new Error(`"${t}" is not an ISO-8601 date-time with its offset (2026-12-02T09:00:00+04:00)`);
+  const w: [number, number] = [Date.parse(args.window_start), Date.parse(args.window_end)];
+  if (w[1] <= w[0]) throw new Error("window_end must be after window_start");
+  if (w[1] - w[0] > MAX_WINDOW_DAYS * DAY_MS) throw new Error(`the window is longer than ${MAX_WINDOW_DAYS} days: ask for a shorter one`);
+  return w;
 }
 
 const minutes = (hhmm: string) => {
@@ -119,15 +130,14 @@ const TIER_RANK: Record<Tier, number> = { best: 0, ok: 1, last_resort: 2 };
  * back-to-back with a meeting of the owner's (both sides before one side), then earliest. Overlapping slots are thinned to the
  * best of each, so the list is distinct choices rather than every quarter-hour of one gap.
  */
-export function findTimes(args: FindTimesArgs, events: GEvent[], attendeeBusy: { start: string; end: string }[], now = Date.now()): FoundSlot[] {
+export function findTimes(args: FindTimesArgs, events: GEvent[], attendeeBusy: { start: string; end: string }[], now = Date.now(), calendarZone = args.timezone): FoundSlot[] {
   if (!validZone(args.timezone)) throw new Error(`unknown timezone ${args.timezone}`);
-  const [from, to] = [Date.parse(args.window_start), Date.parse(args.window_end)];
-  if (Number.isNaN(from) || Number.isNaN(to) || to <= from) throw new Error("window_end must be after window_start (ISO-8601 date-times)");
+  const [from, to] = windowOf(args);
   if (!(args.duration_min > 0)) throw new Error("duration_min must be positive");
   const home = args.timezone;
   const durMs = args.duration_min * 60_000;
   const buf = args.buffer_min * 60_000;
-  const busy = blocksOf(events, home);
+  const busy = blocksOf(events, calendarZone);
   const theirs = attendeeBusy.map((b) => ({ start: Date.parse(b.start), end: Date.parse(b.end) })).filter((b) => b.end > b.start);
   const earliest = now + args.min_notice_hours * 3_600_000;
   const calls = args.call_windows;
@@ -138,8 +148,8 @@ export function findTimes(args: FindTimesArgs, events: GEvent[], attendeeBusy: {
   const found = new Map<number, Candidate>();
   // One day either side: a day's hours in another zone can reach into the window from a neighbouring date.
   for (let date = dateIn(from - DAY_MS, home), last = dateIn(to + DAY_MS, home); date <= last; date = nextDate(date)) {
-    const zone = zoneOn(date, home, events);
-    const todays = blocksOf(events, zone).filter((b) => b.meeting && dateIn(b.start, zone) === date).length;
+    const zone = zoneOn(date, home, events, calendarZone);
+    const todays = busy.filter((b) => b.meeting && dateIn(b.start, zone) === date).length;
     if (args.max_per_day !== undefined && todays >= args.max_per_day) continue;
     for (const [a, b] of args.working_hours[weekday(date)] ?? []) {
       const [open, close] = [minutes(a), minutes(b)];
