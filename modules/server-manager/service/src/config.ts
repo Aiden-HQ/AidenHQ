@@ -80,6 +80,12 @@ export function entryProblems(entry: unknown, at: string): Problem[] {
   if (port != null && !(typeof port === "number" && Number.isInteger(port) && port >= 1 && port <= 65535)) out.push({ field: `${at}.port`, message: "is a port, 1 to 65535" });
   const minutes = entry.security_minutes;
   if (minutes != null && !(typeof minutes === "number" && Number.isInteger(minutes) && minutes >= 15 && minutes <= 1440)) out.push({ field: `${at}.security_minutes`, message: "is how often to check, in minutes: 15 to 1440" });
+  // A scheduled security patch installs only at a check inside the quiet window, so the window must hold at least one check.
+  const mins = (v: unknown, d: string) => { const t = typeof v === "string" && HHMM.test(v) ? v : d; return Number(t.slice(0, 2)) * 60 + Number(t.slice(3)); };
+  const qs = mins(entry.quiet_start, DEFAULTS.quiet_start), qe = mins(entry.quiet_end, DEFAULTS.quiet_end);
+  const windowLen = (qe - qs + 1440) % 1440 || 1440;
+  const every = typeof minutes === "number" ? minutes : DEFAULTS.security_minutes;
+  if (every > windowLen) out.push({ field: `${at}.security_minutes`, message: `checks at least once inside the quiet window (${windowLen} minutes), so it is at most ${windowLen}` });
   if (entry.enabled != null && typeof entry.enabled !== "boolean") out.push({ field: `${at}.enabled`, message: "is true or false" });
   if (entry.weekly_day != null && !(WEEKDAYS as readonly unknown[]).includes(entry.weekly_day)) out.push({ field: `${at}.weekly_day`, message: `is one of ${WEEKDAYS.join(", ")}` });
   if (entry.reboot_policy != null && entry.reboot_policy !== "auto" && entry.reboot_policy !== "ask") out.push({ field: `${at}.reboot_policy`, message: "is auto (reboot in the window) or ask (ask the owner first)" });

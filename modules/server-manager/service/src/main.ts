@@ -149,10 +149,11 @@ function startSchedule() {
         // patch record, and a scheduled security patch installs only inside the machine's quiet window; the weekly pass runs at the
         // time the owner set for it. The check also keeps the page's status and the warehouse row current between clicks.
         const prior = status.get(m.name)?.state;
-        const { row, checked } = await checkOne(m, transport, keys(), status);
+        const { row, checked } = await checkOne(m, transport, keys(), status, { refresh: true });
         void publish([publishRow(m, checked, row.updated_at!)], inventoryOf(machines()), log);
         if (!checked.ok) {
-          slots.finish(due, false, `check failed: ${checked.state}`);
+          // A weekly pass is retried next tick (a host back a minute later still gets it); an hourly slot just waits for the next.
+          if (due.kind === "full") slots.release(due); else slots.finish(due, false, `check failed: ${checked.state}`);
           // Told once per new failure state, not every interval while a host stays down.
           if (prior !== checked.state) await wake({ machine: m.name, title: `Server Manager: ${m.name} could not be checked`, body: `${m.name}: the scheduled check failed (${checked.state}): ${checked.detail.slice(0, 300)}`, source: `server-manager:check-failed:${m.name}:${checked.state}` });
           continue;

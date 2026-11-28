@@ -301,10 +301,12 @@ export async function rebootAndProve(c: Connection, i: { before: string; window:
   // reported only if the boot ID never changes.
   let issued: Error | undefined;
   const busy = { ok: false as const, reason: "a package manager held the dpkg lock when the reboot was due, so the host was not rebooted: run again once it is clear" };
+  // A writer that started after the final read (apt's own fcntl lock, which flock cannot see): refuse now. Outside the try, so a
+  // probe that cannot answer fails the run before any reboot command is sent.
+  const held = await c.probe([...HELD_LOCKS], TIMEOUTS.read);
+  if (held.code !== 0) return { ok: false, reason: `lslocks did not complete (exit ${held.code}), so whether a package manager is running is unknown: nothing was rebooted` };
+  if (aptBusy(held.stdout)) return busy;
   try {
-    // A writer that started after the final read (apt's own fcntl lock, which flock cannot see): refuse now.
-    const held = await c.probe([...HELD_LOCKS], TIMEOUTS.read);
-    if (held.code === 0 && aptBusy(held.stdout)) return busy;
     const r = await c.probe([...REBOOT_ARGV], TIMEOUTS.read);
     // A writer that took the lock after the final read: refuse now, rather than poll for a reboot that never happened.
     if (r.code !== 0 && /flock: failed to get lock/i.test(r.stderr)) return busy;

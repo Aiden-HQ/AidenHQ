@@ -5,7 +5,8 @@
 import type { Tool } from "./mcp.ts";
 import { readMachines, MACHINE_FIELDS, DEFAULTS, listProblems, savedList, type Machine, type Problem } from "./config.ts";
 import type { StatusStore } from "./status-store.ts";
-import { readKeys, withConnection, type Keys, type SshMachine, type Transport } from "./ssh.ts";
+import { readKeys, TIMEOUTS, withConnection, type Keys, type SshMachine, type Transport } from "./ssh.ts";
+import { UPDATE_ARGV } from "./apt.ts";
 import { publish, publishRow, readHost, rowOf, stateOfError } from "./status.ts";
 
 type Dict = Record<string, unknown>;
@@ -37,11 +38,16 @@ export const targetOf = (m: Machine): SshMachine => ({ name: m.name, address: m.
  * The failure is a result, not an exception: a host that is unreachable, refuses the key or changed its host key records that
  * state, so a stale healthy row is never left standing and the rest of the fleet is still checked.
  */
-export async function checkOne(m: Machine, transport: Transport, keys: Keys, status: StatusStore) {
+export async function checkOne(m: Machine, transport: Transport, keys: Keys, status: StatusStore, opts: { refresh?: boolean } = {}) {
   const at = new Date().toISOString();
   let checked: Awaited<ReturnType<typeof readHost>>;
   try {
-    checked = await withConnection(transport, targetOf(m), keys, async (c, pin) => readHost(c, pin));
+    // `refresh`: the schedule's check first refreshes apt's index (it installs nothing), so a newly published fix is seen even on a
+    // host that never refreshes on its own. The page's "check now" reads the index as it is.
+    checked = await withConnection(transport, targetOf(m), keys, async (c, pin) => {
+      if (opts.refresh) await c.exec([...UPDATE_ARGV], TIMEOUTS.lock);
+      return readHost(c, pin);
+    });
   } catch (e) {
     checked = { ...stateOfError(e), ok: false };
   }

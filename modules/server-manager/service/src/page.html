@@ -65,7 +65,7 @@
   // module refused (never shown as machines, and never dropped by a Save unless the owner removes them).
   let cfg = { machines: [], defaults: null };
   // removing: a set of names on their way out; each removal stays until the owner keeps that server or the page starts over.
-  let added = [], drafts = {}, lastGood = { drafts: {}, removing: new Set(), added: [] }, sentRev = 0, removing = new Set(), openName = null, drawn = false;
+  let proposedBefore = false, added = [], drafts = {}, lastGood = { drafts: {}, removing: new Set(), added: [] }, sentRev = 0, removing = new Set(), openName = null, drawn = false;
   // Each machine's last readout (server_manager_status), by name: the page shows its state, last check and counts, never a key.
   let stateOf = {};
   // A check in flight, by machine name: its button says so and is disabled until the read answers.
@@ -128,6 +128,9 @@
       say(`${local[0]}. ${live ? "" : "The last good draft is what Save carries; "}Fix it to update the proposal.${hint}`, true);
       return;
     }
+    const changed = removing.size || list.some((e) => added.includes(e.name) || dirty(e.name));
+    // Nothing differs from what is saved (an unfinished new server alone): no proposal, so the bar offers no Save.
+    if (!changed && !proposedBefore) { say(hint.trim()); return; }
     const sent = { drafts: structuredClone(drafts), removing: new Set(removing), added: [...added] }, rev = ++sentRev;
     inOrder(async () => {
       try {
@@ -139,7 +142,7 @@
           return;
         }
         lastGood = sent;
-        const any = list.some((e) => dirty(e.name) || added.includes(e.name)) || sent.removing.size;
+        const any = changed; proposedBefore = !!any;
         say(`${any ? "Changes are proposed: Save in the bar above applies them." : ""}${hint}`, !any && !!hint);
       } catch (e) {
         if (rev === sentRev) rollback();
@@ -228,7 +231,7 @@
     const name = m.name, open = openName === name, d = draft(name), gone = removing.has(name), fresh = added.includes(name);
     // The machine's last readout, if it has one: the state tags and the re-pin button are drawn from it, so it is read before both.
     const st = stateOf[name];
-    const tags = [fresh ? h("span", { className: "tag edit", textContent: "Added on Save" }) : dirty(name) ? h("span", { className: "tag edit", textContent: "Edited" }) : null, gone ? h("span", { className: "tag failed", textContent: "Removed on Save" }) : null];
+    const tags = [fresh ? h("span", { className: "tag edit", textContent: problemsOf([{ name, ...d }]).length ? "Not saved yet: fill in address, user and key" : "Added on Save" }) : dirty(name) ? h("span", { className: "tag edit", textContent: "Edited" }) : null, gone ? h("span", { className: "tag failed", textContent: "Removed on Save" }) : null];
     const btn = (label, fn, cls = "") => { const b = h("button", { type: "button", textContent: label, className: cls }); b.addEventListener("click", fn); return b; };
     const checkBtn = () => { const b = btn(checking.has(name) ? "Checking…" : "Check now", () => checkNow(name), "check"); b.disabled = checking.has(name); return b; };
     // The two install buttons file the same server-manager.patch record a schedule would (§9); the reboot button files a
@@ -245,7 +248,7 @@
     // page was shown — so a stale click can never pin a third key.
     const repinAct = st && st.state === "host-key-changed" && st.fingerprint ? act("Re-pin the key shown", () => repinNow(name, st.fingerprint), `repin:${name}`) : null;
     const acts = gone ? [btn("Keep", () => { removing.delete(name); redraw(); propose(); })]
-      : open && fresh ? [btn("Discard", () => { added = added.filter((x) => x !== name); delete drafts[name]; redraw(); propose(); })]
+      : fresh ? [...(open ? [] : [btn("Edit", () => { openName = name; redraw(); })]), btn("Discard", () => { added = added.filter((x) => x !== name); delete drafts[name]; if (openName === name) openName = null; redraw(); propose(); })]
       : open ? [btn("Close", () => { openName = null; redraw(); }), btn("Remove", () => { removing.add(name); redraw(); propose(); }), checkBtn()]
       : [btn("Edit", () => { openName = name; redraw(); }), ...writeActs(), ...(repinAct ? [repinAct] : [])];
     const stTags = st ? [
@@ -372,7 +375,7 @@
       try { status = await tool("server_manager_status", {}); } catch { /* the config still draws; a status read that fails says so below */ }
       stateOf = Object.fromEntries((status.servers ?? []).map((s) => [s.name, s]));
       $("addbtn").disabled = false;
-      drafts = {}; added = []; lastGood = { drafts: {}, removing: new Set(), added: [] }; removing = new Set(); draw();
+      drafts = {}; added = []; lastGood = { drafts: {}, removing: new Set(), added: [] }; removing = new Set(); proposedBefore = false; draw();
       if (saved.length) say(`One saved server has a problem and isn't listed: ${saved[0].field} ${saved[0].message}. Fix it in the instance settings, or remove it there; this page won't drop it.`, true);
     } catch (e) { say(e.message, true); }
   }
