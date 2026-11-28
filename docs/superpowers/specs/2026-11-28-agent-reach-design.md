@@ -1,6 +1,6 @@
 # How people reach agents
 
-Status: draft for owner approval (2026-11-28). Builds on `2026-11-28-summon-agents-design.md`.
+Status: approved by the owner (2026-11-28). Builds on `2026-11-28-summon-agents-design.md`.
 
 ## Intent
 
