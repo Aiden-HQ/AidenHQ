@@ -1,7 +1,7 @@
 // Hand-off (spec §2): a member hands a PR to the fleet with the `ship` label or a `/ship` comment, and ship adopts it: one
 // generation, one Engineer task (kernel module-task `source` key ship:<repo>/<n>:<generation>), and for a fork, code review's ask.
 // Only a member with write access counts, never a bot or the App; each event is consumed once. A hold or a hand-back is sticky: a
-// label still on the PR, or `handoff: all`, never adopts it again; only a newer trusted event starts a new generation.
+// label still on the PR, a green bump or `handoff: all`, never adopts it again; only a newer trusted event starts a new generation.
 // The loop (loop.ts) reads each PR and calls intake() once per pass, before rounds.ts's round(). A PR the code host opened for a task
 // is adopted at first sight, owned by that task; everyone else's is a member's hand-off.
 // The adoption's Engineer task is filed when a round first needs it (fileTask), so a PR that merges clean never starts one; a fork's
@@ -142,7 +142,7 @@ async function newest(d: HandoffDeps, pr: PrView, after?: { at: string; event: s
 /**
  * One pass's hand-off for one PR: adopts it on a fresh trusted trigger (a new generation, its task, code review's ask for a fork),
  * puts it on hold when a member hands it back, adopts a task's PR at first sight (`task`: the kernel id of the task the code host
- * opened it for) and, under `handoff: all`, a writer's PR once. Returns the adoption as it stands (undefined: not adopted).
+ * opened it for), a green Dependabot PR and, under `handoff: all`, a writer's PR once. Returns the adoption as it stands (undefined: not adopted).
  */
 export async function intake(d: HandoffDeps, pr: PrView, task?: string, bump?: boolean): Promise<Kept | undefined> {
   const s = d.settings(pr.repo);
@@ -167,9 +167,8 @@ export async function intake(d: HandoffDeps, pr: PrView, task?: string, bump?: b
   // A task's PR stays its task's: a member's label or comment hands over nothing (github merges it only for that task).
   if (was?.owner?.kind === "task") return was;
   const { trigger, handback } = await newest(d, pr, was ? { at: was.trigger.at, event: was.trigger.event } : undefined);
-  if (trigger) {
-    // `handoff: none` is the fleet's own PRs only; otherwise a member's trigger adopts any PR, a fork included.
-    if (s.handoff === "none") return was;
+  // `handoff: none` takes no member's trigger (the fleet's own PRs and green bumps only); otherwise it adopts any PR, a fork included.
+  if (trigger && s.handoff !== "none") {
     // A fork is handed off at the head the member saw: one ship first saw after the label or comment (or can't tell, having
     // started since) may be newer, so the adoption starts held and a member hands it off again.
     const late = pr.fork && !(Date.parse(pr.headSeen ?? "") <= Date.parse(trigger.at));
@@ -202,11 +201,11 @@ export async function intake(d: HandoffDeps, pr: PrView, task?: string, bump?: b
   // A fork's review ask that failed (code review down, a timeout) is asked again each pass until it lands.
   if (was && pr.fork && !was.asked && !was.hold && was.holder) return ask(d, pr, was);
   if (was) return was;
-  // Never adopted: under `handoff: all`, a non-draft PR by a writer (never a fork: that waits for a member), unless a member has
-  // already handed it back (the hand-back is the newest trusted event).
+  // Never adopted: a green Dependabot PR (`bump`, loop.ts: the repo's `dependabot` setting is its opt-in, whatever the hand-off)
+  // or, under `handoff: all`, a non-draft PR by a writer (never a fork: that waits for a member), unless a member has already
+  // handed it back (the hand-back is the newest trusted event).
   if (handback) return undefined;
-  // `bump`: a green Dependabot PR (loop.ts) takes the same way in under `handoff: all`, with no author permission to read.
-  if (s.handoff === "all" && !pr.fork && !pr.draft && (bump || (!pr.authorBot && WRITERS.has((await d.permission(pr.repo, pr.author)) ?? "")))) return adopt(d, pr, undefined, { kind: "all", event: `all:${pr.head}`, actor: pr.author, at: new Date().toISOString(), head: pr.head });
+  if (!pr.fork && !pr.draft && (bump || (s.handoff === "all" && !pr.authorBot && WRITERS.has((await d.permission(pr.repo, pr.author)) ?? "")))) return adopt(d, pr, undefined, { kind: "all", event: `all:${pr.head}`, actor: pr.author, at: new Date().toISOString(), head: pr.head });
   return undefined;
 }
 

@@ -78,13 +78,14 @@ import { createCompileCheck } from "./compile-check.ts";
 import { createSharing, vaultValues } from "./module-share.ts";
 import { createMemory, fillMemory } from "./memory.ts";
 import { createEvents, routineRun } from "./events.ts";
+import { createSummon, httpCall } from "./summon.ts";
 import { createRouting } from "./routing-tune.ts";
 import { createBoardApi } from "./board-api.ts";
 import { createViews } from "./views.ts";
 import { hostPlanner } from "./apply-tier.ts";
 import type { Verdict } from "./tier.ts";
 import { logTasks, scopeOf } from "./task-scope.ts";
-import { KERNEL_KINDS, LOCAL_ORG } from "./kinds.ts";
+import { KERNEL_KINDS, LOCAL_ORG, SUMMON_REPLY } from "./kinds.ts";
 import { FLEET_OP, createFleetOps } from "./fleet-ops.ts";
 import { JobError, admittedJob, createJobs, dispatchesFrom } from "./jobs.ts";
 import { agentJobsLive, createAdmission, wakeInbox } from "./admission.ts";
@@ -144,6 +145,8 @@ const events = createEvents({
   db: records.db, grants: grantsTable as never, connections: connections as never, log,
   subscriptions: () => Object.fromEntries(Object.entries(modulesFile().modules ?? {}).flatMap(([m, d]) => (d.subscribes ? [[m, d.subscribes]] : []))),
   run: routineRun(async (p, body) => { const r = await cpApi(p, { method: "POST", body: JSON.stringify(body) }); return { status: r.status, json: await r.json().catch(() => ({})) }; }),
+  // The summon path (summon.ts, below): claims an owner's summons and its conversation's follow-ups before any routine sees them.
+  summon: { attests: (m, c) => summon.attests(m, c), claim: (ev, t) => summon.claim(ev, t), claimed: () => setImmediate(pumpSummons) },
   routine: async (id) => {
     const r = await cpApi(`/api/routines/${encodeURIComponent(id)}`);
     if (r.status === 404) return undefined;
@@ -248,10 +251,11 @@ const writes = createWrites({
   checks: checksRegistry, filedChecks: { "platform.product-gate": productGate, "code-review.instance-details": instanceDetailsCheck },
   autonomy: () => (["off", "tier0", "full"].includes(grantsTable().autonomy as string) ? grantsTable().autonomy : "off") as never,
   // kernel.fleet_op (fleet-ops.ts): its planner and executor are bound once fleetOps exists below (called only after start).
-  native: { "kernel.apply": applies.execute, [FLEET_OP]: (r) => fleetOps.execute(r) },
-  planners: { "kernel.apply": applyPlanner, [FLEET_OP]: (b) => fleetOps.plan(b) },
+  native: { "kernel.apply": applies.execute, [FLEET_OP]: (r) => fleetOps.execute(r), [SUMMON_REPLY]: (r) => summon.execute(r) },
+  planners: { "kernel.apply": applyPlanner, [FLEET_OP]: (b) => fleetOps.plan(b), [SUMMON_REPLY]: (b) => summon.plan(b) },
   executors: (): Record<string, Executor> => (localHost() ? { "codehost-local": localCode.executor } : {}),
-  resume: ["kernel.apply"],
+  // A reply carries on idempotently (the record id is the source's key): one claimed when the kernel stopped is posted once.
+  resume: ["kernel.apply", SUMMON_REPLY],
 });
 // Connect on first use (connection-state.ts): built below once notify, wakes and idle are; the proxy reads it late-bound.
 let connectionState: ConnectionState | undefined;
@@ -264,7 +268,7 @@ const ownerApi = asApi(cpApi);
 // Projects (projects.ts): repos map into products; a PR's repo fills in its task's project, agents tag one by name.
 const projects = createProjects({ db: records.db, owner: ownerApi, products: () => (grantsTable().projects ?? {}) as Record<string, string[]>, log });
 const boardApi = asApi((p, init) => fetch(new URL(p, env("BOARD_INTERNAL_URL", "http://127.0.0.1:3122")), { ...init, headers: { authorization: `Bearer ${secret("board_internal_token")}`, "x-gateway-key": secret("gateway_board_key"), "content-type": "application/json" }, signal: AbortSignal.timeout(20_000) }));
-const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner: ownerApi, ownerTyped: asApi((p, init) => cpApi(p, init, true)), modules: modulesFile, facts, log, stopJobs: async (task, by) => { const stopped = jobs.stopRunning({ task }, by); for (const j of stopped) await outcomes.post(j, { kind: "notice", body: STOPPED_NOTE }).catch((e: Error) => log("stop note failed", { job: j.id, err: e.message })); return stopped.length; } });
+const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner: ownerApi, files: (b) => moduleTasks.file("kernel", b), ownerTyped: asApi((p, init) => cpApi(p, init, true)), modules: modulesFile, facts, log, stopJobs: async (task, by) => { const stopped = jobs.stopRunning({ task }, by); for (const j of stopped) await outcomes.post(j, { kind: "notice", body: STOPPED_NOTE }).catch((e: Error) => log("stop note failed", { job: j.id, err: e.message })); return stopped.length; } });
 // The owner's messages: the kernel's own (alerts, the approvals digest) and the board's and the runner's, queued for
 // owner-channel's notify (notify.ts).
 const notify = createNotify({ db: records.db, modules: modulesFile, secret, resolver, log, extra: () => [channels.digest()].filter((t): t is string => t !== null).map((text) => ({ kind: "digest" as const, text })) });
@@ -367,6 +371,16 @@ once(() => void certWatch.tick(), 10 * 60_000);
 // Release updates (updates.ts, docs/design/release-updates.md): the check (a child process) prepares a release; the kernel files
 // it as a kernel.apply on a task of its own (the platform engineer's, as the release train's), follows it and tells the owner.
 const moduleTasks = createModuleTasks({ db: records.db, owner: ownerApi, agents: () => grantsTable().agents ?? {}, plugin: () => plugin, rubric: (task, module, b) => checks.rubric(task, module, b), log });
+// Summons (summon.ts): the owner's `cc <Name>` in their own chats becomes that teammate's task; its reply goes back signed.
+const summon = createSummon({
+  db: records.db, modules: modulesFile, agents: () => grantsTable().agents ?? {}, log,
+  file: (b) => moduleTasks.file("kernel", b), owner: ownerApi, ownerTyped: asApi((p, init) => cpApi(p, init, true)),
+  route: (ev) => events.deliver(ev), first: (task) => wakes.first(task), call: httpCall(secret, resolver),
+});
+// Only once the previous kernel has exited (a claim accepted during a drain waits for the next pass): one process files a row.
+const pumpSummons = () => void (previousGone() ? summon.pump() : Promise.resolve()).catch((e: Error) => log("summon pass failed", { err: String(e.message).slice(0, 300) }));
+// Once the previous kernel has exited (it may be filing the same rows): at once (claimed rows left by a restart), then every 2 s.
+afterPrevious(() => { pumpSummons(); every(pumpSummons, 2_000); });
 const updates = createUpdates({
   db: records.db, dir: path.join(dataDir, "updates"), inst: env("AIDENHQ_INSTANCE_DIR", path.join(process.env.HOME ?? "", "aidenhq-instance")), board: path.join(env("AIDENHQ_STATE_DIR", path.join(process.env.HOME ?? "", ".local/state/aidenhq")), "board/updates.json"),
   ownerLine: toOwner("done"), alert: toOwner("alert"), check: runCheck(repo), main: runMain(repo), log,
@@ -774,7 +788,7 @@ const compileCheck = createCompileCheck({
   cache: path.join(process.env.HOME ?? "/root", ".bun/install/cache"), log,
 });
 const answers = createAnswers({ db: records.db, states: taskStates });
-const backplane = createBackplane({ projects, answers, compileCheck, idle, memory, sharing, boardApi: moduleBoardApi, views: createViews({ connections, asserter, resolver, secret }), facts, repos: codehostRepos, healthProbe, settingsChange, validate: moduleValidate, routing, events, connectionHealth: createConnectionHealth({ connections, resolver }), connectionState, healthKey: () => secret("health_probe_key"), codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, flow, taskStates, graderToken, eventsKey: () => secret("paperclip_events_key"), jobTools, moduleTool: createModuleTool({ db: records.db, whoami, asserter, resolver, secret, log, decl: (m) => (modulesFile().modules?.[m] as { jobtools?: ModuleJobToolsDecl } | undefined)?.jobtools }), precheck, repoBundle: (module: string, repo: string, head?: string) => codehost.ask(module, "bundle", { repo, ref: head ?? "HEAD" }), appToken: codehost.appToken, advisories: advisories.list, testSessions: () => accounts?.test, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: model.ready, operatorKey: () => secret(OPERATOR_KEY), secrets: moduleSecrets, decide: channels.decideCard, update: (to, by) => updates.requestMain(to, by), validate: moduleValidate }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ sawn: (id) => jobs.sawn(id), projects, appOwners: () => appOwners(), asserter, whoami, plugin, once: outcomes.once, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl, checks, observe: wakes.observe, facts, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), fetch: ownerFetch, observe: wakes.observe, facts, log, ownerFiled: (id) => void records.db.prepare("INSERT OR IGNORE INTO task_filers (task, filer) VALUES (?, 'owner')").run(id) }) as never });
+const backplane = createBackplane({ summon, projects, answers, compileCheck, idle, memory, sharing, boardApi: moduleBoardApi, views: createViews({ connections, asserter, resolver, secret }), facts, repos: codehostRepos, healthProbe, settingsChange, validate: moduleValidate, routing, events, connectionHealth: createConnectionHealth({ connections, resolver }), connectionState, healthKey: () => secret("health_probe_key"), codehost: codehost.op, checks, checkJobs, lane, whoami, asserter, grantsFile: grantsTable, log, writes, records, channels, brake, notify, owner: ownerApi, ownerRaw: (p) => cpApi(p), modules: modulesFile, boardKey: () => secret("gateway_board_key"), reviews, reviewerKey: () => secret("reviewer_key"), jobs, admission, outcomes, wakes, tasks: moduleTasks, work, flow, taskStates, graderToken, eventsKey: () => secret("paperclip_events_key"), jobTools, moduleTool: createModuleTool({ db: records.db, whoami, asserter, resolver, secret, log, decl: (m) => (modulesFile().modules?.[m] as { jobtools?: ModuleJobToolsDecl } | undefined)?.jobtools }), precheck, repoBundle: (module: string, repo: string, head?: string) => codehost.ask(module, "bundle", { repo, ref: head ?? "HEAD" }), appToken: codehost.appToken, advisories: advisories.list, testSessions: () => accounts?.test, accounts: createAuthApi({ accounts: () => accounts, whoami, boardKey: () => secret("gateway_board_key"), recoveryKeyWaiting: () => Boolean(firstRun.recoveryKey()), modelReady: model.ready, operatorKey: () => secret(OPERATOR_KEY), secrets: moduleSecrets, decide: channels.decideCard, update: (to, by) => updates.requestMain(to, by), validate: moduleValidate }), proxy: (req, res, c) => proxy(req, res, c!), cp: createCp({ sawn: (id) => jobs.sawn(id), projects, appOwners: () => appOwners(), asserter, whoami, plugin, once: outcomes.once, agentKey: (id) => secret(`paperclip-agents/${id}`), grants: () => grantsTable().agents ?? {}, fleetIssues: () => String(grantsTable().fleet_issues ?? ""), controlUrl, checks, observe: wakes.observe, facts, log }) as never, boardCp: createBoardCp({ controlUrl, key: () => secret("paperclip_board_key"), fetch: ownerFetch, observe: wakes.observe, facts, log, ownerFiled: (id) => void records.db.prepare("INSERT OR IGNORE INTO task_filers (task, filer) VALUES (?, 'owner')").run(id) }) as never });
 // The admin listener's accounts (data/kernel/auth/auth.db) and pages. Accounts not moved yet, or a malformed URL setting: the
 // listener refuses while every other part of the kernel serves.
 const urlOf = (v: string) => { try { return v ? new URL(v) : undefined; } catch { log("ignoring a malformed URL setting", { value: v.slice(0, 100) }); return undefined; } };

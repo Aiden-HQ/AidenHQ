@@ -315,9 +315,8 @@ function NotificationsPage({ rows, all, conns }: { rows: SettingRow[]; all: Sett
   const opts: Record<string, RowOpts> = {
     notify_transports: { sub: "Tried in this order: the first one set up that delivers a message gets it.", control: (v, set) => <OrderControl value={(v as string[]) ?? []} set={set} candidates={candidates} ready={ready} /> },
     notify_fyi: { sub: "News to read later. Decisions, results and alerts always reach you.", labels: { send: "Send", mute: "Mute" } },
-    // SUMMON_SLOT: the summon switch and its signature (PR #2062) lay out here once the kernel declares them; rows absent from the compiled settings are left out.
     summon: { sub: "Let your own chats summon an agent." },
-    summon_signature: { sub: "Signs what a summoned agent writes in your chats." },
+    summon_signature: { sub: "The line every summoned agent's reply ends with; {agent} is its name.", required: true },
   };
   return (
     <Page title="Notifications" sub="Where Aiden and the agents reach you, and where you can tap approvals.">

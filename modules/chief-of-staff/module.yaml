@@ -42,7 +42,7 @@ agents:
       # The live product pin and the last applies, and the owner's stale todos for the brief (the fleet-steward module's connection, when it is on).
       fleet_steward?: [ fleet_generation_status, fleet_stale_followups, fleet_followup_snooze, flow_report ]
       paperclip_tasks: [ task_current, task_get, task_comments, task_search, task_list, task_approvals, task_create, task_update, task_comment, task_handoff, task_block, task_cancel, task_finish, task_stale, task_team, task_delegate, fleet_status, fleet_costs, fleet_control, fleet_catalog, task_relay_owner_words, chat_open, app_request_from_owner ]
-    # Woken every heartbeat_hours to check the work it waits on (modules/chief-of-staff/prompts/heartbeat.md); events wake it sooner (the kernel wake inbox, kernel/src/wakes.ts).
+    # Woken every 4 hours to check the work it waits on (modules/chief-of-staff/prompts/heartbeat.md); events wake it sooner (the kernel wake inbox, kernel/src/wakes.ts).
     heartbeat: true
     # fleet-admin: the board's fleet tools and relaying the owner's words (services/board/src/fleet.ts).
     # product-issues: product bugs upstream as the owner (github-mcp).
@@ -73,7 +73,7 @@ agents:
       github?: [ github_whoami, github_project_read, github_issue_read, github_search_issues, github_issue_comment, github_issue_create, github_issue_update, github_pr_review, github_rerun_failed ]
       # Reads, plus the owner's asked-for calendar changes and email (skills google.calendar-changes, google.gmail-writes):
       # each a write record the AI reviewer decides first.
-      google_workspace?: [ docs_read, drive_search_files, drive_read_file, drive_list_recent_files, drive_list_meeting_documents, calendar_list_events, calendar_search_events, calendar_get_event, gmail_search, gmail_read_thread,
+      google_workspace?: [ docs_read, drive_search_files, drive_read_file, drive_list_recent_files, drive_list_meeting_documents, calendar_list_events, calendar_search_events, calendar_get_event, calendar_find_times, calendar_free_busy, calendar_check_times, gmail_search, gmail_read_thread,
                            calendar_create_event, calendar_update_event, calendar_delete_event, calendar_respond, gmail_draft, gmail_send ]
       primer?: [ primer_whoami, primer_resolve_url, primer_get_document, primer_get_version_content, primer_list_versions, primer_get_comments, primer_get_document_comments, primer_list_documents, primer_find_document, primer_get_all_comments, primer_get_events, primer_get_doc, primer_list_collaborators, primer_list_decisions, primer_list_runs, primer_list_suggestions, primer_list_tasks, primer_lookup_user, primer_read_records, primer_record_changes, primer_widget_get, primer_create_document, primer_add_version, primer_reply_to_thread, primer_resolve_thread, primer_send_events, primer_apply_ops, primer_create_thread, primer_reanchor_thread, primer_update_run, primer_withdraw_suggestion, primer_propose_pick, primer_fork_document, primer_promote_conversation, primer_widget_draft, primer_widget_publish, primer_write_records, primer_revert_record_change, primer_add_collaborator ]
       # task_team, task_delegate: code work goes to an Engineer the way everyone hands it on (skill tasks.delegate-work).

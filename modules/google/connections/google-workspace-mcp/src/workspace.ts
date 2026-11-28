@@ -1,18 +1,26 @@
-import { randomUUID } from "node:crypto";
-import type { GoogleClient } from "./google.js";
+import { createHash } from "node:crypto";
+import { type GoogleClient, GoogleApiError } from "./google.js";
+import { blocksOf, conflictWith } from "./find-times.js";
+import { dateIn, renderInZone, wallInstant, zoneOrUtc } from "./zones.js";
+
+export { renderInZone };
 import { automated, category, ccOnly, INBOX_BUDGET_MS, INBOX_QUERY, INBOX_WALK_SHARE, MAX_READS, READS_AT_ONCE } from "./inbox.js";
 
 const CAL = "https://www.googleapis.com/calendar/v3";
 const DRIVE = "https://www.googleapis.com/drive/v3";
 
-interface GEvent {
+export interface GEvent {
   id: string;
+  eventType?: string;
+  recurrence?: string[];
+  workingLocationProperties?: { type?: string; customLocation?: { label?: string }; officeLocation?: { label?: string } };
+  transparency?: string;
   recurringEventId?: string;
   summary?: string;
   status?: string;
   start?: { dateTime?: string; date?: string; timeZone?: string };
   end?: { dateTime?: string; date?: string; timeZone?: string };
-  attendees?: { email?: string; displayName?: string; self?: boolean; responseStatus?: string; resource?: boolean; comment?: string }[];
+  attendees?: { email?: string; displayName?: string; self?: boolean; responseStatus?: string; resource?: boolean; comment?: string; optional?: boolean }[];
   location?: string;
   hangoutLink?: string;
   conferenceData?: { entryPoints?: { entryPointType?: string; uri?: string }[] };
@@ -38,54 +46,8 @@ export interface NormalizedEvent {
   meet_link?: string;
   attachments: { file_id?: string; title?: string; url?: string }[];
   html_link?: string;
-}
-
-const zoneFormatters = new Map<string, Intl.DateTimeFormat>();
-
-/** Wall clock and UTC offset in `zone` at once; throws on a zone name the runtime doesn't know. */
-function zoneFormatter(zone: string): Intl.DateTimeFormat {
-  let f = zoneFormatters.get(zone);
-  if (!f) {
-    f = new Intl.DateTimeFormat("en-US", {
-      timeZone: zone,
-      hourCycle: "h23",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      timeZoneName: "longOffset",
-    });
-    zoneFormatters.set(zone, f);
-  }
-  return f;
-}
-
-/** `zone` if the runtime knows it, else UTC, so the label and the offset still agree. */
-function zoneOrUtc(zone: string | undefined): string {
-  try {
-    zoneFormatter(zone ?? "UTC");
-    return zone ?? "UTC";
-  } catch {
-    return "UTC";
-  }
-}
-
-/**
- * `iso` rendered in `zone` with the offset `zone` is on at that instant, e.g.
- * "2026-11-16T18:30:00+04:00". Google returns an event's `dateTime` in the calendar's default zone,
- * not the event's, so the offset has to be recomputed for the zone we label the event with.
- * The instant is kept; an unknown or missing zone falls back to UTC.
- */
-export function renderInZone(iso: string, zone: string | undefined): string {
-  const epochMs = Date.parse(iso);
-  if (Number.isNaN(epochMs)) return iso;
-  const parts = Object.fromEntries(zoneFormatter(zoneOrUtc(zone)).formatToParts(new Date(epochMs)).map((p) => [p.type, p.value]));
-  // UTC comes out as plain "GMT"; every other zone carries its offset.
-  const offset = (parts.timeZoneName ?? "").replace("GMT", "") || "+00:00";
-  const millis = epochMs % 1000;
-  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}${millis ? `.${String(millis).padStart(3, "0")}` : ""}${offset}`;
+  /** Google's version tag: calendar_update_event's `etag` refuses the change when the event moved on since it was read. */
+  etag?: string;
 }
 
 /**
@@ -119,6 +81,7 @@ export function normalizeEvent(e: GEvent): NormalizedEvent {
     meet_link: meet,
     attachments: (e.attachments ?? []).map((a) => ({ file_id: a.fileId, title: a.title, url: a.fileUrl })),
     html_link: e.htmlLink,
+    etag: e.etag,
   };
 }
 
@@ -140,7 +103,41 @@ function eventFields(e: EventInput): Record<string, unknown> {
 }
 
 const EVENT_FIELDS =
-  "items(id,recurringEventId,summary,status,start,end,attendees(email,displayName,self,responseStatus,resource),location,hangoutLink,conferenceData(entryPoints(entryPointType,uri)),attachments(fileId,title,fileUrl),htmlLink),nextPageToken";
+  "items(id,recurringEventId,summary,status,start,end,attendees(email,displayName,self,responseStatus,resource),location,hangoutLink,conferenceData(entryPoints(entryPointType,uri)),attachments(fileId,title,fileUrl),htmlLink,etag),nextPageToken";
+
+/** The new time is taken (see Workspace.assertFree): a plain failure the agent reports to the owner. */
+export class EventConflict extends Error {}
+/** The event changed since the caller read it (Google's ETag no longer matches); read it again and decide again. */
+export class EventChanged extends Error {
+  constructor() {
+    super("The event changed since you read it (Google's version no longer matches). Nothing was changed: read it again with calendar_get_event and decide again");
+  }
+}
+
+/** An attendee: an email, or with `optional` Google's flag that the guest is optional. */
+export type Attendee = string | { email: string; optional?: boolean };
+const guest = (a: Attendee) => (typeof a === "string" ? { email: a } : { email: a.email, ...(a.optional ? { optional: true } : {}) });
+const emailOf = (a: Attendee) => (typeof a === "string" ? a : a.email);
+
+/** A stable Google event id for (calendar, key): base32hex characters only, so the same key always names the same event. */
+export function eventIdFor(calendar: string, key: string): string {
+  return createHash("sha256").update(`${calendar}\n${key}`).digest("hex").slice(0, 40);
+}
+
+const MAX_RAW_EVENTS = 2500;
+const OFFSET = /(?:[zZ]|[+-]\d\d(?::?\d\d)?)$/;
+/** [start, end) in epoch ms of a timed change, or null for an all-day one; a time with no offset needs `timezone`. */
+function conflictRange(e: { start: string; end: string; timezone?: string }): [number, number] | null {
+  if (!e.start.includes("T") || !e.end.includes("T")) return null;
+  const at = (t: string) => {
+    if (OFFSET.test(t)) return Date.parse(t);
+    if (!e.timezone) throw new Error("a time needs its UTC offset (2026-11-24T15:00:00+04:00) or a timezone");
+    return wallInstant(t, e.timezone);
+  };
+  const r: [number, number] = [at(e.start), at(e.end)];
+  if (!(r[0] < r[1])) throw new Error("the event must end after it starts");
+  return r;
+}
 
 export class Workspace {
   constructor(
@@ -172,6 +169,104 @@ export class Workspace {
     return normalizeEvent(await this.rawEvent(id));
   }
 
+  /**
+   * The events between two instants as Google holds them (recurring series expanded), with the fields find_times and the
+   * conflict check read: type, transparency, the owner's own answer, each side's time zone.
+   */
+  async rawEvents(start: string, end: string): Promise<{ events: GEvent[]; timeZone: string }> {
+    const events: GEvent[] = [];
+    let pageToken: string | undefined;
+    let timeZone = "UTC";
+    do {
+      if (events.length >= MAX_RAW_EVENTS) throw new Error("too many events in that period to check availability: ask for a shorter one");
+      const page = await this.g.get<{ items?: GEvent[]; nextPageToken?: string; timeZone?: string }>(this.eventUrl(), {
+        timeMin: new Date(start).toISOString(),
+        timeMax: new Date(end).toISOString(),
+        singleEvents: true,
+        orderBy: "startTime",
+        maxResults: 250,
+        pageToken,
+        fields: "timeZone,items(id,recurringEventId,summary,status,eventType,transparency,workingLocationProperties(type,customLocation(label),officeLocation(label)),start,end,organizer(self),attendees(email,self,responseStatus,resource)),nextPageToken",
+      });
+      events.push(...(page.items ?? []));
+      if (page.timeZone) timeZone = page.timeZone;
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+    return { events, timeZone };
+  }
+
+  /** Other people's busy time (Calendar's freeBusy; needs the optional calendar.events.freebusy scope). `hidden`: a calendar Google would not show. */
+  async freeBusy(emails: string[], start: string, end: string): Promise<{ busy: { start: string; end: string }[]; byEmail: Record<string, { start: string; end: string }[]>; hidden: string[] }> {
+    const r = await this.g.request<{ calendars?: Record<string, { busy?: { start: string; end: string }[]; errors?: unknown[] }> }>(
+      "POST",
+      `${CAL}/freeBusy`,
+      {},
+      { timeMin: new Date(start).toISOString(), timeMax: new Date(end).toISOString(), items: emails.map((id) => ({ id })) },
+    );
+    const busy: { start: string; end: string }[] = [], hidden: string[] = [], byEmail: Record<string, { start: string; end: string }[]> = {};
+    for (const email of emails) {
+      const c = r.calendars?.[email];
+      if (!c || c.errors?.length) hidden.push(email);
+      else {
+        byEmail[email] = c.busy ?? [];
+        busy.push(...byEmail[email]);
+      }
+    }
+    return { busy, byEmail, hidden };
+  }
+
+  /** A colleague's working-location entries (their calendar must share events with the owner): date, kind and label per day. */
+  async workingLocations(email: string, start: string, end: string): Promise<{ date: string; kind: "home" | "office" | "custom"; label?: string }[]> {
+    const page = await this.g.get<{ items?: GEvent[] }>(`${CAL}/calendars/${encodeURIComponent(email)}/events`, {
+      timeMin: new Date(start).toISOString(),
+      timeMax: new Date(end).toISOString(),
+      eventTypes: "workingLocation",
+      singleEvents: true,
+      maxResults: 100,
+      fields: "items(start,workingLocationProperties(type,customLocation(label),officeLocation(label)))",
+    });
+    return (page.items ?? []).flatMap((e) => {
+      const date = e.start?.date ?? (e.start?.dateTime ? dateIn(Date.parse(e.start.dateTime), zoneOrUtc(e.start.timeZone)) : undefined);
+      if (!date) return [];
+      const t = e.workingLocationProperties?.type;
+      const label = (e.workingLocationProperties?.officeLocation?.label ?? e.workingLocationProperties?.customLocation?.label)?.replace(/[\r\n\t]+/g, " ").trim().slice(0, 200);
+      return [{ date, kind: t === "homeOffice" ? ("home" as const) : t === "officeLocation" ? ("office" as const) : ("custom" as const), ...(label ? { label } : {}) }];
+    });
+  }
+
+  /**
+   * Refuses a timed change onto a time another event holds on the owner's calendar, so an owner-named time that filled up since
+   * the owner chose it is reported, never silently double-booked. `except`: the event being created or moved (an occurrence's id
+   * leaves out just it; a series' id its occurrences too). All-day events are informational and not checked.
+   */
+  private async assertFree(e: { start: string; end: string; timezone?: string }, except: string, allowConflict?: boolean) {
+    const range = conflictRange(e);
+    if (!range || allowConflict) return;
+    const { events, timeZone } = await this.rawEvents(new Date(range[0]).toISOString(), new Date(range[1]).toISOString());
+    const taken = conflictWith(blocksOf(events, timeZone, except), range[0], range[1]);
+    if (taken) throw new EventConflict(`${taken.title ? `"${taken.title}"` : "Another event"} already holds ${renderInZone(new Date(taken.start).toISOString(), e.timezone ?? timeZone)} to ${renderInZone(new Date(taken.end).toISOString(), e.timezone ?? timeZone)} on this calendar. Nothing was changed: tell the owner, and offer other times (calendar_find_times) or a deliberate double-booking (allow_conflict)`);
+  }
+
+  /**
+   * Moving a whole series moves every occurrence by the same shift: the next 12 weeks of occurrences are checked at their
+   * shifted times, so a clash later in the series is reported before anything changes.
+   */
+  private async assertSeriesFree(held: GEvent, e: { start: string; end: string; timezone?: string }, allowConflict?: boolean) {
+    const range = conflictRange(e);
+    if (!range || allowConflict || !held.start?.dateTime || !held.end?.dateTime) return;
+    const [ds, de] = [range[0] - Date.parse(held.start.dateTime), range[1] - Date.parse(held.end.dateTime)];
+    if (!ds && !de) return;
+    const from = Math.max(Date.now(), Date.parse(held.start.dateTime));
+    const { events, timeZone } = await this.rawEvents(new Date(from).toISOString(), new Date(from + 84 * 86_400_000 + Math.max(ds, de, 0)).toISOString());
+    const blocks = blocksOf(events, timeZone, held.id);
+    for (const o of events) {
+      if (o.recurringEventId !== held.id || !o.start?.dateTime || !o.end?.dateTime) continue;
+      const [s, en] = [Date.parse(o.start.dateTime) + ds, Date.parse(o.end.dateTime) + de];
+      const taken = conflictWith(blocks, s, en);
+      if (taken) throw new EventConflict(`Moving the whole series would put its ${renderInZone(new Date(s).toISOString(), e.timezone ?? timeZone).slice(0, 10)} occurrence on ${taken.title ? `"${taken.title}"` : "another event"}. Nothing was changed: tell the owner, move that one occurrence instead, or allow_conflict`);
+    }
+  }
+
   private eventUrl(id?: string) {
     return `${CAL}/calendars/${encodeURIComponent(this.calendarId)}/events${id ? `/${encodeURIComponent(id)}` : ""}`;
   }
@@ -183,32 +278,66 @@ export class Workspace {
 
   // -------------------------------------------------------------- Calendar writes (each a reviewed tool call)
 
-  async createEvent(e: EventInput & { attendees?: string[]; meet?: boolean }, sendUpdates: SendUpdates): Promise<NormalizedEvent> {
+  /**
+   * Creates the event under an id derived from `request_key` (a retried create finds it: Google answers 409, and the existing
+   * event is returned), after checking the time is free.
+   */
+  async createEvent(e: EventInput & { attendees?: Attendee[]; meet?: boolean; request_key: string; allow_conflict?: boolean }, sendUpdates: SendUpdates): Promise<NormalizedEvent> {
+    const id = eventIdFor(this.calendarId, e.request_key);
+    // A retry finds its own event first: it must not fail as a conflict with itself, nor create a second one.
+    const done = await this.rawEvent(id).catch((err) => (err instanceof GoogleApiError && err.status === 404 ? undefined : Promise.reject(err)));
+    if (done?.status === "cancelled") throw new Error("A booking made under this request_key was cancelled, so Google keeps its id: nothing was created. Use a new request_key for a new booking");
+    if (done) return normalizeEvent(done);
+    if (e.start && e.end) await this.assertFree({ start: e.start, end: e.end, timezone: e.timezone }, id, e.allow_conflict);
     const body = {
+      id,
       ...eventFields(e),
-      ...(e.attendees?.length ? { attendees: e.attendees.map((email) => ({ email })) } : {}),
-      ...(e.meet ? { conferenceData: { createRequest: { requestId: randomUUID(), conferenceSolutionKey: { type: "hangoutsMeet" } } } } : {}),
+      ...(e.attendees?.length ? { attendees: e.attendees.map(guest) } : {}),
+      ...(e.meet ? { conferenceData: { createRequest: { requestId: id, conferenceSolutionKey: { type: "hangoutsMeet" } } } } : {}),
     };
-    return normalizeEvent(await this.g.request<GEvent>("POST", this.eventUrl(), { sendUpdates, ...(e.meet ? { conferenceDataVersion: 1 } : {}) }, body));
+    try {
+      return normalizeEvent(await this.g.request<GEvent>("POST", this.eventUrl(), { sendUpdates, ...(e.meet ? { conferenceDataVersion: 1 } : {}) }, body));
+    } catch (err) {
+      // The same key already made this event (a concurrent retry), or its cancelled copy still holds the id.
+      if (err instanceof GoogleApiError && err.status === 409) {
+        const winner = await this.rawEvent(id);
+        if (winner.status === "cancelled") throw new Error("A booking made under this request_key was cancelled, so Google keeps its id: nothing was created. Use a new request_key for a new booking");
+        return normalizeEvent(winner);
+      }
+      throw err;
+    }
   }
 
-  /** Moves, renames or re-describes an event; attendees are added to and removed from the list Google holds. */
-  async updateEvent(id: string, e: EventInput & { add_attendees?: string[]; remove_attendees?: string[] }, sendUpdates: SendUpdates): Promise<NormalizedEvent> {
+  /**
+   * Moves, renames or re-describes an event; attendees are added to and removed from the list Google holds. The change applies
+   * only to the version it was checked against (If-Match): `etag` is the one the caller read, else the one just fetched. A
+   * move first checks the new time is free.
+   */
+  async updateEvent(id: string, e: EventInput & { add_attendees?: Attendee[]; remove_attendees?: string[]; etag?: string; allow_conflict?: boolean }, sendUpdates: SendUpdates): Promise<NormalizedEvent> {
     const body: Record<string, unknown> = eventFields(e);
-    // The guest list is replaced whole, so the PATCH applies only to the version it was merged from (If-Match; Google answers 412 otherwise).
-    let etag: string | undefined;
+    if (!Object.keys(body).length && !e.add_attendees?.length && !e.remove_attendees?.length) throw new Error("nothing to change: pass a new title, time, description, location or attendees");
+    const held = await this.rawEvent(id);
+    if (e.etag && held.etag && e.etag !== held.etag) throw new EventChanged();
+    // A partial time change is checked as the whole interval it makes with the event's other boundary.
+    const [start, end] = [e.start ?? held.start?.dateTime, e.end ?? held.end?.dateTime];
+    if ((e.start || e.end) && start && end) {
+      await this.assertFree({ start, end, timezone: e.timezone }, held.id, e.allow_conflict);
+      if (held.recurrence?.length) await this.assertSeriesFree(held, { start, end, timezone: e.timezone }, e.allow_conflict);
+    }
     if (e.add_attendees?.length || e.remove_attendees?.length) {
       const gone = new Set((e.remove_attendees ?? []).map((a) => a.toLowerCase()));
-      const held = await this.rawEvent(id);
       // Google left some attendees out of the event it returned (a large event): a PATCH of the list would drop them.
-      etag = held.etag;
       if (held.attendeesOmitted) throw new Error("Google didn't return this event's full guest list, so attendees can't be changed safely here");
       const kept = (held.attendees ?? []).filter((a) => !gone.has(String(a.email).toLowerCase()));
       const have = new Set(kept.map((a) => String(a.email).toLowerCase()));
-      body.attendees = [...kept, ...(e.add_attendees ?? []).filter((a) => !have.has(a.toLowerCase())).map((email) => ({ email }))];
+      body.attendees = [...kept, ...(e.add_attendees ?? []).filter((a) => !have.has(emailOf(a).toLowerCase())).map(guest)];
     }
-    if (!Object.keys(body).length) throw new Error("nothing to change: pass a new title, time, description, location or attendees");
-    return normalizeEvent(await this.g.request<GEvent>("PATCH", this.eventUrl(id), { sendUpdates }, body, etag));
+    try {
+      return normalizeEvent(await this.g.request<GEvent>("PATCH", this.eventUrl(id), { sendUpdates }, body, held.etag));
+    } catch (err) {
+      if (err instanceof GoogleApiError && err.status === 412) throw new EventChanged();
+      throw err;
+    }
   }
 
   /** Deletes the event from the calendar; one the owner organises is cancelled for every attendee. */

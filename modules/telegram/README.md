@@ -34,6 +34,15 @@ channels; `all` treats muted like unmuted), `telegram_exclude_chats` (chat ids n
 - Intake's inbox agent reads, and the chief of staff reads, drafts, sends and replies when you ask.
 - Warehouse views: `src_telegram.messages`, `chats`, `changes` (edits and deletes), `users`.
 
+## Summoning agents
+
+Every event carries `from_owner` (TDLib's `outgoing` flag, never the text) and no `thread`: a chat is one conversation (a reply
+chain's root is `data.thread`). telegram-live serves the kernel's summon calls on `/summon/context`, `/summon/reply` and
+`/summon/react` (the service key). `reply` posts as you through the same executor as `telegram_reply` (per-chat gap, hourly cap,
+echo dropped as agent-sent), threads under `in_reply_to`, renders `[label](url)` as a text link, and is idempotent on `key`; all three
+refuse a chat in `telegram_exclude_chats` with 403. Any of them marks the chat as summoned for 48 hours: its messages reach the kernel
+even when muted, so follow-ups to an open task arrive. Message ids on the contract are event ids, `<chat_id>:<message_id>`.
+
 ## New installs
 
 In the default bundle, idle until you connect. Until then Settings, Connections shows Telegram as not connected with a

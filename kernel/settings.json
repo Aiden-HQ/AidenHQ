@@ -70,7 +70,21 @@
   },
   "computers_max": {
     "title": "Computers for agent jobs",
-    "doc": "How many computers agent jobs run at once, 1 to 64: the kernel's job admission reads it (config/computers.json max). Unset: the host's RAM in GB divided by 1.5, within 4 to 64 (8 GB: 5, 16 GB: 10, 32 GB: 21, 64 GB: 42), worked out when the config is compiled. Check jobs have their own number, check_computers_max."
+    "doc": "How many computers agent jobs run at once, 1 to 64: the kernel's job admission reads it (config/computers.json max). Unset: the host's RAM in GB divided by 1.5, within 4 to 64 (8 GB: 5, 16 GB: 10, 32 GB: 21, 64 GB: 42), worked out when the config is compiled."
+  },
+  "summon": {
+    "title": "Summon agents",
+    "default": "on",
+    "values": [
+      "on",
+      "off"
+    ],
+    "doc": "Summon a teammate from your own chats: \"cc Aria\", \"@Aria\" or \"Aria@AidenHQ\" in a message you write on a connected account (Slack, Telegram) gives that teammate the message and the conversation as a task, and it answers there from your account, signed. Off: those messages go to triage like any other. docs/superpowers/specs/2026-11-28-summon-agents-design.md."
+  },
+  "summon_signature": {
+    "title": "Summon signature",
+    "default": "Sent by {agent} from [AidenHQ](https://aidenhq.ai)",
+    "doc": "The line every summoned teammate's reply ends with ({agent} is its name; markdown links render in each chat's own markup). Never empty: it tells the other person an AI wrote it, and it keeps a teammate from reading its own reply as a new summons."
   },
   "auto_update": {
     "title": "Install updates automatically",

@@ -55,15 +55,15 @@ describe("module.yaml: the write tools are reviewed records", () => {
 describe("calendar writes", () => {
   it("creates, moves with a guest change merged into Google's list, answers an invite and cancels, on the named account", async () => {
     const held = { id: "ev1", etag: '"e1"', summary: "Sync", start: { dateTime: "2026-11-24T10:00:00Z" }, end: { dateTime: "2026-11-24T10:30:00Z" }, attendees: [{ email: "me@work.com", self: true, responseStatus: "needsAction" }, { email: "dana@example.com", responseStatus: "accepted", optional: true }, { email: "lee@example.com" }] };
-    const g = google({ [`POST ${EV}`]: { ...held, id: "new" }, [`GET ${EV}/ev1`]: held, [`PATCH ${EV}/ev1`]: held, [`DELETE ${EV}/ev1`]: null });
+    const g = google({ [`GET ${EV}`]: { items: [] }, [`POST ${EV}`]: { ...held, id: "new" }, [`GET ${EV}/ev1`]: held, [`PATCH ${EV}/ev1`]: held, [`DELETE ${EV}/ev1`]: null });
     const ws = new MultiWorkspace(creds(), "primary", g.impl);
 
-    const made = await ws.createEvent({ title: "Plan", start: "2026-11-25T15:00:00+04:00", end: "2026-11-25", attendees: ["dana@example.com"], meet: true }, "all");
+    const made = await ws.createEvent({ title: "Plan", start: "2026-11-25T15:00:00+04:00", end: "2026-11-25", attendees: ["dana@example.com"], meet: true, request_key: "k1" }, "all");
     expect(made).toMatchObject({ id: "new", account: "me@work.com" });
-    expect(g.calls[0]).toMatchObject({ method: "POST" });
-    expect(g.calls[0]!.url.searchParams.get("sendUpdates")).toBe("all");
-    expect(g.calls[0]!.url.searchParams.get("conferenceDataVersion")).toBe("1");
-    expect(g.calls[0]!.body).toMatchObject({ summary: "Plan", start: { dateTime: "2026-11-25T15:00:00+04:00" }, end: { date: "2026-11-25" }, attendees: [{ email: "dana@example.com" }] });
+    const post = g.calls.find((c) => c.method === "POST")!;
+    expect(post.url.searchParams.get("sendUpdates")).toBe("all");
+    expect(post.url.searchParams.get("conferenceDataVersion")).toBe("1");
+    expect(post.body).toMatchObject({ summary: "Plan", start: { dateTime: "2026-11-25T15:00:00+04:00" }, end: { date: "2026-11-25" }, attendees: [{ email: "dana@example.com" }] });
 
     g.calls.length = 0;
     await ws.updateEvent("ev1", { start: "2026-11-24T12:00:00Z", end: "2026-11-24T12:30:00Z", add_attendees: ["kim@example.com", "DANA@example.com"], remove_attendees: ["Lee@example.com"] }, "none");
@@ -85,10 +85,10 @@ describe("calendar writes", () => {
   it("an account signed in before Google writes answers needs_owner scope, without calling Google", async () => {
     const g = google({});
     const ws = new MultiWorkspace(creds(), "primary", g.impl);
-    const err = await ws.createEvent({ title: "x", start: "2026-11-25", end: "2026-11-26" }, "all", "me@side.io").catch((e) => e);
+    const err = await ws.createEvent({ title: "x", start: "2026-11-25", end: "2026-11-26", request_key: "k" }, "all", "me@side.io").catch((e) => e);
     expect(readNeed(toolFailure(err))).toMatchObject({ cause: "scope", scope: "calendar.events", account: "me@side.io" });
     expect(g.calls).toEqual([]);
-    expect(ws.authStatus().find((a) => a.email === "me@side.io")!.missing).toEqual(["calendar.events", "gmail.modify"]);
+    expect(ws.authStatus().find((a) => a.email === "me@side.io")!.missing).toEqual(["calendar.events", "gmail.modify", "calendar.events.freebusy"]);
     expect(ws.authStatus().find((a) => a.email === "me@work.com")!.missing).toBeUndefined();
   });
 });
@@ -146,7 +146,7 @@ describe("the write tools over MCP", () => {
     const client = new Client({ name: "agent", version: "0" });
     await client.connect(ct);
     const call = async (name: string, args: Record<string, unknown>) => JSON.parse(((await client.callTool({ name, arguments: args })).content as { text: string }[])[0]!.text);
-    expect(await call("calendar_create_event", { title: "Plan", start: "2026-11-25", end: "2026-11-26", send_updates: "all" })).toMatchObject({ id: "new", account: "me@work.com" });
+    expect(await call("calendar_create_event", { title: "Plan", start: "2026-11-25", end: "2026-11-26", request_key: "k", send_updates: "all" })).toMatchObject({ id: "new", account: "me@work.com" });
     expect(g.calls.at(-1)!.url.searchParams.get("sendUpdates")).toBe("all");
     expect(await call("gmail_send", { to: ["dana@example.com"], subject: "Hi", body: "Hello" })).toMatchObject({ message_id: "s1", account: "me@work.com" });
     expect(mime(String(g.calls.at(-1)!.body!.raw))).toContain("Subject: Hi\r\n");

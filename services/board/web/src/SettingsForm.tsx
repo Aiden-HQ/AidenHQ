@@ -16,6 +16,8 @@ export interface RowOpts {
   /** Words for a choice's stored values ("tier0" is "Tier 0"). */
   labels?: Record<string, string>;
   prefix?: string;
+  /** The value may not be empty (beyond the setting's own `required`). */
+  required?: boolean;
   placeholder?: string;
   /** A control of its own: the draft value, and how to change it. */
   control?: (value: unknown, set: (v: unknown) => void) => ReactNode;
@@ -46,7 +48,7 @@ function problemOf(s: SettingRow, o: RowOpts, next: unknown): string | null {
   if (typeof effective(s) === "number" && (Number.isNaN(next) || (next as number) < 0)) return "a number";
   const bad = [next].flat().find((x) => s.pattern && typeof x === "string" && x !== "" && !new RegExp(s.pattern).test(x));
   if (bad !== undefined) return `a value like ${s.pattern}`;
-  if (s.required && (next === "" || next === undefined)) return "a value";
+  if ((s.required || o.required) && (next === "" || next === undefined)) return "a value";
   return null;
 }
 

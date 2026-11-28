@@ -59,8 +59,9 @@ const CAUTIOUS: ShipSettings = {
   unwatched: { merge: "ready" }, stop_label: "ship:stop", ignore_authors: [], actions: {}, dependabot: "off", quiet_pr_days: null,
 };
 const FULL: ShipSettings = {
-  // Unguarded at ship's own policy layer. Host rules, human code-owner reviews and kernel authority still apply.
-  ...CAUTIOUS, handoff: "all", protected: [],
+  // Unguarded at ship's own policy layer once handed a PR (a person's PR still waits for the `ship` label or `/ship`; owner,
+  // 2026-11-28). Host rules, human code-owner reviews and kernel authority still apply.
+  ...CAUTIOUS, protected: [],
   by_tier: { skip: { approve: "off", merge: "ready" }, trivial: { approve: "on", merge: "ready" }, standard: { approve: "on", merge: "ready" }, sensitive: { approve: "on", merge: "ready" } },
   caps: Object.fromEntries(CAP_KEYS.map((k) => [k, null])) as Caps,
 };
@@ -239,7 +240,8 @@ export function loosens(before: unknown, after: unknown, scope: Scope = ALL): st
     if (rank(HANDOFF, y.handoff) > rank(HANDOFF, x.handoff)) add("handoff");
     if (y.rebase === "behind" && x.rebase !== "behind") add("rebase");
     // The owner's gates the Maintainer's entries carried for these duties: every Dependabot PR, and closing quiet human PRs.
-    if (y.dependabot === "all" && x.dependabot !== "all") add("dependabot");
+    // `failing` merges green bumps unasked (handoff.ts) and `all` files a task for each: turning either on is the owner's.
+    if (y.dependabot !== "off" && y.dependabot !== x.dependabot) add("dependabot");
     // Any sooner close: switched on, or a shorter window than before.
     if (y.quiet_pr_days !== null && (x.quiet_pr_days === null || y.quiet_pr_days < x.quiet_pr_days)) add("quiet_pr_days");
     for (const t of TIERS) {

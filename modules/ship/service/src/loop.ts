@@ -2,7 +2,7 @@
 // (those get only the Dependabot task), read with one GraphQL list read per repo (github's OPEN_PRS_QUERY) when something changed:
 // followFeed() reads the github change feed's events (the kernel's log) and passes each repo an event names.
 // - A Dependabot PR whose checks have finished becomes one task for the platform-engineer role (kernel POST /v1/tasks), closed
-//   again once the PR is merged or closed. A green one under `failing` goes through the round like any PR (handoff: all adopts it).
+//   again once the PR is merged or closed. A green one under `failing` goes through the round like any PR (adopted as a bump: handoff.ts).
 // - Every other PR goes to one engine (adopted.ts: intake, then rounds.ts round()), the fleet's own (one the code host opened for
 //   a task: github's pr-tasks.json, read through `openers`) and everyone else's alike, after its CI recoveries (ci-recover.ts).
 // Flow's PR facts are the change feed's own (github flow.ts observe), not this watch's.

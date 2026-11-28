@@ -26,7 +26,8 @@ The Fleet page (Fleet sidebar, a module view the `ship` connection serves as `ui
 ## How a PR moves
 
 - **Adoption.** A PR the code host opened for a task is adopted at first sight, owned by that task. Any other PR needs a member
-  with write access: a `ship` label or a `/ship` comment (never a bot or the App), or `handoff: all`. Each trigger is consumed
+  with write access: a `ship` label or a `/ship` comment (never a bot or the App), whatever the preset; only `handoff: all`, set
+  by hand, takes every writer's PR unasked. A green Dependabot PR on a repo whose `dependabot` is `failing` is adopted as is (that setting is its opt-in). Each trigger is consumed
   once; a hold or hand-back is sticky until a newer trigger starts a new generation. The Engineer task (`ship:<repo>/<n>:<generation>`,
   role `platform-engineer`) is filed when a round first needs it, with fixed text, never the PR's words. Cancelling it ends the
   adoption and leaves the PR open.
@@ -74,7 +75,7 @@ Without ship, no PR is watched: Engineers merge their own green PRs (`aidenhq me
 
 Sam (the `ship` agent) is ship's teammate: he answers the owner about a PR's merge state, holds and the queue, and changes
 the settings when asked. The `ship` connection. Read: `ship_config`, `ship_status`. Write: `ship_configure`. Both need the
-`ship-admin` role (Sam, the Maintainer and Aiden hold it); the owner's own Fleet page calls them too, and `ship_configure` then only returns the typed settings change (the board files it on his Save). A repo ship doesn't cover yet is the owner's to add from the Fleet page: Add writes only its `ship` entry and Remove drops only that. The Maintainer and code review are separate: adding a repo to Ship never lists it there (the owner does that from their pages), and a repo code review doesn't watch merges by the `unwatched` setting. Ship reads no other module's list. A change that loosens anything (more hand-off, a higher or removed cap, a tier's approve or merge raised, `dependabot: all`, quiet-PR closing turned on, a login added to
+`ship-admin` role (Sam, the Maintainer and Aiden hold it); the owner's own Fleet page calls them too, and `ship_configure` then only returns the typed settings change (the board files it on his Save). A repo ship doesn't cover yet is the owner's to add from the Fleet page: Add writes only its `ship` entry and Remove drops only that. The Maintainer and code review are separate: adding a repo to Ship never lists it there (the owner does that from their pages), and a repo code review doesn't watch merges by the `unwatched` setting. Ship reads no other module's list. A change that loosens anything (more hand-off, a higher or removed cap, a tier's approve or merge raised, `dependabot` set to `failing` (which merges green bumps unasked) or `all`, quiet-PR closing turned on, a login added to
 `ignore_authors`: its comments stop gating a merge) is the owner's, made from the Fleet page; removing an `ignore_authors` login is
 not.
 

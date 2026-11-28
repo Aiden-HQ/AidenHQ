@@ -57,8 +57,8 @@ settings:
   # rounds, usd, requeue_on_timeout: a number, or null for unlimited },
   # by_tier: { skip|trivial|standard|sensitive: { approve: off|observe|on (not skip), merge: off|ready } } (the risk tier code review gives
   # each PR head; a tier or field omitted takes the preset's), unwatched: { merge: off|ready } (a repo code review doesn't watch has no
-  # tier), enabled: true|false, stop_label, dependabot: off|failing|all (which Dependabot PRs get an Engineer task; `all` is the
-  # owner's), quiet_pr_days: null | days (nudge a human's PR quiet that long, close it after as many more; drafts wait twice as
+  # tier), enabled: true|false, stop_label, dependabot: off|failing|all (which Dependabot PRs get an Engineer task; `failing`
+  # also merges green bumps unasked; turning either on is the owner's), quiet_pr_days: null | days (nudge a human's PR quiet that long, close it after as many more; drafts wait twice as
   # long; turning it on is the owner's): those two duties run whether or not `enabled` is,
   # actions: { conflict|behind|before_merge: [ { workflow: "file.yml", inputs: { pr: "{pr}", … } } ] } (the repo's own workflows,
   # dispatched on the repo's default branch with the PR's number as an input, run before ship's own step; ship follows each run by its

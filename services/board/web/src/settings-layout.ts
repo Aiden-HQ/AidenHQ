@@ -17,7 +17,7 @@ export const CATEGORIES = [
 export type Category = (typeof CATEGORIES)[number]["key"];
 export const isCategory = (s: string | null | undefined): s is Category => CATEGORIES.some((c) => c.key === s);
 
-/** The settings each general page edits, in row order. `summon` and `summon_signature` (the owner-channel's summon switch) show once a module declares them. */
+/** The settings each general page edits, in row order. `summon` and `summon_signature` are kernel settings. */
 export const PAGE_SETTINGS = {
   profile: ["owner_name", "owner_email", "timezone", "time_format"],
   notifications: ["notify_transports", "notify_fyi", "summon", "summon_signature"],

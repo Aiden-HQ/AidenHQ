@@ -109,6 +109,15 @@ routine or memory.
   its `events: { kinds: [...] }` (modules/slack/module.yaml) and mapping the vendor event to a router event in its service
   (slack-live `map.ts` `toSourceEvent`, which sends the owner's `reaction_added` and `reaction_removed` for the task
   emoji); a routine's `filter.kind` then names it.
+- **Scheduled work is a declared routine, never a service clock.** A module that runs something on a schedule declares a
+  routine in module.yaml: `schedules: [{ cron, timezone: "${settings.timezone}", label }]`. Paperclip runs the clock,
+  so the run happens even while the module's service is down.
+  - A schedule the owner switches on starts `status: paused` (and quiet start pauses every scheduled routine on a new
+    install). On/off is the routine's live Resume/Pause, and the time is the `overrides.routines.<key>.schedules` field.
+  - User-written instructions reach the run through `${settings.<key>}` in the routine's `description`.
+  - Limits such as "at most N a night" go in that prompt or the skill, not in a code counter.
+  - A service runs its own scheduler only for many dynamic slots that one fixed routine can't express: server-manager's
+    per-machine windows, design's always-on passes per app.
 - **Memory** is the kernel's, one file per agent at `data/kernel/memory/agents/<key>.json`; the repo and the instance hold
   no memory files. An agent uses `memory_note`, `memory_forget`, `memory_read` and `memory_rewrite`.
 - **Self-change.** An agent edits its own handbook, skill list, `library` skills and `library` routines with `self_change`;

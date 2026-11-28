@@ -33,7 +33,7 @@ const stateOf = (url: string) => new URL(url).searchParams.get("state")!;
 describe("reconnect from the board", () => {
   const redirect = "http://127.0.0.1:3120/google/callback";
 
-  it("asks Google for SCOPES, for that account, with PKCE", () => {
+  it("asks Google for SCOPES (free/busy included), for that account, with PKCE", () => {
     const { url } = new Reconnect(credsFile()).start("me@work.com", redirect);
     const q = new URL(url).searchParams;
     expect(q.get("client_id")).toBe("cid");

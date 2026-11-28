@@ -5,6 +5,8 @@ import type { Card } from "./records.ts";
 import { FLEET_OP, FLEET_OP_KIND } from "./fleet-ops.ts";
 import type { Kind, Schema } from "./writes.ts";
 
+/** The kind of a summoned teammate's reply in the conversation it was summoned into (summon.ts). */
+export const SUMMON_REPLY = "conversation.reply";
 const SHA: Schema = { type: "string", pattern: "^[0-9a-f]{40}$" };
 // owner/name only: no `.git`, no trailing slash, no further path (repoKey canonicalises what reaches the same repo).
 const NAME = "[\\w.-]+\\/(?![\\w.-]*\\.git(?:$|\\/))[\\w.-]*[\\w-]";
@@ -48,7 +50,7 @@ export function repoKey(v: unknown): string | undefined {
  * The kernel's roles a module may request (module.yaml roles.requests): each opens one backplane route or, for kernel.apply,
  * filing that kernel kind. No module declares a kernel.* role or a role named after a write kind (compile refuses both).
  */
-export const KERNEL_ROLES = ["kernel.apply", "kernel.checks", "kernel.cp-read", "kernel.events", "kernel.facts", "kernel.flow-read", "kernel.grader", "kernel.jobs", "kernel.lane", "kernel.memory", "kernel.notify", "kernel.owner-notice", "kernel.routing", "kernel.settings", "kernel.tasks", "kernel.test-session", "kernel.wake", "kernel.work-read"];
+export const KERNEL_ROLES = ["kernel.apply", "kernel.attest-owner", "kernel.checks", "kernel.cp-read", "kernel.events", "kernel.facts", "kernel.flow-read", "kernel.grader", "kernel.jobs", "kernel.lane", "kernel.memory", "kernel.notify", "kernel.owner-notice", "kernel.routing", "kernel.settings", "kernel.tasks", "kernel.test-session", "kernel.wake", "kernel.work-read"];
 
 /** The kernel's kinds, beside the modules' compiled ones (config/kernel/writes.json). */
 export const KERNEL_KINDS: Record<string, Kind> = {
@@ -56,4 +58,6 @@ export const KERNEL_KINDS: Record<string, Kind> = {
   "kernel.apply": { module: "kernel", floor: 1, tools: [], args: APPLY_ARGS },
   // The Fleet Steward's operations (fleet-ops.ts): filed through its tool, read by the AI reviewer first.
   [FLEET_OP]: FLEET_OP_KIND,
+  // A summoned teammate's reply in the owner's chat (summon.ts): planned and posted by the kernel, read by the AI reviewer first.
+  [SUMMON_REPLY]: { module: "kernel", floor: 1, tools: ["conversation.conversation_reply"], args: obj({ text: { type: "string", minLength: 1, maxLength: 4000 } }, ["text"]) },
 };
