@@ -20,8 +20,8 @@ it("reads each way's real state", async () => {
 
   const waiting = await teammateReach({ agent: "aria", points, pages, settings, stored: async () => [] });
   expect(waiting.rows[0]!.state).toBe("needs");
-  // A failed read of the tokens is no answer: the way still counts as set up.
-  expect((await teammateReach({ agent: "aria", points, pages, settings, stored: async () => null })).rows[0]!.state).toBe("on");
+  // A failed read of the tokens is no answer, so it never reads as connected.
+  expect((await teammateReach({ agent: "aria", points, pages, settings, stored: async () => null })).rows[0]!.state).toBe("needs");
 });
 
 it("shows a way the agent has no entry in as off, with no address", async () => {

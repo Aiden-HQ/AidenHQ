@@ -2783,7 +2783,7 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     // signed-in session's own reads; a read that fails leaves its part out rather than guessing.
     {
       method: "GET",
-      path: /^\/api\/teammates\/([a-z][a-z0-9_-]{0,62})\/reach$/,
+      path: /^\/api\/teammates\/([a-z0-9][a-z0-9_-]{0,62})\/reach$/,
       handle: async (m, _b, who) => {
         if (!teammates().keys.has(m[1]!)) throw new HttpError(404, `no teammate called ${m[1]}`);
         const stored = (module: string, secret: string) => opts.accounts!.call<{ keys: string[] }>("secret_keys", who, { module, secret }).then((r) => r.keys, () => null);

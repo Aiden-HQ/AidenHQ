@@ -11,7 +11,7 @@ export function reachPoints(file: string): ReachPoint[] {
   return existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).reach ?? []) : [];
 }
 
-/** `on`: in use; `needs`: set up but not working yet; `off`: not set up. */
+/** `on`: in use; `needs`: set up but not working or not confirmed yet; `off`: not set up. */
 export interface ReachRow { id: string; label: string; kind: ReachPoint["kind"]; state: "on" | "needs" | "off"; detail: string; address?: string[]; manage: { module: string; page?: string } }
 export interface TeammateReach { rows: ReachRow[]; address: boolean }
 
@@ -19,10 +19,10 @@ export interface TeammateReach { rows: ReachRow[]; address: boolean }
 const entriesOf = (value: unknown, agent: string): Record<string, unknown>[] =>
   (Array.isArray(value) ? value : []).filter((e): e is Record<string, unknown> => !!e && typeof e === "object" && (e as { agent?: unknown }).agent === agent);
 
-/** The page its Manage opens: the module's page that edits the secret map, else its first page; none sends the owner to the module's settings. */
+/** The page its Manage opens: the module's page that edits the secret map or lists the setting, else its first page (a module's own settings need no listing); none sends the owner to the module's settings. */
 const pageOf = (p: ReachPoint, pages: PagePoint[]) => {
   const own = pages.filter((x) => x.module === p.module);
-  return (own.find((x) => p.secret_map && x.secret_maps?.some((s) => s.secret === p.secret_map)) ?? own[0])?.id;
+  return (own.find((x) => (p.secret_map && x.secret_maps?.some((s) => s.secret === p.secret_map)) || x.settings?.includes(p.setting)) ?? own[0])?.id;
 };
 
 export async function teammateReach({ agent, points, pages, settings, stored }: { agent: string; points: ReachPoint[]; pages: PagePoint[]; settings: Record<string, unknown>; stored: (module: string, secret: string) => Promise<string[] | null> }): Promise<TeammateReach> {
@@ -34,11 +34,12 @@ export async function teammateReach({ agent, points, pages, settings, stored }: 
       if (!entries.length) return { ...row, state: "off", detail: p.kind === "address" ? "No address yet" : "Not set up" };
       if (p.kind === "address") {
         const address = [...new Set(entries.flatMap((e) => (typeof e.address === "string" && e.address ? [e.address] : [])))];
-        return { ...row, state: "on", detail: address.join(", "), address };
+        return address.length ? { ...row, state: "on", detail: address.join(", "), address } : { ...row, state: "off", detail: "No address yet" };
       }
-      // A dedicated app works once its tokens are stored; a read that fails is no answer, so it counts as set up.
-      const keys = p.secret_map ? await stored(p.module, p.secret_map) : null;
-      return keys && !keys.includes(agent) ? { ...row, state: "needs", detail: "Waiting for its app tokens" } : { ...row, state: "on", detail: "Connected as its own app" };
+      // A dedicated app works once its tokens are stored; a read that fails is no answer, never a yes.
+      const keys = p.secret_map ? await stored(p.module, p.secret_map) : [agent];
+      if (!keys) return { ...row, state: "needs", detail: "Can't check its app tokens right now" };
+      return keys.includes(agent) ? { ...row, state: "on", detail: "Connected as its own app" } : { ...row, state: "needs", detail: "Waiting for its app tokens" };
     }),
   );
   return { rows, address: rows.some((r) => r.state === "on" && r.address?.length) };
