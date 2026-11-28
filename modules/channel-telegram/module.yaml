@@ -2,7 +2,7 @@ name: channel-telegram
 description: "The owner's Telegram: their chat with Aiden (typed, and voice notes with the voice module), approval cards decided with single-use decision tokens, and a transport for owner-channel's notify. In the default bundle; Telegram itself is optional."
 # A channel (channel@1): the kernel hands it each pending card with a single-use approve and reject token bound to the card's
 # digest and this channel, and posts what the owner writes here as theirs (stamped [telegram]). It can approve every card it
-# is sent: telegram_decide is how the owner limits that. As a transport, the kernel sends it owner-channel's messages one at a
+# is sent. As a transport, the kernel sends it owner-channel's messages one at a
 # time (transport: below), with this module's own token.
 privileged: [ speaks-as-owner ]
 requires: [ board ] # its setup flow on the board
@@ -38,12 +38,6 @@ connections:
     tools:
       read: []
       write: []
-settings:
-  # Which approval cards may be decided in Telegram: all; standard (all but applies, which come as
-  # text to decide on the board); or none (every card is text only).
-  telegram_decide:
-    default: all
-    values: [ all, standard, none ]
 services:
   data: true
   run:
@@ -57,7 +51,6 @@ services:
         OWNER_NAME: "${settings.owner_name}"
         OWNER_TIMEZONE: "${settings.timezone}"
         OWNER_COMPANY: "${settings.company_name}"
-        TELEGRAM_DECIDE: "${settings.telegram_decide}"
         # Its own token at the kernel, and the kernel's bearer on /transport/send.
         CHANNEL_TOKEN_FILE: ${secrets.channel_telegram_token}
         TELEGRAM_NOTIFY_BOT_TOKEN_FILE: ${secrets.telegram_notify_bot_token}

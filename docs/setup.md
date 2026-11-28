@@ -449,7 +449,7 @@ maintenance, so quiet start doesn't hold it.
 - **See what's out:** the board's Settings > Instance shows the release you run, the newer one with what changed, and the
   last update. You also get a message when one is available, installed or failed. Aiden can tell you too.
 - **Update now:** the button there opens the kernel's Updates page; its Update now installs at once.
-- **Turn auto-updates off:** `settings.auto_update: "off"` (the switch on that page, or Settings > Kill switches). You're
+- **Turn auto-updates off:** `settings.auto_update: "off"` (the switch on Settings > System > Updates). You're
   still told about each release and install it with Update now.
 - **From 2026.11.2:** run the installer again, the same command as the first time (`curl -fsSL https://get.aidenhq.ai | sh`).
   It verifies the new release, moves the pin and applies; from 2026.11.3 on, updates come by themselves.

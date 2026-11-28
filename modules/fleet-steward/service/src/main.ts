@@ -94,12 +94,10 @@ const run = async () => {
     busy = false;
   }
 };
-const minutes = Number(env.FLEET_OPS_INTERVAL_MINUTES);
-if (minutes > 0) {
-  setInterval(run, Math.max(1, minutes) * 60_000).unref();
-  setTimeout(run, 60_000).unref();
-  log("fleet detector on", { minutes });
-}
+const DETECTOR_MINUTES = 10; // how often the fleet detector checks
+setInterval(run, DETECTOR_MINUTES * 60_000).unref();
+setTimeout(run, 60_000).unref();
+log("fleet detector on", { minutes: DETECTOR_MINUTES });
 
 const mcp = createMcp(fleetTools({
   detector: () => { const s = detectorState(kv); return { open: Object.entries(s.open).map(([key, o]) => ({ key, since: o.at, reason: o.reason, ...(o.critical ? { critical: true } : {}) })), recovered: s.recovered.map((r) => ({ key: r.key, reason: r.reason, recovered_at: r.at })) }; },

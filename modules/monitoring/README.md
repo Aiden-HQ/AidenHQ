@@ -14,7 +14,7 @@ in the `grafana` module and put a Viewer service account token in the vault.
 ## What agents get
 
 No tools of its own. Agents read metrics through the `grafana` connection (`mcp-grafana` joins this module's network when
-`grafana_source` is `local`). Setting `monitoring_retention` (default `30d`) sets how long Prometheus keeps samples.
+`grafana_source` is `local`). Prometheus keeps samples for 30 days.
 
 ## New installs
 

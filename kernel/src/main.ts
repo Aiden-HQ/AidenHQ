@@ -703,7 +703,7 @@ boxes = createBoxes({
     may: (module, repo) => covers(repo, codehostGrants().find((g) => g.module === module)?.clone?.repos, codehostRepos()),
   },
 });
-// The computer pool (pool.ts): agent jobs bounded by settings.computers_max, check jobs by settings.check_computers_max.
+// The computer pool (pool.ts): agent jobs bounded by settings.computers_max, check jobs by the fixed CHECK_COMPUTERS_MAX.
 const pool = createPool({ capacity: () => Number(computers().max) || 0, checkCapacity: () => Number(computers().checks) || 0, agentLive: () => agentJobsLive(records.db) });
 const admission = createAdmission({
   pool, db: records.db, facts, grants: () => (grantsTable().agents ?? {}) as never, kinds: registry, capacity: () => Number(computers().max) || 0,

@@ -65,8 +65,6 @@ export function revertOf(repo: string, title: string, body: string): { of_pr?: s
 
 export type FlowDeps = {
   kernelUrl: string; key: string; cacheDir: string; log: (msg: string, f?: Record<string, unknown>) => void;
-  /** Globs the churn pass ignores (the churn_exclude setting). */
-  exclude?: string[];
   now?: () => Date;
   /** The repos the instance manages: the agents org's, the product repo and the instance repo. */
   repos?: () => Promise<string[]>;
@@ -162,7 +160,7 @@ export function createFlow(d: FlowDeps) {
 
   // ---- churn ----
   const cursorFile = join(d.cacheDir, "churn.json");
-  const exclude = d.exclude?.length ? d.exclude : DEFAULT_CHURN_EXCLUDE;
+  const exclude = DEFAULT_CHURN_EXCLUDE;
   /**
    * One repo's churn from its default branch's merged commits (a squash or merge commit whose subject names its PR): everything
    * on a first pass, later the last window before the cursor, so lines added shortly before it keep their owner. Facts only for PRs

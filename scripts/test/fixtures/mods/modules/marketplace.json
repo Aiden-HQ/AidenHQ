@@ -169,10 +169,6 @@
       "source": "./wiper"
     },
     {
-      "name": "up",
-      "source": "./up"
-    },
-    {
       "name": "sessbad",
       "source": "./sessbad"
     },

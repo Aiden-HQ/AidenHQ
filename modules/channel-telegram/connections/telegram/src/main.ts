@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import pino from "pino";
-import { applyButtons, sendBatch, sendOutcomes, syncCards, type DecideSetting } from "./approvals.js";
+import { applyButtons, sendBatch, sendOutcomes, syncCards } from "./approvals.js";
 import { makeChat, startTelegramPoll } from "./chat.js";
 import { quickCommand } from "./commands.js";
 import { kernelClient } from "./kernel.js";
@@ -35,7 +35,6 @@ const store = openStore(process.env.TELEGRAM_DB ?? "/data/telegram.sqlite");
 seedOwnerChat(store, env("TELEGRAM_OWNER_CHAT_ID"), (msg) => log.info(msg));
 const pairing = createPairing(store);
 const pairToken = env("PAIR_TOKEN");
-const decideSetting = (["all", "standard", "none"].includes(process.env.TELEGRAM_DECIDE ?? "") ? process.env.TELEGRAM_DECIDE : "all") as DecideSetting;
 const cfg: TgConfig & { telegramToken: string; telegramChatId: string } = {
   telegramToken: env("TELEGRAM_NOTIFY_BOT_TOKEN"),
   get telegramChatId() {
@@ -117,7 +116,7 @@ else {
   const cards = async () => {
     if (!cfg.telegramChatId) return; // nothing is taken from the kernel until a chat is paired
     try {
-      const r = await syncCards(kernel, store, withButtons, decideSetting, resync);
+      const r = await syncCards(kernel, store, withButtons, resync);
       resync = false;
       await sendBatch(r.cards, store, withButtons, (id, text) => editTelegram(cfg, id, text)).catch((err) => log.warn({ err: String(err) }, "approval batch list failed"));
       await sendOutcomes(r.finished, store, (id, text) => editTelegram(cfg, id, text), r.ended);
@@ -136,12 +135,12 @@ else {
     command: async (text) => {
       if (!text.startsWith("/")) return null;
       const r = await quickCommand(text, (_m, p) => kernel.read(p), await chat.company(), kernel.openTasks);
-      return r?.applyTo ? { ...r, markup: await applyButtons(kernel, store, r.applyTo, decideSetting).catch(() => undefined) } : r;
+      return r?.applyTo ? { ...r, markup: await applyButtons(kernel, store, r.applyTo).catch(() => undefined) } : r;
     },
     // null: the voice module is off (the owner is told how to turn it on).
     transcribe: async (fileId: string) => ((await voiceOn(whisperUrl)) ? transcribe(cfg.telegramToken, whisperUrl, fileId) : null),
     reply: (r) => postTelegram(cfg, r.text, r.markup ?? buttonsMarkup(store, r.actions ?? [])),
     stop: chat.stop,
-    approvals: { kernel, setting: decideSetting },
+    approvals: { kernel },
   });
 }

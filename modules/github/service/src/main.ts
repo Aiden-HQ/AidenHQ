@@ -8,7 +8,6 @@
 //   INSTANCE_REPO, PRODUCT_REPO
 //   GITHUB_LISTED_REPOS     the listed repos (compile's listed_repos: the Maintainer's and Ship's lists, comma-separated):
 //                           the fleet merges and closes there as in the fleet org
-//   GITHUB_RELEASE_WINDOW_MINUTES release_window_minutes: the release train's batch window (minutes)
 //   GITHUB_REVIEW_GATED     the repos code review gates (comma-separated; compile derives it): their merges wait for its verdict,
 //                           asked with the module's own token
 // Its loops start here: the change feed (feed.ts: the one timer-driven reader of GitHub, which also schedules the src_github sync
@@ -39,16 +38,12 @@ const { access, app: githubApp, reportNeed, sync, sources, useFeed } = await sta
 const fleetOrg = env.GITHUB_FLEET_ORG ?? "";
 
 const listed = (env.GITHUB_LISTED_REPOS ?? "").split(",").map((r) => r.trim()).filter(Boolean);
-// compile always sets it (module.yaml's default, 5-1440): anything else is a broken deploy, so fail loudly.
-const releaseWindowMinutes = Number(env.GITHUB_RELEASE_WINDOW_MINUTES);
-if (!Number.isInteger(releaseWindowMinutes) || releaseWindowMinutes < 1) throw new Error(`github: GITHUB_RELEASE_WINDOW_MINUTES is not a positive number of minutes: ${env.GITHUB_RELEASE_WINDOW_MINUTES}`);
 // Code review's verdict for the merge queue and for ship's watch loop (/internal/ship/verdict) alike.
 const reviewGate = createReviewGate({ gated: (env.GITHUB_REVIEW_GATED ?? "").split(",").filter(Boolean), url: "http://code-review:8098", key: () => key });
 const handle = createService({
   key, kernelUrl: env.AIDENHQ_KERNEL_URL ?? "http://10.231.0.1:3130", cacheDir: env.CACHE_DIR ?? "/cache", tasksDir: env.TASKS_DIR || undefined,
   access, reportNeed, ops: serveOps, fleetOrg, allowedOrgs: (env.ALLOWED_ORGS ?? "").split(",").filter(Boolean), instanceRepo: env.INSTANCE_REPO || undefined,
-  productRepo: env.PRODUCT_REPO || undefined, listed, releaseWindowMinutes,
-  churnExclude: (env.CHURN_EXCLUDE ?? "").split(",").map((g) => g.trim()).filter(Boolean),
+  productRepo: env.PRODUCT_REPO || undefined, listed,
   reviewGate,
   // The ship module's adoptions, only while it is on (compiled): absent, every write naming an adoption is refused.
   ...(env.GITHUB_SHIP === "1" ? { ship: shipAdoptions({ url: "http://ship:8101", key: () => key }) } : {}),

@@ -1,5 +1,5 @@
 // The computer pool: agent jobs (admission.ts) and check jobs (checkbox.ts) each have their own number of computers. Agent
-// jobs take at most settings.computers_max (config/computers.json `max`), check jobs at most settings.check_computers_max
+// jobs take at most settings.computers_max (config/computers.json `max`), check jobs at most CHECK_COMPUTERS_MAX (scripts/modules.ts)
 // (`checks`); the launcher keeps both (its pool is their sum). A check box mostly waits on remote model calls (measured about
 // 250 MB and no CPU), so a repo review's many checks never take a computer from an agent job, nor wait on one.
 // A check over its number waits queued, it never fails.
@@ -13,8 +13,8 @@ export function createPool({ capacity, checkCapacity, agentLive, sleep = (ms: nu
     },
     /** A check job's slot: resolves when it may take a box; hold it until the box is released (`freeCheck`). */
     async takeCheck() {
-      // No number at all (a config compiled before check_computers_max): the check can't run, said, never a wait forever.
-      if (!(checkCapacity() >= 1)) throw new Error("config/computers.json has no checks (check_computers_max): run scripts/compile.ts");
+      // No number at all (a config compiled before the checks pool): the check can't run, said, never a wait forever.
+      if (!(checkCapacity() >= 1)) throw new Error("config/computers.json has no checks: run scripts/compile.ts");
       while (checks >= checkCapacity()) await sleep(2_000);
       checks++;
     },

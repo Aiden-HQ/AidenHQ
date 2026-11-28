@@ -18,7 +18,7 @@ The `jira` connection. Use it for exact fields, change history, comments and JQL
   `listJiraIssueChangelogs`, `listJiraIssueComments`, `searchConfluence`, `getConfluenceContent` and more.
 - Destructive (56, reviewed, named grants only): every Jira and Confluence write, such as `createJiraIssue`,
   `transitionJiraIssue`, `createConfluenceContent`.
-- Settings `history_projects` and `history_days` (365) read quiet projects' older history once into the warehouse.
+- Setting `history_projects` reads quiet projects' last 365 days once into the warehouse.
 
 ## New installs
 

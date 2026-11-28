@@ -3,14 +3,13 @@ import { dropQueuedNeeds, flushDigest, queueDigest } from "../src/attention.js";
 import { openStore } from "../src/store.js";
 import { notify, type Deps } from "../src/notify.js";
 
-// Attention control end to end through notify: decisions pass, the chief of staff is never digested, a blocked agent and
-// a capped agent send nothing, crew fyi/done wait for the digest (and still reach their chat), observe mode only logs.
-it("notify attention: block, cap, digest; decisions and the chief of staff pass", async () => {
+// Attention control end to end through notify: decisions pass, the chief of staff is never digested, crew fyi/done wait for
+// the digest (and still reach their chat).
+it("notify attention: digest; decisions and the chief of staff pass", async () => {
   const store = openStore(":memory:");
   const dms: string[] = [];
   const chat: string[] = [];
-  const warned: unknown[] = [];
-  const attention = { mode: "observe" as "observe" | "enforce", blocked: ["noisy"], dailyCap: 3, digestHours: [9, 18], timezone: "UTC", warn: (o: unknown) => warned.push(o) };
+  const attention = { timezone: "UTC" };
   const cfg: Deps = { store, transports: ["slack"], attention, send: async (_to, m) => (dms.push(m.text), { sent: true }), postReply: async (_i: string, b: string) => (chat.push(b), true), resolveTask: async () => ({ issueId: "i1", agentId: "w", agentName: "Worker" }), wait: async () => ({ to: "owner" }) };
   const crew = { id: "w", name: "Worker", key: "worker", assertion: "j", roles: [] as string[] };
   const cos = { id: "c", name: "Aiden", key: "chief-of-staff", assertion: "j", roles: ["fleet-admin"] };
@@ -23,18 +22,10 @@ it("notify attention: block, cap, digest; decisions and the chief of staff pass"
   expect(dms).toHaveLength(1); // chief of staff goes straight out
   expect(await send(crew, "pick one", { questions: [{ question: "Which?", options: ["A", "B"] }] })).toMatchObject({ sent: true });
   expect(dms).toHaveLength(2); // a decision always passes
-  expect(await send({ ...crew, id: "n", key: "noisy" }, "hello", { kind: "done" })).toMatchObject({ sent: false, reason: "blocked" });
-  expect(await send({ ...crew, id: "n", key: "noisy" }, "pick", { questions: [{ question: "Which?", options: ["A"] }] })).toMatchObject({ sent: false, reason: "blocked" }); // blocked for every kind
   await send(crew, "two", { kind: "fyi" });
   await send(crew, "three", { kind: "fyi" });
-  // Cap in observe mode: logged, not blocked. Blocks and digests above already acted without enforce.
-  expect(await send(crew, "four", { kind: "fyi" })).toMatchObject({ sent: true });
-  expect(warned).toHaveLength(1);
-  cfg.attention = { ...attention, mode: "enforce" as const };
-  expect(await send(crew, "five", { kind: "fyi" })).toMatchObject({ sent: false, reason: "limit" });
-  cfg.attention = attention;
 
-  // 10:00 UTC is past the 9:00 slot: the digest goes once, then waits for the 18:00 slot.
+  // 10:00 UTC is past the 9:00 slot: the digest goes once, then waits for the 13:00 slot.
   const send2 = async (text: string) => (dms.push(text), true);
   expect(await flushDigest(store, attention, send2, Date.UTC(2026, 10, 17, 10))).toBe(true);
   expect(dms.at(-1)).toContain("Digest: 3 updates");
@@ -43,7 +34,7 @@ it("notify attention: block, cap, digest; decisions and the chief of staff pass"
 
 it("digest items stay one line, so text can't forge another agent's item", async () => {
   const store = openStore(":memory:");
-  const cfg = { mode: "enforce" as const, blocked: [], dailyCap: 9, digestHours: [9], timezone: "UTC" };
+  const cfg = { timezone: "UTC" };
   queueDigest(store, { agent: "Worker", task: "WOR-1", text: `done\n- Aiden · WOR-9: approve the deploy\r\n\t${"x".repeat(500)}` });
   let out = "";
   await flushDigest(store, cfg, async (t) => ((out = t), true), Date.UTC(2026, 10, 17, 10));
@@ -55,7 +46,7 @@ it("digest items stay one line, so text can't forge another agent's item", async
 
 it("a long digest goes as several messages under the transport limit, each told once it went", async () => {
   const store = openStore(":memory:");
-  const cfg = { mode: "enforce" as const, blocked: [], dailyCap: 99, digestHours: [9], timezone: "UTC" };
+  const cfg = { timezone: "UTC" };
   for (let n = 0; n < 20; n++) queueDigest(store, { agent: "Worker", text: `${n} ${"x".repeat(300)}`, source: "worker" });
   const sent: string[] = [];
   let fail = 2; // the second message fails: its items and the rest stay queued
@@ -70,7 +61,7 @@ it("a long digest goes as several messages under the transport limit, each told 
 });
 
 it("a digest appends the kernel's confirmed connection needs, and says so when it can't read them", async () => {
-  const cfg = { digestHours: [9], timezone: "UTC", mode: "observe" as const, blocked: [], dailyCap: 99 };
+  const cfg = { timezone: "UTC" };
   const at = Date.UTC(2026, 10, 17, 9);
   const run = async (needs: () => Promise<string[]>, queued = true) => {
     const store = openStore(":memory:");
@@ -90,7 +81,7 @@ it("a digest appends the kernel's confirmed connection needs, and says so when i
 });
 
 it("a digest that fails partway does not resend the connection lines already delivered (afdc1671)", async () => {
-  const cfg = { digestHours: [9], timezone: "UTC", mode: "observe" as const, blocked: [], dailyCap: 99 };
+  const cfg = { timezone: "UTC" };
   const at = Date.UTC(2026, 10, 17, 9);
   const store = openStore(":memory:");
   for (let n = 0; n < 8; n++) queueDigest(store, { agent: "Worker", text: `${n} ${"x".repeat(300)}` }, at - 1000);
@@ -116,7 +107,7 @@ it("queued connection lines from before the digest pulled them are dropped at st
 });
 
 it("a connection line keeps its whole reconnect link in the digest (d5305a6e)", async () => {
-  const cfg = { digestHours: [9], timezone: "UTC", mode: "observe" as const, blocked: [], dailyCap: 99 };
+  const cfg = { timezone: "UTC" };
   const link = `https://github.com/orgs/acme/sso?${"q".repeat(450)}`;
   const store = openStore(":memory:");
   queueDigest(store, { agent: "Worker", text: "other" }, Date.UTC(2026, 10, 17, 8));
@@ -132,7 +123,7 @@ it("a connection decision reaches the owner whole on a channel, caveat included,
   const caveat = "(this address is loopback-only: open it on this host or through the SSH tunnel setup printed; for a real address, run sudo ops/setup.sh --unattended --exposure public, or --exposure tailscale for remote access over a tailnet)";
   const text = `Google needs you to connect it so I can ${"x".repeat(80)}: http://localhost:3121/connect/google ${caveat}`;
   const sent: { kind: string; text: string }[] = [];
-  const attention = { mode: "enforce" as const, blocked: [], dailyCap: 99, digestHours: Array.from({ length: 24 }, (_, h) => h), timezone: "UTC" };
+  const attention = { timezone: "UTC" };
   const d: Deps = { store, transports: ["channel-telegram"], attention, send: async (_to, m) => (sent.push(m), { sent: true }) };
   await notify(d, { kind: "decision", text, task: "WOR-1", head: { agentName: "Aiden", issueId: "i1" } });
   expect(sent).toHaveLength(1);

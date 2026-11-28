@@ -153,8 +153,8 @@ export type BatchRow = {
 export type Plan = { eligible: number; lines: number; planned_by: "one" | "model" | "folders"; note: string | null; areas: { id: string; name: string; tags: string[]; files: Record<string, string[]>; count: number; lines: number }[] };
 /** The area planner's model (cheap: it reads only paths and line counts) and its check job. */
 const PLAN_MODEL = "anthropic/claude-haiku-5.5", PLAN = "code-review-plan";
-/** Tree runs running at once: each fetches its snapshot before it waits for one of the kernel's check computers (its default
- * check_computers_max), so more would only hold snapshots to wait. */
+/** Tree runs running at once: each fetches its snapshot before it waits for one of the kernel's check computers (the fixed check pool's
+ * size), so more would only hold snapshots to wait. */
 const TREE_RUNNING = 32;
 /** A stack option's skip when no area has its stack (a run with nothing to review: never a gap in the verdict). */
 export const NO_CODE = "skipped: no ";

@@ -106,7 +106,7 @@ const resolvConf = path.join(stateDir, "resolv.conf");
 writeFileSync(resolvConf, "nameserver 1.1.1.1\nnameserver 8.8.8.8\n");
 const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a);
 const DEBUG = env("AIDENHQ_COMPUTERS_DEBUG") === "1"; // log every exec, with its env keys (never values)
-/** The pool's size: settings.computers_max plus settings.check_computers_max (compile writes both to computers.json; the kernel
+/** The pool's size: settings.computers_max plus the check jobs' fixed number (compile writes both to computers.json; the kernel
  * admits agent jobs and check jobs each against its own). */
 const maxBoxes = () => {
   const { max, checks } = readJson(CFG.computersFile);

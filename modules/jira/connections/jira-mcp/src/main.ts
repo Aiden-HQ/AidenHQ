@@ -36,7 +36,7 @@ const http = createVendorProxy({
 // password (WAREHOUSE_PASSWORD_FILE) is there.
 const sources = SourceStore.fromEnv("jira");
 if (sources && siteUrl) {
-  startSync(sources, http.call, siteUrl, log, { projects: (process.env.HISTORY_PROJECTS ?? "").split(",").map((p) => p.trim()).filter(Boolean), days: Number(process.env.HISTORY_DAYS) || 365 });
+  startSync(sources, http.call, siteUrl, log, { projects: (process.env.HISTORY_PROJECTS ?? "").split(",").map((p) => p.trim()).filter(Boolean), days: 365 });
   startConfluenceSync(sources, http.call, siteUrl, log);
 }
 else log.warn({ warehouse: Boolean(sources), site: Boolean(siteUrl) }, "src_jira is off until the warehouse login and the site are there");

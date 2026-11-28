@@ -21,6 +21,7 @@ settings:
   # An App Auditor MCP server behind Cloudflare Access (optional). Used only when this URL is set and its Access service
   # token is in the vault (app_auditor_cf_client_id / _secret); empty = off.
   app_auditor_url:
+    title: App Auditor address
     default: ""
     type: url
 agents:

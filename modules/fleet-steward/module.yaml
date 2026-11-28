@@ -22,12 +22,6 @@ roles:
     - { id: fleet-audit, description: "Read any agent's evidence (the fleet_steward connection's coach_* reads) and keep a review log (tasks bridge coach_record)." }
     - { id: librarian, description: "Read every handbook and decide proposed identity links (tasks bridge, apps-mcp)." }
     - { id: routing-tuner, description: "Read team routing decisions and their outcomes, and propose one change a day to members' repos or routing weights as a reviewed experiment (routing_*)." }
-settings:
-  # Minutes between the detector's checks (lower while developing). The detector files a check task for the Steward only when a
-  # threshold trips or recovers, at most once per 30 minutes unless an app or apps-mcp is down or a critical alert fires
-  # (service/src/detector.ts).
-  fleet_ops_interval_minutes:
-    default: 10
 agents:
   fleet-steward:
     skills: [ fleet-steward.agent-review, fleet-steward.fleet-check, fleet-steward.fleet-digest, fleet-steward.fleet-review, fleet-steward.handbook-prune, fleet-steward.knowledge-daily, fleet-steward.knowledge-lint, fleet-steward.review-digest, fleet-steward.route-security-fix, fleet-steward.routing-review, tasks.delegate-work, tasks.owner-triage ]
@@ -192,7 +186,6 @@ services:
         OWNER_TIMEZONE: "${settings.timezone}"
         FLEET_STEWARD_TOKEN_FILE: ${secrets.fleet_steward_token}
         FLEET_STEWARD_SERVICE_KEY_FILE: ${secrets.fleet_steward_service_key}
-        FLEET_OPS_INTERVAL_MINUTES: "${settings.fleet_ops_interval_minutes}"
         # Under quiet start the detector keeps checking but files no check task until the owner turns the Steward on
         # (resuming its "Fleet Ops: daily digest" routine; service/src/detector.ts stewardOn).
         FLEET_STEWARD_QUIET_START: "${settings.quiet_start}"

@@ -56,7 +56,7 @@ host: a repo's checks are check jobs.
   `POST /check`, one box per run, always destroyed.
 - **Pool.** `settings.computers_max` (1 to 64; unset, the host's RAM in GB divided by 1.5, 4 to 64, worked out at compile
   time: boxes mostly wait on model calls and use 0.3 to 0.45 GB each) is how many agent jobs run at once, and
-  `settings.check_computers_max` (1 to 64, default 32) how many check jobs (code review, CI checks) do: a check's box mostly
+  a fixed 32 computers how many check jobs (code review, CI checks) do: a check's box mostly
   waits on remote model calls (about 250 MB, no CPU). Compile writes both to `config/computers.json` (`max`, `checks`); the
   launcher's pool is their sum and the kernel admits each kind against its own (`kernel/src/pool.ts`), so neither kind takes
   a box from the other. New work of a kind at its number waits, queued and never failed, until something of its own kind

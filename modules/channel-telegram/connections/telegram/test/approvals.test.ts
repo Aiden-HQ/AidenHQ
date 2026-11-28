@@ -1,5 +1,5 @@
 // Cards decided with the kernel's single-use tokens: kept here, never in Telegram; a button maps to its card, a typed reply to
-// the one card held for its task, Approve all to one decision per card; the decide setting keeps some cards for the board.
+// the one card held for its task, Approve all to one decision per card.
 import { describe, expect, it } from "bun:test";
 import { approvalPress, decideByReply, decideCard, parseReply, syncCards } from "../src/approvals.js";
 import type { Card } from "../src/kernel.js";
@@ -31,8 +31,8 @@ describe("cards", () => {
     const store = openStore(":memory:");
     const k = fakeKernel([card("A00000001", "WOR-1")]);
     const { sent, send } = sender();
-    await syncCards(k, store, send, "all", true);
-    await syncCards(k, store, send, "all");
+    await syncCards(k, store, send, true);
+    await syncCards(k, store, send);
     expect(sent).toHaveLength(1);
     expect(JSON.stringify(sent)).not.toContain("ta-A00000001");
     const approve = sent[0]!.markup.inline_keyboard[0][0].callback_data;
@@ -44,25 +44,15 @@ describe("cards", () => {
     expect(await decideCard(k, store, "A00000001", "reject", "owner")).toMatchObject({ ok: false }); // its tokens are gone
   });
 
-  it("telegram_decide standard: an apply comes without buttons and can't be decided here", async () => {
-    const store = openStore(":memory:");
-    const k = fakeKernel([card("A00000003", "WOR-3", { kind: "apply" }), card("A00000004", "WOR-4")]);
-    const { sent, send } = sender();
-    await syncCards(k, store, send, "standard", true);
-    expect(sent.map((s) => Boolean(s.markup))).toEqual([false, true]);
-    expect(sent[0]!.text).toContain("Decide this one [on the board](#/approvals/");
-    expect(await decideCard(k, store, "A00000003", "approve", "owner")).toMatchObject({ ok: false });
-  });
-
   it("an exact typed reply decides the one card held for that task, stamped as a reply; a replaced request needs its tap", async () => {
     expect(parseReply("Apply wor-5.")).toEqual({ decision: "approve", task: "WOR-5" });
     const store = openStore(":memory:");
     const k = fakeKernel([card("A00000005", "WOR-5"), card("A00000006", "WOR-6", { replaced: true })]);
-    await syncCards(k, store, sender().send, "all", true);
-    expect(await decideByReply(k, store, "WOR-5", "approve", "owner", "all")).toMatchObject({ ok: true });
+    await syncCards(k, store, sender().send, true);
+    expect(await decideByReply(k, store, "WOR-5", "approve", "owner")).toMatchObject({ ok: true });
     expect(k.decided).toEqual([{ token: "ta-A00000005", sender: "owner", reply: true }]);
-    expect(await decideByReply(k, store, "WOR-6", "approve", "owner", "all")).toMatchObject({ ok: false, reason: expect.stringContaining("changed") });
-    expect(await decideByReply(k, store, "WOR-9", "approve", "owner", "all")).toMatchObject({ ok: false });
+    expect(await decideByReply(k, store, "WOR-6", "approve", "owner")).toMatchObject({ ok: false, reason: expect.stringContaining("changed") });
+    expect(await decideByReply(k, store, "WOR-9", "approve", "owner")).toMatchObject({ ok: false });
   });
 
 });

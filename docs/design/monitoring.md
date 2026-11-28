@@ -9,7 +9,7 @@ tell the owner.
 
 | Piece | Where | Reached at |
 |---|---|---|
-| Prometheus (`monitoring_retention`, default 30d) | `aidenhq-mod-monitoring` + `-board` | not published |
+| Prometheus (30d retention) | `aidenhq-mod-monitoring` + `-board` | not published |
 | node-exporter (as nobody; host `/`, `/proc`, `/sys` read-only; textfiles) | `aidenhq-mod-monitoring` | not published |
 | cAdvisor (cgroup CPU, memory, disk IO, pressure; no Docker socket) | `aidenhq-mod-monitoring` | not published |
 | Alertmanager | `aidenhq-mod-monitoring` + `aidenhq-mod-fleet-steward` (join) | not published |
@@ -148,7 +148,7 @@ apply. Fleet Ops has `grafana?: read` (granted whenever the grafana module is on
 
 ## Enabling
 
-1. Instance: add `monitoring` to `modules:` (and optionally `monitoring_retention`, `grafana_root_url`), commit, apply. Compile
+1. Instance: add `monitoring` to `modules:` (and optionally `grafana_root_url`), commit, apply. Compile
    creates the secrets and `data/monitoring/*`; apply starts the services and the `aidenhq-host-metrics` timer.
 2. Tailnet: `tailscale serve --bg --https=8444 http://127.0.0.1:3131` on the host (the operator is tailscaled's operator, no
    sudo), then set `grafana_root_url: https://<host>.<tailnet>.ts.net:8444`.

@@ -25,7 +25,7 @@ The `fleet_steward` connection.
 - Write: `fleet_followup_snooze`, `routing_tune`, `routing_judge`, `fleet_operate` (the kernel's `kernel.fleet_op`).
 - The agent also reads apps and the warehouse, and notifies you.
 
-Setting `fleet_ops_interval_minutes` (default 10) sets how often the detectors run.
+The detectors run every 10 minutes.
 
 ## New installs
 
@@ -36,7 +36,7 @@ weekly lint, and the daily routing review.
 ## The detector
 
 The service (`modules/fleet-steward/service/src`) runs the detector every
-`fleet_ops_interval_minutes`: from the kernel's job ledger (`/v1/work`) a run stuck past twice its timeout, an agent's last 3
+10 minutes: from the kernel's job ledger (`/v1/work`) a run stuck past twice its timeout, an agent's last 3
 runs failed, or 3 runs in a day with no steps and no output; a task held for grading over a day; from apps-mcp (a module token
 holding `apps.read`) an app incident open over 15 minutes (or apps-mcp not answering for 15 minutes), a source with no good
 pass in an hour or failing past its own allowance (twice its median pass interval from the last 24 h, never under 15 minutes

@@ -39,7 +39,7 @@ if (!serviceKey) log.warn("MCP_BEARER_TOKEN not set: tools and the executor answ
 const settings: Settings = {
   muted: process.env.TELEGRAM_MUTED === "all" ? "all" : "tagged",
   exclude: new Set((process.env.TELEGRAM_EXCLUDE_CHATS ?? "").split(",").map((s) => s.trim()).filter((s) => /^-?\d{1,20}$/.test(s)).map(Number)),
-  backfillDays: Number(process.env.TELEGRAM_BACKFILL_DAYS) > 0 ? Number(process.env.TELEGRAM_BACKFILL_DAYS) : 30,
+  backfillDays: 30,
 };
 
 mkdirSync(dataDir, { recursive: true });

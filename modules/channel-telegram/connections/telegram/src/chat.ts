@@ -10,7 +10,7 @@ export const OWNER = {
 import type { Logger } from "pino";
 import type { Store } from "./store.js";
 import { COMMANDS, type QuickReply } from "./commands.js";
-import { approvalPress, decideByReply, decideCard, decideList, decidedText, parseReply, type DecideSetting } from "./approvals.js";
+import { approvalPress, decideByReply, decideCard, decideList, decidedText, parseReply } from "./approvals.js";
 import type { Kernel } from "./kernel.js";
 import { KernelError } from "./aidenhq-sdk/kernel-client.js";
 import { fromAnswerCallback, fromTelegramCallback, type AnswerPress } from "./telegram.js";
@@ -173,7 +173,7 @@ export interface TelegramExtras {
   reply: (r: QuickReply) => Promise<unknown>;
   stop?: (replyTo: string | undefined) => Promise<string>;
   /** Approval cards' buttons and exact typed replies, decided with the tokens the kernel sent this channel. */
-  approvals?: { kernel: Pick<Kernel, "decide" | "cards" | "claimAnswer" | "releaseAnswer">; setting: DecideSetting };
+  approvals?: { kernel: Pick<Kernel, "decide" | "cards" | "claimAnswer" | "releaseAnswer">};
   /** `/start <code>` from any chat (pair.ts): true when the update was a pairing attempt, handled there. */
   start?: (update: unknown) => Promise<boolean>;
 }
@@ -224,7 +224,7 @@ export async function startTelegramPoll(cfg: ChatConfig, store: Store, deliver: 
         // An exact typed reply decides the one card held for that task (typed here, never a voice note or a forward).
         const reply = m && !m.forward && extras?.approvals ? parseReply(m.text) : undefined;
         const unreachable = (err: Error) => ({ ok: false as const, reason: `couldn't reach the kernel (${err.message.slice(0, 100)}); try again, or decide it on the board` });
-        const decided = reply ? { text: decidedText(await decideByReply(extras!.approvals!.kernel, store, reply.task, reply.decision, "owner", extras!.approvals!.setting).catch(unreachable), reply.decision) } : null;
+        const decided = reply ? { text: decidedText(await decideByReply(extras!.approvals!.kernel, store, reply.task, reply.decision, "owner").catch(unreachable), reply.decision) } : null;
         const quick = stopping ? { text: stopping } : decided ? decided : m && !m.forward && extras ? await extras.command(m.text) : null;
         if (quick) await extras!.reply(quick);
         else if (m) await deliver(m);

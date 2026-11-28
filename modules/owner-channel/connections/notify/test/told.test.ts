@@ -15,13 +15,12 @@ it("delivered, queued and retried messages are in notify_recent; dropped ones ar
     store: openStore(":memory:"),
     transports: ["slack"],
     send: async () => { if (!up) throw new Error("down"); return { sent: true }; },
-    attention: { mode: "observe", blocked: ["muted"], dailyCap: 40, digestHours: [9], timezone: "UTC" },
+    attention: { timezone: "UTC" },
   };
   const who = (key: string) => ({ id: key, name: key, key, assertion: "jwt", roles: [] as string[] });
   await notify(d, { kind: "alert", text: "Prod is down", task: "WOR-1" }, who("ops")); // delivered
   await notify(d, { kind: "alert", text: "Prod is down", task: "WOR-1" }, who("ops")); // duplicate: nothing
   await notify(d, { kind: "fyi", text: "Routine news" }, who("scout")); // digest: queued
-  await notify(d, { kind: "fyi", text: "Silenced" }, who("muted")); // blocked: nothing
   queueDigest(d.store, { agent: "AidenHQ", text: "Kernel batch line", source: "kernel", kind: "fyi" }); // kernel digest line: queued
   up = false;
   await notify(d, { kind: "alert", text: "Later news", dedupe_key: "k" }, who("late")); // waits for a channel: nothing yet

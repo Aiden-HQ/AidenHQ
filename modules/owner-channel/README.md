@@ -18,9 +18,8 @@ Steward) so news reaches them once, not once per task. Settings:
 
 - `notify_transports` (default `slack`, `channel-telegram`): channels tried in order.
 - `notify_fyi` (`send` or `mute`): FYI messages; decisions, results and alerts are never muted.
-- `notify_attention` (`observe` or `enforce`), `notify_daily_cap` (40 routine messages per agent per UTC day) and
-  `notify_blocked` (agent keys whose routine messages are dropped).
-- `notify_digest_hours` (default 9, 13, 18, owner-local): routine crew messages go out as one digest.
+
+Routine crew messages (done, fyi) go out as one digest at 9:00, 13:00 and 18:00 owner-local.
 
 The push test (onboarding's "Send a test") bypasses this routing on purpose: the board asks the kernel
 (`POST /v1/notify/test`) to send one fixed decision card, with two buttons that do nothing, to exactly the channel picked,
