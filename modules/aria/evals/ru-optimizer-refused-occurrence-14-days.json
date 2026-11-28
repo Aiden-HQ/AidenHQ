@@ -5,6 +5,7 @@
   "description": "The owner refused moving one occurrence of a series; the optimizer leaves the whole series alone for 14 days.",
   "world": {
     "now": "2026-11-09T06:00:00Z",
+    "owner_team_domain": "{{DOMAIN}}",
     "calendar": [
       {"id":"team-weekly_20261110","status":"confirmed","summary":"Tomas / Owner weekly","start":{"dateTime":"2026-11-10T22:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-10T23:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"tomas.brandt@{{DOMAIN}}","responseStatus":"accepted"}],"recurringEventId":"team-weekly"},
       {"id":"team-weekly_20261117","status":"confirmed","summary":"Tomas / Owner weekly","start":{"dateTime":"2026-11-17T22:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-17T23:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"tomas.brandt@{{DOMAIN}}","responseStatus":"accepted"}],"recurringEventId":"team-weekly"}

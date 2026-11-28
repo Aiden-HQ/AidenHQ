@@ -5,6 +5,7 @@
   "description": "The owner asks for a call in five hours with a colleague found in the Slack directory. Aria books it and DMs that colleague herself.",
   "world": {
     "now": "2026-11-09T06:00:00Z",
+    "owner_team_domain": "{{DOMAIN}}",
     "calendar": [],
     "contacts": [
       {"name":"Rafael Quist","emails":["rafael.quist@{{DOMAIN}}"],"tier":"team","timezone":"America/New_York"}

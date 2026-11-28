@@ -5,6 +5,7 @@
   "description": "An external invite overlaps a 1:1 the owner organizes. The owner's 1:1 moves to the best window on the first day that fits, with no second approval.",
   "world": {
     "now": "2026-11-09T06:00:00Z",
+    "owner_team_domain": "{{DOMAIN}}",
     "calendar": [
       {"id":"lena-1on1","status":"confirmed","summary":"Lena / Owner","start":{"dateTime":"2026-11-10T15:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-10T15:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"lena.voss@{{DOMAIN}}","responseStatus":"accepted"}]}
     ],

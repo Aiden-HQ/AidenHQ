@@ -6,6 +6,7 @@
   "description": "A message naming several execs is unclear. Aria asks \"who is this for\" rather than guessing.",
   "world": {
     "now": "2026-11-09T06:00:00Z",
+    "owner_team_domain": "{{DOMAIN}}",
     "calendar": [],
     "contacts": [
       {"name":"Ines Okafor","emails":["ines.okafor@{{DOMAIN}}"],"tier":"team","timezone":"Africa/Lagos"}

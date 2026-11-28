@@ -5,6 +5,7 @@
   "description": "The owner asks for a 15-minute call with Ines tomorrow at 5:15 pm, but a meeting someone else organizes holds that time. The owner named the time, so it is not swapped for another one on her own: she tells the owner and asks, booking nothing else.",
   "world": {
     "now": "2026-11-12T09:00:00Z",
+    "owner_team_domain": "{{DOMAIN}}",
     "calendar": [
       {"id":"board","status":"confirmed","summary":"Advisory board","start":{"dateTime":"2026-11-13T17:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-13T18:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"chair@northwind.example"},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"chair@northwind.example","responseStatus":"accepted"}]}
     ],

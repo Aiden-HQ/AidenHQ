@@ -9,10 +9,10 @@ books, confirms in the chat, follows up once and handles "8 doesn't work, how ab
 and she has no accounts of her own. An optional nightly tidy-up moves meetings you organise to a better window, as a prompt
 you write says (limits included).
 
-Her page (Team, Aria) holds everything she needs to know about you: working hours and call windows, meeting lengths and limits
-(empty means no limit), VIPs and your team, plain-English preferences, how she follows up, and the tidy-up. Aria reads your last
-four weeks of meetings and proposes your hours, usual lengths and calendars (`aria_suggest`); the page shows them as a proposal
-and nothing changes until you Save.
+Her page (Team, Aria) holds what she needs to know about you: working hours (with stretch hours she may use at lower priority),
+blocking calendars, plain-English preferences ("In your words": who is important, how long to wait before a nudge), and the nightly
+tidy-up's instructions. Aria reads your last four weeks of meetings and proposes your hours and calendars (`aria_suggest`); the page
+offers them with a "Use these" button, and nothing changes until you Save.
 
 ## Connect
 

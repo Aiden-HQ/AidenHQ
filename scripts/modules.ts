@@ -1343,9 +1343,9 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
     if (r.event != null) eventRoutine(key, r, paperclip); // else Paperclip runs it in UTC
     // Its status when setup creates it (docs/design/quiet-start.md); after that, Paperclip owns pause and resume. A local
     // module's routines are the owner's and the agents' own, whichever agent they run as: active. An imported (declared)
-    // module's start paused. An official module's scheduled and event routines start paused under quiet start (a heartbeat
+    // module's start paused. An official module's routine that declares `status: paused` starts paused whatever quiet start says (the owner resumes it); its scheduled and event routines that declare no status start paused under quiet start (a heartbeat
     // the instance turned on, or an app's feedback routine, is generated with no tier: active).
-    r.status = r.tier === "declared" || (r.tier === "official" && settings.quiet_start === "on" && (r.schedules?.length || r.event != null)) ? "paused" : "active";
+    r.status = r.tier === "declared" || (r.tier === "official" && (r.status === "paused" || (settings.quiet_start === "on" && (r.schedules?.length || r.event != null)))) ? "paused" : "active";
     // A local routine (the owner's or an agent's own), checked as it ends up after the overrides: at most hourly, as one
     // schedule whose cron minute is a single literal number (no cron parser; events cover anything faster).
     if (r.tier === "local") {

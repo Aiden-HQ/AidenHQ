@@ -6,6 +6,7 @@
   "description": "A colleague asks for a call between herself and another exec Aria serves; the message goes to that exec's cell, nothing is planned here.",
   "world": {
     "now": "2026-11-09T06:00:00Z",
+    "owner_team_domain": "{{DOMAIN}}",
     "calendar": [],
     "contacts": [
       {"name":"Lena Voss","emails":["lena.voss@{{DOMAIN}}"],"tier":"team","timezone":"Europe/Berlin"},

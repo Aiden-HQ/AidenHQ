@@ -58,10 +58,8 @@
 /*kit:js*/
   const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   const DAYS = [["mon", "Monday"], ["tue", "Tuesday"], ["wed", "Wednesday"], ["thu", "Thursday"], ["fri", "Friday"], ["sat", "Saturday"], ["sun", "Sunday"]];
-  let cfg = null, draft = null, lastGood = null, sentRev = 0, notices = [];
-  const code = (t) => h("code", { textContent: t });
+  let cfg = null, draft = null, lastGood = null, sentRev = 0, offered = [], boardOrigin = "";
   const srow = (title, desc, ctl) => h("div", { className: "srow" }, h("div", { className: "st", textContent: title }), h("div", { className: "sd" }, ...desc.map((d) => (typeof d === "string" ? h("span", { textContent: d }) : d))), h("div", { className: "ctl" }, ctl));
-  const dirty = (k) => !eq(draft[k], cfg.settings[k]);
   const section = (n, title, summary, ...kids) => h("div", { className: `card sc h${n}` }, h("div", { className: "top" }, h("div", { className: "who" }, h("div", { className: "name", textContent: title }), summary ? h("div", { className: "sum", textContent: summary }) : null)), ...kids);
 
   // The proposal: every setting's draft, whole; the tool leaves out what equals the saved value, so the board's bar holds exactly what differs.
@@ -74,19 +72,14 @@
   }
   const set = (key, value, live) => { draft[key] = value; if (!live) soon(redraw); propose(); };
   const patch = (key, p, live) => set(key, { ...draft[key], ...p }, live);
-
-  // ---- controls
-  // A whole number in range; `optional` lets the field stay empty, which saves null: no limit.
-  const numField = (key, field, label, unit, lo, hi, optional) => {
-    const inp = h("input", { type: "text", inputMode: "numeric", value: draft[key][field] === null ? "" : String(draft[key][field]), ariaLabel: label, autocomplete: "off", placeholder: optional ? "no limit" : "" });
-    inp.dataset.f = `${key}|${field}`;
-    const ok = () => { const t = inp.value.trim(); if (t === "") return optional ? null : undefined; const n = Number(t); return Number.isInteger(n) && n >= lo && n <= hi ? n : undefined; };
-    inp.addEventListener("input", () => { inp.ariaInvalid = String(ok() === undefined); const n = ok(); if (n !== undefined) patch(key, { [field]: n }, true); });
-    inp.addEventListener("change", () => { const n = ok(); if (n !== undefined) return patch(key, { [field]: n }); inp.value = draft[key][field] === null ? "" : String(draft[key][field]); inp.ariaInvalid = "false"; say(`${label}: a whole number from ${lo} to ${hi}${optional ? ", or empty for no limit" : ""}.`, true); });
-    return h("label", { className: "num" }, inp, unit);
-  };
   const onoff = (value, set2, label) => editor({ kind: "seg", label, f: label, value: value ? "On" : "Off", values: ["Off", "On"], set: (l) => set2(l === "On") });
-  const chips = (key, path, label, placeholder, check) => editor({ kind: "chips", label, f: `${key}|${path}`, value: path ? draft[key][path] : draft[key], placeholder, set: (v, live) => { const bad = check ? v.find((x) => !check(x)) : undefined; if (bad !== undefined) return say(`"${bad}" isn't valid here.`, true); path ? patch(key, { [path]: v }, live) : set(key, v, live); } });
+  const lineBox = (label, value, rows, put, ph, max) => {
+    const ta = h("textarea", { rows, value, ariaLabel: label, spellcheck: true, placeholder: ph ?? "", ...(max ? { maxLength: max } : {}) });
+    ta.dataset.f = label;
+    // Proposed on every keystroke (no pause), so the board's Save always carries the latest words.
+    ta.addEventListener("input", () => put(ta.value, true)); ta.addEventListener("change", () => put(ta.value, false));
+    return ta;
+  };
 
   // One weekday: Off/On and two times; a day Aria was given several ranges for shows them as one text field.
   function dayControl(d, name) {
@@ -102,6 +95,14 @@
     if (v !== "off") wrap.append(h("div", { className: "twin" }, from, h("span", { textContent: "to" }), to));
     return wrap;
   }
+  const stretchField = () => {
+    const inp = h("input", { type: "text", inputMode: "numeric", value: String(draft.aria_stretch_hours), ariaLabel: "Stretch hours", autocomplete: "off" });
+    inp.dataset.f = "stretch";
+    const ok = () => { const n = Number(inp.value.trim()); return inp.value.trim() !== "" && Number.isInteger(n) && n >= 0 && n <= 6 ? n : undefined; };
+    inp.addEventListener("input", () => { const n = ok(); inp.ariaInvalid = String(n === undefined); if (n !== undefined) set("aria_stretch_hours", n, true); });
+    inp.addEventListener("change", () => { const n = ok(); if (n !== undefined) return set("aria_stretch_hours", n); inp.value = String(draft.aria_stretch_hours); inp.ariaInvalid = "false"; say("Stretch hours: a whole number from 0 to 6.", true); });
+    return h("label", { className: "num" }, inp, "hours");
+  };
 
   // ---- sections
   function status() {
@@ -111,130 +112,65 @@
       h("div", { className: "facts" },
         fact("Calendar", "Through Google", "Aria uses the Google connection under Settings, Connections. If she says she needs Google, connect it there."),
         fact("Your time zone", cfg.timezone, "Set under Settings, General. Hours below are on this clock."),
-        fact("Nightly tidy-up", "At 2:00 AM, once resumed", "Off until you resume it under Settings, Modules, Aria. It runs on your clock."),
+        fact("Nightly tidy-up", "At 2:00 AM, once resumed", "Off until you resume it. It runs on your clock."),
         fact("Reading your calendar", s ? "Suggestion ready" : "Not yet", s ? `Worked out from ${s.based_on.meetings} meetings.` : "Aria reads your last four weeks to propose your hours.")),
       ...offered.map((o) => h("div", { className: "banner" }, h("p", { textContent: o.text }), (() => { const b = h("button", { type: "button", className: "primary", textContent: "Use these" }); b.addEventListener("click", () => use(o)); return b; })())),
-      ...(!s ? [h("div", { className: "banner" }, h("p", { textContent: "Ask Aria to read your last four weeks and propose your working hours, typical meeting lengths and calendars. You only correct them." }), (() => { const b = h("button", { type: "button", className: "primary", textContent: "Ask Aria to read my calendar" }); b.addEventListener("click", () => ask("Aria, read my last four weeks of meetings and save a suggestion for my working hours, typical meeting lengths and calendars (aria_suggest). I'll review it on your page.").catch((e) => say(e.message, true))); return b; })())] : []));
+      ...(!s ? [h("div", { className: "banner" }, h("p", { textContent: "Ask Aria to read your last four weeks and propose your working hours and calendars. You only correct them." }), (() => { const b = h("button", { type: "button", className: "primary", textContent: "Ask Aria to read my calendar" }); b.addEventListener("click", () => ask("Aria, read my last four weeks of meetings and save a suggestion for my working hours and calendars (aria_suggest). I'll review it on your page.").catch((e) => say(e.message, true))); return b; })())] : []));
   }
 
   function week() {
     const hrs = draft.aria_working_hours, open = DAYS.filter(([d]) => hrs[d] !== "off").map(([, n]) => n.slice(0, 3));
-    const cw = (k, label, desc) => srow(label, [desc], chips("aria_call_windows", k, `${label} windows`, "Add a range like 10:00-12:00, press Enter", (x) => /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/.test(x)));
     return section(2, "Your week", open.length ? `Works ${open.join(", ")}.` : "No working days set.",
       h("div", { className: "body" },
         ...DAYS.map(([d, n]) => srow(n, [hrs[d] === "off" ? h("span", { className: "offrow", textContent: "Not booked" }) : h("span", { textContent: hrs[d] })], dayControl(d, n))),
-        srow("Stretch", ["Hours before and after your working day Aria may still use, at lower priority, when nothing else fits. Nothing outside it is ever offered."], stretchField()),
-        cw("best", "Best call windows", "Tried first when Aria picks a time."), cw("ok", "Fine call windows", "Next, if no best window fits. Any other working time is the last resort, and what strangers get.")));
+        srow("Stretch", ["Hours before and after your working day Aria may still use, at lower priority, when nothing else fits. Nothing outside it is offered unless you ask."], stretchField())));
   }
 
-  function meetings() {
-    const m = draft.aria_meetings, n = (f, label, unit, lo, hi, desc, title, optional) => srow(title, [desc], numField("aria_meetings", f, label, unit, lo, hi, optional));
-    return section(3, "Meetings", `${m.intro}, ${m.one_on_one} and ${m.external} minute defaults${m.buffer_min ? `, ${m.buffer_min} minutes between` : ", no buffer"}.`,
-      h("div", { className: "body" },
-        n("intro", "Intro length", "minutes", 5, 480, "A first call with someone new.", "Intro"),
-        n("one_on_one", "1:1 length", "minutes", 5, 480, "A 1:1 with a colleague.", "1:1"),
-        n("external", "External length", "minutes", 5, 480, "A call with someone outside your team.", "External"),
-        n("default", "Any other length", "minutes", 5, 480, "Anything the ask doesn't size.", "Other"),
-        n("buffer_min", "Buffer", "minutes", 0, 120, "Kept free between meetings. Empty = no limit.", "Buffer", true),
-        n("travel_buffer_min", "Travel buffer", "minutes", 0, 480, "Extra room after a meeting somewhere else. Empty = no limit.", "Travel buffer", true),
-        n("min_notice_hours", "Minimum notice", "hours", 0, 720, "Aria never books sooner than this from now. Empty = no limit.", "Minimum notice", true),
-        n("max_per_day", "Most per day", "meetings", 1, 50, "A day this full gets no more. Empty = no limit.", "Most per day", true),
-        srow("Blocking calendars", ["Calendars whose events make you busy: primary, or a calendar's address."], chips("aria_meetings", "blocking_calendars", "Blocking calendars", "Add a calendar, press Enter", (x) => x.length <= 200))));
+  function calendars() {
+    const cals = draft.aria_blocking_calendars;
+    return section(3, "Calendars", `${cals.length} calendar${cals.length === 1 ? " blocks" : "s block"} your time.`,
+      h("div", { className: "body" }, srow("Blocking calendars", ["Calendars whose events make you busy: primary, or a calendar's address."], editor({ kind: "chips", label: "Blocking calendars", f: "calendars", value: cals, placeholder: "Add a calendar, press Enter", set: (v, live) => v.length ? set("aria_blocking_calendars", v, live) : say("Keep at least one calendar.", true) }))));
   }
 
-  // A "HH:MM-HH:MM" setting as two time inputs.
-  function rangeControl(key, label) {
-    const [a, b] = draft[key].split("-");
-    const from = h("input", { type: "time", value: a, ariaLabel: `${label} start` }), to = h("input", { type: "time", value: b, ariaLabel: `${label} end` });
-    from.dataset.f = `${key}|from`; to.dataset.f = `${key}|to`;
-    for (const el of [from, to]) el.addEventListener("change", () => { if (from.value && to.value && from.value < to.value) set(key, `${from.value}-${to.value}`); else { say("It must end after it starts.", true); redraw(); } });
-    return h("div", { className: "twin" }, from, h("span", { textContent: "to" }), to);
-  }
-  const stretchField = () => {
-    const inp = h("input", { type: "text", inputMode: "numeric", value: String(draft.aria_stretch_hours), ariaLabel: "Stretch hours", autocomplete: "off" });
-    inp.dataset.f = "stretch";
-    const ok = () => { const n = Number(inp.value.trim()); return inp.value.trim() !== "" && Number.isInteger(n) && n >= 0 && n <= 6 ? n : undefined; };
-    inp.addEventListener("change", () => { const n = ok(); if (n !== undefined) return set("aria_stretch_hours", n); inp.value = String(draft.aria_stretch_hours); say("Stretch hours: a whole number from 0 to 6.", true); });
-    return h("label", { className: "num" }, inp, "hours");
-  };
-
-  function people() {
-    const p = draft.aria_people;
-    return section(4, "People", `${p.vips.length} VIP${p.vips.length === 1 ? "" : "s"}, ${p.team_domains.length} team domain${p.team_domains.length === 1 ? "" : "s"}.`,
-      h("div", { className: "body" },
-        srow("VIPs", ["Their asks come first: if nothing fits, Aria moves one occurrence of a team meeting to make room. Names, emails or @domains."], chips("aria_people", "vips", "VIPs", "Add a name, email or @domain", (x) => x.length <= 200)),
-        srow("Others' core hours", ["The day Aria assumes for people whose hours she doesn't know, on their own clock. Google doesn't share anyone's hours; she replaces this once she learns a person's real ones."], rangeControl("aria_default_hours", "Others' core hours")),
-        srow("Others' stretch hours", ["Used only when nobody's core hours fit; the person is told it is early or late for them."], rangeControl("aria_default_stretch", "Others' stretch hours")),
-        srow("Team domains", ["Email domains of your colleagues: their calendars are readable, so Aria never chases them. Starts as your own organisation."], chips("aria_people", "team_domains", "Team domains", "Add a domain like acme.com", (x) => /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(x)))));
-  }
-
-  function likes() {
+  function words() {
     const lines = draft.aria_preferences.lines;
-    const ta = h("textarea", { rows: 4, value: lines.join("\n"), ariaLabel: "How I like my calendar", spellcheck: true, placeholder: "No meetings before 10 on Mondays\nKeep Friday afternoons free" });
-    ta.dataset.f = "preferences";
-    const read = () => ta.value.split("\n").map((s) => s.trim()).filter(Boolean);
-    ta.addEventListener("input", () => patch("aria_preferences", { lines: read() }, true));
-    ta.addEventListener("change", () => patch("aria_preferences", { lines: read() }));
-    return section(5, "How I like my calendar", lines.length ? `${lines.length} preference${lines.length === 1 ? "" : "s"}.` : "None yet.",
-      h("div", { className: "body" }, srow("In your words", ["One line each, in plain English. Aria follows these unless an ask says otherwise."], ta)));
-  }
-
-  function following() {
-    const f = draft.aria_following_up;
-    return section(6, "Following up", `One nudge after ${f.after_hours} hours, gives up after ${f.deadline_days} days.`,
-      h("div", { className: "body" },
-        srow("Nudge after", ["When someone hasn't answered while Aria is sorting out a time."], numField("aria_following_up", "after_hours", "Hours before a nudge", "hours", 1, 168)),
-        srow("Nudges at most", ["How many times she nudges the same person."], numField("aria_following_up", "max_nudges", "Nudges at most", "nudges", 0, 5)),
-        srow("Give up after", ["Then she closes it and tells you who didn't answer."], numField("aria_following_up", "deadline_days", "Days before giving up", "days", 1, 30))));
+    return section(4, "In your words", lines.length ? `${lines.length} line${lines.length === 1 ? "" : "s"}.` : "None yet.",
+      h("div", { className: "body" }, srow("How you like your calendar", ["One line each, in plain English. Aria follows these unless an ask says otherwise: who is important, how long to wait before a nudge, meetings you want kept short."], lineBox("In your words", lines.join("\n"), 5, (t, live) => set("aria_preferences", { lines: t.split("\n").map((x) => x.trim()).filter(Boolean) }, live), "No meetings before 10 on Mondays\nKeep Friday afternoons free\nDana is important: make room for her"))));
   }
 
   function tidy() {
-    const text = draft.aria_optimizer_prompt;
-    const ta = h("textarea", { rows: 7, value: text, ariaLabel: "Tidy-up prompt", spellcheck: true, maxLength: 500 });
-    ta.dataset.f = "prompt";
-    // Proposed on every keystroke (no pause), so the board's Save always carries the latest words.
-    const read = () => ta.value.replace(/[\r\n$]+/g, " ").trim();
-    const put = (live) => { const t = read(); if (!t) return say("The prompt can't be empty: Reset puts the default back.", true); set("aria_optimizer_prompt", t, live); };
-    ta.addEventListener("input", () => put(true));
-    ta.addEventListener("change", () => put(false));
     const reset = h("button", { type: "button", className: "sm", textContent: "Reset to default" });
     reset.addEventListener("click", () => set("aria_optimizer_prompt", cfg.defaults.aria_optimizer_prompt));
-    return section(7, "Nightly tidy-up", "A routine that runs at 2:00 AM on your clock. It stays off until you resume it.",
+    const where = boardOrigin ? link(`${boardOrigin}/#/team/modules/aria`, "Settings, Modules, Aria") : h("span", { textContent: "Settings, Modules, Aria" });
+    return section(5, "Nightly tidy-up", "A routine that runs at 2:00 AM on your clock. It stays off until you resume it.",
       h("div", { className: "body" },
-        srow("Turn it on", ["Aria moves meetings you organise to a better window or to close gaps, one occurrence at a time, each move reviewed first. Resume or pause it under Settings, Modules, Aria: it is off, and nothing runs or is spent, until you do. The time is fixed at 2:00 AM for now."], h("span", { className: "soft", textContent: "Settings, Modules, Aria" })),
-        srow("Her instructions", ["What she is asked each night, in your words. Put the limits in it: how far ahead, how close a meeting may be and still move, the most moves a night. One paragraph, 500 characters at most."], ta),
+        srow("Turn it on", [h("span", {}, "Aria moves meetings you organise to a better window or to close gaps, one occurrence at a time, each move reviewed first. It is off, and nothing runs or is spent, until you resume it in ", where, ". The time is fixed at 2:00 AM.")], h("span", { className: "soft", textContent: "Resume it there" })),
+        srow("Her instructions", ["What she is asked each night, in your words. Put the limits in it: how far ahead, how close a meeting may be and still move, the most moves a night. One paragraph, 500 characters at most."], lineBox("Tidy-up prompt", draft.aria_optimizer_prompt, 7, (t, live) => { const x = t.replace(/[\r\n$]+/g, " ").trim(); if (!x) return say("The prompt can't be empty: Reset puts the default back.", true); set("aria_optimizer_prompt", x, live); }, "", 500)),
         h("div", { className: "tools" }, reset)));
   }
 
   function signature() {
-    return section(8, "Signature", "How people know Aria is writing.",
+    return section(6, "Signature", "How people know Aria is writing.",
       h("div", { className: "body" }, srow("Summons signature", ["When you bring Aria into a chat, her replies carry the signature set for summoning. It belongs to all your teammates, not to Aria, so it is set under Settings, General."], h("span", { className: "soft", textContent: "Set in Settings" }))));
   }
 
   function draw() {
     closeHelp();
-    $("rows").replaceChildren(h("div", { className: "wrap" }, status(), week(), meetings(), people(), likes(), following(), tidy(), signature()));
+    $("rows").replaceChildren(h("div", { className: "wrap" }, status(), week(), calendars(), words(), tidy(), signature()));
   }
   const redraw = () => keepFocus(draw);
 
   // What Aria worked out from the calendar is offered, never applied by itself: a Discard on the board's bar must stay discarded, so
-  // nothing is drafted until the owner presses "Use these". Lengths and calendars only replace values still at their defaults.
+  // nothing is drafted until the owner presses "Use these".
   function offers() {
-    const s = cfg.suggestion, def = cfg.defaults, out = [];
-    if (s && eq(cfg.settings.aria_working_hours, def.aria_working_hours)) out.push({ text: `Aria read your last four weeks (${s.based_on.meetings} meetings) and worked out your hours, usual lengths and calendars.`, apply() {
-      draft.aria_working_hours = s.working_hours;
-      const dm = def.aria_meetings, m = draft.aria_meetings;
-      for (const k of ["one_on_one", "external", "default"]) if (s.durations[k] && m[k] === dm[k]) m[k] = s.durations[k];
-      if (eq(m.blocking_calendars, dm.blocking_calendars)) m.blocking_calendars = s.blocking_calendars;
-    } });
-    if (cfg.owner_team_domain && !cfg.settings.aria_people.team_domains.length) out.push({ text: `Set your team to ${cfg.owner_team_domain}, your own organisation.`, apply() { draft.aria_people = { ...draft.aria_people, team_domains: [cfg.owner_team_domain] }; } });
-    return out;
+    const s = cfg.suggestion, def = cfg.defaults;
+    return s && eq(cfg.settings.aria_working_hours, def.aria_working_hours) ? [{ text: `Aria read your last four weeks (${s.based_on.meetings} meetings) and worked out your hours and calendars.`, apply() { draft.aria_working_hours = s.working_hours; if (eq(draft.aria_blocking_calendars, def.aria_blocking_calendars)) draft.aria_blocking_calendars = s.blocking_calendars; } }] : [];
   }
   const use = (o) => { o.apply(); offered = offered.filter((x) => x !== o); redraw(); propose(); };
-  let offered = [];
 
-  async function load() {
+  async function load(ctx) {
     try {
+      boardOrigin = typeof ctx?.origin === "string" ? ctx.origin : "";
       cfg = await tool("aria_config", {});
       draft = structuredClone(cfg.settings); lastGood = structuredClone(draft);
       offered = offers();

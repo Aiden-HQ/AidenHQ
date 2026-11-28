@@ -5,6 +5,7 @@
   "description": "An external asks for a window that is full. Aria books the earliest good time and says why in the same thread; she does not offer a menu.",
   "world": {
     "now": "2026-11-09T06:00:00Z",
+    "owner_team_domain": "{{DOMAIN}}",
     "calendar": [
       {"id":"f1","status":"confirmed","summary":"f1","start":{"dateTime":"2026-11-12T14:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-12T16:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"lena.voss@{{DOMAIN}}"},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"lena.voss@{{DOMAIN}}","responseStatus":"accepted"}]}
     ],

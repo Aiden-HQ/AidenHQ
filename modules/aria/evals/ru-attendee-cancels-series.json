@@ -5,6 +5,7 @@
   "description": "A colleague says to drop the whole weekly. Any participant may cancel a series; no tap.",
   "world": {
     "now": "2026-11-09T06:00:00Z",
+    "owner_team_domain": "{{DOMAIN}}",
     "calendar": [
       {"id":"lena-weekly_20261111","status":"confirmed","summary":"Lena / Owner weekly","start":{"dateTime":"2026-11-11T10:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-11T10:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"lena.voss@{{DOMAIN}}","responseStatus":"accepted"}],"recurringEventId":"lena-weekly"},
       {"id":"lena-weekly_20261118","status":"confirmed","summary":"Lena / Owner weekly","start":{"dateTime":"2026-11-18T10:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-18T10:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"lena.voss@{{DOMAIN}}","responseStatus":"accepted"}],"recurringEventId":"lena-weekly"}

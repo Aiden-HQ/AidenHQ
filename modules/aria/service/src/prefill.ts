@@ -1,13 +1,12 @@
-// What Aria proposes for a new owner's settings from their last weeks of meetings: working hours per weekday, typical lengths and
-// the calendars that block time. Pure code (the model reads the calendar and hands the meetings here; it never does this arithmetic).
+// What Aria proposes for a new owner's settings from their last weeks of meetings: working hours per weekday and the calendars
+// that block time. Pure code (the model reads the calendar and hands the meetings here; it never does this arithmetic).
 // The owner only corrects a proposal on the Aria page and saves it.
 import { DAYS } from "./settings.ts";
 
-/** A meeting as Aria read it: instants (ISO, with Z or an offset), and the attendees' emails when there were any. */
-export interface Meeting { start: string; end: string; attendees?: string[]; all_day?: boolean }
+/** A meeting as Aria read it: instants (ISO, with Z or an offset). */
+export interface Meeting { start: string; end: string; all_day?: boolean }
 export interface Suggestion {
   working_hours: Record<(typeof DAYS)[number], string>;
-  durations: { one_on_one?: number; external?: number; default?: number };
   blocking_calendars: string[];
   /** What it was worked out from: meetings counted, the fraction of them inside the proposed hours. */
   based_on: { meetings: number; coverage: number };
@@ -24,21 +23,15 @@ function local(at: number, timeZone: string) {
   return { date: `${get("year")}-${get("month")}-${get("day")}`, day: WEEKDAY[day < 0 ? 0 : day]!, minute: Number(get("hour")) * 60 + Number(get("minute")) };
 }
 
-const mode = (xs: number[]) => {
-  const n = new Map<number, number>();
-  for (const x of xs) n.set(x, (n.get(x) ?? 0) + 1);
-  return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0];
-};
 const domain = (email: string) => email.toLowerCase().split("@")[1] ?? "";
 /** A quantile of a sorted list, the lower side for the start and the upper for the end, so that at most `p` of the meetings fall outside it. */
 const cut = (sorted: number[], p: number, low: boolean) => sorted[low ? Math.floor(sorted.length * p) : Math.ceil(sorted.length * (1 - p)) - 1]!;
 
 /**
  * The proposal. Hours per weekday cover at least 90% of that weekday's meetings (the earliest and latest 5% of starts and ends are
- * left outside, rounded outward to the half hour), a weekday with meetings on fewer than two different dates is off, and a length
- * is the most common one for its kind (1:1: two attendees; external: someone outside the owner's own domain; default: all).
+ * left outside, rounded outward to the half hour), and a weekday with meetings on fewer than two different dates is off.
  */
-export function suggest(meetings: Meeting[], opts: { timeZone: string; ownerEmail?: string; calendars?: string[] }): Suggestion {
+export function suggest(meetings: Meeting[], opts: { timeZone: string; calendars?: string[] }): Suggestion {
   const rows = meetings.flatMap((m) => {
     // A date-only start is an all-day entry; an end at or before the start is nothing to place.
     if (m.all_day || !/T/.test(m.start) || !/T/.test(m.end)) return [];
@@ -46,7 +39,7 @@ export function suggest(meetings: Meeting[], opts: { timeZone: string; ownerEmai
     if (!(e > s)) return [];
     const a = local(s, opts.timeZone), b = local(e, opts.timeZone);
     // A meeting that runs past midnight on the wall clock is capped at the day's end.
-    return [{ day: a.day, date: a.date, from: a.minute, to: b.date === a.date ? b.minute : 24 * 60 - 1, length: Math.round((e - s) / 60_000), attendees: m.attendees ?? [] }];
+    return [{ day: a.day, date: a.date, from: a.minute, to: b.date === a.date ? b.minute : 24 * 60 - 1 }];
   });
   const hours = Object.fromEntries(DAYS.map((d) => {
     const mine = rows.filter((r) => r.day === d);
@@ -56,12 +49,8 @@ export function suggest(meetings: Meeting[], opts: { timeZone: string; ownerEmai
     return [d, to > from ? `${hm(from)}-${hm(to)}` : "off"];
   })) as Suggestion["working_hours"];
   const inside = rows.filter((r) => { const h = hours[r.day]; if (h === "off") return false; const [a, b] = h.split("-") as [string, string]; return r.from >= Number(a.slice(0, 2)) * 60 + Number(a.slice(3)) && r.to <= Number(b.slice(0, 2)) * 60 + Number(b.slice(3)); }).length;
-  const typical = (rs: { length: number }[]) => { const m = mode(rs.map((r) => r.length)); return m === undefined ? undefined : Math.min(480, Math.max(5, Math.round(m / 5) * 5)); };
-  const own = domain(opts.ownerEmail ?? "");
-  const durations: Suggestion["durations"] = {};
-  for (const [k, v] of [["default", typical(rows)], ["one_on_one", typical(rows.filter((r) => r.attendees.length === 2))], ["external", own ? typical(rows.filter((r) => r.attendees.some((a) => domain(a) && domain(a) !== own))) : undefined]] as const) if (v !== undefined) durations[k] = v;
   const calendars = [...new Set((opts.calendars ?? []).map((c) => c.trim()).filter(Boolean))].slice(0, 20);
-  return { working_hours: hours, durations, blocking_calendars: calendars.length ? calendars : ["primary"], based_on: { meetings: rows.length, coverage: rows.length ? Math.round((inside / rows.length) * 1000) / 1000 : 0 } };
+  return { working_hours: hours, blocking_calendars: calendars.length ? calendars : ["primary"], based_on: { meetings: rows.length, coverage: rows.length ? Math.round((inside / rows.length) * 1000) / 1000 : 0 } };
 }
 
 /** Email domains that are no organisation: never a team. */

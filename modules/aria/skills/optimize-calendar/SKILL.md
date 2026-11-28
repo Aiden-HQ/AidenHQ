@@ -1,7 +1,7 @@
 ---
 name: optimize-calendar
-description: "The nightly tidy-up of the owner's next working days: move a meeting the owner organises to a better call window or to close a gap, as the owner's own prompt says. Use only in the run of the routine 'Aria nightly calendar tidy-up', which exists only while the owner has resumed it."
-tools: [ google_workspace.calendar_list_events, google_workspace.calendar_get_event, google_workspace.calendar_update_event, google_workspace.calendar_find_times, aria.aria_config ]
+description: "The nightly tidy-up of the owner's next working days: move a meeting the owner organises to a better window or to close a gap, as the owner's own prompt says. Use only in the run of the routine 'Aria nightly calendar tidy-up', which exists only while the owner has resumed it."
+tools: [ google_workspace.calendar_list_events, google_workspace.calendar_get_event, google_workspace.calendar_update_event, aria.aria_config ]
 ---
 
 # The nightly tidy-up
@@ -11,9 +11,9 @@ far ahead, how close a meeting may be and still move, the most moves a night). I
 
 ## What a move is
 
-- A better call window (`aria_call_windows`) or closing a gap between meetings, as the prompt says: one occurrence at a time.
+- A better window (the owner's preferences, else their best working hours) or closing a gap between meetings, as the prompt says: one occurrence at a time.
 - Only a meeting the owner organises. Never one organised by someone else, never a series, never a meeting the owner named a
-  time for or moved or refused themselves, never a meeting with anyone outside `aria_people.team_domains` unless the owner's
+  time for or moved or refused themselves, never a meeting with anyone outside `owner_team_domain` (from `aria_config`) unless the owner's
   prompt says to.
 - Find the new time with `calendar_find_times` (skill `scheduling`: windows with an explicit offset, at most 62 days), never by hand. Keep it only when it is clearly better:
   inside the owner's hours, with every invitee free.

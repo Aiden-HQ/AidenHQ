@@ -490,3 +490,8 @@ test("a chat lane tool of an optional connection (`slack?.tool`) is kept while i
   assert.throws(() => chatBlock("a", { tools: ["slack?.nope"] }, { slack: ["search"] }), /isn't one of its granted tools/);
   assert.throws(() => chatBlock("a", { tools: ["slack.search"] }, { google: ["read"] }), /isn't one of its granted tools/);
 });
+
+test("an official routine that declares status paused starts paused with quiet start off; one that declares none stays active", () => {
+  const r = compile(mods, finst(["pausedrt"])).paperclip.routines;
+  assert.deepEqual([r.nightly.status, r.daily.status], ["paused", "active"]);
+});

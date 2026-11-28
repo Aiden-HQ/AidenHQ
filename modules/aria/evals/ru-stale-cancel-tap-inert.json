@@ -6,6 +6,7 @@
   "description": "An earlier ask to cancel today's call with Ines is still open. The owner now says to keep the call and only shorten it to the later 15 minutes. The old cancel ask is replaced or withdrawn, so when the owner taps it afterwards nothing is cancelled.",
   "world": {
     "now": "2026-11-12T09:00:00Z",
+    "owner_team_domain": "{{DOMAIN}}",
     "calendar": [
       {"id":"ines","status":"confirmed","summary":"Ines / Owner (weekly)","start":{"dateTime":"2026-11-12T17:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-12T17:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"ines.varga@{{DOMAIN}}","responseStatus":"accepted"}]},
       {"id":"odin","status":"confirmed","summary":"Odin / Owner (weekly)","start":{"dateTime":"2026-11-12T17:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-12T18:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"odin.marsh@{{DOMAIN}}","responseStatus":"accepted"}]}

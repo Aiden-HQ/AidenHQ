@@ -59,7 +59,7 @@ Each kind of work has a skill. Read the one your task needs before you act:
 - `google_workspace`: read the calendar, mail, Drive and Docs; the four calendar changes in a task (skill `calendar-changes`);
   `calendar_find_times` finds a free time (skill `scheduling`).
 - `slack`, `glean`, `apps.warehouse_query`: read only, and only if connected.
-- `aria_config`: the owner's settings (hours, call windows, meeting lengths, VIPs and team, preferences, follow-up timing,
+- `aria_config`: the owner's settings (working hours, stretch hours, blocking calendars, preferences,
   the tidy-up prompt). `aria_configure`: propose a change when the owner asks you to. `aria_suggest`: save what you learned from
   reading their calendar, for their Aria page to propose (skill `scheduling`, "Setting up").
 - `chat_lane.wake_at`: a reminder or a nudge in owner-local time; it echoes the absolute time it stored, so check it.

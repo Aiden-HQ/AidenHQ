@@ -5,6 +5,7 @@
   "description": "A colleague adds a meeting starting in four hours. The owner gets one message about it; no question.",
   "world": {
     "now": "2026-11-09T06:00:00Z",
+    "owner_team_domain": "{{DOMAIN}}",
     "calendar": [],
     "contacts": [
       {"name":"Lena Voss","emails":["lena.voss@{{DOMAIN}}"],"tier":"team","timezone":"Europe/Berlin"}

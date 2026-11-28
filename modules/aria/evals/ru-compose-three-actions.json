@@ -5,6 +5,7 @@
   "description": "One owner message asks for three different things. Aria composes them from the tools she has, never substituting one action for another.",
   "world": {
     "now": "2026-11-09T06:00:00Z",
+    "owner_team_domain": "{{DOMAIN}}",
     "calendar": [
       {"id":"standup","status":"confirmed","summary":"standup","start":{"dateTime":"2026-11-12T09:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-12T09:30:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"tomas.brandt@{{DOMAIN}}","responseStatus":"accepted"}]},
       {"id":"review","status":"confirmed","summary":"Roadmap review","start":{"dateTime":"2026-11-13T11:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-13T12:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"oskar.pell@brightfield.example.com","responseStatus":"accepted"},{"email":"ines.okafor@{{DOMAIN}}","responseStatus":"accepted"}]}

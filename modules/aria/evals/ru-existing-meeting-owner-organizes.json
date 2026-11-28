@@ -5,6 +5,7 @@
   "description": "A colleague asks to move a meeting the owner organizes. It is treated as a change to that event, never a new booking.",
   "world": {
     "now": "2026-11-09T06:00:00Z",
+    "owner_team_domain": "{{DOMAIN}}",
     "calendar": [
       {"id":"quarterly","status":"confirmed","summary":"Quarterly review","start":{"dateTime":"2026-11-12T13:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"end":{"dateTime":"2026-11-12T14:00:00{{OFFSET}}","timeZone":"{{TZ}}"},"organizer":{"email":"{{OWNER}}","self":true},"attendees":[{"email":"{{OWNER}}","self":true,"responseStatus":"accepted"},{"email":"rafael.quist@{{DOMAIN}}","responseStatus":"accepted"},{"email":"tomas.brandt@{{DOMAIN}}","responseStatus":"accepted"}]}
     ],
