@@ -2,6 +2,8 @@
 // for a fan-out). The board folds them into the parent card. Pure functions; I/O is in app.ts.
 import type { Assignee } from "./board.js";
 import type { Issue } from "./paperclip.js";
+import type { StateRow } from "./aidenhq-sdk/task-state-types.js";
+import { waitsForAnswer } from "./task-state.js";
 
 export type CrewState = "needs" | "failed" | "working" | "queued" | "waiting" | "done";
 
@@ -50,10 +52,10 @@ export function foldedChildren(issues: Issue[], assignees: Assignee[]): Map<stri
 
 /**
  * A part waiting on its own trigger: `backlog` and `blocked` are open, but the task's close doesn't release them. A part
- * parked on an answer to its question (`state.wait_since`: the kernel parks a wait in backlog) is not: the closed task is
- * what it asked about, so nobody will answer it.
+ * parked on the owner's reply (the kernel parks a wait in backlog) is not: the owner closed the task it asked about, so
+ * that reply never comes. A wait on another agent's answer stays the part's own.
  */
-export const waitsOnItsOwn = (part: Issue, state: { wait_since?: string } | undefined) => (part.status === "backlog" || part.status === "blocked") && !state?.wait_since;
+export const waitsOnItsOwn = (part: Issue, state: StateRow | undefined) => (part.status === "backlog" || part.status === "blocked") && !waitsForAnswer(state);
 
 /**
  * Crew parts left open on a task closed somewhere other than the board (a scout's "Answered in Telegram",
@@ -69,7 +71,7 @@ export async function partsToClose(
   parents: Map<string, Issue>,
   assignees: Assignee[],
   ownCommentAt: (part: Issue) => Promise<string | undefined>,
-  states: Map<string, { wait_since?: string }>,
+  states: Map<string, StateRow>,
 ): Promise<{ part: Issue; status: "done" | "cancelled" }[]> {
   const out: { part: Issue; status: "done" | "cancelled" }[] = [];
   for (const part of open) {

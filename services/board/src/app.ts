@@ -2453,7 +2453,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
         // Done or cancelled closes the crew's open parts too, except one an agent is busy with or one waiting on its own trigger.
         if ((update.status === "done" || update.status === "cancelled") && issue.assigneeUserId === ctx.me) {
           const [kids, busy] = await Promise.all([pc.children(issue.id), working(ctx)]);
-          const states = await statesOf(taskStates, kids.filter((k) => k.status === "backlog" || k.status === "blocked").map((k) => k.id));
+          // Unread, the parked parts stay open (the sweep closes them later); the rest close now.
+          const states = await statesOf(taskStates, kids.filter((k) => k.status === "backlog" || k.status === "blocked").map((k) => k.id)).catch((e: Error) => (log.warn({ err: e.message }, "parked parts' states unread"), new Map<string, StateRow>()));
           const open = kids.filter((k) => !["done", "cancelled"].includes(k.status) && !waitsOnItsOwn(k, states.get(k.id)) && !busy.map.has(k.identifier) && ctx.assignees.some((a) => a.kind !== "me" && a.key === k.assigneeAgentId));
           for (const k of open) await pc.updateIssue(k.id, { status: update.status });
         }
