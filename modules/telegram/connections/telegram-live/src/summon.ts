@@ -113,7 +113,8 @@ export function createSummon(d: { td: () => TdClient | undefined; store: Store; 
     const id = `summon-${createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
     const { text: plain, entities } = renderLinks(text);
     // The topic of the message replied to: in a forum, the reply must go to that topic's thread too.
-    const target = await c.td.invoke<any>({ _: "getMessage", chat_id: c.id, message_id: to }).catch(() => undefined);
+    // A failed lookup fails the reply (handle: 502) rather than send it without its topic.
+    const target = await c.td.invoke<any>({ _: "getMessage", chat_id: c.id, message_id: to });
     const topic = target?.topic_id?._ === "messageTopicForum" ? { _: "messageTopicForum", forum_topic_id: target.topic_id.forum_topic_id } : undefined;
     const r = await d.run({ id, kind: "telegram.reply", digest: "", idempotency_key: key, args: { action: "reply", chat_id: String(c.id), reply_to_message_id: String(to), text: plain, agent: "summon" } }, { entities, topic });
     let w = written.get(id) as { state: string; message_id: number | null } | undefined;

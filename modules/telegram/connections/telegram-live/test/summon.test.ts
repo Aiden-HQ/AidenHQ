@@ -42,6 +42,7 @@ function setup(exclude: number[] = [-99]) {
     .on("getChat", (r: any) => ({ id: r.chat_id, title: "T", type: { _: "chatTypeSupergroup" } }))
     .on("sendMessage", (r: any) => ({ id: 900 + fake.calls.length, chat_id: r.chat_id }))
     .on("addMessageReaction", {})
+    .on("getMessage", { id: 5 })
     .on("getUser", (r: any) => ({ id: r.user_id, first_name: `User${r.user_id}`, last_name: "" }));
   const ex = sender({
     td: () => fake, store, now: () => clock.t,
