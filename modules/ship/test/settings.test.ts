@@ -13,7 +13,7 @@ test("a fleet repo is worked with no entry; any other repo only once it has its 
 
 test("loosens names each loosened field by repo, and the same policy spelled differently is no change", () => {
   const l = loosens({ repos: { "a/b": "cautious" } }, { repos: { "a/b": { preset: "full" } } });
-  assert.ok(l.includes("a/b.by_tier.standard.approve") && l.includes("a/b.by_tier.sensitive.approve") && !l.includes("a/b.by_tier.standard.merge") && l.includes("a/b.caps.usd") && l.includes("a/b.handoff"));
+  assert.ok(l.includes("a/b.by_tier.standard.approve") && l.includes("a/b.by_tier.sensitive.approve") && !l.includes("a/b.by_tier.standard.merge") && l.includes("a/b.caps.usd") && !l.includes("a/b.handoff"));
   assert.deepEqual(loosens({ repos: { "a/b": "full" } }, { repos: { "a/b": { preset: "full" } } }), []);
   assert.deepEqual(loosens({ repos: { "a/b": "full" } }, { repos: { "a/b": "cautious" } }), []);
   // Per tier: approve raised, merge raised, the unwatched merge; lowering is free.
