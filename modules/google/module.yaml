@@ -98,6 +98,28 @@ connections:
     health_probes:
       gmail: { tool: gmail_search, args: { query: "in:inbox", max_results: 1 } }
       calendar: { tool: calendar_list_events, args: { start: "2000-01-01T00:00:00Z", end: "2000-01-01T00:00:01Z", max_results: 1 } }
+# kernel.events: the agent-address poller sends each message to or cc an agent's address to the kernel's event router (POST /v1/events)
+# with this module's own token (google_token). kernel.attest-owner: it marks which of them the owner sent (from_owner: the account's own
+# sent mail that no agent sent), so the owner's mail cc'ing an agent's address summons it.
+roles:
+  requests: [ kernel.events, kernel.attest-owner ]
+# The kernel's calls for an agent's email conversation (kernel/src/summon.ts): the thread, the reply prepared and frozen (recipients,
+# From, anchor), the reply sent as that address, and a no-op reaction.
+summon:
+  connection: google_workspace
+  url: http://google-workspace-mcp:8081/summon
+  auth: google_service_key
+settings:
+  # Agent email addresses: an address that lands in your Gmail and that you can send as (a Workspace alias or group, or a plus-address
+  # of your own) can be an agent's own. Each entry is { agent, address }; the poller reads mail to or cc it every minute and the agent
+  # replies from it (reply-all), after Gmail's send-as check. Empty: nothing runs.
+  google_agent_addresses:
+    title: Agent email addresses
+    type: array
+    default: []
+    entry: address
+    pattern: '^[^\s<>,;:"()\\@]+@[^\s<>,;:"()\\@]+\.[^\s<>,;:"()\\@]+$'
+    writers: [ owner ]
 # Empty until pasted: with them empty, the client already in google_oauth.json (set up before the guided flow) stands.
 optional_secrets:
   - google_client_id
@@ -138,6 +160,9 @@ services:
         CALENDAR_ID: "${GOOGLE_CALENDAR_ID:-primary}"
         # calendar_today's day is the owner's.
         OWNER_TIMEZONE: "${settings.timezone}"
+        # Agent email addresses (reach): the poller's list, and this module's own token at the kernel (events).
+        AGENT_ADDRESSES: "${settings.google_agent_addresses}"
+        MODULE_TOKEN_FILE: ${secrets.google_token}
         # Shared sources (src_docs): its warehouse login, and the model credential for doc summaries.
         WAREHOUSE_PASSWORD_FILE: ${secrets.warehouse_src_docs_password}
         # Summaries go through the model gateway with the source writers' key, never OpenRouter's.
@@ -146,4 +171,5 @@ services:
 # src_docs' warehouse login (ops/warehouse-sources.sh gives the role this password); compile creates it when missing.
 generated_secrets:
   - google_service_key
+  - google_token
   - warehouse_src_docs_password

@@ -43,9 +43,10 @@ export function category(labelIds: readonly string[] | undefined): string | unde
 }
 
 /** Why a message is automated mail (a list, bulk, an auto-reply, a no-reply sender), or undefined for a person's mail. */
-export function automated(h: (name: string) => string | undefined): "list" | "bulk" | "auto" | "no-reply" | undefined {
-  if (h("List-Unsubscribe") || h("List-Id")) return "list";
-  if (/^\s*(bulk|list|junk)\b/i.test(h("Precedence") ?? "")) return "bulk";
+export function automated(h: (name: string) => string | undefined, keepLists = false): "list" | "bulk" | "auto" | "no-reply" | undefined {
+  // keepLists: a group delivery to an agent's own address (reach.ts) carries list headers and `Precedence: list`: kept, as the person-to-group mail it is.
+  if (!keepLists && (h("List-Unsubscribe") || h("List-Id"))) return "list";
+  if (new RegExp(`^\\s*(bulk|${keepLists ? "" : "list|"}junk)\\b`, "i").test(h("Precedence") ?? "")) return "bulk";
   const auto = h("Auto-Submitted");
   if (auto && !/^\s*no\b/i.test(auto)) return "auto";
   const addr = /<([^>]+)>/.exec(h("From") ?? "")?.[1] ?? h("From") ?? "";
@@ -54,12 +55,21 @@ export function automated(h: (name: string) => string | undefined): "list" | "bu
 }
 
 /** The addresses in an address header, lower-cased. */
-const addresses = (s: string | undefined) => new Set((s ?? "").toLowerCase().match(/[^\s<>,;:"']+@[^\s<>,;:"']+/g) ?? []);
+export const addresses = (s: string | undefined) => new Set((s ?? "").toLowerCase().match(/[^\s<>,;:"']+@[^\s<>,;:"']+/g) ?? []);
 
 /** Whether `me` is on Cc and not on To. */
 export function ccOnly(me: string, to: string | undefined, cc: string | undefined): boolean {
   const m = me.toLowerCase();
   return addresses(cc).has(m) && !addresses(to).has(m);
+}
+
+/** The header every agent send carries (reach.ts SendLedger): its token, durable provenance that a message is an agent's own. */
+export const SEND_HEADER = "X-AidenHQ-Token";
+
+/** Gmail's search for mail to, cc'd to or delivered to any of `addresses` (groups and aliases included, the owner's own sent mail
+ *  too): the one classification of "this is an agent's mail", used by the reach poller and by the inbox feed to leave it alone. */
+export function agentQuery(addresses: readonly string[]): string {
+  return `{${addresses.flatMap((a) => [`to:${a}`, `cc:${a}`, `deliveredto:${a}`]).join(" ")}}`;
 }
 
 export type Cursor = Record<string, number>;

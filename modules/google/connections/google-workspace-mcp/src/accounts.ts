@@ -4,6 +4,7 @@ import { type AuthStatus, FREEBUSY, GoogleAuthError, GoogleClient, type StoredCr
 import { blocksOf, checkTimes, DEFAULT_HOURS, DEFAULT_STRETCH, DEFAULT_STRETCH_HOURS, HISTORY_DAYS, hhmm, inferHours, locationsOf, minutes, type AttendeeFreebusy, type AttendeeStatus, findTimes, type FindTimesArgs, type FoundTimes, LOOKBACK_MS, type LocationDay, type PersonInput, type PersonView, windowOf } from "./find-times.js";
 import { type DriveFile, type EventInput, type MailInput, type NormalizedEvent, type SendUpdates, Workspace, type Attendee } from "./workspace.js";
 import { validZone } from "./zones.js";
+import { mailKey, ReachState, SendLedger } from "./reach.js";
 import { type Cursor, INBOX_BUDGET_MS, startOf } from "./inbox.js";
 
 /**
@@ -153,14 +154,14 @@ export class MultiWorkspace {
   /** Each account's granted scopes, as stored at its sign-in. */
   private readonly scopes = new Map<string, string[]>();
 
-  constructor(path: string, calendarId = "primary", fetchImpl: typeof fetch = fetch) {
+  constructor(path: string, calendarId = "primary", fetchImpl: typeof fetch = fetch, private readonly reach: { claims: (account: string) => Promise<readonly string[]>; ledger: SendLedger } = { claims: async () => [], ledger: new SendLedger(new ReachState()) }) {
     const { primary, accounts } = loadAccounts(path);
     this.primary = primary;
     for (const [email, creds] of accounts) {
       const client = new GoogleClient(creds, fetchImpl);
       this.clients.set(email, client);
       this.scopes.set(email, creds.scopes ?? []);
-      this.ws.set(email, new Workspace(client, calendarId));
+      this.ws.set(email, new Workspace(client, calendarId, () => this.reach.claims(email)));
     }
   }
 
@@ -190,6 +191,11 @@ export class MultiWorkspace {
   async checkAuth() {
     await Promise.all([...this.clients.values()].map((c) => c.checkAuth()));
     return this.authStatus();
+  }
+
+  /** One account's workspace (its Gmail, for reach.ts); undefined when it isn't connected. */
+  workspace(account: string): Workspace | undefined {
+    return this.ws.get(account);
   }
 
   private one(account?: string): [string, Workspace] {
@@ -431,7 +437,9 @@ export class MultiWorkspace {
   }
 
   async gmailSend(m: MailInput, account?: string) {
-    const s = await this.write(account, WRITE_SCOPE.gmail, (w) => w.gmailSend(m));
+    // Every send leaves durable provenance (reach.ts): a retry after an unclear failure is reconciled, and the poller can tell it from the owner's own words.
+    const [name] = this.one(account);
+    const s = await this.write(account, WRITE_SCOPE.gmail, (w) => this.reach.ledger.run(`send:${mailKey(name, m)}`, name, { send: (token) => w.gmailSend(m, token), find: (token, since) => w.findSent(token, since) }));
     return { ...s, link: gmailLink(s.thread_id, s.account) };
   }
 

@@ -4,7 +4,7 @@ import { blocksOf, conflictWith } from "./find-times.js";
 import { dateIn, renderInZone, wallInstant, zoneOrUtc } from "./zones.js";
 
 export { renderInZone };
-import { automated, category, ccOnly, INBOX_BUDGET_MS, INBOX_QUERY, INBOX_WALK_SHARE, MAX_READS, READS_AT_ONCE } from "./inbox.js";
+import { agentQuery, automated, category, ccOnly, INBOX_BUDGET_MS, INBOX_QUERY, INBOX_WALK_SHARE, MAX_READS, READS_AT_ONCE, SEND_HEADER } from "./inbox.js";
 
 const CAL = "https://www.googleapis.com/calendar/v3";
 const DRIVE = "https://www.googleapis.com/drive/v3";
@@ -143,6 +143,8 @@ export class Workspace {
   constructor(
     private readonly g: GoogleClient,
     private readonly calendarId = "primary",
+    /** The agent addresses this mailbox is the poller's for (reach.ts Identities.assigned): mail to or cc one is the poller's, never the inbox feed's. */
+    private readonly agentAddresses: () => Promise<readonly string[]> = async () => [],
   ) {}
 
   async listEvents(start: string, end: string, query?: string, max = 100): Promise<NormalizedEvent[]> {
@@ -486,6 +488,21 @@ export class Workspace {
     // A partial listing holds only the newest pages: serving them would move the cursor past older mail that was never listed,
     // which no later call could reach. Nothing is served, the cursor stays where it was, and `more` says to call again.
     if (!listedAll) return { threads: [], dropped: {}, cursor: after, more: true };
+    // One consumer: mail addressed to an agent's own address belongs to the reach poller (reach.ts), classified by the same Gmail
+    // query, so the feed never shows it whichever scan comes first.
+    // An address nobody is assigned to (its send-as not verified, another mailbox's) leaves its mail here.
+    const claimed = new Set<string>();
+    const mine = await this.agentAddresses(); // a failed lookup fails the account's call (it keeps its cursor): never read as "no address is assigned"
+    if (mine.length) {
+      let next: string | undefined;
+      do {
+        // Like the listing above, it stops at the walk's deadline: a call that cannot classify its window serves nothing and says `more`.
+        if (Date.now() >= deadline) return { threads: [], dropped: {}, cursor: after, more: true };
+        const page = await this.g.get<{ messages?: { id: string }[]; nextPageToken?: string }>(`${GMAIL}/messages`, { q: `${agentQuery(mine)} after:${Math.floor(after / 1000)}`, maxResults: 500, pageToken: next });
+        for (const m of page.messages ?? []) claimed.add(m.id);
+        next = page.nextPageToken;
+      } while (next);
+    }
     const threads = new Map<string, Record<string, unknown>>();
     /** Each kept thread's listed message time: the walk's progress, so a call cut short by the enrichment budget hands back an
      *  honest cursor instead of one past rows it did not serve. */
@@ -529,7 +546,7 @@ export class Workspace {
       if (at === after) continue;
       const h = (name: string) => header(m!, name);
       // A category comes from this message's own labels: an older promotional message in a thread does not hide the thread.
-      const why = category(m!.labelIds) ?? automated(h);
+      const why = claimed.has(m!.id) ? "agent-address" : category(m!.labelIds) ?? automated(h);
       // A call stops at `limit` threads, MAX_READS messages or the budget, never inside one millisecond (the cursor can't
       // split those: the next call skips the message at the cursor, so an undecided one at that timestamp would be lost).
       // A message that is dropped anyway takes no thread slot, so it is counted instead of ending the call.
@@ -597,7 +614,7 @@ export class Workspace {
       }
       // Category and automated mail stays set aside here too: the row is the newest message a person sent (the owner's own
       // included). A thread is kept when its listed message was not categorised, even if an older message in it was.
-      const person = (x: GmailMessage) => (x.labelIds ?? []).includes("SENT") || (!category(x.labelIds) && !automated((name) => header(x, name)));
+      const person = (x: GmailMessage) => !claimed.has(x.id) && ((x.labelIds ?? []).includes("SENT") || (!category(x.labelIds) && !automated((name) => header(x, name))));
       const newest = (t?.messages ?? []).filter(person).reduce<GmailMessage | undefined>((last, x) => (!last || Number(x.internalDate ?? 0) >= Number(last.internalDate ?? 0) ? x : last), undefined);
       if (!newest) continue;
       const h = (name: string) => header(newest, name);
@@ -647,7 +664,7 @@ export class Workspace {
   // -------------------------------------------------------------- Gmail writes (drafts and sends reviewed; labels upkeep)
 
   /** A new message, or a reply in `thread_id` (threaded by Gmail and by the recipient's mail client). */
-  private async outgoing(m: MailInput): Promise<{ raw: string; threadId?: string }> {
+  private async outgoing(m: MailInput, token?: string): Promise<{ raw: string; threadId?: string }> {
     let reply: { inReplyTo?: string; references?: string; subject?: string } = {};
     if (m.thread_id) {
       const t = await this.g.get<{ messages?: GmailMessage[] }>(`${GMAIL}/threads/${encodeURIComponent(m.thread_id)}`, { format: "metadata" });
@@ -662,7 +679,7 @@ export class Workspace {
     if (m.thread_id && !reply.subject) throw new Error(`thread ${m.thread_id}'s last message has no subject, so a reply can't be kept in it: send a new message instead`);
     const subject = m.thread_id ? (/^re:/i.test(reply.subject!) ? reply.subject! : `Re: ${reply.subject}`) : m.subject;
     if (subject === undefined) throw new Error("a new message needs a subject");
-    return { raw: mimeMessage({ to: m.to, cc: m.cc, bcc: m.bcc, subject, body: m.body, inReplyTo: reply.inReplyTo, references: reply.references }), ...(m.thread_id ? { threadId: m.thread_id } : {}) };
+    return { raw: mimeMessage({ to: m.to, cc: m.cc, bcc: m.bcc, subject, body: m.body, inReplyTo: reply.inReplyTo, references: reply.references, ...(token ? { token } : {}) }), ...(m.thread_id ? { threadId: m.thread_id } : {}) };
   }
 
   async gmailDraft(m: MailInput): Promise<{ draft_id: string; message_id: string; thread_id: string }> {
@@ -670,9 +687,60 @@ export class Workspace {
     return { draft_id: d.id, message_id: d.message.id, thread_id: d.message.threadId };
   }
 
-  async gmailSend(m: MailInput): Promise<{ message_id: string; thread_id: string }> {
-    const sent = await this.g.request<{ id: string; threadId: string }>("POST", `${GMAIL}/messages/send`, {}, await this.outgoing(m));
+  /** `token` stamps the message with SEND_HEADER, the durable provenance of an agent's send (reach.ts SendLedger). */
+  async gmailSend(m: MailInput, token?: string): Promise<{ message_id: string; thread_id: string }> {
+    const sent = await this.g.request<{ id: string; threadId: string }>("POST", `${GMAIL}/messages/send`, {}, await this.outgoing(m, token));
     return { message_id: sent.id, thread_id: sent.threadId };
+  }
+
+  // -------------------------------------------------------------- Agent addresses (reach.ts)
+
+  /** Message ids matching a Gmail query, newest first, at most `max` over up to `pages` pages; `complete` only when Gmail said there was no more. */
+  async gmailIds(q: string, max = 500, pages = 5, pageSize = 100): Promise<{ ids: string[]; complete: boolean }> {
+    const ids: string[] = [];
+    let pageToken: string | undefined;
+    for (let i = 0; i < pages && ids.length < max; i++) {
+      const page = await this.g.get<{ messages?: { id: string }[]; nextPageToken?: string }>(`${GMAIL}/messages`, { q, maxResults: Math.min(pageSize, max - ids.length), pageToken });
+      ids.push(...(page.messages ?? []).map((m) => m.id));
+      pageToken = page.nextPageToken;
+      if (!pageToken) return { ids, complete: true };
+    }
+    return { ids, complete: false };
+  }
+
+  /** One message, headers and body (`full`), or just headers (`metadata`); undefined when it is gone. */
+  async gmailMessage(id: string, format: "full" | "metadata" = "full"): Promise<GmailMessage | undefined> {
+    return this.g.get<GmailMessage>(`${GMAIL}/messages/${encodeURIComponent(id)}`, { format }).catch((err) => (err instanceof GoogleApiError && err.status === 404 ? undefined : Promise.reject(err)));
+  }
+
+  /** A whole thread's messages (headers and bodies), oldest first. */
+  async gmailThreadRaw(id: string): Promise<GmailMessage[]> {
+    return (await this.g.get<{ messages?: GmailMessage[] }>(`${GMAIL}/threads/${encodeURIComponent(id)}`, { format: "full" })).messages ?? [];
+  }
+
+  /** The addresses this mailbox may send as (`users.settings.sendAs`), with Google's verification state. */
+  async sendAs(): Promise<{ email: string; name?: string; primary: boolean; verified: boolean }[]> {
+    const r = await this.g.get<{ sendAs?: { sendAsEmail: string; displayName?: string; isPrimary?: boolean; verificationStatus?: string }[] }>(`${GMAIL}/settings/sendAs`);
+    return (r.sendAs ?? []).map((a) => ({ email: a.sendAsEmail.toLowerCase(), ...(a.displayName ? { name: a.displayName } : {}), primary: a.isPrimary === true, verified: a.isPrimary === true || a.verificationStatus === undefined || a.verificationStatus === "accepted" }));
+  }
+
+  /** Sends the frozen reply (reach.ts prepare): exactly these headers and body, `From:` the verified address, in `thread_id`. */
+  async sendFrozen(f: FrozenMail, token: string): Promise<{ message_id: string; thread_id: string }> {
+    const raw = mimeMessage({ from: f.from, to: f.to, cc: f.cc, subject: f.subject, body: f.body, inReplyTo: f.in_reply_to, references: f.references, token });
+    const sent = await this.g.request<{ id: string; threadId: string }>("POST", `${GMAIL}/messages/send`, {}, { raw, threadId: f.thread_id });
+    return { message_id: sent.id, thread_id: sent.threadId };
+  }
+
+  /** The agent sends of this mailbox since `sinceMs` carrying `token` (an ambiguous send is reconciled against this before a retry). */
+  async findSent(token: string, sinceMs: number): Promise<{ message_id: string; thread_id: string } | undefined> {
+    const { ids, complete } = await this.gmailIds(`in:sent after:${Math.max(0, Math.floor(sinceMs / 1000) - 5)}`, FIND_MAX, FIND_MAX / 100);
+    for (const id of ids) {
+      const m = await this.gmailMessage(id, "metadata");
+      if (m && header(m, SEND_HEADER) === token) return { message_id: m.id, thread_id: m.threadId };
+    }
+    // A window too full to read whole proves nothing: the send stays pending and this fails, rather than sending twice.
+    if (!complete) throw new Error("too much sent mail since the unsure send to check it; look in Sent and retry");
+    return undefined;
   }
 
   /**
@@ -709,8 +777,18 @@ export class Workspace {
 // ---------------------------------------------------------------- Gmail
 
 const GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
+/** The most sent messages one reconciliation reads. */
+const FIND_MAX = 200;
 
 /** A message an agent writes: plain text, to named addresses; `thread_id` makes it a reply there. */
+/** A reply as `prepare` froze it (reach.ts): who it is from and to, in which thread and after which message, and what it says. */
+export interface FrozenMail { from: string; to: string[]; cc: string[]; subject: string; body: string; thread_id: string; in_reply_to: string; references: string }
+/** `Name <address>` for a From header: the name as one RFC 2047 phrase (or a quoted string when plain ASCII). */
+export function fromHeader(name: string | undefined, address: string): string {
+  const n = (name ?? "").replace(/[\r\n"\\<>]/g, " ").replace(/\s+/g, " ").trim();
+  if (!n) return address;
+  return /^[\x20-\x7e]*$/.test(n) ? `"${n}" <${address}>` : `${encoded(n)} <${address}>`;
+}
 export interface MailInput { to: string[]; cc?: string[]; bcc?: string[]; subject?: string; body: string; thread_id?: string }
 
 const FOLD = "\r\n ";
@@ -733,10 +811,12 @@ function encoded(v: string): string {
 }
 
 /** The RFC 2822 message Gmail's API takes (`raw`, base64url): plain text, UTF-8. Gmail sets From to the signed-in account. */
-export function mimeMessage(m: { to: string[]; cc?: string[]; bcc?: string[]; subject: string; body: string; inReplyTo?: string; references?: string }): string {
+export function mimeMessage(m: { from?: string; to: string[]; cc?: string[]; bcc?: string[]; subject: string; body: string; inReplyTo?: string; references?: string; token?: string }): string {
   // Long headers are folded (a line break then a space) so no line passes the 998-character limit.
   const list = (name: string, xs: string[]) => xs.map((x) => oneLine(name, x)).join(`,${FOLD}`);
   const lines = [
+    ...(m.from ? [`From: ${oneLine("From", m.from)}`] : []),
+    ...(m.token ? [`${SEND_HEADER}: ${oneLine(SEND_HEADER, m.token)}`] : []),
     `To: ${list("To", m.to)}`,
     ...(m.cc?.length ? [`Cc: ${list("Cc", m.cc)}`] : []),
     ...(m.bcc?.length ? [`Bcc: ${list("Bcc", m.bcc)}`] : []),
@@ -749,10 +829,10 @@ export function mimeMessage(m: { to: string[]; cc?: string[]; bcc?: string[]; su
   return Buffer.from(text, "utf8").toString("base64url");
 }
 
-interface GmailPart { mimeType?: string; filename?: string; body?: { data?: string; size?: number }; parts?: GmailPart[]; headers?: { name: string; value: string }[] }
-interface GmailMessage { id: string; threadId: string; labelIds?: string[]; snippet?: string; internalDate?: string; payload?: GmailPart }
+export interface GmailPart { mimeType?: string; filename?: string; body?: { data?: string; size?: number }; parts?: GmailPart[]; headers?: { name: string; value: string }[] }
+export interface GmailMessage { id: string; threadId: string; labelIds?: string[]; snippet?: string; internalDate?: string; payload?: GmailPart }
 
-const header = (m: GmailMessage, name: string) => m.payload?.headers?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value;
+export const header = (m: GmailMessage, name: string) => m.payload?.headers?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value;
 
 const b64url = (data: string) => Buffer.from(data.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
 
