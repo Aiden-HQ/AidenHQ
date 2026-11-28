@@ -162,6 +162,17 @@ agents:
         - aria.aria_config
         - paperclip_tasks.task_create
         - chat_lane.wake_at
+routines:
+  # Run once when the owner sets Aria up as a teammate (trial: the board's setup runs it; no schedule, no event): she reads the last
+  # four weeks and saves a proposal for the owner's hours, which the Aria page shows for the owner to correct and Save.
+  aria-setup:
+    title: Aria first look
+    agent: aria
+    trial: true
+    concurrency: skip_if_active
+    description: |
+      Today is {{date}}. Follow "Setting up" in your skill scheduling: read the owner's last four weeks of meetings and call aria_suggest
+      with them. Then close this task with one line saying how many meetings you read.
 # The Aria page's connection: the owner's reads and proposed changes to Aria's settings (service/src/config-tool.ts), and the two
 # tools Aria herself calls (aria_suggest, aria_move_budget).
 connections:
