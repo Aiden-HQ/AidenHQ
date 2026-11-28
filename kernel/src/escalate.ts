@@ -10,8 +10,9 @@
 //   asking task, which ends the wait and wakes it, from the owner's decisions (owner/profile.md); a call that is truly the
 //   owner's it hands to the chief of staff.
 // - The chief of staff (role fleet-admin): the Steward's own asks. It brings to the owner only the calls that are theirs.
-// - The owner directly: only the chief of staff's own asks, an agent's question on a task the owner is talking to it on
-//   (the owner wrote there in the last day), and an agent's question on its part of the owner's own task (task_join: the
+// - The owner directly: only the chief of staff's own asks, an agent's question on a chat the owner opened with it (their own
+//   conversation for routing, however old the chat), an agent's question on a task the owner is talking to it on (they wrote
+//   there in the last day), and an agent's question on its part of the owner's own task (task_join: the
 //   owner holds the parent, so the owner is its delegator), e.g. the follow-up chaser's "Send this chaser?" in a sweep. A decision message headed by the waiting agent and its task, so the owner's reply
 //   lands on that task and wakes it. It names that agent as its asker, so the owner channel applies its mutes and the brake.
 // An agent's ask is one open ask per task: another isn't sent while the recorded ask (the durable `ask:<task>` marker) still
@@ -49,6 +50,16 @@ export type AskTo = "owner" | "steward" | "chief_of_staff" | "delegator";
 const settlerFor = (roles: string[] | undefined): AskTo => (roles?.includes(CHIEF) ? "owner" : roles?.includes(SETTLER) ? "chief_of_staff" : "steward");
 
 type Comment = { body?: unknown; authorUserId?: unknown; authorAgentId?: unknown; createdAt?: unknown; deletedAt?: unknown };
+/** The mark a chat carries in its description when it is created (channels.ts, the board): the agent it belongs to. */
+const CHAT_MARKER = /<!-- aidenhq-chat-agent:[\w-]+ -->\s*$/;
+/**
+ * Whether the task is a chat the owner opened with an agent: owner-created, its opening carries the chat marker, and no agent
+ * made it. That chat is the owner's own conversation for routing, however long ago they opened it; an ordinary comment of
+ * theirs still has its CONVERSING_MS expiry (ownerWroteAt), and a task they only commented on stays the Steward's.
+ */
+export function ownerChat(t: { description?: unknown; createdByUserId?: unknown; createdByAgentId?: unknown }): boolean {
+  return Boolean(t.createdByUserId && !t.createdByAgentId && CHAT_MARKER.test(String(t.description ?? "")));
+}
 /**
  * When the owner last wrote on a task (ms), from its comments and opening: a person's comment that isn't one of the kernel's or
  * a module's marked posts, or the opening of a chat they opened with an agent (the board's or a channel's chat marker; no
@@ -56,7 +67,7 @@ type Comment = { body?: unknown; authorUserId?: unknown; authorAgentId?: unknown
  */
 export function ownerWroteAt(t: { description?: unknown; createdAt?: unknown; createdByUserId?: unknown; createdByAgentId?: unknown }, comments: Comment[]): number | undefined {
   const at = comments.filter((c) => !c.deletedAt && !c.authorAgentId && c.authorUserId && String(c.body ?? "").trim() && !String(c.body).includes("<!-- aidenhq")).map((c) => Date.parse(String(c.createdAt)));
-  if (t.createdByUserId && !t.createdByAgentId && /<!-- aidenhq-chat-agent:[\w-]+ -->\s*$/.test(String(t.description ?? ""))) at.push(Date.parse(String(t.createdAt)));
+  if (ownerChat(t)) at.push(Date.parse(String(t.createdAt)));
   const n = Math.max(...at.filter(Number.isFinite));
   return Number.isFinite(n) ? n : undefined;
 }
@@ -81,7 +92,8 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
   settle: (b: { title: string; description: string; source: string }) => Promise<unknown>;
   /** The Steward's agent id (role fleet-settle), when there is one. */
   settleAgent?: () => string | undefined;
-  /** Whether the owner is talking to the task's agent there: they wrote on it within CONVERSING_MS. */
+  /** Whether the owner is talking to the task's agent there: they wrote on it within CONVERSING_MS, or it is the chat they
+   *  opened with it (ownerChat: theirs however old). */
   conversing: (task: string) => Promise<boolean>;
   /** Whether an agent id's wakes are taken (an enabled dispatcher runs it): a notice to a task nobody runs would never be read. */
   reachable?: (agent: string) => boolean;
@@ -210,7 +222,7 @@ export function createEscalate({ db, issue, state, asker, notice, owner, chief, 
       // The delegator is resolved once, for both the route and the delivery: resolving it again in send() could land the question
       // on another recipient than the marker records, and the next call would read that ask as abandoned.
       const d = who === "delegator" ? await delegatorOf(t) : undefined;
-      const to: AskTo = who === "owner" ? (settler === "owner" || (await ownersPart(t)) || (await conversing(t.id)) ? "owner" : settler) : d ? "delegator" : settler;
+      const to: AskTo = who === "owner" ? (settler === "owner" || ownerChat(t) || (await ownersPart(t)) || (await conversing(t.id)) ? "owner" : settler) : d ? "delegator" : settler;
       const open = await openAsk(t);
       if (open === "unknown") return { sent: "open" };
       // A legacy marker doesn't say which recipient waits; the caller refuses, actionably.

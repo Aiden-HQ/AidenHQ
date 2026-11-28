@@ -10,7 +10,7 @@ import { createTaskStateRead } from "../src/task-state-read.ts";
 import { KERNEL_STAGES } from "../src/flow-stages.ts";
 import { createWakes } from "../src/wakes.ts";
 import { createIdle } from "../src/idle.ts";
-import { CONVERSING_MS, createEscalate, ownerWroteAt } from "../src/escalate.ts";
+import { CONVERSING_MS, createEscalate, ownerChat, ownerWroteAt } from "../src/escalate.ts";
 
 const AGENT = "a-1", MIN = 60_000;
 
@@ -552,6 +552,47 @@ test("the owner wrote on a task: their own comment or the opening of a chat they
   assert.equal(ownerWroteAt(own, [{ body: "[telegram] go on", authorUserId: "o1", createdAt: at("09:00") }, { body: "done", authorAgentId: "a", createdAt: at("10:00") }, { body: "[wake] x <!-- aidenhq-wake -->", authorUserId: "o1", createdAt: at("11:00") }]), Date.parse(at("09:00")));
   assert.equal(ownerWroteAt({ ...own, description: "Heartbeat: eng" }, []), undefined, "no chat marker: a routine's run, a heartbeat, a filed task");
   assert.equal(ownerWroteAt({ ...own, createdByAgentId: "a" }, []), undefined, "an agent's task");
+  // The mark of an owner-opened chat is the owner's own conversation, whatever its age: only the "last wrote" age expires.
+  assert.equal(ownerChat(own), true);
+  assert.equal(ownerChat({ ...own, description: "Heartbeat: eng" }), false, "no marker: not the owner's chat");
+  assert.equal(ownerChat({ ...own, createdByAgentId: "a" }), false, "an agent's task");
+  assert.equal(ownerChat({ ...own, createdByUserId: null }), false, "a person didn't make it");
+});
+
+test("a chat the owner opened more than a day ago still reaches the owner: a for:owner ask routes to the owner and the wait is an owner_wait; a task they only commented on a week ago does not", async (t) => {
+  const DAY = 24 * 60 * MIN;
+  // The chat's opening is over a day old (the live repro): the marker still makes it the owner's conversation for routing.
+  const opened = "2026-11-17T09:00:00Z";
+  const chat = { description: "Chase my PRs\n\n<!-- aidenhq-chat-agent:arch -->", createdAt: opened, createdByUserId: "o1", createdByAgentId: null };
+  // A task an agent made whose only owner words are a week-old comment: routing stays the Steward's.
+  const commented = { description: "Build the chaser", createdAt: "2026-11-10T09:00:00Z", createdByUserId: null, createdByAgentId: "aiden" };
+  const old = [{ body: "looks right", authorUserId: "o1", createdAt: "2026-11-12T09:00:00Z" }];
+  assert.ok(Date.now() - Date.parse(opened) > DAY, "the chat is older than CONVERSING_MS");
+  assert.ok(Date.now() - Date.parse(old[0].createdAt) > 7 * DAY, "the comment is a week old");
+  // The kernel's `conversing` (main.ts) is ownerChat, else the owner's last write within CONVERSING_MS.
+  const conversing = (issue, comments) => ownerChat(issue) || (() => { const at = ownerWroteAt(issue, comments); return at !== undefined && Date.now() - at < CONVERSING_MS; })();
+  // `conversing` as it was before this fix (ownerWroteAt alone, age-limited): the old chat reads as not conversing, the live repro.
+  assert.equal(ownerWroteAt(chat, []) !== undefined && Date.now() - ownerWroteAt(chat, []) < CONVERSING_MS, false, "the marker's created-at alone is not a fresh write");
+  assert.equal(conversing(chat, []), true, "ownerChat: the marker makes it the owner's conversation however old");
+  const w = world(t);
+  for (const [id, issue] of Object.entries({ t3: chat, t4: commented })) {
+    w.issues[id] = { id, identifier: id.toUpperCase(), status: "todo", assigneeAgentId: AGENT, parentId: null };
+    w.add("task.created", `task:${id}`, id, { parent: null, identifier: id.toUpperCase() });
+    w.add("task.assignee_changed", `task:${id}`, id, { from: null, to: AGENT });
+  }
+  const esc = createEscalate({ db: w.db, issue: async (id) => ({ ...w.issues[id], ...(id === "t3" ? chat : id === "t4" ? commented : {}) }), state: (id) => w.row(id), asker: async () => ({ name: "Kai", key: "kai", roles: [] }), notice: () => {}, owner: () => {}, chief: async () => {}, settle: async () => {}, conversing: async (id) => conversing(id === "t3" ? chat : commented, old), now: w.now });
+  const idle = createIdle({ db: w.db, facts: w.facts, state: { read: () => ({ tasks: [] }) }, wakes: w.wakes, owner: async () => ({ status: 200, json: { id: "t3" } }), escalate: esc, now: w.now });
+  // Owner route: the ask resolves to the owner, its recorded marker says to:owner, and the wait fact is an owner_wait.
+  const asked = await idle.wait({ agent: AGENT, key: "architect", task: "t3" }, { reason: "x", for: "owner", question: "Which channels?" });
+  assert.equal(asked.to, "owner", "the owner-opened chat's question reaches the owner, however old the chat");
+  assert.equal(w.db.prepare("SELECT kind FROM escalations WHERE key = 'ask:t3'").get().kind, "to:owner", "the ask gate's marker agrees: to:owner");
+  assert.equal(w.row("t3").reason, "owner_wait");
+  assert.deepEqual(w.row("t3").attention.map((a) => [a.who, a.why]), [["owner", "owner_wait"]]);
+  // The Steward route: a task the owner only commented on a week ago.
+  const routed = await idle.wait({ agent: AGENT, key: "architect", task: "t4" }, { reason: "x", for: "owner", question: "Which channels?" });
+  assert.equal(routed.to, "steward", "a task the owner did not open still goes to the Steward");
+  assert.equal(w.row("t4").reason, "delegator_wait");
+  assert.deepEqual(w.row("t4").attention.map((a) => [a.who, a.why]), [["agent", "delegator_wait"]]);
 });
 
 test("a form on a chat the owner's words opened reaches the owner; on a task Aiden delegated it goes to the Steward", async (t) => {

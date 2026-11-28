@@ -101,6 +101,9 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   let failure: FactRow | undefined;
   let silent: FactRow | undefined; // a chat's job that ended done: ended without a reply unless an agent comment came with it
   const agentComments: FactRow[] = [];
+  // A question this task already asked and had answered (by anyone but its holder): an answer handed the call on, and a wait that
+  // asks it again is a re-arm of that same, settled episode, not a new judgement.
+  const settledQuestions = new Set<string>();
   let wait: { f: FactRow; end?: number } | undefined;
   const mwaits = new Map<string, FactRow>(); // a module's waits by subject (a PR), until its work.resumed or a job starts
   let handback: { f: FactRow; fromAgent: boolean } | undefined;
@@ -138,7 +141,12 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
         if (!wait || wait.end || ms(f.at) <= ms(wait.f.at)) break;
         const r = wait.f.data.reason;
         const answers = r === "owner_wait" ? f.actor.startsWith("account:") : r === "delegator_wait" ? f.actor !== "kernel" && f.actor !== `agent:${who}` : false;
-        if (answers) { wait.end = ms(f.at); quiet = Math.max(quiet, wait.end); }
+        if (answers) {
+          wait.end = ms(f.at);
+          quiet = Math.max(quiet, wait.end);
+          const q = str(wait.f.data.question)?.trim();
+          if (r === "delegator_wait" && q) settledQuestions.add(q);
+        }
         break;
       }
       case "record.filed": records.set(f.subject, { since: ms(f.at), owner: f.data.state === "owner", done: false }); break;
@@ -232,7 +240,11 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   const waitDetail = waitQuestion ? str(wait!.f.data.detail) : undefined;
   const blocker = open.find((o) => o.reason === "blocked")?.ref;
   const waitsOn = wait && !wait.end && wait.f.data.reason === "delegator_wait" ? str(wait.f.data.agent) : undefined;
-  const extra = { ...(blocker ? { blocker } : {}), ...(nextDue !== undefined ? { scheduled_for: iso(nextDue) } : {}), ...(waitsOn ? { waits_on: waitsOn } : {}), ...(waitQuestion ? { question: waitQuestion } : {}), ...(waitDetail ? { detail: waitDetail } : {}), ...(openNote ? { note: openNote } : {}), ...(judging ? { wait_since: judging } : {}), ...(openUntil ? { wait_until: openUntil } : {}) };
+  // A delegator wait asking a question this task already had answered on this stretch: the answer settled it, and the agent is
+  // re-asking the same one (the Steward's settlement handing it on, the live repro), so it is not a new judgement to raise. A
+  // genuinely new question is not in the set, so it is still raised once it is an hour old.
+  const askSettled = wait && !wait.end && wait.f.data.reason === "delegator_wait" && Boolean(str(wait.f.data.question)?.trim()) && settledQuestions.has(str(wait.f.data.question)!.trim());
+  const extra = { ...(blocker ? { blocker } : {}), ...(nextDue !== undefined ? { scheduled_for: iso(nextDue) } : {}), ...(waitsOn ? { waits_on: waitsOn } : {}), ...(waitQuestion ? { question: waitQuestion } : {}), ...(waitDetail ? { detail: waitDetail } : {}), ...(openNote ? { note: openNote } : {}), ...(judging ? { wait_since: judging } : {}), ...(openUntil ? { wait_until: openUntil } : {}), ...(askSettled ? { ask_settled: true as const } : {}) };
   const hint = () => {
     const occ = pair(own.filter((f) => after(f) && ms(f.at) <= now), stages)
       .filter((o) => o.module_fact && !o.end && ms(o.start) <= now && now - ms(o.start) <= STAGE_HINT_MS).at(-1);
