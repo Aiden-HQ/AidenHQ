@@ -1,4 +1,4 @@
-// The event router (events.ts): intake, batches, the drain's gates and caps, and the batch read bound to its run.
+// The event router (events.ts): intake, batches, the drain's gates, and the batch read bound to its run.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
@@ -32,7 +32,7 @@ function rig() {
 }
 const refused = async (f: () => unknown) => { try { await f(); } catch (e) { assert.ok(e instanceof EventsError, String(e)); return e.status; } return 200; };
 
-test("drain, caps, gates and binding", async () => {
+test("drain, gates and binding", async () => {
   const r = rig();
   const { events } = r;
   // Intake: only the connection's module; a duplicate id is dropped; a bot post misses R1's filter; R2's filter is its own.
@@ -119,34 +119,9 @@ test("drain, caps, gates and binding", async () => {
   r.tick(60_000);
   await events.drain();
   assert.equal(r.runs.length, 0);
-
-  // Caps count dispatch times: R1 has 4 runs this hour; 8 more reach 12, the 13th is dropped; an hour on, it runs again.
-  r.runs.length = 0;
-  for (let i = 0; i < 9; i++) { events.ingest("slack", ev(`c${i}`)); r.tick(60_000); await events.drain(); }
-  assert.equal(r.runs.length, 8);
-  assert.ok(r.logs.some(([m, f]) => m === "events: batch dropped" && String(f?.why).startsWith("cap:")));
-  r.tick(3600_000);
-  events.ingest("slack", ev("c-late"));
-  r.tick(60_000);
-  await events.drain();
-  assert.equal(r.runs.length, 9);
 });
 
-test("the global cap and the pending cap: dropped and counted, still a 2xx answer", async () => {
-  const r = rig();
-  // 120 runs in the past hour across routines: the next is dropped.
-  for (let i = 0; i < 130; i++) {
-    r.grants.routine_events[`r-${i}`] = { key: `k${i}`, agent: "a1", connection: "slack", resource: "C9", filter: { kind: "message" } };
-    r.routines[`r-${i}`] = { status: "active", assignee: "a1" };
-  }
-  r.runs.length = 0;
-  r.logs.length = 0;
-  r.tick(3600_000);
-  r.events.ingest("slack", ev("g1", { resource: "C9" }));
-  r.tick(60_000);
-  await r.events.drain();
-  assert.equal(r.runs.length, 120);
-  assert.equal(r.logs.filter(([m, f]) => m === "events: batch dropped" && String(f?.why).startsWith("cap:")).length, 10);
+test("the pending cap: dropped and counted, still a 2xx answer", async () => {
   // Over the pending cap an event is acknowledged as dropped (overflow).
   const p = rig();
   for (let i = 0; i < PENDING_MAX; i++) p.events.ingest("slack", ev(`q${i}`));
@@ -188,7 +163,7 @@ test("a batch belongs to the subscription that accepted it; resources match in a
   assert.equal(events.fired("issue-other"), false);
 });
 
-test("an ended window takes no more events; firing batches hold their place in the caps", async () => {
+test("an ended window takes no more events; a failed run is retried under the same key", async () => {
   const r = rig();
   const { events } = r;
   events.ingest("slack", ev("w1"));
@@ -199,11 +174,6 @@ test("an ended window takes no more events; firing batches hold their place in t
   await events.drain();
   const keys = new Set(r.runs.filter((x) => x.routine === R1).map((x) => x.key));
   assert.equal(keys.size, 2, "two batches, one event each");
-  // Both still firing (503): with 10 more sealed, R1's cap of 12 counts the two in flight, so only 10 fire.
-  r.runs.length = 0;
-  r.answer((k) => ({ status: 202, issue: `issue-${k.slice(0, 8)}` }));
-  for (let i = 0; i < 11; i++) { events.ingest("slack", ev(`x${i}`)); r.tick(61_000); await events.drain(); }
-  assert.equal(new Set(r.runs.filter((x) => x.routine === R1).map((x) => x.key)).size, 12);
 });
 
 test("a batch read after its text is gone answers expired; its task stays marked as fired", async () => {

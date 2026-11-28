@@ -185,11 +185,11 @@ Engineering calls made with these (simplest to maintain):
     drops a repeated source event id. Filters (event kind, author, label, text match) run in code before
     any model call. A burst within the wake window is one run carrying all its events.
   - A batch is sealed when the 60 s window ends; there is no leading-edge fire.
-  - One non-overlapping drain. Intake always answers the source: overflow and cap drops are acknowledged and counted,
+  - One non-overlapping drain. Intake always answers the source: overflow drops are acknowledged and counted,
     and permanently invalid items are skipped. Transport errors, 429 and 5xx are retried with the same key. A job that
     starts before its batch binding is stored gets a bounded "pending, retry" answer.
-  - Caps: 12 runs per routine per hour and 120 in total, counted from dispatch times. Pending events are capped
-    separately from retained payloads.
+  - No run-rate caps: a batch seals at 60 s or 20 events, so a burst fires several runs and the gateway's spend limit is the
+    money guard. Only the pending queue is capped (a memory guard), and only its overflow drops events.
   - Slack and GitHub only in this release. GitHub is polled on the code host's existing loop (an instance has no
     ingress), best-effort, since GitHub can delay its event feed. Only `issues.opened`, `issue_comment.created`,
     `pull_request.opened` and `push` are offered for now.

@@ -37,7 +37,7 @@ export type IngestResult = { accepted: true; seq?: number; duplicate?: true; que
 type Log = (msg: string, f?: Record<string, unknown>) => void;
 
 export const WINDOW_MS = 60_000, BATCH_MAX = 20, TEXT_MAX = 2000, LABELS_MAX = 10, DATA_KEYS = 20, DATA_BYTES = 2048, LOG_KEEP_MS = 3 * 24 * 3600_000, LOG_PAGE = 200;
-export const ROUTINE_HOURLY = 12, TOTAL_HOURLY = 120, PENDING_MAX = 2000;
+export const PENDING_MAX = 2000;
 const DRAIN_MS = 30_000, FIRING_MS = 10 * 60_000, PENDING_RETRY_S = 10, BODY_MS = 24 * 3600_000, KEEP_MS = 7 * 24 * 3600_000, HOUR = 3600_000;
 
 export class EventsError extends Error {
@@ -278,12 +278,7 @@ export function createEvents(o: {
           }
           if (r?.status !== "active" || r.assignee !== s.agent) { drop(b, r ? `the routine is ${r.status}` : "the routine is gone"); continue; }
           if (b.state === "sealed") {
-            const since = now() - HOUR;
-            // A batch firing holds its place in the caps until it lands (its retries keep the same key and place).
-            const mine = (db.prepare("SELECT count(*) AS n FROM event_batches WHERE routine = ? AND (dispatched_at > ? OR state = 'firing')").get(b.routine, since) as { n: number }).n;
-            const all = (db.prepare("SELECT count(*) AS n FROM event_batches WHERE dispatched_at > ? OR state = 'firing'").get(since) as { n: number }).n;
-            if (mine >= ROUTINE_HOURLY || all >= TOTAL_HOURLY) { drop(b, `cap: ${mine} runs of this routine and ${all} in all in the past hour`); continue; }
-            db.prepare("UPDATE event_batches SET state = 'firing' WHERE id = ?").run(b.id);
+            db.prepare("UPDATE event_batches SET state = 'firing', sealed_at = ? WHERE id = ?").run(now(), b.id); // the retry window starts here: time queued (a busy drain, failed lookups) never spends it
           }
           db.prepare("UPDATE event_batches SET tries = tries + 1 WHERE id = ?").run(b.id);
           let res: { status: number; issue?: string };
