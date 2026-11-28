@@ -177,7 +177,7 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
     if (!proposal) return;
     setSaving(true);
     try {
-      await Promise.allSettled([...inflight.current]);
+      await Promise.allSettled(inflight.current);
       const latestProposal = newest.current === undefined ? proposal : newest.current;
       if (!latestProposal) return;
       const r = await api.viewSave(page!.id, latestProposal.changes);
