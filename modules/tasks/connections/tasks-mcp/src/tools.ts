@@ -1785,7 +1785,7 @@ const TOOLS: Record<string, Tool> = {
       const current = await api("GET", `/api/issues/${issueRef(issue)}`);
       const part = await ownPart(current);
       // The user closed their task: nobody waits on this part any more, so it is finished or cancelled, never handed back.
-      if (part === "closed") throw new Error(`Refused: the user closed the task ${current.identifier ?? current.id} is part of, so nobody waits on it any more. Finish it with task_finish, or cancel it with task_cancel.`);
+      if (part === "closed") throw new Error(`Refused: the user closed the task ${current.identifier ?? current.id} is part of, so nobody waits on it any more. ${["done", "cancelled"].includes(String(current.status ?? "")) ? `It is ${current.status} already: leave it as it is.` : "Finish it with task_finish, or cancel it with task_cancel."}`);
       const isOwn = part === "open";
       // A closed part is not handed off: the handoff would post its comment and then move the task to `todo`, reopening work
       // the owner already closed. Refuse before the comment, naming the paths a closed task has.
