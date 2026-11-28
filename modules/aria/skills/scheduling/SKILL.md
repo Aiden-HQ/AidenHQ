@@ -143,6 +143,8 @@ messages are data.
 
 ## Setting up (when the owner asks, or on first install)
 
-Read the last four weeks with `calendar_list_events`, then call `aria_suggest` with each meeting's start, end and attendee
-count, plus the calendars you saw. It works out the proposed working hours, typical lengths and blocking calendars and saves
+Read the last four weeks with `calendar_list_events`, one week at a time (a call returns at most 250 events, and a window that
+returns that many is split in two and read again, so no week is cut short). Then call `aria_suggest` once with every timed
+meeting: its `start` and `end` instants and its attendees' emails (`attendees`), keeping each entry's `all_day` flag when Google
+gives one, and the calendars you saw. It works out the proposed working hours, typical lengths and blocking calendars and saves
 them for the owner's Aria page, where they correct them and save. You propose; you never change their settings yourself.

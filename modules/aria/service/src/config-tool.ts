@@ -70,7 +70,7 @@ export function configTools(d: Deps): Tool[] {
     },
     {
       name: "aria_suggest", roles: ["aria-admin"],
-      description: "Save what you learned from reading the owner's last four weeks of meetings, for their Aria page to propose (they correct it and save; nothing changes until then): { meetings: [{ start, end, attendees?: [email] }], calendars?: [id] }. Instants are ISO with an offset or Z. The service works out working hours per weekday, typical lengths and blocking calendars; you never do that arithmetic.",
+      description: "Save what you learned from reading the owner's last four weeks of meetings, for their Aria page to propose (they correct it and save; nothing changes until then): { meetings: [{ start, end, attendees?: [email], all_day?: boolean }], calendars?: [id] }, every timed meeting of the four weeks (all-day entries are ignored, so keep Google's all_day flag). Instants are ISO with an offset or Z. The service works out working hours per weekday, typical lengths and blocking calendars; you never do that arithmetic.",
       inputSchema: { type: "object", properties: { meetings: { type: "array", items: { type: "object", properties: { start: { type: "string" }, end: { type: "string" }, attendees: { type: "array", items: { type: "string" } }, all_day: { type: "boolean" } }, required: ["start", "end"] } }, calendars: { type: "array", items: { type: "string" } } }, required: ["meetings"], additionalProperties: false },
       run: async (a) => {
         if (!Array.isArray(a.meetings) || a.meetings.length > 2000) throw new Error("send up to 2000 meetings");
