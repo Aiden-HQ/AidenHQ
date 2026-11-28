@@ -195,6 +195,16 @@ export const REBOOT_READ = {
  */
 export const DPKG_LOCK_NOWAIT = ["sudo", "-n", "flock", "--verbose", "-n", "-x", "/var/lib/dpkg/lock-frontend"] as const;
 
+/**
+ * Every lock held on the host, by path. apt and dpkg lock `/var/lib/dpkg/lock*` with fcntl (POSIX) locks, which `flock(1)` neither
+ * takes nor sees on Linux, so a manual or unattended-upgrades transaction is found here instead. util-linux ships `lslocks` on both
+ * Ubuntu and Debian; sudo lets it resolve paths held by root's processes.
+ */
+export const HELD_LOCKS = ["sudo", "-n", "lslocks", "-n", "-r", "-o", "PATH"] as const;
+
+/** Whether `lslocks`' output shows a dpkg or apt lock held by any process. */
+export const aptBusy = (lslocks: string) => /^\/var\/lib\/(dpkg\/lock|apt\/lists\/lock)/m.test(lslocks);
+
 /** A package writer held the dpkg lock when the final reboot state was read. */
 export class RebootLocked extends Error {}
 
@@ -238,6 +248,11 @@ export async function readRebootState(c: Connection, opts: { lock?: boolean } = 
   const pkgs = flag.code === 0 ? await c.probe([...REBOOT_READ.rebootPkgs]) : undefined;
   const boot = (await c.exec([...REBOOT_READ.bootId], TIMEOUTS.read)).stdout.trim();
   const kernel = (await c.exec([...REBOOT_READ.kernel], TIMEOUTS.read)).stdout.trim();
+  if (opts.lock) {
+    const held = await c.probe([...HELD_LOCKS], TIMEOUTS.read);
+    if (held.code !== 0) throw new Error(`lslocks did not complete (exit ${held.code}${held.stderr.trim() ? `: ${held.stderr.trim().split("\n")[0]}` : ""}), so whether a package manager is running is unknown`);
+    if (aptBusy(held.stdout)) throw new RebootLocked("a package manager was writing to the host, so the reboot state could not be read");
+  }
   const installed = opts.lock
     ? await c.probe([...DPKG_LOCK_NOWAIT, ...REBOOT_READ.installedVersions], TIMEOUTS.read)
     : await c.exec([...REBOOT_READ.installedVersions], TIMEOUTS.read);
@@ -285,13 +300,18 @@ export async function rebootAndProve(c: Connection, i: { before: string; window:
   // the proof below is what decides either way. A `Connection` cannot tell its own refusal from a cut, so a failure here is kept and
   // reported only if the boot ID never changes.
   let issued: Error | undefined;
+  const busy = { ok: false as const, reason: "a package manager held the dpkg lock when the reboot was due, so the host was not rebooted: run again once it is clear" };
   try {
+    // A writer that started after the final read (apt's own fcntl lock, which flock cannot see): refuse now.
+    const held = await c.probe([...HELD_LOCKS], TIMEOUTS.read);
+    if (held.code === 0 && aptBusy(held.stdout)) return busy;
     const r = await c.probe([...REBOOT_ARGV], TIMEOUTS.read);
     // A writer that took the lock after the final read: refuse now, rather than poll for a reboot that never happened.
-    if (r.code !== 0 && /flock: failed to get lock/i.test(r.stderr)) {
-      return { ok: false, reason: "a package manager held the dpkg lock when the reboot was due, so the host was not rebooted: run again once it is clear" };
-    }
-    if (r.code !== 0) issued = new Error(`the reboot command answered: exit ${r.code}${r.stderr.trim() ? `: ${r.stderr.trim().split("\n")[0]}` : ""}`);
+    if (r.code !== 0 && /flock: failed to get lock/i.test(r.stderr)) return busy;
+    // A dropped connection (ssh's 255, the reboot starting) throws from `probe` and lands in the catch below. A returned non-zero
+    // exit is the host refusing the command (sudo denied, systemctl failed): polling then could credit an unrelated reboot to this
+    // run, so it fails now.
+    if (r.code !== 0) return { ok: false, reason: `the reboot command was refused: exit ${r.code}${r.stderr.trim() ? `: ${r.stderr.trim().split("\n")[0]}` : ""}; nothing was rebooted` };
   } catch (e) {
     // A connection that drops as the host goes down is the reboot starting, not a failed reboot; the boot ID is the proof.
     issued = e as Error;

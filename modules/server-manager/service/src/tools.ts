@@ -29,6 +29,33 @@ export interface Filing {
   file: (kind: "server-manager.patch" | "server-manager.reboot", args: Record<string, unknown>, machine: string) => Promise<{ id: string; tier: number; state: string }>;
 }
 
+/** One machine's target for the transport: only the fields ssh.ts may see, and never the key's value. */
+export const targetOf = (m: Machine): SshMachine => ({ name: m.name, address: m.address, port: m.port, user: m.user, key: m.key, expected_fingerprint: m.expected_fingerprint });
+
+/**
+ * Checks one machine and records what it saw in the page's store: the one read pass the page, the agent and the schedule share.
+ * The failure is a result, not an exception: a host that is unreachable, refuses the key or changed its host key records that
+ * state, so a stale healthy row is never left standing and the rest of the fleet is still checked.
+ */
+export async function checkOne(m: Machine, transport: Transport, keys: Keys, status: StatusStore) {
+  const at = new Date().toISOString();
+  let checked: Awaited<ReturnType<typeof readHost>>;
+  try {
+    checked = await withConnection(transport, targetOf(m), keys, async (c, pin) => readHost(c, pin));
+  } catch (e) {
+    checked = { ...stateOfError(e), ok: false };
+  }
+  const row = rowOf(m, checked, at);
+  status.put(row);
+  return { row, checked };
+}
+
+/** Every name the saved list holds, valid or not: the warehouse keeps exactly these machines' rows. */
+export function inventoryOf(saved: string): string[] {
+  const { machines } = readMachines(saved);
+  return [...new Set([...machines.map((m) => m.name), ...(savedList(saved) ?? []).flatMap((e) => (typeof e.name === "string" && e.name ? [e.name] : []))])];
+}
+
 export function configTools(d: {
   machines: () => string; status: StatusStore; keys?: () => Keys; transport?: Transport;
   log?: (msg: string, f?: Record<string, unknown>) => void;
@@ -41,27 +68,6 @@ export function configTools(d: {
 }): Tool[] {
   const log = d.log ?? (() => undefined);
   const publishRows = d.publishRows ?? publish;
-  /** One machine's target for the transport: only the fields ssh.ts may see, and never the key's value. */
-  const target = (m: Machine): SshMachine => ({ name: m.name, address: m.address, port: m.port, user: m.user, key: m.key, expected_fingerprint: m.expected_fingerprint });
-  /**
-   * Checks one machine and records what it saw: the transport's read pass, the row (in the page's store) and the sanitized
-   * warehouse row. The record is filed only after the read, and a publish failure never fails the check.
-   */
-  async function checkOne(m: Machine, transport: Transport, keys: Keys) {
-    // The failure is a result, not an exception: a host that is unreachable, refuses the key or changed its host key records
-    // that state, so a stale healthy row is never left standing and the rest of the fleet is still checked.
-    const at = new Date().toISOString();
-    let checked: Awaited<ReturnType<typeof readHost>>;
-    try {
-      checked = await withConnection(transport, target(m), keys, async (c, pin) => readHost(c, pin));
-    } catch (e) {
-      checked = { ...stateOfError(e), ok: false };
-    }
-    const row = rowOf(m, checked, at);
-    d.status.put(row);
-    return { row, checked };
-  }
-
   /**
    * A saved entry that failed its own check is not in `readMachines`' list, so a whole-list replacement built from that list would
    * silently delete it. A draft may not drop a saved entry the draft does not itself name and carry: the page shows the entries
@@ -122,13 +128,13 @@ export function configTools(d: {
         const name = typeof a.name === "string" ? a.name : undefined;
         // Every machine the settings still list, enabled or not, and including an entry that fails its own check: the warehouse
         // keeps only the machines that are still saved, and a bad field is the owner's to fix, not a removal.
-        const inventory = [...new Set([...machines.map((m) => m.name), ...(savedList(d.machines()) ?? []).flatMap((e) => (typeof e.name === "string" && e.name ? [e.name] : []))])];
+        const inventory = inventoryOf(d.machines());
         const list = machines.filter((m) => m.enabled && (!name || m.name === name));
         if (name && !list.length) return { problem: `no enabled machine called ${name}` };
         const results = [];
         const rows = [];
         for (const m of list) {
-          const { row, checked } = await checkOne(m, transport, keys);
+          const { row, checked } = await checkOne(m, transport, keys, d.status);
           rows.push(publishRow(m, checked, row.updated_at!));
           results.push({
             name: m.name, state: row.state, distro: row.distro, pending: row.pending, security: row.security, reboot_needed: row.reboot_needed,
@@ -191,7 +197,7 @@ export function configTools(d: {
         const m = readMachines(d.machines()).machines.find((x) => x.name === a.machine);
         if (!m) throw new Error(`no enabled machine called ${String(a.machine)}`);
         if (!d.repinKey) throw new Error("the re-pin isn't configured in this build");
-        const r = await d.repinKey(target(m), String(a.fingerprint));
+        const r = await d.repinKey(targetOf(m), String(a.fingerprint));
         d.status.put({ ...(d.status.get(m.name) ?? { name: m.name, distro: null, state: "ok", pending: null, security: null, security_known: null, reboot_needed: null, disk: null, updated_at: null }), state: "ok", updated_at: new Date().toISOString() });
         return { machine: m.name, repinned: r.fingerprint, note: "The next check reads the host over this pin." };
       },

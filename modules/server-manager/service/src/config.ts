@@ -61,6 +61,8 @@ export function entryProblems(entry: unknown, at: string): Problem[] {
   const out: Problem[] = [];
   for (const k of Object.keys(entry)) if (!(MACHINE_FIELDS as readonly string[]).includes(k)) out.push({ field: `${at}.${k}`, message: `isn't a server setting (one of ${MACHINE_FIELDS.join(", ")})` });
   for (const k of REQUIRED_FIELDS) if (entry[k] == null) out.push({ field: `${at}.${k}`, message: "is required" });
+  // An explicit null would override the default (`port: null` reaches ssh as `-p null`); leave a field out to use its default.
+  for (const [k, v] of Object.entries(entry)) if (v === null && !(REQUIRED_FIELDS as readonly string[]).includes(k)) out.push({ field: `${at}.${k}`, message: "has no value: leave it out to use the default" });
   const text = (k: string, re: RegExp, why: string) => {
     const v = entry[k];
     if (v == null) return;

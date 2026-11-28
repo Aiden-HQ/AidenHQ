@@ -74,7 +74,7 @@
   const acting = new Set();
   const advOpen = new Set();
   const machines = () => [...cfg.machines.map((m) => ({ name: m.name, effective: m.effective })), ...added.map((name) => ({ name, effective: { name, ...DEFAULT() } }))];
-  const DEFAULT = () => ({ address: "", user: "", key: "", port: 22, enabled: true, expected_fingerprint: "", security_minutes: 60, weekly_day: "mon", weekly_time: "03:00", reboot_policy: "auto", quiet_start: "03:00", quiet_end: "05:00" });
+  const DEFAULT = () => ({ address: "", user: "", key: "", ...(cfg.defaults ?? {}) });
   const saved = (name) => machines().find((m) => m.name === name).effective;
   const draft = (name) => (drafts[name] ??= { ...saved(name) });
   const dirty = (name) => name in drafts && !eq(drafts[name], saved(name));
@@ -107,13 +107,25 @@
   }
   // The draft, whole, as the owner's one settings change: the module checks each entry and returns the change the board's bar saves.
   function propose(live) {
-    const list = machines().filter((m) => !removing.has(m.name)).map((m) => { const e = drafts[m.name] ?? saved(m.name); const out = { name: m.name }; for (const k of Object.keys(e)) if (k !== "name" && e[k] !== "" && e[k] != null) out[k] = e[k]; return out; });
+    const entry = (m) => { const e = drafts[m.name] ?? saved(m.name); const out = { name: m.name }; for (const k of Object.keys(e)) if (k !== "name" && e[k] !== "" && e[k] != null) out[k] = e[k]; return out; };
+    // A new server stays a local draft in its editor until it is complete and valid: only then does it join the proposal. An
+    // unfinished one is never sent, never refused and never rolled away; the owner is told what it still needs.
+    const unfinished = [];
+    const list = machines().filter((m) => !removing.has(m.name)).map(entry).filter((e) => {
+      if (!added.includes(e.name)) return true;
+      const bad = problemsOf([e]);
+      if (bad.length) unfinished.push(`${e.name}: ${bad[0].replace(/^Servers\[0\]: /, "")}`);
+      return !bad.length;
+    });
+    // Back to the last accepted draft for saved servers; the new servers' drafts and the list of them stay as typed.
+    const rollback = () => { const keep = Object.fromEntries(added.map((n) => [n, drafts[n]]).filter(([, d]) => d)); drafts = structuredClone(lastGood.drafts); Object.assign(drafts, keep); removing = new Set(lastGood.removing); redraw(); };
+    const hint = unfinished.length ? ` ${unfinished[0]}; a new server is proposed once it is complete.` : "";
     // A draft that breaks a rule is not proposed: the bar keeps the last draft the module accepted, and the owner is told which
     // value to fix. A committed edit (blur, Enter) drops back to that last draft, so what the bar carries is what the screen shows.
     const local = problemsOf(list);
     if (local.length) {
-      if (!live) { drafts = structuredClone(lastGood.drafts); removing = new Set(lastGood.removing); added = [...lastGood.added]; redraw(); }
-      say(`${local[0]}. ${live ? "" : "The last good draft is what Save carries; "}Fix it to update the proposal.`, true);
+      if (!live) rollback();
+      say(`${local[0]}. ${live ? "" : "The last good draft is what Save carries; "}Fix it to update the proposal.${hint}`, true);
       return;
     }
     const sent = { drafts: structuredClone(drafts), removing: new Set(removing), added: [...added] }, rev = ++sentRev;
@@ -123,13 +135,14 @@
         // A draft the module refuses comes back with its problems and no change: drop back to the last draft it accepted (so the
         // bar's proposal is what is on screen) and say what is wrong. Never claim a refused draft is proposed.
         if (out && Array.isArray(out.problems) && out.problems.length) {
-          if (rev === sentRev) { drafts = structuredClone(lastGood.drafts); removing = new Set(lastGood.removing); added = [...lastGood.added]; redraw(); say(`${out.problems[0].field} ${out.problems[0].message}. The last good draft is what Save carries.`, true); }
+          if (rev === sentRev) { rollback(); say(`${out.problems[0].field} ${out.problems[0].message}. The last good draft is what Save carries.`, true); }
           return;
         }
         lastGood = sent;
-        say(Object.keys(drafts).length || sent.removing.size || sent.added.length ? "Changes are proposed: Save in the bar above applies them." : "");
+        const any = list.some((e) => dirty(e.name) || added.includes(e.name)) || sent.removing.size;
+        say(`${any ? "Changes are proposed: Save in the bar above applies them." : ""}${hint}`, !any && !!hint);
       } catch (e) {
-        if (rev === sentRev) { drafts = structuredClone(lastGood.drafts); removing = new Set(lastGood.removing); added = [...lastGood.added]; redraw(); }
+        if (rev === sentRev) rollback();
         say(e.message, true);
       }
     });
@@ -233,7 +246,7 @@
     const repinAct = st && st.state === "host-key-changed" && st.fingerprint ? act("Re-pin the key shown", () => repinNow(name, st.fingerprint), `repin:${name}`) : null;
     const acts = gone ? [btn("Keep", () => { removing.delete(name); redraw(); propose(); })]
       : open && fresh ? [btn("Discard", () => { added = added.filter((x) => x !== name); delete drafts[name]; redraw(); propose(); })]
-      : open ? [btn("Remove", () => { removing.add(name); redraw(); propose(); }), checkBtn()]
+      : open ? [btn("Close", () => { openName = null; redraw(); }), btn("Remove", () => { removing.add(name); redraw(); propose(); }), checkBtn()]
       : [btn("Edit", () => { openName = name; redraw(); }), ...writeActs(), ...(repinAct ? [repinAct] : [])];
     const stTags = st ? [
       h("span", { className: `tag ${st.security ? "needs" : st.reboot_needed ? "needs" : "ok"}`, textContent: st.distro ?? st.state }),
@@ -328,7 +341,7 @@
     if (!$("adder").hidden) return $("adder").querySelector("input").focus();
     const input = h("input", { type: "text", placeholder: "e.g. vm-one", ariaLabel: "Server name", autocomplete: "off", spellcheck: false });
     const msg = h("p", { className: "msg", role: "status" }), go = h("button", { type: "button", className: "primary", textContent: "Add" }), cancel = h("button", { type: "button", textContent: "Cancel" });
-    const check = () => { const v = input.value.trim(), bad = nameError(v); msg.textContent = bad ? bad : "Lists it with defaults; fill in address, user and key, then Save in the bar above."; msg.className = bad ? "msg err" : "msg"; return !bad && !!v; };
+    const check = () => { const v = input.value.trim(), bad = nameError(v); msg.textContent = bad ? bad : "Opens its editor: fill in address, user and key, and it joins the proposal once complete."; msg.className = bad ? "msg err" : "msg"; return !bad && !!v; };
     const submit = () => { const v = input.value.trim(); if (!v) { msg.textContent = "Type the server's name, for example vm-one."; msg.className = "msg err"; return input.focus(); } if (!check()) return input.focus(); added = [...added, v]; openName = v; closeAdder(); redraw(); propose(); };
     input.addEventListener("input", check);
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); else if (e.key === "Escape") closeAdder(); });
@@ -343,7 +356,7 @@
     closeHelp();
     const all = machines();
     if (!all.length) return $("rows").replaceChildren(h("div", { className: "card" }, h("div", { className: "empty" }, h("b", { textContent: "No servers yet. " }), "Choose + Add server above, then connect it here; keys are typed in the Sign-ins panel under the page.")));
-    if (!all.some((m) => m.name === openName)) openName = all[0].name;
+    if (!all.some((m) => m.name === openName)) openName = null;
     $("rows").replaceChildren(h("div", { className: "wrap" }, ...all.map(card)));
     drawn = true;
   }

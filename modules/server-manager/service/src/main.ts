@@ -10,15 +10,15 @@ import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.ts";
 import { serveExecutor } from "./aidenhq-sdk/executor.ts";
 import { createMcp, pageHtml, serveMcp } from "./mcp.ts";
 import { StatusStore } from "./status-store.ts";
-import { configTools } from "./tools.ts";
+import { checkOne, configTools, inventoryOf } from "./tools.ts";
 import { validate, type ValidateInput } from "./validate.ts";
 import { readKeys, repin, type Transport } from "./ssh.ts";
-import { ensureSchema } from "./status.ts";
+import { ensureSchema, publish, publishRow } from "./status.ts";
 import { readMachines } from "./config.ts";
 import { createExecutor } from "./executor.ts";
 import { KernelWrites } from "./kernel-writes.ts";
 import { dueFor, SlotStore } from "./schedule.ts";
-import { ConsentStore, rebootDue } from "./reboot.ts";
+import { ConsentStore, inWindow, rebootDue } from "./reboot.ts";
 
 const env = process.env;
 const log = (msg: string, f?: Record<string, unknown>) => console.log(new Date().toISOString(), msg, JSON.stringify(f ?? {}));
@@ -119,8 +119,9 @@ createServer(async (req, res) => {
 /**
  * The schedule (§12): every minute, what each machine is due for now. A fresh install lists no machine and does nothing; a machine
  * the owner adds and enables gets its first slot one interval after it is enabled. A slot is recorded durably before its run and
- * marked done after, so a restart cannot start it twice; the record is a patch (security or full) filed as the module, which brings
- * its own executor, tier and audit trail. A patch that needs a reboot files the reboot record itself after it (a Tier 2 card on an
+ * marked done after, so a restart cannot start it twice. Each slot checks the machine (a read, no record) and files a patch
+ * (security or full) as the module only when the check found something to install, which brings its own executor, tier and
+ * audit trail. A patch that needs a reboot files the reboot record itself after it (a Tier 2 card on an
  * "ask me first" machine). No agent run is started for scheduled work (§12).
  */
 function startSchedule() {
@@ -144,6 +145,25 @@ function startSchedule() {
         const due = dueFor(m, new Date(), timeZone(), slots);
         if (!due) continue;
         if (!slots.start(due)) continue;
+        // A slot is a check first (a read: no record, §6). Only a check that found something this module may install files a
+        // patch record, and a scheduled security patch installs only inside the machine's quiet window; the weekly pass runs at the
+        // time the owner set for it. The check also keeps the page's status and the warehouse row current between clicks.
+        const prior = status.get(m.name)?.state;
+        const { row, checked } = await checkOne(m, transport, keys(), status);
+        void publish([publishRow(m, checked, row.updated_at!)], inventoryOf(machines()), log);
+        if (!checked.ok) {
+          slots.finish(due, false, `check failed: ${checked.state}`);
+          // Told once per new failure state, not every interval while a host stays down.
+          if (prior !== checked.state) await wake({ machine: m.name, title: `Server Manager: ${m.name} could not be checked`, body: `${m.name}: the scheduled check failed (${checked.state}): ${checked.detail.slice(0, 300)}`, source: `server-manager:check-failed:${m.name}:${checked.state}` });
+          continue;
+        }
+        const r = checked.readout;
+        const count = due.kind === "full" ? r.upgradable.length : r.security.length;
+        const why = !count ? "nothing to install"
+          : r.unattended_upgrades ? "unattended-upgrades patches this host"
+          : due.kind === "security" && !inWindow(m.quiet_start, m.quiet_end, new Date(), timeZone()) ? `${count} security update(s) wait for the quiet window`
+          : "";
+        if (why) { slots.finish(due, true, `checked: ${why}`); continue; }
         try {
           const task = await kernelWrites.holder(m.name, await holderAgent()).catch(() => "");
           const r = await kernelWrites.file("server-manager.patch", { machine: m.name, mode: due.kind }, task || undefined);

@@ -86,6 +86,13 @@ Then review it with the person where they chose (**in review**):
 - When its task wakes you, read the diff it shows (`task_comments`) and **compare it line by line with your design**: grants, `reports_to`, the handbook text, schedules. If anything differs, comment on that same task with the exact correction; its next commit replaces the card. At most **3 rounds**; then tell the person what is stuck in one sentence.
 - Its change waits as an approval card, filed when its turn ends and tiered by code; the AI reviewer decides it, and if it reaches the person the card itself tells them. Review the diff before it lands either way: when it differs from your design, correct it on that task (its next commit replaces the card).
 
+**A module or product capability** (a service, a page, typed writes: more than an agent's two files) is built in slices, and you hold each slice to the locked design:
+
+- **The first slice is the smallest version the owner can use end to end**: add the thing on its page, run it once, see the result. Hardening, edge cases and extra modes come in later slices, only once that path works. Choose the simplest design that keeps the design's promises (the product CLAUDE.md "Conventions"); machinery for a rare case waits until the case shows up.
+- **Each Engineer task carries the design's promises as checks**: the few sentences a user relies on (for example "a check files no record", "installs happen only inside the quiet window"), copied from the locked doc. When a slice merges, read the code for each promise and confirm it holds; a promise the code does not keep is the next task, before any new slice.
+- **Each slice is tried the way the owner will use it**: the task asks the Engineer to run the page and walk its main flow in a browser (add, act, see the result), with screenshots on the task. Read them before you call the slice done.
+- **Tests fake the real system's behaviour**: a fake host answers the way the real one does (its real output, its real locking), checked once against the real thing, such as a throwaway container. A fake that answers what the code expects proves nothing.
+
 ### 4. Applied (ready for your OK)
 
 When the diff matches, tell the person in plain words what the new agent will be ("<name>: it can read …, it can change …, it reports to the chief of staff."). Don't ask them to approve or tap anything, and don't say the agent exists until the Engineer's task reports it applied.
