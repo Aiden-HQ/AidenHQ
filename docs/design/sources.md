@@ -49,7 +49,10 @@ All writers share one `SourceStore` (a byte-identical copy lives in each connect
 - **Text caps.** Long text is cut to about 4 KB with a `*_truncated` flag and a URL for the rest.
 - **Ingest runs.** Each pass writes a `src_meta.ingest_run` row (source, scope, rows written, error, for a repo target the
   commit scanned, and `status` for a non-error marker such as a retired security target). apps-mcp reports each source's
-  last good pass and whether the latest failed, and the board's fleet-ops detector raises a stale or failing source.
+  last good pass, whether the latest failed, and its expected pass interval (the median gap between its good passes in the
+  last 24 h, whole minutes, null under 3 good passes); the Fleet Steward's detector raises a stale or failing source, and a
+  failing pass is only an outage past twice the source's own interval (never under 15 minutes, never over 60, and slack's
+  fixed hour).
   The configured scope list is authoritative: a source that stops syncing a scope (an org dropped from its config) writes
   `status = 'retired'` for it, and `/internal/sources` leaves a scope out of both its failing and short lists while its newest
   pass is retired, so its detector key recovers within one tick instead of after the 8-day window.

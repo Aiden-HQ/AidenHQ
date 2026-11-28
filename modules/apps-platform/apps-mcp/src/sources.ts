@@ -138,16 +138,32 @@ export async function scopeIssues(d: Pick<WarehouseDeps, "pool">): Promise<{ fai
  * a failed org) nor keep a source whose every scope was retired looking alive. A source with no scope still syncing drops out.
  * A re-added scope's last good pass is counted from its re-add (the retirement cut its history), so a success from before it
  * left the config never delays the alert on its new failures.
+ *
+ * `interval_min` is the source's expected pass interval: the median gap between consecutive good passes in the last 24 h,
+ * in whole minutes, null under 3 good passes. Gaps are taken per scope (a source with several scopes writes one row each
+ * per pass, and same-timestamp rows would otherwise be zero gaps) and pooled across its scopes, so a multi-scope source
+ * gets its cadence, not half of it. The median, not the mean: one long gap (an outage, a paused sync) would drag a mean
+ * far off the cadence, while the median over 24 h still spans the ~24 samples of a 1-minute connector.
  */
 export async function sourceHealth(d: Pick<WarehouseDeps, "pool">): Promise<Record<string, unknown>[]> {
   const r = await d.pool.query(
     `WITH latest AS (SELECT DISTINCT ON (source, scope) source, scope, status FROM src_meta.ingest_run ORDER BY source, scope, finished_at DESC),
-          since AS (SELECT source, scope, max(finished_at) AS at FROM src_meta.ingest_run WHERE status = 'retired' GROUP BY source, scope)
+          since AS (SELECT source, scope, max(finished_at) AS at FROM src_meta.ingest_run WHERE status = 'retired' GROUP BY source, scope),
+          good AS (SELECT DISTINCT i.source, i.scope, i.finished_at
+                   FROM src_meta.ingest_run i JOIN latest l USING (source, scope) LEFT JOIN since s USING (source, scope)
+                   WHERE l.status IS DISTINCT FROM 'retired' AND i.error IS NULL AND i.status IS DISTINCT FROM 'retired'
+                     AND i.finished_at > COALESCE(s.at, '-infinity') AND i.finished_at > now() - interval '24 hours'),
+          gaps AS (SELECT source, EXTRACT(EPOCH FROM finished_at - lag(finished_at) OVER (PARTITION BY source, scope ORDER BY finished_at)) AS secs
+                   FROM good),
+          interval AS (SELECT source, CASE WHEN count(secs) >= 2 THEN round((percentile_cont(0.5) WITHIN GROUP (ORDER BY secs) / 60)::numeric)::int END AS interval_min
+                       FROM gaps GROUP BY source)
      SELECT i.source, max(i.finished_at) FILTER (WHERE i.error IS NULL AND i.status IS DISTINCT FROM 'retired' AND i.finished_at > COALESCE(s.at, '-infinity')) AS last_ok,
-            (array_agg(i.error IS NOT NULL ORDER BY i.finished_at DESC))[1] AS failing
+            (array_agg(i.error IS NOT NULL ORDER BY i.finished_at DESC))[1] AS failing,
+            v.interval_min
      FROM src_meta.ingest_run i JOIN latest l USING (source, scope) LEFT JOIN since s USING (source, scope)
+     LEFT JOIN interval v USING (source)
      WHERE l.status IS DISTINCT FROM 'retired'
-     GROUP BY i.source
+     GROUP BY i.source, v.interval_min
      ORDER BY i.source`,
   );
   return r.rows;

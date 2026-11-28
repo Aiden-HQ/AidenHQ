@@ -447,10 +447,33 @@ test("a failing slack row 61 minutes after its last good pass raises one source 
   assert.match(f.reason, /src_slack: last good pass 61 min ago; its latest pass failed/);
 });
 
-test("a failing non-slack source with a 16-minute-old good pass still raises an incident", () => {
+test("a failing non-slack source with a 16-minute-old good pass and no interval history still raises an incident", () => {
   const [f, ...rest] = staleSources([{ source: "hubspot", last_ok: minAgo(16), failing: true }], NOW);
   assert.equal(rest.length, 0);
   assert.equal(f.key, "hubspot");
+});
+
+test("a 15-minute source with one failed pass raises nothing at 16 minutes, and raises at 31 (past twice its interval)", () => {
+  const row = (m) => [{ source: "docs", last_ok: minAgo(m), failing: true, interval_min: 15 }];
+  assert.deepEqual(staleSources(row(16), NOW), [], "one failed pass inside two pass intervals is not a source-down");
+  const [f, ...rest] = staleSources(row(31), NOW);
+  assert.equal(rest.length, 0);
+  assert.equal(f.key, "docs");
+  assert.match(f.reason, /src_docs: last good pass 31 min ago; its latest pass failed/);
+});
+
+test("a source with no interval history keeps the 15-minute failing allowance", () => {
+  const rows = (m) => [{ source: "docs", last_ok: minAgo(m), failing: true, interval_min: null }];
+  assert.deepEqual(staleSources(rows(15), NOW), []);
+  assert.deepEqual(staleSources(rows(16), NOW).map((i) => i.key), ["docs"]);
+});
+
+test("a derived failing allowance is capped at 60 minutes, so a broken cadence cannot hide an outage", () => {
+  // A source whose history says 50-minute passes would derive 100 minutes: capped to 60.
+  assert.deepEqual(staleSources([{ source: "docs", last_ok: minAgo(60), failing: true, interval_min: 50 }], NOW), []);
+  assert.deepEqual(staleSources([{ source: "docs", last_ok: minAgo(61), failing: true, interval_min: 50 }], NOW).map((i) => i.key), ["docs"]);
+  // The slack override still wins over both the derived value and the cap.
+  assert.deepEqual(staleSources([{ source: "slack", last_ok: minAgo(60), failing: true, interval_min: 5 }], NOW), []);
 });
 
 test("spend: today above twice the prior days' average names its top components and subjects; quiet without a baseline or under the floor", () => {
