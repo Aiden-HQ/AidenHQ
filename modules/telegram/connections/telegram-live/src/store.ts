@@ -56,6 +56,9 @@ export function openStore(path: string): Store {
       chat_id INTEGER, message_id INTEGER, text TEXT, at INTEGER NOT NULL,
       body TEXT); -- text: the outcome words; body: the message text being sent (ingest's crash-recovery match); at: epoch ms
 
+    -- chats a summons touched: their messages reach the kernel even when muted, until \`until\` (epoch ms)
+    CREATE TABLE IF NOT EXISTS summoned_chats (chat_id INTEGER PRIMARY KEY, until INTEGER NOT NULL);
+
     -- the send rate cap
     CREATE TABLE IF NOT EXISTS send_log (at INTEGER NOT NULL, chat_id INTEGER NOT NULL);
   `);
