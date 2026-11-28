@@ -234,7 +234,10 @@
     const s = cfg.suggestion, def = cfg.defaults;
     if (s && eq(cfg.settings.aria_working_hours, def.aria_working_hours)) {
       draft.aria_working_hours = s.working_hours;
-      draft.aria_meetings = { ...draft.aria_meetings, ...s.durations, blocking_calendars: s.blocking_calendars };
+      // Only what is still the default: a length or calendar the owner already set stays theirs.
+      const dm = def.aria_meetings, m = draft.aria_meetings;
+      for (const k of ["one_on_one", "external", "default"]) if (s.durations[k] && m[k] === dm[k]) m[k] = s.durations[k];
+      if (eq(m.blocking_calendars, dm.blocking_calendars)) m.blocking_calendars = s.blocking_calendars;
       banners.push({ text: `Aria read your last four weeks (${s.based_on.meetings} meetings) and filled in your hours, usual lengths and calendars. Check them, then Save in the bar above.` });
     }
     if (cfg.owner_team_domain && !cfg.settings.aria_people.team_domains.length) {

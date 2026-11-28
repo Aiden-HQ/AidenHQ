@@ -201,8 +201,9 @@ export function chatBlock(key: string, c: Obj, tools: Obj) {
   for (const t of out.tools) {
     const [conn, tool] = String(t).split(".");
     const optional = !!conn?.endsWith("?"), name = optional ? conn!.slice(0, -1) : conn!;
+    if (!tool) fail(`agent ${key}: chat tool ${t} isn't one of its granted tools (write it as connection.tool)`);
     if (optional && !tools[name]) continue;
-    if (!tool || !tools[name]?.includes(tool)) fail(`agent ${key}: chat tool ${t} isn't one of its granted tools (write it as connection.tool)`);
+    if (!tools[name]?.includes(tool)) fail(`agent ${key}: chat tool ${t} isn't one of its granted tools (write it as connection.tool)`);
     kept.push(`${name}.${tool}`);
   }
   out.tools = kept;

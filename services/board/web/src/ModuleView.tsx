@@ -143,7 +143,7 @@ export function ModuleView({ page, sub, onSignIn }: { page: PageRow | undefined;
       });
       // A settings change the tool proposed: shown on the bar below, saved only by the owner's click (/save checks it).
       const changes = (r.result as { structuredContent?: { _aidenhq?: { settings_change?: unknown } } } | undefined)?.structuredContent?._aidenhq?.settings_change;
-      if (live && Array.isArray(changes) && changes.length) setProposal({ changes: changes as Proposal["changes"] }), setSaid("");
+      if (live && Array.isArray(changes)) changes.length ? (setProposal({ changes: changes as Proposal["changes"] }), setSaid("")) : setProposal(null); // an explicit empty proposal (every edit put back) clears the bar
       if (live && loads.current <= 1) answer(m, r.error ? { error: { code: r.error.code ?? -32000, message: String(r.error.message ?? "failed") } } : { result: r.result });
     }
     window.addEventListener("message", onMessage);

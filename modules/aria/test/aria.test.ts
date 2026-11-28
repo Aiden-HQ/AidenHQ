@@ -62,12 +62,14 @@ test("prefill: four weeks of meetings give hours covering at least 90% of them a
     at(wk + d, "09:00", 30, ["sam@acme.com", "kim@acme.com"]); at(wk + d, "11:00", 30, ["sam@acme.com", "lee@acme.com"]); at(wk + d, "14:00", 45, ["sam@acme.com", "x@partner.example.com"]); at(wk + d, "16:00", 30);
   }
   at(2, "07:00", 30); at(23, "20:00", 60);
+  meetings.push({ start: "2026-11-04T00:00:00Z", end: "2026-11-05T00:00:00Z", all_day: true }, { start: "2026-11-03T23:00:00Z", end: "2026-11-04T01:30:00Z" });
   const s = suggest(meetings, { timeZone: "Europe/London", ownerEmail: "sam@acme.com", calendars: ["primary", "primary"] });
   assert.ok(s.based_on.coverage >= 0.9, String(s.based_on.coverage));
   assert.deepEqual([s.working_hours.sat, s.working_hours.sun], ["off", "off"]);
   assert.equal(s.working_hours.wed, "09:00-16:30");
   assert.deepEqual(s.durations, { default: 30, one_on_one: 30, external: 45 });
   assert.deepEqual(s.blocking_calendars, ["primary"]);
+  assert.deepEqual(problems({ ...DEFAULTS, aria_working_hours: s.working_hours }), {});
   assert.equal(teamDomainOf("me@gmail.com"), undefined);
   assert.equal(teamDomainOf("me@acme.com"), "acme.com");
 });
