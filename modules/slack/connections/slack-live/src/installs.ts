@@ -39,3 +39,12 @@ export const installs = (store: Store) => {
   };
 };
 export type Installs = ReturnType<typeof installs>;
+
+/** The one record the instance's app had before there was one per app (`app:last`, `app:<id>`): carried over once, and the old keys are gone. */
+export function adoptLegacy(store: Store): void {
+  const last = store.getKv("app:last");
+  if (!last) return;
+  const { id, part } = JSON.parse(last) as { id: string; part: string };
+  installs(store).put(id, { part, ...(store.getKv(`app:${id}`) ? { hash: store.getKv(`app:${id}`)! } : {}) });
+  for (const r of store.listKv("app:")) store.delKv(r.k);
+}

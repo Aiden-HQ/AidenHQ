@@ -64,12 +64,13 @@ mention of the bot there goes to the bound agent, 30 an hour per channel), an ad
   (bot scope `chat:write.customize`, in the advanced manifest; an app made before needs "Update your bot app" and a reinstall).
   The bot's avatar stays (Slack needs a public `icon_url`, and the board's faces aren't public); `icon_emoji` is used when the kernel
   sends the agent an emoji. `users:read` names the sender (`author_name`).
-- **An agent's own Slack app (opt-in).** List the agent in the setting `slack_agent_apps` (`{ agent }`), make its app with the same
-  setup flow (`POST /setup/app` with `agent`: the app is named after the agent and has no user token, events or `/aiden`), and paste
+- **An agent's own Slack app (opt-in).** List the agent in the setting `slack_agent_apps` (`{ agent }`), make its app with slack-live's
+  `/setup/app` route (`agent` in the body: the app is named after the agent and has no user token, events or `/aiden`; the board's
+  setup form for it comes with the teammate page's "How to reach" card), and paste
   its two tokens into the secret `slack_agent_apps`: `{"aria": {"app_token": "xapp-…", "bot_token": "xoxb-…"}}`. slack-live reads the map every
   30 s: one installation record per app (`inst:<app id>`), one Socket Mode worker per record, each with its own socket, token and
-  state (`/healthz` `agent_apps`). A pair is checked first (both tokens one app, the instance's workspace, not an app already in use,
-  the instance's own included); a changed pair stops its old worker before the new one starts. Events carry `to_agent: <key>`,
+  state (`/healthz` `agent_apps`). A pair is checked first and refused unless proven (both tokens one app, which needs the bot scope `users:read`; the
+  instance bot's workspace; not an app already in use, the instance's own included); a changed pair stops its old worker before the new one starts. Events carry `to_agent: <key>`,
   `entry: slack:app:<app id>`, and the owner is the same Slack user id as the pairing. Replies, context and 👀 use that app's bot token.
   Cutting over an existing app: stop its old Socket Mode consumer first, since two consumers split events.
 - Every call the kernel makes names the conversation's `entry`; the entry picks the token. An owner chat (`cc <Agent>`, no entry) is

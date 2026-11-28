@@ -266,6 +266,8 @@ export async function gapSync(store: SourceStore, api: Api, now = Date.now(), lo
     const type = conversationType(c);
     await put(CHANNEL, { channel_id: String(c.id), name: c.name ?? c.user ?? null, channel_type: type }, false);
     convs.push({ id: String(c.id), type });
+    // Who an owner DM is with, so a replayed message to an agent's own app is addressed to it (map.ts Route.peers).
+    if (type === "im" && c.user) route?.peers?.set(String(c.id), String(c.user));
   }
   // users.conversations lists only conversations the owner is in; messages also arrive (events) from public channels they
   // aren't in, which then have no channel row and so no name. Look those up (and backfill existing rows) by channel id.

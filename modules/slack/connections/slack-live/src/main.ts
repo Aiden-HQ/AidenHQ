@@ -10,7 +10,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import pino from "pino";
 import { admit, bindings, binder, slashCommand } from "./bind.js";
 import { buildServer } from "./mcp.js";
-import { memoryWriter, noteTask } from "./memory.js";
+import { memoryWriter } from "./memory.js";
 import { BOT_ENTRY, type Route, type SourceEvent } from "./map.js";
 import { appIdOf, identity, namer, once, readTokens, reach } from "./reach.js";
 import { poster } from "./post.js";
@@ -24,7 +24,7 @@ import { SourceStore } from "./source-store.js";
 import { replayQueue, slackApi as relayApi, slackTee, startGapSync } from "./sources.js";
 import { attest, postedByAgent, relayWrites, summon, SummonError } from "./summon.js";
 import { AppError, apps as appsOf, type Part } from "./apps.js";
-import { installs } from "./installs.js";
+import { adoptLegacy } from "./installs.js";
 import { ownerReader } from "./signin.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info", base: { svc: "slack-live" }, redact: ["authorization", "*.authorization", "token", "*.token", "config_token"] });
@@ -90,7 +90,15 @@ const agentApps = reach({
 /** The bot token an entry's calls use: the instance bot's (`slack:bot`), or a running agent app's. */
 const botFor = (entry: string): string | undefined => (entry === BOT_ENTRY ? cfg.botToken || undefined : agentApps.token(entry));
 /** Where a message is addressed (map.ts): the instance bot and every agent app's bot by user id, the channel bindings, the owner's command DM. */
+const peers = new Map<string, string>();
+/** Who the owner's DM `channel` is with (the relay reads as the owner), once; only while an agent has an app of its own. */
+const learnDm = async (channel: string) => {
+  if (!relayKey || peers.has(channel) || !Object.keys(agentApps.bots()).length) return;
+  const user = ((await relayApi(slackMcp, relayKey)("conversations.info", { channel })).channel as { user?: string } | undefined)?.user;
+  if (user) peers.set(channel, user);
+};
 const route = (): Route => ({
+  peers,
   receiver: { to: "*", entry: BOT_ENTRY },
   bots: { ...(botIdentity.user ? { [botIdentity.user]: { to: "*", entry: BOT_ENTRY } } : {}), ...agentApps.bots() },
   bound: (channel) => bindings(store).get(channel)?.agent,
@@ -100,6 +108,7 @@ const route = (): Route => ({
 // conversation that came through a bot (its `entry`) uses that bot's token.
 const summoning = summon({ ...(relayKey ? { relay: { read: relayApi(slackMcp, relayKey), write: relayWrites(slackMcp, relayKey) }, signedIn: async () => (await owner())?.user_id ?? null } : {}), store, owner: () => cfg.ownerId || undefined, bot: botFor });
 // The Slack app made or updated from a pasted App Configuration Token (the board's setup page, with the pair token).
+adoptLegacy(store);
 const slackApps = appsOf(store);
 // Whether the bot is set up (the board's Connections shows it): booleans only, never a token. Once the owner uses Slack (signed
 // in) but has no bot, the connection needs them: Slack triage and 📌 tasks (Intake) come only from the bot's live events.
@@ -305,11 +314,9 @@ const deliver = async (event: SourceEvent) => {
   if (!res.ok) log.warn({ status: res.status }, "the kernel refused an event; passed");
   if (!event.to_agent) return;
   seen.done(event.id);
-  // Which tasks are a bound channel's threads (channel_memory is allowed from those only): when the kernel names the task it opened.
-  if (bound && res.ok) noteTask(store, ((await res.json().catch(() => ({}))) as { task?: { id?: string; identifier?: string } }).task, `${event.resource}:${event.thread ?? ""}`);
 };
 
-if (appToken) startSocket({ appToken, store, chat, pair, route, ...(binding ? { bind: binding } : {}), ...(tee ? { tee } : {}), ...(channelToken ? { forward } : {}), onState: (s) => void (socketState = s), log });
+if (appToken) startSocket({ appToken, store, chat, pair, route, learnDm, ...(binding ? { bind: binding } : {}), ...(tee ? { tee } : {}), ...(channelToken ? { forward } : {}), onState: (s) => void (socketState = s), log });
 else log.warn("SLACK_APP_TOKEN not set; not listening to Slack");
 // The bot's own user id (so a mention of it is known) and the agents' own apps, checked and started on a timer.
 if (cfg.botToken) { retryIdentity(); setInterval(retryIdentity, 30_000).unref(); }

@@ -19,6 +19,8 @@ interface Deps {
   bind?: { command: (body: any) => Promise<string> };
   /** Where a message is addressed (map.ts), read per event: the instance bot's route. */
   route?: () => Route;
+  /** Looks up who an owner's own DM is with (it throws when it can't, so the event is redelivered, never classified without it). */
+  learnDm?: (channel: string) => Promise<void>;
   tee?: (body: unknown) => void; // src_slack (sources.ts): every event that is not a pairing DM; never throws or blocks
   /** The kernel's event router (POST /v1/events): throws only when the kernel didn't take it (transport, 429, 5xx). */
   forward?: (e: SourceEvent) => Promise<void>;
@@ -83,7 +85,7 @@ export function listen({ appToken, onEvent, onState, log }: { appToken: string; 
 
 // Persist BEFORE ack: if the insert throws we do not ack, so Slack redelivers; a duplicate
 // event_id is a no-op. Events during a disconnect are lost (accepted; the scout scan covers it).
-export function startSocket({ appToken, store, chat, pair, bind, route, tee, forward, onState, log }: Deps): Listener {
+export function startSocket({ appToken, store, chat, pair, bind, route, learnDm, tee, forward, onState, log }: Deps): Listener {
   return listen({ appToken, onState, log, onEvent: async (msg) => {
     // Before any filter: "a DM arrived" is observable, whatever the pairing, chat and routing rules then do with it.
     const ingress = ingressLine(msg.type, msg.body);
@@ -123,6 +125,9 @@ export function startSocket({ appToken, store, chat, pair, bind, route, tee, for
       }
       // Routines' events (bot posts too, flagged), and the messages addressed to one of our bots (`to_agent`, classified once here:
       // owner command DM, bound channel, addressed bot, else plain): a kernel that didn't take it leaves the envelope unacked, so Slack redelivers.
+      // The owner's own DM (a user-token event, no bot among its authorizations) may be with an agent's app: who it is with is known first.
+      const auths = (msg.body as { authorizations?: { is_bot?: boolean }[] } | null)?.authorizations ?? [];
+      if (learnDm && msg.type === "events_api" && ev?.type === "message" && ev.channel_type === "im" && ev.channel && ev.channel !== owner?.channel && !auths.some((a) => a?.is_bot === true)) await learnDm(ev.channel);
       const source = msg.type === "events_api" ? toSourceEvent(msg.body, owner?.user, { ...route?.(), ...(owner?.channel ? { ownerChannel: owner.channel } : {}) }) : null;
       if (source && forward) await forward(source);
     } catch (err) {

@@ -1,5 +1,6 @@
 import { expect, it } from "bun:test";
 import { apps, botName, MANIFESTS, named, slugOf } from "../src/apps.js";
+import { adoptLegacy } from "../src/installs.js";
 import { openStore } from "../src/store.js";
 
 // Built at run time, so no secret scanner takes a test value for a real token.
@@ -154,4 +155,14 @@ it("makes an agent's own app named after the agent, without the owner's user tok
   // Its record is its own: the instance's status is untouched.
   expect(a.status("aria").app_id).toBe("A0ARIA00");
   expect(a.status().app_id).toBeNull();
+});
+
+it("the instance app's record from before one-per-app is carried over once", () => {
+  const store = openStore(":memory:");
+  store.setKv("app:last", JSON.stringify({ id: "A0OLD000", part: "advanced" }));
+  store.setKv("app:A0OLD000", "abc");
+  adoptLegacy(store);
+  adoptLegacy(store);
+  expect(apps(store).status()).toEqual({ app_id: "A0OLD000", part: "advanced", current: false, url: "https://api.slack.com/apps/A0OLD000" });
+  expect(store.listKv("app:")).toEqual([]);
 });

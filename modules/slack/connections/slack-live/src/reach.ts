@@ -122,11 +122,15 @@ export function reach(o: ReachOptions) {
     if (app_id === o.instance.app_id) throw new Error("that is the instance's own Slack app: an agent needs an app of its own");
     const auth = await slack("auth.test", p.bot_token).catch((e: Error) => { throw new Error(`Slack didn't accept the bot token (${e.message})`); });
     const team_id = String(auth.team_id ?? ""), bot_user = String(auth.user_id ?? "");
-    // Both tokens must be one app. bots.info needs users:read: an app without it can't be checked, which is no proof of a mismatch.
-    const bot = await slack("bots.info", p.bot_token, { bot: String(auth.bot_id ?? "") }).then((r) => r.bot as { app_id?: string } | undefined, (e: Error) => { if (!/missing_scope/.test(e.message)) throw e; return undefined; });
-    if (bot?.app_id && bot.app_id !== app_id) throw new Error("the bot token and the app-level token are from different apps");
+    // Both tokens must be proven one app: bots.info names the bot's app (it needs the bot scope users:read, which the app's manifest
+    // adds: an app made before needs "Update your bot app" and a reinstall). An unproven pair is refused, never assumed.
+    const bot = await slack("bots.info", p.bot_token, { bot: String(auth.bot_id ?? "") }).then((r) => r.bot as { app_id?: string } | undefined, (e: Error) => { throw new Error(/missing_scope/.test(e.message) ? "can't tell whether the two tokens are one app: add the bot scope users:read to that Slack app and reinstall it" : `Slack didn't name the bot's app (${e.message})`); });
+    if (!bot?.app_id) throw new Error("Slack didn't name the bot's app, so the two tokens can't be matched");
+    if (bot.app_id !== app_id) throw new Error("the bot token and the app-level token are from different apps");
+    // The workspace is the instance bot's: without it known there is nothing to match.
     await o.instance.identity.load().catch(() => undefined);
-    if (o.instance.identity.team && team_id !== o.instance.identity.team) throw new Error("that app is installed in another Slack workspace than the instance's bot");
+    if (!o.instance.identity.team) throw new Error("the instance's own bot isn't connected yet, so the workspace can't be checked; it is tried again shortly");
+    if (team_id !== o.instance.identity.team) throw new Error("that app is installed in another Slack workspace than the instance's bot");
     if (bot_user === o.instance.identity.user) throw new Error("that bot is the instance's own bot");
     const clash = [...workers.values()].find((w) => w.agent !== agent && (w.app_id === app_id || w.bot_user === bot_user));
     if (clash) throw new Error(`that app is already ${clash.agent}'s`);
@@ -196,7 +200,7 @@ export function reach(o: ReachOptions) {
           o.log.info({ agent, app_id: v.app_id }, "agent app started");
         } catch (err) {
           const detail = String((err as Error).message).slice(0, 200);
-          problems.set(agent, { fp, detail, until: Date.now() + 300_000 });
+          problems.set(agent, { fp, detail, until: Date.now() + 60_000 });
           o.log.warn({ agent, detail }, "agent app not started");
         }
       }

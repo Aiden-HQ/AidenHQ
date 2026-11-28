@@ -39,6 +39,20 @@ describe("classification", () => {
     seen.done(a!.id);
     expect(seen.begin(a!.id)).toBe(false);
   });
+  it("the owner's DM with an agent's own app is the same event from the instance socket (user stream) and from the app's", () => {
+    const dmEvent = { type: "message", channel_type: "im", user: OWNER, channel: "D0ARIADM1", ts: "9.9", text: "when is he free?" };
+    const peers = new Map([["D0ARIADM1", ARIA_BOT]]);
+    const fromInstance = toSourceEvent({ event: dmEvent, authorizations: [{ is_bot: false }] }, OWNER, { ...route, peers });
+    const fromApp = toSourceEvent({ event: dmEvent, authorizations: [{ is_bot: true, user_id: ARIA_BOT }] }, OWNER, { receiver: { to: "aria", entry: "slack:app:A0ARIA00" }, bots: route.bots });
+    expect(fromInstance).toEqual(fromApp);
+    expect(fromApp).toMatchObject({ to_agent: "aria", entry: "slack:app:A0ARIA00", from_owner: true });
+    // Before the other party is known the owner's colleague DM stays a plain event.
+    expect(toSourceEvent({ event: dmEvent, authorizations: [{ is_bot: false }] }, OWNER, route)?.to_agent).toBeUndefined();
+  });
+  it("a message's mention of the receiving bot is known from the envelope itself, before any lookup", () => {
+    const e = toSourceEvent({ event: { type: "message", channel_type: "channel", user: GUEST, channel: "C0OTHER01", ts: "9.5", text: `<@${BOT}> hi` }, authorizations: [{ is_bot: true, user_id: BOT }] }, OWNER, { receiver: route.receiver });
+    expect(e).toMatchObject({ to_agent: "*", entry: "slack:bot" });
+  });
   it("a mention of an agent's own app goes to that agent's entry from either socket; bots and edits never address a bot", () => {
     const e = toSourceEvent(env({ type: "message", channel_type: "channel", user: OWNER, channel: "C0OTHER01", ts: "8.1", text: `<@${ARIA_BOT}> book it` }), OWNER, route);
     expect(e).toMatchObject({ to_agent: "aria", entry: "slack:app:A0ARIA00", from_owner: true });
@@ -115,6 +129,16 @@ describe("dedicated apps", () => {
     await dup.r.reconcile();
     expect(dup.opened.length).toBe(1);
     expect(dup.r.status().find((s) => s.agent === "nora")).toMatchObject({ state: "invalid", detail: expect.stringMatching(/already aria's/) });
+  });
+
+  it("a pair that can't be proven one app, or an instance whose workspace isn't known, starts nothing", async () => {
+    const noScope = setup({ [`bots.info:${XOXB("1")}`]: { error: "missing_scope" } });
+    await noScope.r.reconcile();
+    expect(noScope.opened).toEqual([]);
+    expect(noScope.r.status()[0]).toMatchObject({ state: "invalid", detail: expect.stringMatching(/users:read/) });
+    const unnamed = setup({ [`bots.info:${XOXB("1")}`]: { bot: {} } });
+    await unnamed.r.reconcile();
+    expect(unnamed.opened).toEqual([]);
   });
 
   it("a rotated pair stops the old worker before the new one starts", async () => {
