@@ -78,6 +78,8 @@ const cases = [
   ["a delegator wait ends at another's comment, not the holder's", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), comment("agent:kai", 2)], NOW,
     { reason: "delegator_wait", attention: [{ who: "agent", why: "delegator_wait" }] }],
   ["another's comment wake ends a delegator wait (an answer with no comment fact)", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), f("wake.opened", 2, {}, "agent:aiden", { subject: "wake:comment:c1" })], NOW, { reason: not("delegator_wait") }],
+  ["an agent's wake-only answer settles the question, so its re-arm is marked", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), f("wake.opened", 2, {}, "agent:aiden", { subject: "wake:comment:c1" }), f("wake.bound", 2, {}, "agent:aiden", { subject: "wake:comment:c1" }), wait("delegator_wait", 3, { question: "q" })], NOW,
+    { reason: "delegator_wait", question: "q", ask_settled: true }],
   ["an unrelated job start leaves a delegator wait open", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), job("job.started", 3), job("job.ended", 4, { state: "done" })], NOW, { reason: "delegator_wait" }],
   ["a delegator's answer ends the delegator wait", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), comment("agent:aiden", 2)], NOW, { reason: not("delegator_wait") }],
   ["a delegator wait carries its question, which the ask gate reads", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "which path?" })], NOW,
@@ -115,10 +117,22 @@ const cases = [
     { reason: "delegator_wait", ask_settled: true }],
   ["a new question after an answered one is raised again", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), comment("agent:lead", 2), wait("delegator_wait", 3, { question: "other?" })], NOW,
     { reason: "delegator_wait", question: "other?", ask_settled: undefined }],
-  ["a wait never answered is not settled", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" })], NOW,
+  ["a question asked once is not a settled re-ask", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" })], NOW,
     { reason: "delegator_wait", question: "q", ask_settled: undefined }],
+  // Told from the question, never from who commented: an answer that ends one wait and a person's status note both leave a
+  // re-ask of the same question a re-ask (they open no new ask either, escalate.ask's one-open-ask rule), so neither re-raises it.
+  ["a question an agent answered, re-armed, is settled", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), comment("agent:lead", 2), wait("delegator_wait", 3, { question: "q" })], NOW,
+    { reason: "delegator_wait", ask_settled: true }],
   ["the holder's own comment is no answer, so nothing is settled", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), comment("agent:kai", 2), wait("delegator_wait", 3, { question: "q" })], NOW,
     { reason: "delegator_wait", ask_settled: undefined }],
+  ["a person's status comment ends the wait but settles nothing", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q" }), comment("account:o1", 2), wait("delegator_wait", 3, { question: "q" })], NOW,
+    { reason: "delegator_wait", ask_settled: undefined }],
+  // A revised draft under the same question is a new ask (escalate.ask refuses the same question with a different detail), so its
+  // re-arm is not the settled one: it is raised.
+  ["the same question about a revised draft is a new ask", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q", detail: "v1" }), comment("agent:lead", 2), wait("delegator_wait", 3, { question: "q", detail: "v2" })], NOW,
+    { reason: "delegator_wait", ask_settled: undefined }],
+  ["the same question about the same draft is the settled one", [created(), assignee("kai", 0), wait("delegator_wait", 1, { question: "q", detail: "v1" }), comment("agent:lead", 2), wait("delegator_wait", 3, { question: "q", detail: "v1" })], NOW,
+    { reason: "delegator_wait", ask_settled: true }],
   ["backlog waits", [created(), status("backlog", 1, null)], NOW, { kind: "waiting", reason: "backlog", attention: [] }],
   ["a chat's job ended with no agent comment reads failed · no_reply", [created(0, { chat: true }), assignee("kai", 0), job("job.started", 1), job("job.ended", 2, { state: "done", acted: false })], 120,
     { kind: "idle", reason: "failed", ref: "no_reply", since: iso(2), attention: [{ who: "agent", why: "failed", ref: "no_reply" }] }],

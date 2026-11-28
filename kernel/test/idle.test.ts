@@ -94,7 +94,12 @@ function world(t, { polls = true } = {}) {
   const asked = { owner: [], notices: [], chief: [], steward: [] };
   // Who the task's agent is (roles: ["fleet-admin"] is the chief of staff, ["fleet-settle"] the Steward) and whether the owner is talking to it on the task.
   const who = { roles: [], conversing: false };
-  const escalate = createEscalate({ db, issue: async (id) => issues[id], state: (id) => row(id), asker: async () => ({ name: "Kai", key: "kai", roles: who.roles }), notice: (task, body) => asked.notices.push({ task, body }), owner: (n) => asked.owner.push(n), chief: async (b) => { asked.chief.push(b); }, settle: async (b) => { asked.steward.push(b); }, settleAgent: () => "steward-id", conversing: async () => who.conversing, now: () => clock });
+  // The newest delegator wait's question and draft (main.ts passes the fact log): a re-ask of a settled one keeps its filing.
+  const lastAsk = (task) => {
+    const f = facts.forTask(task).filter((x) => x.type === "work.waiting" && x.subject === `wait:${task}` && x.data.reason === "delegator_wait").at(-1);
+    return f ? { at: f.at, ...(typeof f.data.question === "string" ? { question: f.data.question } : {}), ...(typeof f.data.detail === "string" ? { detail: f.data.detail } : {}) } : undefined;
+  };
+  const escalate = createEscalate({ db, issue: async (id) => issues[id], state: (id) => row(id), asker: async () => ({ name: "Kai", key: "kai", roles: who.roles }), notice: (task, body) => asked.notices.push({ task, body }), owner: (n) => asked.owner.push(n), chief: async (b) => { asked.chief.push(b); }, settle: async (b) => { asked.steward.push(b); }, settleAgent: () => "steward-id", conversing: async () => who.conversing, lastAsk, now: () => clock });
   const idle = createIdle({ db, facts, state, wakes, owner, escalate, now: () => clock });
   const rows = () => db.prepare("SELECT key, cause, state FROM wakes ORDER BY at, key").all().map((r) => `${r.key.replace(/:[0-9TZ:.-]+$/, "")} ${r.cause} ${r.state}`);
   /** A job on t1 from its wake to its end. */
@@ -543,6 +548,40 @@ test("an ask fails closed: an unreadable state sends nothing; a follow-up a minu
   w.tick(MIN);
   assert.equal((await esc.ask("t1", "owner", "follow-up?")).sent, "asked", "a minute after the answer");
   assert.equal(sent.length, 2, "the retry filed nothing new");
+});
+
+test("a re-ask of a question this task already carried files the same Steward task, not a new one; a new question is a new filing", async (t) => {
+  const w = world(t);
+  const sent = [];
+  // As main.ts: the newest delegator wait's question and draft, from the task's facts.
+  const lastAsk = (task) => {
+    const f = w.facts.forTask(task).filter((x) => x.type === "work.waiting" && x.subject === `wait:${task}` && x.data.reason === "delegator_wait").at(-1);
+    return f ? { at: f.at, ...(typeof f.data.question === "string" ? { question: f.data.question } : {}), ...(typeof f.data.detail === "string" ? { detail: f.data.detail } : {}) } : undefined;
+  };
+  const esc = createEscalate({ db: w.db, issue: async (id) => ({ id, identifier: id.toUpperCase(), status: "todo", assigneeAgentId: AGENT }), state: (id) => w.row(id), asker: async () => ({ name: "Kai", key: "kai", roles: [] }), notice: () => {}, owner: () => {}, chief: async () => {}, settle: async (b) => { sent.push(b.source); }, conversing: async () => false, lastAsk, now: w.now });
+  const idle = createIdle({ db: w.db, facts: w.facts, state: { read: () => ({ tasks: [] }) }, wakes: w.wakes, owner: async () => ({ status: 200, json: { id: "t1" } }), escalate: esc, now: w.now });
+  // The question goes to the Steward (no owner conversation): one Settle filing.
+  assert.equal((await idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", question: "Which region?" })).to, "steward");
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0], "ask:t1:0", "the first ask is a new filing");
+  // The Steward answers (its comment ends the wait), and the agent re-arms the very same question: the task's state calls it a
+  // settled re-ask, and the re-ask reuses the first filing's source, so the idempotent filing makes no second Settle task.
+  w.tick(MIN);
+  w.add("task.commented", "task:t1", "t1", { kind: "comment" }, "agent:fleet-steward");
+  w.tick(MIN);
+  assert.equal(w.row("t1").ask_settled, undefined, "the answered wait is closed, so nothing is open to mark");
+  const again = await idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", question: "Which region?" });
+  assert.equal(again.to, "steward");
+  assert.equal(w.row("t1").ask_settled, true, "the re-armed wait is the settled episode");
+  assert.deepEqual(sent, [sent[0], sent[0]], "the re-ask files under the same source: no second Settle task");
+  // A genuinely new question is a new filing.
+  w.tick(MIN);
+  w.add("task.commented", "task:t1", "t1", { kind: "comment" }, "agent:fleet-steward");
+  w.tick(MIN);
+  assert.equal((await idle.wait({ agent: AGENT, key: "eng", task: "t1" }, { reason: "x", for: "owner", question: "Which currency?" })).to, "steward");
+  assert.equal(sent.length, 3);
+  assert.notEqual(sent[2], sent[1], "a new question is a new Settle filing");
+  assert.equal(w.row("t1").ask_settled, undefined, "a new question is not a settled re-ask");
 });
 
 test("the owner wrote on a task: their own comment or the opening of a chat they opened, never a marked post, an agent's task or a routine's", () => {

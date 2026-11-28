@@ -341,8 +341,8 @@ test("gate activity counts only the holder's or a fleet-audit agent's comment, n
 });
 
 test("the judgement rule raises a delegator wait over an hour once, skips it once the Steward settled that question, and raises a genuinely new one", async () => {
-  // The kernel's task state for an agent waiting on its delegator's call; `ask_settled` is the kernel's own mark of a wait whose
-  // current question the Steward's comment already settled (kernel task-state.ts). `question`/`wait_since` tell the episodes apart.
+  // The kernel's task state for an agent waiting on its delegator's call; `ask_settled` is the kernel's own mark of a re-ask of a
+  // question (with its draft) the task already had settled (kernel task-state.ts). `question`/`detail` tell the episodes apart.
   const waiting = (over = {}) => ({
     task: "t1", identifier: "WOR-T1", since: ago(2), reason: "delegator_wait", holder: "eng", idle_wakes: 0, origin: null,
     attention: [{ who: "agent", why: "delegator_wait", ref: "wait:t1" }], wait_since: ago(2), question: "Which region?", ...over,
@@ -354,12 +354,14 @@ test("the judgement rule raises a delegator wait over an hour once, skips it onc
   const run = async (kernel) => (await checks({ kernel, kv: kvOf(), apps: async () => [], alerts: async () => [], openKeys: () => [], now: () => NOW }).judgement()).map((i) => i.key);
   // Waiting on the delegator over an hour with no settlement: raised once.
   assert.deepEqual(await run(kernelOf(() => [waiting()])), ["t1"]);
-  // The Steward settled that exact question (its comment handed it to the chief of staff, the wait stays armed): not raised.
+  // The Steward settled that exact question (or a delegator answered it) and the agent re-armed it, so the state marks it: not raised.
   assert.deepEqual(await run(kernelOf(() => [waiting({ ask_settled: true })])), [], "a settled question is not raised again");
-  // The agent re-armed the same question: the kernel keeps the mark, so still not raised (the live repro's 62-second repeat).
+  // The live repro's 62-second repeat: the same question re-armed under a fresh wait is still that settled episode, not raised.
   assert.deepEqual(await run(kernelOf(() => [waiting({ ask_settled: true, wait_since: minsAgo(20) })])), [], "the same question re-armed is not raised");
   // A genuinely new question on the same task after the old one was settled: it carries no mark, so once it is an hour old it is raised.
   assert.deepEqual(await run(kernelOf(() => [waiting({ question: "Which currency?", wait_since: ago(2) })])), ["t1"], "a new question is raised once it is an hour old");
+  // The same question about a revised draft is a new ask (escalate.ask refuses a revised draft under the same words), so it is raised.
+  assert.deepEqual(await run(kernelOf(() => [waiting({ detail: "v2", wait_since: ago(2) })])), ["t1"], "a revised draft is a new ask, raised");
   // Still inside the hour, even a new question is raised.
   assert.deepEqual(await run(kernelOf(() => [waiting({ question: "Which currency?", wait_since: minsAgo(20) })])), [], "not before the hour");
 });
