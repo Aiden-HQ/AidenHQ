@@ -87,6 +87,7 @@ test("the link renders as a text-link entity", async () => {
 test("the sent message comes back through ingest as stored, never as an event", async () => {
   const store = openStore(tmpDb());
   const { td } = scriptedTd([chat(-10, "group")], {});
+  td.on("getMessage", { id: 5 });
   td.on("sendMessage", (r: any) => ({ ...msg(-10, 1000, { outgoing: true, text: "Booked.", sending: true }), chat_id: r.chat_id }));
   const ing = createIngest({ td, store, me: () => ME, settings: { muted: "tagged", exclude: new Set(), backfillDays: 30 }, log });
   const ex = sender({ td: () => td, store, onAgentSend: (c, t, w) => markAgentSend(store, c, t, w) });
