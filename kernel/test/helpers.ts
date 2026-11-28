@@ -12,6 +12,7 @@ import { createAsserter, loadKey } from "../src/assert.ts";
 import { createBackplane } from "../src/backplane.ts";
 import { createBrake } from "../src/brake.ts";
 import { createChannels } from "../src/channels.ts";
+import { createModuleTasks } from "../src/modtasks.ts";
 import { createNotify } from "../src/notify.ts";
 import { createChecks } from "../src/checks.ts";
 import { createLane } from "../src/lane.ts";
@@ -138,7 +139,8 @@ export async function kernel(t, { agents = {}, grants = {}, settings = {}, conne
   const owner = async (method, path, body) => { const r = await fetch(new URL(path, cpServer.url), { method, headers: { authorization: "Bearer board-key", "content-type": "application/json" }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) }); return { status: r.status, json: await r.json().catch(() => ({})) }; };
   const boardCalls = [];
   const boardApi = async (method, path, body) => (boardCalls.push({ method, path, body }), board(method, path, body));
-  const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner, modules: modulesFile, log: logf });
+  const moduleTasks = createModuleTasks({ db: records.db, owner, agents: () => grantsTable().agents ?? {}, plugin: () => { throw new Error("no plugin post in tests"); }, log: logf });
+  const channels = createChannels({ db: records.db, records, writes, board: boardApi, owner, modules: modulesFile, files: (b) => moduleTasks.file("kernel", b), log: logf });
   const brake = createBrake({ db: records.db, owner });
   // The finish gate (checks.ts) over `checks`, config/kernel/checks.json's shape.
   // `checks` is the table, or a function (to stand for a file that fails to load).

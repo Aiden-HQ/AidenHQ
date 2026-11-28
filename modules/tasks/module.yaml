@@ -46,6 +46,20 @@ connections:
       read: [ task_current, task_get, task_search, task_list, task_team, task_comments, task_files, task_file_read, task_approvals, fleet_status, fleet_costs, fleet_catalog, handbook_list, handbook_read, advisor_ask, fanout_map, memory_note, memory_forget, memory_read, memory_rewrite, routine_events, self_change ]
       named: [ memory_read, memory_rewrite, self_change ]
       write: [ coach_record, task_create, task_delegate, task_route, task_join, task_schedule, task_stale, task_recurring, task_merge, task_update, task_pass_on, task_handoff, task_comment, task_file_upload, task_finish, task_wait, task_block, task_cancel, task_relay_owner_words, chat_open, app_request_from_owner, fleet_control ]
+  # A summoned teammate's conversation (kernel/src/summon.ts): conversation_context reads the chat its task was summoned in
+  # (through the kernel, POST /v1/conversation/context); conversation_reply is the kernel's conversation.reply write (signed,
+  # AI-reviewed), bound to that chat. Neither takes a channel: the kernel binds both to the task.
+  conversation:
+    setup: "Built in: nothing to connect."
+    url: http://tasks-mcp:8080/mcp
+    auth: tasks_service_key
+    returns: untrusted
+    tools:
+      read: [ conversation_context ]
+      write: [ conversation_reply ]
+prompts:
+  # How a summoned teammate works its task: the one rule, for every agent that can reply in a summoned chat.
+  - { id: summoned, file: prompts/summoned.md, when: { tools: [ conversation.conversation_reply ] } }
 services:
   data: true
   run:
@@ -72,6 +86,8 @@ data_version: 0 # its data dir's format: bumped by each forward-only migration (
 default_grants:
   - { tools: [ paperclip_tasks.advisor_ask ], when: { fields: { profile: crew }, modules: [ model-tools ] } }
   - { tools: [ paperclip_tasks.memory_note, paperclip_tasks.memory_forget, paperclip_tasks.memory_read, paperclip_tasks.memory_rewrite ], when: { fields: { profile: crew }, modules: [ memory ] } }
+  # conversation: every teammate can be summoned from the owner's chats (kernel/src/summon.ts), so each reads and replies there.
+  - { tools: [ conversation.conversation_context, conversation.conversation_reply ], when: { fields: { teammate: true } } }
   # routine_events: every crew agent reads the batch its event routine's run was fired with.
   - { tools: [ paperclip_tasks.routine_events ], when: { fields: { profile: crew } } }
   # self_change: every crew agent changes its own handbook, skills and routines (reviewed at apply).

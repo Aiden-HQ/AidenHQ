@@ -62,6 +62,18 @@
     "default": 32,
     "doc": "How many computers check jobs (code review, CI checks) run at once, 1 to 64, apart from agent jobs' computers_max (config/computers.json checks); the computer launcher keeps both. A check's computer mostly waits on remote model calls (about 250 MB, no CPU), so a repo review's area checks run side by side; a check over it waits queued."
   },
+  "summon": {
+    "default": "on",
+    "values": [
+      "on",
+      "off"
+    ],
+    "doc": "Summon a teammate from your own chats: \"cc Aria\", \"@Aria\" or \"Aria@AidenHQ\" in a message you write on a connected account (Slack, Telegram) gives that teammate the message and the conversation as a task, and it answers there from your account, signed. Off: those messages go to triage like any other. docs/superpowers/specs/2026-11-28-summon-agents-design.md."
+  },
+  "summon_signature": {
+    "default": "Sent by {agent} from [AidenHQ](https://aidenhq.ai)",
+    "doc": "The line every summoned teammate's reply ends with ({agent} is its name; markdown links render in each chat's own markup). Never empty: it tells the other person an AI wrote it, and it keeps a teammate from reading its own reply as a new summons."
+  },
   "auto_update": {
     "default": "on",
     "values": [

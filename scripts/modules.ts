@@ -1525,7 +1525,12 @@ export function compile(productDir: string, instanceDir: string, { revision, bun
   // (a service outside the owning module can mount one), and they are recreated with it.
   const mounted = composeSecretFiles(base, compose);
   const mounts = Object.fromEntries(setup.map((f) => [f.secret, [...(mounted[f.secret] ?? [])].sort()]));
-  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, commit_domain: settings.instance_name ? `${settings.instance_name}.aidenhq.ai` : "aidenhq.ai", repos: { ...(fleetOrg ? { fleet_org: fleetOrg } : {}), orgs: [settings.github_orgs ?? []].flat().map(String), listed: listedRepos, review_code: String(settings.ai_review_code ?? "all"), code_review_mandatory: reviewGated.mandatory }, modules: kernelModuleTable(enabledDefs, settings, new Set(enabled.filter((n) => all.get(n)!.tier === "official"))), services, ...(reviewer ? { reviewer } : {}), ...(Object.keys(checkJobTable).length ? { check_jobs: checkJobTable } : {}), ...(setup.length ? { setup, mounts } : {}) };
+  // Summons (kernel/src/summon.ts): on or off, the signature every reply carries (never empty: the loop guard and honesty with
+  // the other person rest on it), and the teammates the owner can summon by name (their renamed names).
+  const signature = String(settings.summon_signature ?? "").trim();
+  if (!signature || signature.length > 300) fail("settings.summon_signature: the signature replies carry, 1 to 300 characters ({agent} is the teammate's name)");
+  const teammates = Object.entries<Obj>(paperclip.agents).filter(([, a]) => a.teammate).map(([key, a]) => ({ key, name: String(a.name ?? key) })).sort((x, y) => x.key.localeCompare(y.key));
+  const kernelModules = { owner: { name: String(settings.owner_name ?? ""), email: String(settings.owner_email).trim().toLowerCase(), timezone: String(settings.timezone ?? "UTC") }, commit_domain: settings.instance_name ? `${settings.instance_name}.aidenhq.ai` : "aidenhq.ai", repos: { ...(fleetOrg ? { fleet_org: fleetOrg } : {}), orgs: [settings.github_orgs ?? []].flat().map(String), listed: listedRepos, review_code: String(settings.ai_review_code ?? "all"), code_review_mandatory: reviewGated.mandatory }, modules: kernelModuleTable(enabledDefs, settings, new Set(enabled.filter((n) => all.get(n)!.tier === "official"))), teammates, summon: { on: settings.summon !== "off", signature }, services, ...(reviewer ? { reviewer } : {}), ...(Object.keys(checkJobTable).length ? { check_jobs: checkJobTable } : {}), ...(setup.length ? { setup, mounts } : {}) };
   // Every agent (any module's or the instance's) is the job dispatcher's: the one enabled module with kernel.jobs. The kernel
   // starts a job only for an agent its requester dispatches (kernel/src/jobs.ts).
   const dispatchers = Object.entries<Obj>(kernelModules.modules).filter(([, m]) => (m.roles ?? []).includes("kernel.jobs")).map(([n]) => n);
@@ -1749,6 +1754,17 @@ export function kernelModuleTable(defs: Obj, settings: Obj = {}, official: Set<s
       if (typeof jt.auth !== "string" || !jt.auth.startsWith(prefix) || !/^[a-z][a-z0-9_]*$/.test(jt.auth) || ![def.generated_secrets ?? [], def.secrets?.generated ?? []].flat().includes(jt.auth)) fail(`module ${name}: providers.jobtools.auth must name a secret the module generates, named ${prefix}…`);
       if (!Array.isArray(jt.ops) || !jt.ops.length || jt.ops.some((o: unknown) => typeof o !== "string" || !/^[a-z][a-z0-9-]{0,40}$/.test(o)) || new Set(jt.ops).size !== jt.ops.length) fail(`module ${name}: providers.jobtools.ops is a list of distinct op names ([a-z][a-z0-9-]*)`);
     }
+    // summon: { connection, url: http://<service>:<port>/<path>, auth: one of its own secrets }: the three calls the kernel makes
+    // for a summoned conversation on that connection (POST {url}/context|reply|react, kernel/src/summon.ts). It needs the role that
+    // lets the module say which of the connection's messages the owner wrote.
+    const sm = def.summon;
+    if (sm != null) {
+      if (typeof sm !== "object" || Array.isArray(sm) || Object.keys(sm).some((k) => !["connection", "url", "auth"].includes(k))) fail(`module ${name}: summon is { connection, url, auth }`);
+      if (!Object.hasOwn(def.connections ?? {}, String(sm.connection))) fail(`module ${name}: summon.connection must be one of its own connections`);
+      if (!/^http:\/\/[a-z][a-z0-9-]*:\d+\/[\w/.-]*$/.test(String(sm.url)) || !Object.keys(def.services?.run ?? {}).includes(new URL(String(sm.url)).hostname)) fail(`module ${name}: summon.url must be http://<service>:<port>/<path>, one of the module's own services`);
+      if (!ownSecrets(def).includes(sm.auth)) fail(`module ${name}: summon.auth must name one of its own secrets`);
+      if (!roles.includes("kernel.attest-owner")) fail(`module ${name}: a summon contract needs roles.requests: [kernel.attest-owner]`);
+    }
     const { facts, stages, journeys } = flowDecls(name, def, declared);
     const subscribes = subscriptions(name, def, defs, settings, official.has(name));
     // Two modules may declare one journey (github and codehost-local both draw `pr`): only the same declaration.
@@ -1766,6 +1782,7 @@ export function kernelModuleTable(defs: Obj, settings: Obj = {}, official: Set<s
       ...((def.generated_secrets ?? []).includes(token) ? { token } : {}),
       ...(bd != null ? { board: { url: String(bd.url), auth_secret: String(bd.auth) } } : {}),
       ...(jt != null ? { jobtools: { url: String(jt.url), auth_secret: String(jt.auth), ops: [...jt.ops] } } : {}),
+      ...(sm != null ? { summon: { connection: String(sm.connection), url: String(sm.url), auth_secret: String(sm.auth) } } : {}),
       ...(ch != null ? { channel: { ...(ch.stamp ? { stamp: String(ch.stamp) } : {}), ...(ch.stale === true ? { stale: true } : {}), ...(ch.transport ? { transport: String(ch.transport) } : {}) }, settings: Object.fromEntries(Object.keys(def.settings ?? {}).map((k) => [k, settings[k]])) } : {}),
     };
     if (Object.keys(e).length) out[name] = e;
