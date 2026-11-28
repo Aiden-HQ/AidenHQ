@@ -13,6 +13,7 @@ import { urlSettingProblem } from "../services/shared/url-setting.ts";
 import { teammateNameProblem } from "../services/shared/teammate-name.ts";
 import { faceKitProblem, type FaceKit } from "../services/shared/face-kit.ts";
 import { MAX_CHECK_MIN } from "../services/computer/lib.ts";
+import { isConnectionName } from "../kernel/src/connection-name.ts";
 import { OWNER_TOOLS } from "../services/board/src/mcp-tools.ts";
 import { generateCompose, ownSecrets, subnetFor } from "./compiler/services.ts";
 import { capabilityProblems, conflictProblems, danglingBindings } from "./compiler/bindings.ts";
@@ -260,7 +261,7 @@ export function jobcapEntries(name: string, def: Obj) {
     const where = `module ${name}: jobcap ${j?.id}`;
     for (const f of Object.keys(j ?? {})) if (!JOBCAP_FIELDS.includes(f)) fail(`${where}: unknown field ${f} (known: ${JOBCAP_FIELDS.join(", ")})`);
     if (!/^[a-z][a-z0-9-]{0,40}$/.test(j?.id ?? "")) fail(`module ${name}: a jobcap needs an id (a-z, 0-9, -)`);
-    if (!/^[a-z0-9_]{1,40}$/.test(j.connection ?? "")) fail(`${where}: connection must be a name (a-z, 0-9, _)`);
+    if (!isConnectionName(j.connection, 40)) fail(`${where}: connection must be a name (a-z, 0-9, _, -)`);
     const tools = j.tools === "read" ? readTools(def.connections?.[j.connection] ?? fail(`${where}: tools: read, but ${name} has no connection ${j.connection}`)) : j.tools;
     if (!Array.isArray(tools) || !tools.length || tools.some((t) => typeof t !== "string" || !t)) fail(`${where}: tools must list its tools (or be read)`);
     const writes = writeTools(def.connections?.[j.connection]).filter((t) => tools.includes(t));

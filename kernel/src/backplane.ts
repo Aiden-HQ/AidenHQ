@@ -145,6 +145,7 @@ import { JOBTOOL_BODY_MAX, JOBTOOL_CLAIM, type JobTools, type ModuleTool } from 
 import type { Routing } from "./routing-tune.ts";
 import { CODEHOSTS, hostOf, type Answer } from "./codehost.ts";
 import { fail } from "./proxy.ts";
+import { CONNECTION_SEGMENT } from "./connection-name.ts";
 import { logTasks } from "./task-scope.ts";
 import type { Records, Requester, State } from "./records.ts";
 import type { BoardApi } from "./board-api.ts";
@@ -281,8 +282,9 @@ export const ROUTES = [
   { method: "POST", path: "/v1/test-session/:op", auth: "module+assertion" },
   { method: "POST", path: "/v1/health/probe", auth: "health-key" },
 ] as const;
-// `:id` matches a record id, any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included.
-const compiled = ROUTES.map((r) => ({ ...r, re: new RegExp(`^${r.path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:batch\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:cmd\b/g, "([a-z][a-z0-9_-]*)").replace(/:module\b/g, "([a-z0-9][a-z0-9-]{0,62})").replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`) }));
+/** A `ROUTES` path as the listener matches it: `:id` a record id, `:connection` a connection name (connection-name.ts), any other `:name` [a-z0-9_]+, a trailing `/*` the rest of the path, slash included. */
+export const routeRegex = (path: string): RegExp => new RegExp(`^${path.replace(/:id\b/g, "(k-[0-9a-f]{16})").replace(/:review\b/g, "(r-[0-9a-f]{16})").replace(/:job\b/g, "(j-[0-9a-f]{16})").replace(/:check\b/g, "(c-[0-9a-f]{16})").replace(/:task\b/g, "([0-9a-f-]{36})").replace(/:batch\b/g, "([0-9a-f-]{36})").replace(/:key\b/g, "([^/]{1,200})").replace(/:cmd\b/g, "([a-z][a-z0-9_-]*)").replace(/:module\b/g, "([a-z0-9][a-z0-9-]{0,62})").replace(/:connection\b/g, CONNECTION_SEGMENT).replace(/:\w+/g, "([a-z0-9_]+)").replace(/\/\*$/, "(/.*)")}$`);
+const compiled = ROUTES.map((r) => ({ ...r, re: routeRegex(r.path) }));
 /** The record lists the board and the runner read (`?state=`). */
 const ALL: State[] = ["review", "owner", "approved", "claimed", "done", "failed", "rejected", "stale", "cancelled", "unknown"];
 const LISTS: { [k: string]: State[] } = { review: ["review"], owner: ["owner"], pending: ["review", "owner"], approved: ["approved", "claimed"], live: ["review", "owner", "approved", "claimed"], recent: ALL, finished: ["done", "failed", "unknown"] };

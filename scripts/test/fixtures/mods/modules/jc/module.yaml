@@ -2,9 +2,11 @@ name: jc
 description: jobcaps
 connections:
   jconn: { url: "http://j-mcp:1/mcp", auth: jconn_service_key, tools: { read: [j_get, j_list], write: [j_set] } }
+  j-conn: { url: "http://j-mcp:1/mcp", auth: j_conn_service_key, tools: { read: [j_get], write: [] } }
 jobcaps:
   - { id: jc-read, connection: jconn, tools: read, read_url: "http://j-mcp:81/mcp/read", read_secret: j_mcp_read_token }
   - { id: jc-secret, connection: jsecret, tools: [s_get], tool_timeout_s: 90, read_url: "http://j-mcp:82/mcp", read_secret: s_mcp_token }
+  - { id: jc-hyphen, connection: j-conn, tools: [j_get], read_url: "http://j-mcp:83/mcp/read", read_secret: j_conn_mcp_token }
 agents:
   eng: { profile: engineer, jobcaps: [ jc-read, nope-read? ] }
   deep: { profile: engineer, jobcaps: [ jc-secret, jc-read ] }

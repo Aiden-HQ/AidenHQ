@@ -28,6 +28,9 @@ test("one list: a server is listed only with tools, a connection entry and a Cod
   assert.deepEqual(missing(["slack"], { slack: ["search"] }, conns), []); // present, tools in the frozen set
   assert.deepEqual(missing(["slack"], { slack: ["search"] }, {}), ["slack"]); // no connection entry
   assert.deepEqual(missing(["slack.mcp"], { "slack.mcp": ["search"] }, { "slack.mcp": {} }), ["slack.mcp"]); // a name Codex refuses
+  // A hyphen is part of a connection name (modules/server-manager): it is listed, not dropped by the preflight.
+  assert.deepEqual(missing(["server-manager"], { "server-manager": ["x"] }, { "server-manager": {} }), []);
+  assert.equal(emitsServer("server-manager", { "server-manager": ["x"] }, { "server-manager": {} }), true);
   assert.deepEqual(missing(["apps", "github", "slack"], tools, conns), ["github", "slack"]);
   // A name that only exists on Object.prototype is not a present server.
   assert.deepEqual(missing(["toString"], {}, conns), ["toString"]);

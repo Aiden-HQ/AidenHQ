@@ -43,12 +43,16 @@ import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { CONNECTION_SEGMENT } from "../../kernel/src/connection-name.ts";
 import { MAX_CHECK_MIN, WARM_MS, standingMounts,  forwardModel, forwardModelList, PROGRESS_SCRIPT, UNTAR_SCRIPT, boxOf, checkoutDest, compatKey, Jobs, tokenHash, JOB_HOME, JOB_ROUTES, CHECK_ROUTES, checkMounts, admit, controlAllowed, jobEnvFile, jobFolder, jobMounts, reapLapsed, builtImage, dockerRunArgs, stale, drainServers } from "./lib.ts";
 import type { Box } from "./lib.ts";
 import { STANDING_AGENT, Standing, dropStandingFiles } from "./standing.ts";
 import { createSessionProxy } from "./session-proxy.ts";
 
 type Failure = Error & { status?: number };
+
+/** A box's tool call to one connection: the name is the kernel's rule, so a hyphenated one (`server-manager`) is routed, not refused. */
+const CONNECTION_ROUTE = new RegExp(`^/c/${CONNECTION_SEGMENT}/mcp$`);
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const dotenv: Record<string, string> = {};
@@ -572,7 +576,7 @@ const gatewayServer = http.createServer(async (req, res) => {
       up.on("error", (e) => { if (!res.headersSent) deny(502, e.message); else res.destroy(); });
       return void req.pipe(up);
     }
-    const m = /^\/c\/([a-z0-9_]+)\/mcp$/.exec(req.url!.split("?")[0]!);
+    const m = CONNECTION_ROUTE.exec(req.url!.split("?")[0]!);
     if (!m) return deny(403, "refused");
     if (!readJson(CFG.computersFile).connections?.[m[1]!]) return deny(404, `no connection ${m[1]}`);
     const token = String(req.headers["x-agent-key"] ?? "");

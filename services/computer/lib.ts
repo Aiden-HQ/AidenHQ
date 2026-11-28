@@ -5,6 +5,7 @@ import { mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { MODEL_BODY_MAX } from "../../kernel/src/gateway/token.ts";
+import { CONNECTION_NAME } from "../../kernel/src/connection-name.ts";
 
 export { MODEL_BODY_MAX };
 
@@ -42,7 +43,7 @@ export function emitsServer(name: string, tools: Record<string, unknown> | undef
   if (!tools || !Object.hasOwn(tools, name) || !Object.hasOwn(connections, name) || !connections[name]) return false;
   const list = tools[name];
   const hasTools = Array.isArray(list) ? list.length > 0 : list !== undefined && list !== null;
-  return hasTools && /^[a-z0-9_]+$/.test(name);
+  return hasTools && CONNECTION_NAME.test(name);
 }
 
 /** One connection a job reaches: the gateway's proxy route, the run token as X-Agent-Key, its granted tools and tool timeout. */

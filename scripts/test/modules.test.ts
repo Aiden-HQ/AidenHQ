@@ -133,6 +133,8 @@ test("jobcaps: compiled for the gateway, carried in the grants entry; unknown fa
   assert.deepEqual(grantEntry("eng", out.paperclip.agents.eng).jobcaps, ["jc-read"]); // nope-read? is optional
   assert.deepEqual(out.paperclip.agents.deep.jobcaps, ["jc-read", "jc-secret"]);
   assert.throws(() => compile(mods, finst(["jcunknown"])), /lost: unknown jobcap nope-read/);
+  // A connection name may carry a hyphen (modules/server-manager's `server-manager`), and a jobcap may name it.
+  assert.deepEqual(out.jobcaps["jc-hyphen"], { connection: "j-conn", url: "http://j-mcp:83/mcp/read", bearer_secret: "j_conn_mcp_token", tools: ["j_get"] });
 });
 test("generated compose: module services from services:, root services only gain board_env, links and secrets; compose fragments fail", () => {
   const a = compile(mods, finst(["a"])).compose;

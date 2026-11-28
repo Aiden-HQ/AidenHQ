@@ -220,3 +220,14 @@ test("setup is the module's own for a caller that doesn't accept JSON, and an ov
   const text = await r.text();
   assert.match(text, /oversized-result: docs\.doc_read/);
 });
+
+test("a hyphenated connection name routes: /c/server-manager/mcp reaches its module, not a 404", async (t) => {
+  // modules/server-manager names its connection `server-manager`; the backplane's `:connection` segment must accept the hyphen.
+  const sm = await moduleServer(t, { key: "sm-key", tools: ["server_manager_config"] });
+  const smGrants = { "ag-sm": { key: "sm", roles: [], tools: { "server-manager": ["server_manager_config"] } } };
+  const k = await kernel(t, { agents: { "run-jwt-sm": { id: "ag-sm", name: "Sm" } }, grants: smGrants, secrets: { sm_service_key: "sm-key" }, connections: { "server-manager": conn(sm.url, "sm", { read: ["server_manager_config"] }) } });
+  const r = await k.call("server-manager", "run-jwt-sm", { method: "tools/list" });
+  assert.equal(r.status, 200);
+  assert.deepEqual((await r.json()).result.tools.map((x) => x.name), ["server_manager_config"]);
+  assert.equal(sm.seen.filter((s) => s.method === "tools/list").length, 1);
+});
