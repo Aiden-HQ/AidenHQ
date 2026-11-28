@@ -407,7 +407,7 @@ function Overview({ issue, board, editable, update, reload, toast, pick, onAdd, 
   );
 }
 
-const STATE_PILLS: Record<CrewState, string> = { needs: "needs you", failed: "stuck", working: "working", queued: "queued", waiting: "waiting", done: "done" };
+const STATE_PILLS: Record<CrewState, string> = { needs: "needs you", failed: "no result", working: "working", queued: "queued", waiting: "waiting", done: "done" };
 const CREW_TONE: Record<CrewState, StatusTone> = { needs: "needs", failed: "failed", working: "working", queued: "idle", waiting: "idle", done: "done" };
 const ENGINE_NAMES: Record<string, string> = { codex: "Codex", claude: "Claude Code", openrouter: "OpenRouter" };
 
@@ -447,9 +447,24 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
   const sub = member.issues.find((i) => i.identifier === selected);
   const state = sub?.state ?? member.state;
   const fan = member.issues.length > 1;
-  // "Hand to" the careful one, unless it is the one that got stuck.
+  // "Hand to" the careful one, unless it is the one whose run ended without a result.
   const engineers = board.assignees.filter((a) => a.kind === "engineer" && a.key !== member.agent);
   const next = engineers.find((a) => a.engine === "claude") ?? engineers[0];
+
+  /** Cancel this part (the task itself when the card is the part); the parent stays open. Undo reopens it. */
+  async function dismiss(p: IssueView) {
+    const refresh = () => Promise.all([onChanged(), reload(), self ? Promise.resolve() : load()]);
+    setBusy(true);
+    try {
+      await api.update(p.id, { status: "cancelled" });
+      toast(`${p.identifier} dismissed`, { label: "Undo", run: () => void api.update(p.id, { status: p.status === "in_progress" ? "in_progress" : "todo" }).then(refresh, (e) => toast(`Couldn't undo: ${(e as Error).message}`)) });
+      await refresh();
+    } catch (e) {
+      toast(`Couldn't do that: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function act(run: () => Promise<unknown>, note: string) {
     setBusy(true);
@@ -495,16 +510,23 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
         )}
         {state === "failed" && part && (
           <div className="crew-banner failed">
-            <b>{name} got stuck.</b>
-            <span className="spacer" />
-            <button className="btn" disabled={busy} onClick={() => void act(() => api.comment(part.id, "Try again."), `${name} is trying again`)}>
-              Try again
-            </button>
-            {next && task.assignee === "me" && !self && (
-              <button className="btn primary" disabled={busy} onClick={() => void act(() => api.handOver(task.id, part.id, next.key), `${shortName(next)} picked it up`)}>
-                Hand to {shortName(next)}
+            <div className="banner-text">
+              <b>The last run on this task ended without a result.</b>
+              <span className="muted small">{name} isn't stuck: only this task's run stopped short. Try again, or dismiss it if you no longer need it.</span>
+            </div>
+            <div className="banner-actions">
+              <button className="btn" disabled={busy} onClick={() => void act(() => api.comment(part.id, "Try again."), `${name} is trying again`)}>
+                Try again
               </button>
-            )}
+              {next && task.assignee === "me" && !self && (
+                <button className="btn primary" disabled={busy} onClick={() => void act(() => api.handOver(task.id, part.id, next.key), `${shortName(next)} picked it up`)}>
+                  Hand to {shortName(next)}
+                </button>
+              )}
+              <button className="btn" disabled={busy || part.identifier !== selected} onClick={() => void dismiss(part)}>
+                Dismiss
+              </button>
+            </div>
           </div>
         )}
         {part && <DoneMeans grade={part.grade} />}
