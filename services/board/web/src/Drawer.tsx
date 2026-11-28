@@ -407,7 +407,7 @@ function Overview({ issue, board, editable, update, reload, toast, pick, onAdd, 
   );
 }
 
-const STATE_PILLS: Record<CrewState, string> = { needs: "needs you", failed: "run failed", working: "working", queued: "queued", waiting: "waiting", done: "done" };
+const STATE_PILLS: Record<CrewState, string> = { needs: "needs you", failed: "no result", working: "working", queued: "queued", waiting: "waiting", done: "done" };
 const CREW_TONE: Record<CrewState, StatusTone> = { needs: "needs", failed: "failed", working: "working", queued: "idle", waiting: "idle", done: "done" };
 const ENGINE_NAMES: Record<string, string> = { codex: "Codex", claude: "Claude Code", openrouter: "OpenRouter" };
 
@@ -447,7 +447,7 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
   const sub = member.issues.find((i) => i.identifier === selected);
   const state = sub?.state ?? member.state;
   const fan = member.issues.length > 1;
-  // "Hand to" the careful one, unless it is the one whose run failed.
+  // "Hand to" the careful one, unless it is the one whose run ended without a result.
   const engineers = board.assignees.filter((a) => a.kind === "engineer" && a.key !== member.agent);
   const next = engineers.find((a) => a.engine === "claude") ?? engineers[0];
 
@@ -511,8 +511,8 @@ function AgentPane({ task, member, focus, board, reload, onChanged, toast, moved
         {state === "failed" && part && (
           <div className="crew-banner failed">
             <div className="banner-text">
-              <b>The last run on this task failed.</b>
-              <span className="muted small">{name} isn't stuck: only this task's run failed. Try again, or dismiss it if you no longer need it.</span>
+              <b>The last run on this task ended without a result.</b>
+              <span className="muted small">{name} isn't stuck: only this task's run stopped short. Try again, or dismiss it if you no longer need it.</span>
             </div>
             <div className="banner-actions">
               <button className="btn" disabled={busy} onClick={() => void act(() => api.comment(part.id, "Try again."), `${name} is trying again`)}>

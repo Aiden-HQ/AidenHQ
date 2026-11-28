@@ -20,7 +20,7 @@ export function Avatar({ assignee, size = 18, state }: { assignee: Assignee | un
   );
 }
 
-const STATE_WORDS: Record<CrewState, string> = { needs: "needs you", failed: "run failed", working: "working", queued: "queued", waiting: "waiting", done: "done" };
+const STATE_WORDS: Record<CrewState, string> = { needs: "needs you", failed: "no result", working: "working", queued: "queued", waiting: "waiting", done: "done" };
 
 /** An agent's face seed and face, found in the crew by its Paperclip id, then its name; one not found (a deleted agent) is seeded by its name. */
 export const faceOf = (crew: Assignee[], keyOrName: string) => {
@@ -57,7 +57,7 @@ export function crewLine(crew: CrewMember[], assignees: Assignee[]): { text: str
     if (!m) continue;
     const name = shortName(assignees.find((a) => a.key === m.agent));
     const fan = m.issues.length > 1 ? ` · ${m.finished ?? 0}/${m.issues.length}` : "";
-    const text = { needs: `${name} needs you`, failed: `${name}'s run failed`, working: `${name} is working${m.since ? ` · ${elapsed(m.since)}` : ""}`, queued: `${name} is queued`, waiting: "", done: "" }[state];
+    const text = { needs: `${name} needs you`, failed: `${name}'s run ended without a result`, working: `${name} is working${m.since ? ` · ${elapsed(m.since)}` : ""}`, queued: `${name} is queued`, waiting: "", done: "" }[state];
     return { text: text + fan, tone: state };
   }
   return undefined;
