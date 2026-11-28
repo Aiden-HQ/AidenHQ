@@ -1,14 +1,30 @@
 // The sign-in, lent narrowly to slack-live (the module's other service), so the owner has one Slack user token, kept and
 // renewed here (src/vendor/oauth.ts), and it never leaves this service:
 //   GET /internal/owner          whose sign-in it is: { user_id, team_id } (slack_owner); 409 while Slack isn't connected
-//   GET /internal/slack/<method> one read the src_slack gap sync makes, sent to Slack as the owner; Slack's answer as given
-// Both need slack-live's own key (slack_relay_key). Only the gap sync's read methods pass.
+//   GET /internal/slack/<method> one read the src_slack gap sync and summoning make, sent to Slack as the owner; Slack's answer as given
+//   POST /internal/post-message  one message posted as the owner (chat.postMessage): {channel, text, thread_ts?}   (summoning's reply)
+//   GET /internal/posted?channel=&ts=  whether this service posted that message for an agent (by ts, or by its words): { posted: boolean }
+//   POST /internal/add-reaction  one reaction added as the owner (reactions.add): {channel, timestamp, name}      (summoning's 👀)
+// All need slack-live's own key (slack_relay_key). Only those read methods pass, and the two writes have a fixed shape: the
+// token stays here, and slack-live can't send anything else as the owner.
 import { timingSafeEqual } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Posted } from "./posted.js";
 
 /** What the gap sync reads (slack-live src/sources.ts): nothing that writes, nothing else. */
-export const RELAYED = new Set(["users.list", "users.conversations", "conversations.history", "conversations.replies", "conversations.info"]);
+export const RELAYED = new Set(["users.list", "users.info", "users.conversations", "conversations.history", "conversations.replies", "conversations.info"]);
+
+const text = (v: unknown, max: number): v is string => typeof v === "string" && v.length > 0 && v.length <= max;
+/** The two writes' fixed bodies: the Slack call and its arguments, or why not. Nothing outside these fields reaches Slack. */
+export function writeCall(path: string, b: Record<string, unknown>): { method: string; body: Record<string, unknown> } | string {
+  if (path === "/internal/post-message") {
+    if (!text(b.channel, 40) || !text(b.text, 40_000) || (b.thread_ts !== undefined && !text(b.thread_ts, 40))) return "channel and text are required; thread_ts is a timestamp";
+    return { method: "chat.postMessage", body: { channel: b.channel, text: b.text, unfurl_links: false, unfurl_media: false, ...(b.thread_ts ? { thread_ts: b.thread_ts } : {}) } };
+  }
+  if (!text(b.channel, 40) || !text(b.timestamp, 40) || !text(b.name, 100)) return "channel, timestamp and name are required";
+  return { method: "reactions.add", body: { channel: b.channel, timestamp: b.timestamp, name: b.name } };
+}
 
 export interface RelayDeps {
   key: string | undefined;
@@ -17,6 +33,8 @@ export interface RelayDeps {
   headers: () => Promise<Record<string, string>>;
   signedIn: () => boolean;
   fetchImpl?: typeof fetch;
+  /** Messages posted for an agent as the owner (posted.ts): the relay's own post-message is recorded, and `GET /internal/posted` answers. */
+  posted?: Posted;
 }
 
 /** Answers the relay's paths; false for every other path. */
@@ -37,8 +55,24 @@ export function relay(o: RelayDeps) {
     const presented = Buffer.from((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
     const expected = Buffer.from(o.key ?? "");
     if (!o.key || presented.length !== expected.length || !timingSafeEqual(presented, expected)) return (send(401, { error: "unauthorized" }), true);
-    if (req.method !== "GET") return (send(405, { error: "method not allowed" }), true);
+    const write = url.pathname === "/internal/post-message" || url.pathname === "/internal/add-reaction";
+    // The provenance lookup is this service's own record: it needs no Slack sign-in.
+    if (req.method === "GET" && url.pathname === "/internal/posted") return (send(200, { posted: Boolean(o.posted?.has(url.searchParams.get("channel") ?? "", url.searchParams.get("ts") ?? "", url.searchParams.get("text") ?? undefined)) }), true);
+    if (req.method !== (write ? "POST" : "GET")) return (send(405, { error: "method not allowed" }), true);
     if (!o.signedIn()) return (send(409, { error: "Slack is not connected" }), true);
+    if (write) {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = (() => { try { return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as Record<string, unknown>; } catch { return undefined; } })();
+      const call = body && typeof body === "object" && !Array.isArray(body) ? writeCall(url.pathname, body) : "a JSON object is required";
+      if (typeof call === "string") return (send(400, { error: call }), true);
+      if (call.method === "chat.postMessage") o.posted?.sending(String(call.body.channel), String(call.body.text)); // before: Slack may deliver it first
+      const up = await doFetch(`https://slack.com/api/${call.method}`, { method: "POST", headers: { ...(await o.headers()), "content-type": "application/json; charset=utf-8" }, body: JSON.stringify(call.body), signal: AbortSignal.timeout(30_000) });
+      const retry = up.headers.get("retry-after");
+      const answer = await up.text();
+      if (call.method === "chat.postMessage") { try { const r = JSON.parse(answer) as { ok?: boolean; channel?: string; ts?: string }; if (r.ok && r.channel && r.ts) o.posted?.record(r.channel, r.ts); } catch { /* not JSON: nothing to record */ } }
+      return (send(up.status, answer, retry ? { "retry-after": retry } : {}), true);
+    }
     if (url.pathname === "/internal/owner") {
       const t = JSON.parse(readFileSync(o.tokenFile, "utf8")) as { user_id?: unknown; team_id?: unknown };
       if (typeof t.user_id === "string") return (send(200, { user_id: t.user_id, team_id: typeof t.team_id === "string" ? t.team_id : null }), true);

@@ -72,3 +72,9 @@ describe("slack sign-in", () => {
     expect(slackAnswer({ ok: true, access_token: "xoxp-1", authed_user: { id: "U7" } })).toMatchObject({ access_token: "xoxp-1", user_id: "U7" });
   });
 });
+
+import { connectScopes } from "../src/slack.js";
+it("Connect pre-selects the summon scopes only once the bot is set up", () => {
+  expect(connectScopes(false)).toEqual(READ_SCOPES);
+  expect(connectScopes(true)).toEqual([...READ_SCOPES, "chat:write", "reactions:write"]);
+});

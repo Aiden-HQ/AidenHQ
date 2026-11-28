@@ -33,14 +33,15 @@ contributes:
         On Connect you pick which permissions to grant: the reads are pre-selected. Agents act as you, so they see only what you can see. To let them act as you too (every post, reaction or change is reviewed first), add the **User Token Scopes** you want under **OAuth & Permissions** in your app (`chat:write`, `reactions:write`, `channels:write`, `groups:write`, `im:write`, `mpim:write`, `files:write`, `canvases:write`, `lists:write`) and Connect again.
     - order: 31
       mode: advanced
-      title: Slack with Aiden's bot
-      why: Everything on the left, plus a bot of your own app's that you DM, and live Slack events. The bot is always your own app's.
+      title: Slack with Aiden's bot (recommended)
+      why: 'Everything on the left, plus live triage, a bot you DM, and summoning: write "cc Aria" in any chat and she takes over.'
       effort: about 5 minutes
       admin: a Slack workspace admin may need to approve the app
       capabilities:
-        - DM Aiden; approvals and alerts as Slack messages
-        - Slack triage and 📌 tasks (Intake)
+        - "Summoning: cc Aria or @Aiden in your own message hands it to that agent, who replies as you, signed"
+        - Live Slack triage and 📌 tasks (Intake), not a 15-minute scan
         - live events for the src_slack warehouse
+        - DM Aiden; approvals and alerts as Slack messages
         - "/aiden assign-channel: a channel's @mentions become an agent's tasks"
       secrets: [ slack_live_bot_token, slack_live_app_token ]
       pair_url: http://slack-live:8089/pair
@@ -195,6 +196,8 @@ services:
         SLACK_AUTH_TOKEN_FILE: ${secrets.slack_auth_token}
         MCP_TOKEN_FILE: ${secrets.slack_service_key}
         MCP_READ_TOKEN_FILE: ${secrets.slack_mcp_read_token}
+        # slack-live's /healthz: whether the bot's app lists the summon scopes, which makes Connect pre-select them.
+        SLACK_LIVE_URL: http://slack-live:8089
         # The read endpoint serves only these: the connection's read tags (CI checks they match).
         # slack-live's key to the sign-in's relay (src/relay.ts): whose sign-in it is, and the gap sync's reads as the owner.
         RELAY_KEY_FILE: ${secrets.slack_relay_key}

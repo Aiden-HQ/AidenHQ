@@ -18,6 +18,8 @@
 #     slack_channel_context), and the channel membership events channel binding uses (channels:read, groups:read: Slack
 #     requires them for member_joined_channel and channel_left; mpim:read too, which Slack marks required by the event
 #     subscriptions).
+#   - advanced, user token: summoning's reply and 👀 as the owner (chat:write, reactions:write; slack-live src/summon.ts). An
+#     app connected before needs Connect again to hold them.
 #   - advanced, events: the bot's mentions, DMs and channel membership; the person's own messages, live, for src_slack and triage, and their reactions (reaction_added, reaction_removed: the task emoji, for triage).
 # Sign-in is PKCE with the board's loopback redirect (http://localhost:3121/slack/callback, the board's sign-in address:
 # Slack accepts a localhost redirect when PKCE is on). The code exchanges with the client id and the code_verifier alone, so
@@ -82,6 +84,10 @@ advanced:
       messages_tab_read_only_enabled: false
   oauth_config:
     scopes:
+      # Summoning acts as the owner: the reply (chat:write) and the 👀 acknowledgement (reactions:write), through slack-mcp's relay.
+      user:
+        - chat:write
+        - reactions:write
       bot:
         - chat:write
         - chat:write.public
