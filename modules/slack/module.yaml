@@ -190,6 +190,8 @@ services:
         SLACK_AUTH_TOKEN_FILE: ${secrets.slack_auth_token}
         MCP_TOKEN_FILE: ${secrets.slack_service_key}
         MCP_READ_TOKEN_FILE: ${secrets.slack_mcp_read_token}
+        # slack-live's /healthz: whether the bot's app lists the summon scopes, which makes Connect pre-select them.
+        SLACK_LIVE_URL: http://slack-live:8089
         # The read endpoint serves only these: the connection's read tags (CI checks they match).
         # slack-live's key to the sign-in's relay (src/relay.ts): whose sign-in it is, and the gap sync's reads as the owner.
         RELAY_KEY_FILE: ${secrets.slack_relay_key}

@@ -105,7 +105,9 @@ const health = async () => {
   const detail = missing.length ? missing.join(" ") : undefined;
   // A signed-in Slack with no bot is a real misconfiguration (the board should show it); a token with a blip is not.
   const ok = bot || !ownerNow;
-  return JSON.stringify({ ok, ...(detail ? { detail } : {}), channels, socket, paired, ...(paired && pairedAt ? { paired_at: pairedAt } : {}) });
+  const app = slackApps.status();
+  // The app made or updated for the bot lists the summon user scopes: slack-mcp's Connect pre-selects them then (and only then).
+  return JSON.stringify({ ok, summon_scopes: app.part === "advanced" && app.current, ...(detail ? { detail } : {}), channels, socket, paired, ...(paired && pairedAt ? { paired_at: pairedAt } : {}) });
 };
 
 const http = createServer(async (req, res) => {

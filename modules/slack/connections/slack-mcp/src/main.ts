@@ -7,7 +7,7 @@ import pino from "pino";
 import { kernelJwks, verifyCaller } from "./aidenhq-sdk/caller.js";
 import { servedTool, type Ask } from "./admission.js";
 import { interceptReactionSearch } from "./reactions.js";
-import { READ_SCOPES, slackAnswer, upstreamArgs, WRITE_SCOPES } from "./slack.js";
+import { connectScopes, READ_SCOPES, slackAnswer, upstreamArgs, WRITE_SCOPES } from "./slack.js";
 import { relay } from "./relay.js";
 import { oauth } from "./vendor/oauth.js";
 import { createVendorProxy } from "./vendor/proxy.js";
@@ -23,13 +23,21 @@ const jwks = kernelJwks();
 const tokenFile = `${stateDir}/token.json`;
 const caller = (req: Parameters<Parameters<typeof createVendorProxy>[0]["caller"]>[0]) => verifyCaller(req, jwks, process.env.AIDENHQ_MODULE ?? "slack");
 
+// Whether the app AidenHQ made for the bot is current (slack-live's /healthz `summon_scopes`): then Connect pre-selects the summon
+// scopes too. Any other app's manifest may lack them, and Slack refuses a scope the app doesn't list, so Connect never asks then.
+const liveUrl = (process.env.SLACK_LIVE_URL ?? "http://slack-live:8089").replace(/\/$/, "");
+let advanced = false;
+const checkAdvanced = () => void fetch(`${liveUrl}/healthz`, { signal: AbortSignal.timeout(5_000) }).then(async (r) => void (advanced = ((await r.json()) as { summon_scopes?: boolean }).summon_scopes === true)).catch(() => undefined);
+checkAdvanced();
+setInterval(checkAdvanced, 30_000).unref();
+
 const auth = oauth({
   name: "Slack",
   mcpUrl,
   stateDir,
   client: () => (clientId ? { id: clientId } : undefined),
   endpoints: { authorize: "https://slack.com/oauth/v2_user/authorize", token: "https://slack.com/api/oauth.v2.user.access" },
-  scopes: { supported: [...READ_SCOPES, ...WRITE_SCOPES], recommended: READ_SCOPES, separator: "," },
+  scopes: { supported: [...READ_SCOPES, ...WRITE_SCOPES], get recommended() { return connectScopes(advanced); }, separator: "," },
   resource: false,
   tokenAnswer: slackAnswer,
 });

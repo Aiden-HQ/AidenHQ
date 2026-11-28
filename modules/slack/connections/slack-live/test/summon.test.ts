@@ -127,6 +127,31 @@ describe("the summon calls", () => {
     expect((err as SummonError).message).toMatch(/chat:write and reactions:write/);
   });
 
+  it("a reply whose outcome was unknown is reconciled by its text before it is posted again", async () => {
+    const store = openStore(":memory:");
+    const posts: string[] = [];
+    let lost = true;
+    const mk = (visible: unknown[]): Relay => ({
+      read: async () => ({ ok: true, messages: visible }),
+      write: async (_, b) => { posts.push(String(b.text)); if (lost) { lost = false; throw new Error("fetch failed"); } return { ok: true, ts: "30.1" }; },
+    });
+    const b = { resource: "C1", thread: "10.5", text: "Booked", key: "kk" };
+    const first = summon({ relay: mk([]), store, owner: () => OWNER, signedIn: async () => OWNER });
+    await first.reply(b).catch(() => undefined); // Slack may have taken it: the answer was lost
+    // The retry finds the owner's message with that text in the thread: no second post.
+    const retry = summon({ relay: mk([{ ts: String(Date.now() / 1000 + 1), user: OWNER, text: "Booked" }]), store, owner: () => OWNER, signedIn: async () => OWNER });
+    expect((await retry.reply(b)).id).toMatch(/^C1:\d+/);
+    expect(posts).toEqual(["Booked"]);
+    expect((await retry.reply(b)).id).toMatch(/^C1:\d+/); // and it is now stored
+    // Not there: it is posted again.
+    const again = summon({ relay: mk([]), store, owner: () => OWNER, signedIn: async () => OWNER });
+    lost = true;
+    await again.reply({ ...b, key: "k2" }).catch(() => undefined);
+    lost = false;
+    expect(await again.reply({ ...b, key: "k2" })).toEqual({ id: "C1:30.1" });
+    expect(posts).toEqual(["Booked", "Booked", "Booked"]);
+  });
+
   it("refuses every call when the relay's sign-in is not the paired owner's account", async () => {
     const posted: unknown[] = [];
     const other = summon({ relay: { read: async () => ({}), write: async (_, b) => (posted.push(b), { ok: true, ts: "1.1" }) }, store: openStore(":memory:"), owner: () => OWNER, signedIn: async () => "UOTHER" });

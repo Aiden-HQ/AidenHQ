@@ -36,7 +36,7 @@ function slackError(method: string, err: unknown): never {
   throw new SummonError(502, e);
 }
 
-export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv">; owner: () => string | undefined;
+export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv" | "delKv">; owner: () => string | undefined;
   /** Whose sign-in the relay holds (slack-mcp); null while Slack isn't connected. */
   signedIn: () => Promise<string | null> }) {
   // Attestation is the paired owner's, the calls are made with the sign-in's token: one account, or nothing is done.
@@ -85,7 +85,9 @@ export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv">;
   }
 
   /** Posts as the owner, threaded under the summons' thread in a channel and top-level in a DM. A repeated `key` returns the
-   * first id and posts nothing. `in_reply_to` needs no use: the thread root is the anchor, and a DM has no thread. */
+   * first id and posts nothing. `in_reply_to` needs no use: the thread root is the anchor, and a DM has no thread.
+   * The attempt is recorded before the post; one whose outcome is unknown (the answer lost, a restart) is reconciled on the
+   * retry by looking for the owner's message with that exact text since the attempt began, and only then posted again. */
   const inflight = new Map<string, Promise<{ id: string }>>();
   async function reply(b: Json) {
     const channel = str(b.resource), thread = str(b.thread), text = str(b.text), key = str(b.key);
@@ -95,12 +97,40 @@ export function summon(o: { relay: Relay; store: Pick<Store, "getKv" | "setKv">;
     if (done) return { id: done };
     const running = inflight.get(key);
     if (running) return running;
+    const rendered = toSlackLinks(text);
     const p = (async () => {
       try {
-        const r = await o.relay.write("post-message", { channel, text: toSlackLinks(text), ...(thread ? { thread_ts: thread } : {}) });
-        if (r.ok !== true || !str(r.ts)) throw new Error(String(r.error ?? "chat.postMessage failed"));
+        const pending = o.store.getKv(`summon_pending:${key}`);
+        if (pending) {
+          const since = (JSON.parse(pending) as { at: number }).at / 1000 - 2; // our clock to Slack's: a little skew
+          let seen: Json | undefined;
+          // Every page of the window, or the attempt stays pending (a throw): a scan that couldn't finish proves nothing.
+          for (let cursor = "", pages = 0; !seen; pages++) {
+            if (pages >= 10) throw new Error("too many messages since the unsure post to check it");
+            const r = thread ? await o.relay.read("conversations.replies", { channel, ts: thread, oldest: String(since), limit: "200", ...(cursor ? { cursor } : {}) })
+              : await o.relay.read("conversations.history", { channel, oldest: String(since), limit: "200", ...(cursor ? { cursor } : {}) });
+            seen = ((r.messages as Json[] | undefined) ?? []).find((m) => m.user === o.owner() && m.text === rendered && Number(m.ts) >= since);
+            cursor = (r.response_metadata as { next_cursor?: string } | undefined)?.next_cursor ?? "";
+            if (!cursor) break;
+          }
+          if (seen) {
+            const id = `${channel}:${String(seen.ts)}`;
+            o.store.setKv(`summon_reply:${key}`, id);
+            o.store.delKv(`summon_pending:${key}`);
+            return { id };
+          }
+        }
+        o.store.setKv(`summon_pending:${key}`, JSON.stringify({ at: Date.now() }));
+        const r = await o.relay.write("post-message", { channel, text: rendered, ...(thread ? { thread_ts: thread } : {}) });
+        if (r.ok !== true || !str(r.ts)) {
+          // Slack answered with a refusal that proves nothing was posted: nothing was posted, so nothing is pending. Any other error (internal_error, a
+          // transport or unreadable answer) and a throw are the uncertain cases: they stay pending.
+          if (r.ok === false && typeof r.error === "string" && /^(channel_not_found|not_in_channel|is_archived|missing_scope|not_allowed_token_type|invalid_auth|token_expired|token_revoked|account_inactive|msg_too_long|no_text|restricted_action|access_denied)$/.test(r.error)) o.store.delKv(`summon_pending:${key}`);
+          throw new Error(String(r.error ?? "chat.postMessage failed"));
+        }
         const id = `${channel}:${String(r.ts)}`;
         o.store.setKv(`summon_reply:${key}`, id);
+        o.store.delKv(`summon_pending:${key}`);
         return { id };
       } catch (err) { return slackError("reply", err); }
     })().finally(() => void inflight.delete(key));
