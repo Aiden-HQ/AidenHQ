@@ -404,6 +404,13 @@ async function ownPart(issue: Json): Promise<"open" | "closed" | undefined> {
   return ["done", "cancelled"].includes(String(parent.status ?? "")) ? "closed" : "open";
 }
 
+/** Your part of the user's task is finished or cancelled only once they closed their task, and only while it is open itself. */
+async function closablePart(issue: Json) {
+  const part = await ownPart(issue);
+  if (part === "open") throw new Error("this is your part of the user's task: it stays open for their replies. Finish with task_handoff instead; the user closes the task.");
+  if (part && ["done", "cancelled"].includes(String(issue.status ?? ""))) throw new Error(`Refused: ${issue.identifier ?? issue.id} is already ${issue.status}: leave it as it is.`);
+}
+
 async function findByMarker(marker: string, statuses = OPEN_STATUSES) {
   if (!COMPANY()) return undefined;
   marker = String(marker).trim().replace(/^(source:)+/, ""); // agents often include the prefix
@@ -1932,7 +1939,7 @@ const TOOLS: Record<string, Tool> = {
       if (!target) throw new Error("no current task");
       // Your part of the user's task stays open for their replies.
       const current = issue ? await requireHeld(issue) : await api("GET", `/api/issues/${issueRef(CURRENT())}`);
-      if ((await ownPart(current)) === "open") throw new Error("this is your part of the user's task: it stays open for their replies. Finish with task_handoff instead; the user closes the task.");
+      await closablePart(current);
       const leading = await postLeadingParts(target, comment);
       // An owner task an agent filed closes on its evidence, labelled so the owner's Home shows the close.
       return brief(await patchIssue(target, { status: "done", comment: leading, ...(ownerFiled(current) ? { labelIds: await withAutoClosed(current) } : {}) }));
@@ -1966,7 +1973,7 @@ const TOOLS: Record<string, Tool> = {
       const target = issue ?? CURRENT();
       if (!target) throw new Error("no current task");
       const t = issue ? await requireHeld(issue) : await api("GET", `/api/issues/${issueRef(CURRENT())}`);
-      if ((await ownPart(t)) === "open") throw new Error("this is your part of the user's task: it stays open for their replies. Finish with task_handoff instead; the user closes the task.");
+      await closablePart(t);
       const leading = await postLeadingParts(target, comment);
       return brief(await patchIssue(target, { status: "cancelled", comment: leading, ...(issue && ownerFiled(t) ? { labelIds: await withAutoClosed(t) } : {}) }));
     },

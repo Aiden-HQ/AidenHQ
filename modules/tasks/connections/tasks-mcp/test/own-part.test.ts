@@ -102,6 +102,9 @@ test("once the owner closes their task, the agent's part of it is finished or ca
     assert.equal(error, undefined);
     assert.deepEqual(patches, [{ issue: "cur", status, comment: "The owner closed the task." }]);
   }
+  // A part already closed keeps its outcome.
+  const closed = await call("task_finish", { comment: "Done." }, null, "cancelled", [], "cancelled");
+  assert.deepEqual([/already cancelled/.test(closed.error), closed.patches], [true, []]);
   const before = waits.length;
   const { error, patches } = await call("task_handoff", { issue: "cur", comment: "Over to you." }, null, "backlog", [], "cancelled");
   assert.match(error, /the user closed the task WOR-2 is part of.*task_finish.*task_cancel/);

@@ -681,7 +681,8 @@ export function createApp(opts: AppOptions): Server & { sweep(): Promise<void> }
     };
     // A parked part's kernel state says whether it waits on an answer (waitsOnItsOwn).
     const parked = open.filter((i) => i.parentId && crew(i) && (i.status === "backlog" || i.status === "blocked") && closedIssue(known.get(i.parentId) ?? i));
-    const states = await statesOf(taskStates, parked.map((i) => i.id));
+    // Unread, they stay parked until the next sweep; the rest of the sweep goes on.
+    const states = await statesOf(taskStates, parked.map((i) => i.id)).catch((e: Error) => (log.warn({ err: e.message }, "parked parts' states unread"), new Map<string, StateRow>()));
     const leftover = await partsToClose(open, known, ctx.assignees, ownCommentAt, states);
     if (!leftover.length) return open;
     const busy = (await working(ctx)).map;
