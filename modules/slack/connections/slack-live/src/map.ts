@@ -11,9 +11,14 @@ export function permalink(channel: string, ts: string): string {
 }
 
 /** A routine's event (the kernel's event router, POST /v1/events). */
-export type SourceEvent = { connection: "slack"; resource: string; id: string; kind: string; author?: string; text: string; bot: boolean; url: string; thread?: string; truncated?: true };
+export type SourceEvent = { connection: "slack"; resource: string; id: string; kind: string; author?: string; text: string; bot: boolean; url: string; thread?: string; from_owner?: boolean; truncated?: true };
 // The envelope -> a routine's event: messages and mentions with text, bot posts flagged `bot` (a routine's filter decides), system
 // subtypes dropped. Its id is the message (channel and ts): one message delivered as a bot and a user event is one event.
+// `from_owner` (the kernel's summon path, role kernel.attest-owner) is decided here, in code, from the author alone: the paired
+// owner's own user id, no bot or app marker, a plain message (a thread broadcast or file share is still the owner's). It is never
+// derived from text. `thread` is the conversation's root in a channel (a top-level message is its own root) and absent in a DM.
+const OWN_SUBTYPES = new Set(["thread_broadcast", "file_share"]);
+const CHANNEL_TYPES = new Set(["channel", "group", "public", "private"]);
 export function toSourceEvent(body: unknown, owner?: string): SourceEvent | null {
   const ev = rec(rec(body)?.event);
   const reaction = reactionEvent(ev, owner);
@@ -28,9 +33,14 @@ export function toSourceEvent(body: unknown, owner?: string): SourceEvent | null
   const auths = (rec(body)?.authorizations as { is_bot?: boolean }[] | undefined) ?? [];
   if (dm && !auths.some((a) => a?.is_bot === false)) return null;
   const author = str(ev.user) ?? str(ev.bot_id);
-  // A reply carries its thread's root ts: whom it addresses and which task it belongs to are the thread's.
-  const thread = str(ev.thread_ts);
-  return { connection: "slack", resource: channel, id: `${channel}:${ts}`, kind, ...(author ? { author } : {}), text: text.slice(0, 2000), bot: subtype === "bot_message" || Boolean(str(ev.bot_id) || str(ev.app_id)), url: permalink(channel, ts), ...(thread && thread !== ts ? { thread } : {}), ...(text.length > 2000 ? { truncated: true as const } : {}) };
+  const bot = subtype === "bot_message" || Boolean(str(ev.bot_id) || str(ev.app_id));
+  // A reply carries its thread's root ts: whom it addresses and which task it belongs to are the thread's. An app_mention has no
+  // channel_type: a channel id starting C is a channel.
+  const type = str(ev.channel_type);
+  const inChannel = type ? CHANNEL_TYPES.has(type) : channel.startsWith("C");
+  const thread = inChannel ? (str(ev.thread_ts) ?? ts) : undefined;
+  const fromOwner = Boolean(owner) && author === owner && !bot && (!subtype || OWN_SUBTYPES.has(subtype));
+  return { connection: "slack", resource: channel, id: `${channel}:${ts}`, kind, ...(author ? { author } : {}), text: text.slice(0, 2000), bot, url: permalink(channel, ts), ...(thread ? { thread } : {}), from_owner: fromOwner, ...(text.length > 2000 ? { truncated: true as const } : {}) };
 }
 
 // The owner's task emoji added or removed on a message: kind reaction_added / reaction_removed, the reacted message's permalink.

@@ -80,7 +80,9 @@
           "files:read",
           "canvases:read",
           "lists:read",
-          "reactions:read"
+          "reactions:read",
+          "chat:write",
+          "reactions:write"
         ],
         "bot": [
           "chat:write",
