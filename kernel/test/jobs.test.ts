@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createJobs, firstError, stripSentinels, writeLastMessage } from "../src/jobs.ts";
-import { sanitizeReply } from "../sdk/src/model-text.ts";
+import { hasToolMarkup, sanitizeReply } from "../sdk/src/model-text.ts";
 import { openFacts } from "../src/facts.ts";
 import { admitAndRun } from "./fixtures/admitted.ts";
 import { quietRun } from "../src/quiet.ts";
@@ -198,6 +198,8 @@ test("a final's sentinels are stripped from its edges only, in time linear in it
   assert.equal(sanitizeReply("The call is:\n> </invoke>"), "The call is:\n> </invoke>", "a blockquote line keeps it");
   assert.equal(sanitizeReply("Use \\<system> in the template."), "Use \\<system> in the template.", "an escaped tag is literal text");
   assert.equal(sanitizeReply("Compare a < b, and 3 < 4."), "Compare a < b, and 3 < 4.", "a bare < is prose");
+  assert.ok(hasToolMarkup(`x <${bar}DSML${bar}invoke name="y">`), "a DSML element tag is markup, and the task tools refuse it");
+  assert.ok(!hasToolMarkup("plain <b>bold</b> prose"), "ordinary HTML is prose");
 
   for (const long of [`${" ".repeat(100_000)}<|im_end|>`, `<|im_end|>${"a".repeat(50_000)}${" ".repeat(100_000)}b`,
     `<|im_end|>${"<|im_end|>".repeat(20_000)}`, `${"a".repeat(100_000)}<|im_end|>${"<|im_end|>".repeat(20_000)}`]) {

@@ -160,9 +160,10 @@ export function stripSentinels(text: string): string {
 
 /**
  * DeepSeek's DSML tag, which writes tool-call markup as text: its separators are fullwidth bars (U+FF5C), so its tags are
- * spelled with them instead of the usual attribute punctuation. One tag, one element.
+ * spelled with them instead of the usual attribute punctuation. Any tag that opens that way is markup, whatever element it
+ * names (`｜DSML｜`invoke`, `｜DSML｜`parameter`, `｜DSML｜`function_calls`).
  */
-const DSML = /<\uff5cDSML\uff5c>/;
+const DSML = /<\uff5cDSML\uff5c/i;
 /** A stray tool-call element's complete tag: `<invoke>`, `</parameter>`, `<function_calls>` (attributes allowed). */
 const ELEMENT = /<\/?(?:invoke|parameter|function_calls)\b[^>]*>/;
 /** Whether `text` carries raw tool-call markup: the task tools refuse such an argument, and a reply's body is stripped of it. */
