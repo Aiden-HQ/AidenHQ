@@ -4,7 +4,7 @@ import type { ConnectionsData } from "./connections";
 import type { TimelineEntry } from "../../src/timeline";
 import type { Explanation } from "../../src/explain";
 import type { CatalogModel } from "../../src/model-catalog";
-import type { BrowseModule, GrantConnection, MarketplaceRow, NotifyTestResult, SavedView, TeammateQueue, TeammateStart, TeammatesList, TrialView, ViewSpec, WorkCard } from "./types";
+import type { BrowseModule, GrantConnection, MarketplaceRow, NotifyTestResult, SavedView, TeammateQueue, TeammateReach, TeammateStart, TeammatesList, TrialView, ViewSpec, WorkCard } from "./types";
 
 async function call<T>(method: string, path: string, body?: unknown, answered?: Response): Promise<T> {
   const res = answered ?? await fetch(path, {
@@ -349,6 +349,7 @@ export const api = {
   /** After its module is applied: resume its routines and run its trial once (`trial: false` resumes only). */
   teammateStart: (ref: string, body: { trial?: boolean } = {}) => call<TeammateStart>("POST", `/api/teammates/${encodeURIComponent(ref)}/start`, body),
   teammateTrial: (ref: string) => call<TrialView>("GET", `/api/teammates/${encodeURIComponent(ref)}/trial`),
+  teammateReach: (key: string) => call<TeammateReach>("GET", `/api/teammates/${encodeURIComponent(key)}/reach`),
   teammateQueue: () => call<TeammateQueue>("GET", "/api/teammates/queue"),
   setTeammateQueue: (q: TeammateQueue) => call<TeammateQueue>("PUT", "/api/teammates/queue", q),
   /** One fixed test card through one transport only; its answer as the transport gave it. */

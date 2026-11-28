@@ -31,7 +31,7 @@ const MODEL_CATALOG = ([
   ["z-ai/glm-5.3", "Z.ai: GLM 5.3", 25, 202752, 0.4, 1.5, 1, 1], ["z-ai/glm-5.2", "Z.ai: GLM 5.2", 80, 202752, 0.4, 1.5, 1, 1], ["moonshotai/kimi-k3.1-pro", "MoonshotAI: Kimi K3.1 Pro", 30, 262144, 0.6, 2.5, 1, 1], ["moonshotai/kimi-k3", "MoonshotAI: Kimi K3", 120, 262144, 0.6, 2.5, 1, 1],
   ["meta-llama/llama-4.5-70b-instruct", "Meta: Llama 4.5 70B Instruct", 100, 131072, 0.15, 0.4, 1, 0], ["meta-llama/llama-4.5-8b-instruct", "Meta: Llama 4.5 8B Instruct", 100, 131072, 0.03, 0.06, 0, 0], ["qwen/qwen3.6-coder", "Qwen: Qwen3.6 Coder", 50, 262144, 0.2, 0.9, 1, 0], ["mistralai/mistral-large-3", "Mistral: Mistral Large 3", 110, 131072, 2, 6, 1, 0], ["x-ai/grok-5", "xAI: Grok 5", 45, 256000, 3, 15, 1, 1], ["minimax/minimax-m3", "MiniMax: M3", 35, 1000000, 0.3, 1.2, 1, 1],
 ] as [string, string, number, number, number, number, number, number][]).map(([id, name, d, context, i, o, tools, reasoning]) => ({ id, name, provider: id.replace(/^~/, "").split("/")[0], created: Math.floor(now / 1000) - d * 86400, context, in: i, cached_in: null, out: o, tools: !!tools, reasoning: !!reasoning }));
-const mock = { slowSessions: 0, sessions: "full", term: "up", welcome: false, empty: false, slow: 0, search: "ok", email: "alex@example.com", org: false, slack: "none", connected: false, key: false, qr: "missing", qrStep: 0 };
+const mock = { slowSessions: 0, sessions: "full", term: "up", welcome: false, empty: false, slow: 0, search: "ok", email: "alex@example.com", org: false, slack: "none", reach: "full", connected: false, key: false, qr: "missing", qrStep: 0 };
 
 // The kernel's task state (src/task-state.ts) as the board reads it: one row per task, every reason somewhere below.
 const A = (who: string, why: string, ref = "x") => ({ who, why, ref });
@@ -722,6 +722,17 @@ function route(method: string, url: URL): [number, unknown] {
   if (opened) { const tok = `${"mock".repeat(6)}.${"sig".repeat(15)}`; return [200, { term: `/sessions/${opened[1]}/${tok}/term/` }]; }
   if (method === "POST" && p === "/api/home/seen") return [200, { seen: lastBody.as_of }];
   if (method === "POST" && p === "/api/home/snooze") { if (lastBody.on) homeMock.snoozed.add(lastBody.id); else homeMock.snoozed.delete(lastBody.id); return [200, lastBody.on ? { until: TOMORROW_8 } : {}]; }
+  // A teammate's "How to reach" card (src/reach.ts): ?reach=full (Nora has her own app and two addresses, Tess waits for tokens, the bot is on) or basic (nothing set up, no bot).
+  const rc = /^\/api\/teammates\/([^/]+)\/reach$/.exec(p);
+  if (rc) {
+    const full = mock.reach !== "basic", mine = rc[1] === "meetings", wait = rc[1] === "open-loops";
+    const addr = full && mine ? ["nora@example.com", "calendar+nora@example.com"] : [];
+    const manage = (module: string, page?: string) => ({ module, ...(page ? { page } : {}) });
+    return [200, { bot: full, address: addr.length > 0, rows: [
+      { id: "slack:app", label: "Own Slack app", kind: "app", ...(full && mine ? { state: "on", detail: "Connected as its own app" } : full && wait ? { state: "needs", detail: "Waiting for its app tokens" } : { state: "off", detail: "Not set up" }), manage: manage("slack") },
+      { id: "google:email", label: "Email", kind: "address", ...(addr.length ? { state: "on", detail: addr.join(", "), address: addr } : { state: "off", detail: "No address yet" }), manage: manage("google") },
+    ] }];
+  }
   // Hiring and onboarding.
   if (p === "/api/teammates") return [200, teammates()];
   if (p === "/api/teammates/queue") { if (method === "PUT") hireMock.queue = { ...lastBody }; return [200, hireMock.queue]; }
@@ -865,6 +876,7 @@ createServer((req, res) => {
     if (url.searchParams.has("nocal")) homeMock.nocal = url.searchParams.get("nocal") === "1";
     if (url.searchParams.has("quiet")) homeMock.quiet = url.searchParams.get("quiet") === "1";
     if (url.searchParams.has("qr")) mock.qr = url.searchParams.get("qr") ?? "missing";
+    if (url.searchParams.has("reach")) mock.reach = url.searchParams.get("reach") ?? "full";
     if (url.searchParams.has("slack")) mock.slack = url.searchParams.get("slack") ?? "none";
     return res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(mock));
   }

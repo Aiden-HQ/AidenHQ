@@ -248,7 +248,7 @@ teammates as "Name · Role" everywhere (`TeammateChip`), never a module name in 
 
 ## Modules
 
-Modules declare (`board.signins`, `board.setup_flows`, `board.pages`, `providers.board` (the warehouse's search), settings) and both the board and the
+Modules declare (`board.signins`, `board.setup_flows`, `board.pages`, `board.reach`, `providers.board` (the warehouse's search), settings) and both the board and the
 owner's MCP drive the declarations: a Connect on Settings, Connections, a setup sheet or an inline flow in onboarding and hiring
 ([guided-setup.md](guided-setup.md)), a page under Team, a setting with its help. How a module is built:
 [modules/AGENTS.md](../../modules/AGENTS.md).
@@ -319,6 +319,13 @@ contributes:
   (`web/dev/example-view.html`, the mock API's Notes page) is the starting point: no build step, about 100 lines.
 
 Code review's Reviews page is a module view too (`modules/code-review/service/src/page.html`, order 5), results first: a one-sentence summary, what needs the owner, one row per pull request that opens in place to its findings (with the owner's Dismiss), and a rail (what the reviewer covers, Ask, whole-repo checks, Advanced). Advanced writes a repo's settings as editable sentences (through `code_review_configure`'s proposal). Every module page has this one path; an old `#/reviews/…` link redirects to it.
+
+**`board.reach`** declares a way people reach a teammate: `{ id, label, kind: app | address, setting, secret_map? }`, where `setting`
+is the module's own list setting with one `{ agent, … }` entry per agent and `secret_map` (an app's) the named-secret map its tokens live in.
+The teammate page's "How to reach" card (`TeammateReach.tsx`, read from `GET /api/teammates/<key>/reach`) draws one row per entry from
+real state (the applied setting, the stored tokens): On, Needs tokens or Off, with Manage, Edit or Set up linking to the module's page
+(the one that edits that secret map) or its settings. Two fixed rows come first: "Your chats" (always on; it names email only when the
+teammate has an address) and "AidenHQ bot" (only while the Slack advanced setup's tokens are stored, so a basic install advertises no bot).
 
 **`board.reads`** are a module's owner-view reads for Home: `{id, connection, tool}`, a read tool of its own connection,
 called by the board through the kernel's view route (google's `calendar_today`, owner-channel's `told`). Home names no

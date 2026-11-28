@@ -52,6 +52,9 @@ export const QUERIES = {
 /** One agent's chats (its teammate page, Ask Aiden): the active ones, or the settled ones. */
 export const agentChatsQuery = (key: string, state: "active" | "settled" = "active") => q(`chats.${key}.${state}`, () => api.chats(key, { state }), chatListForDevice);
 
+/** A teammate's "How to reach" card: live state, memory only. */
+export const reachQuery = (key: string) => q(`agents.${key}.reach`, () => api.teammateReach(key), false);
+
 export const scorecardQuery = (id: string) => q(`agents.${id}.scorecard`, () => api.scorecard(id));
 export const agentProfileQuery = (key: string) => q(`agents.${key}.profile`, () => api.agentProfile(key).then((r) => r.profile));
 /** Task titles stay off the device, like chats. */
