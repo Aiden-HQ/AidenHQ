@@ -33,6 +33,9 @@ export type TaskState = {
   scheduled_for?: string;
   /** The agent (id) an open delegator wait's question went to, when the wait recorded it. */
   waits_on?: string;
+  /** An open delegator wait re-asking a question this task already had answered (it settled that episode): the Steward's incident
+   *  detector does not raise it again while this wait stands, and a genuinely new question carries none. */
+  ask_settled?: true;
 };
 /**
  * `origin`: what created the task (`task.created` `data.origin`): a routine's `routine_execution`, a module's `module:<key>`,

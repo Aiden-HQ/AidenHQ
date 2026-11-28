@@ -284,12 +284,17 @@ by its own channel tokens (taps and typed replies), never through a kernel page.
 
 ### Richer waiting and scheduled cards
 
-The kernel's state row gains two fields; the board only renders them (`ui/TaskState.tsx`, in the board's timezone):
+The kernel's state row gains these fields; the board renders the first two (`ui/TaskState.tsx`, in the board's timezone):
 - `scheduled_for`: the earliest open scheduled wake's due time (`wake.opened` `at`), whenever one is open: "Scheduled for
   tomorrow 08:00".
 - `waits_on`: the agent id an open delegator wait went to. `escalate.ask` returns the recipient (the delegator task's agent, or the
   chief of staff), `idle.ts` stores it on the `work.waiting` fact (`agent`), the state reads it: "An answer from Research Lead".
   Waits recorded before this keep "an answer from another agent".
+- `ask_settled`: an open delegator wait re-asking a question (with its draft) this task already had settled on this stretch — an
+  agent other than the holder answered it, or the Steward did and handed it on, and the agent asked the same thing again. The
+  Steward's incident detector's `judgement` rule reads it and does not raise that wait, and `escalate.ask` files the re-ask under
+  the first ask's source, so one question is one Steward task. A genuinely new question, or the same one about a revised draft,
+  carries none and is still raised once it is an hour old. Not shown on the board.
 
 "All tasks" stays the unfiltered default of Agent work: it never picks up a filter (filters live only in a saved board's spec,
 and selecting All tasks clears them), shows "No project" tasks, and each card carries its project as a quiet tag at its top right.

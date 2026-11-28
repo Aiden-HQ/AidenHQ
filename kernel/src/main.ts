@@ -286,6 +286,12 @@ const escalateIssue = async (id: string) => {
 };
 const escalate = createEscalate({
   db: records.db, log, reachable: (id) => wakes.polls(id),
+  // The newest delegator wait's question and draft (facts.forTask): a re-ask of a settled question keeps its filing.
+  lastAsk: (task) => {
+    const f = facts.forTask(task).filter((x) => x.type === "work.waiting" && x.subject === `wait:${task}` && x.data.reason === "delegator_wait").at(-1);
+    if (!f) return undefined;
+    return { at: f.at, ...(typeof f.data.question === "string" ? { question: f.data.question } : {}), ...(typeof f.data.detail === "string" ? { detail: f.data.detail } : {}) };
+  },
   issue: escalateIssue,
   state: (id) => taskStates.read({ ids: [id] }).tasks[0],
   // The owner channel's attention reads the agent's key and roles (the grants table), as it does for the agent's own notify.

@@ -381,7 +381,7 @@ export function gateActivity(d: { kernel: KernelClient; now?: () => number }): (
 }
 
 /** A row of the kernel's task state (GET /v1/tasks/state, kernel/src/task-state-read.ts). */
-type StateRow = { task: string; identifier: string | null; since: string; reason: string; ref?: string; holder: string | null; attention: { who: string; why: string; ref?: string }[]; idle_wakes: number; origin: string | null; wait_since?: string; stage?: string };
+type StateRow = { task: string; identifier: string | null; since: string; reason: string; ref?: string; holder: string | null; attention: { who: string; why: string; ref?: string }[]; idle_wakes: number; origin: string | null; wait_since?: string; stage?: string; /** The wait re-asks a question this task already had answered: settled, so not raised again while it stands. */ ask_settled?: true };
 /** Idle with nothing recorded to wake it, a wake nothing took, or its history pruned: the state's unexplained idle. */
 const UNEXPLAINED = ["unpolled", "orphaned", "unknown", "history_expired"];
 type IdleItem = { task: string; identifier: string | null; reason: string; blocked_on?: string };
@@ -827,6 +827,10 @@ export function checks(d: { kernel: KernelClient; kv: Kv; apps: <T>(path: string
       for (const m of [agentMade, unreadUntil]) for (const k of m.keys()) if (!live.has(k)) m.delete(k);
       for (const i of states) {
         const why = i.attention.map((a) => a.why).find((w) => JUDGEMENTS[w] !== undefined);
+        // Settled: this task already had this exact question answered and the agent re-armed it (the Steward settled it once), so
+        // raising it again would file a run that can only repeat that answer. The kernel marks it on the wait's own question
+        // (task-state.ts `ask_settled`); a genuinely new question on the task carries none and is still raised.
+        if (i.ask_settled) continue;
         // A handback's own age is the state's `since` only while the handback is what the task waits on (a pending card or an
         // older wait shows instead, and the handback waits its turn); a delegator wait's is `wait_since`.
         if (why === "handback" && i.reason !== "handback") continue;

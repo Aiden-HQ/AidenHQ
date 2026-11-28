@@ -101,7 +101,15 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   let failure: FactRow | undefined;
   let silent: FactRow | undefined; // a chat's job that ended done: ended without a reply unless an agent comment came with it
   const agentComments: FactRow[] = [];
+  // The delegator questions this task has had answered by an agent other than its holder: the kernel's own rule ends a delegator
+  // wait on such a comment, and by the ask's contract that answer settles the question (the delegator decided it, or the Steward
+  // did and handed it on). A wait that asks one of them again is that same settled episode, not a new judgement to raise. Keyed by
+  // the question with its draft, as `escalate.ask` tells one ask from a revised one; a person's status comment ends a wait under
+  // the rule below but settles nothing, so only an agent's comment counts here.
+  const settledQuestions = new Set<string>();
+  const askKey = (question: unknown, detail: unknown) => { const q = str(question)?.trim(); return q ? `${q}\u0000${str(detail) ?? ""}` : undefined; };
   let wait: { f: FactRow; end?: number } | undefined;
+  const delegatorWaits: FactRow[] = []; // every delegator wait fact in the stretch, in order (a wake-only answer settles each)
   const mwaits = new Map<string, FactRow>(); // a module's waits by subject (a PR), until its work.resumed or a job starts
   let handback: { f: FactRow; fromAgent: boolean } | undefined;
   let who: string | null = null; // the holder as each fact happened
@@ -132,13 +140,22 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
         else if (isChat && f.data.state === "done" && f.data.acted !== true && f.data.no_reply !== true) silent = f;
         break;
       case "task.assignee_changed": if (f.subject === self) failure = silent = undefined; break;
-      case "work.waiting": if (f.subject === `wait:${task}`) wait = { f }; else if (moduleFact(f)) mwaits.set(f.subject, f); break;
+      case "work.waiting":
+        if (f.subject === `wait:${task}`) { wait = { f }; if (f.data.reason === "delegator_wait") delegatorWaits.push(f); }
+        else if (moduleFact(f)) mwaits.set(f.subject, f);
+        break;
       case "work.resumed": if (moduleFact(f)) mwaits.delete(f.subject); break;
       case "task.commented": {
         if (!wait || wait.end || ms(f.at) <= ms(wait.f.at)) break;
         const r = wait.f.data.reason;
         const answers = r === "owner_wait" ? f.actor.startsWith("account:") : r === "delegator_wait" ? f.actor !== "kernel" && f.actor !== `agent:${who}` : false;
-        if (answers) { wait.end = ms(f.at); quiet = Math.max(quiet, wait.end); }
+        if (answers) {
+          wait.end = ms(f.at);
+          quiet = Math.max(quiet, wait.end);
+          // Only an agent's answer to a delegator wait settles the question; a person's comment ends the wait but decides nothing.
+          const key = r === "delegator_wait" && f.actor.startsWith("agent:") ? askKey(wait.f.data.question, wait.f.data.detail) : undefined;
+          if (key) settledQuestions.add(key);
+        }
         break;
       }
       case "record.filed": records.set(f.subject, { since: ms(f.at), owner: f.data.state === "owner", done: false }); break;
@@ -153,10 +170,17 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   }
 
   // A delegator's answer can reach the task as a comment wake with no comment fact the state reads (WOR-9335, #1326): a comment
-  // wake opened after the wait by anyone but its holder and the kernel ends it, as the comment would have.
-  if (wait && !wait.end && wait.f.data.reason === "delegator_wait") {
-    const answer = own.find((f) => f.type === "wake.opened" && f.subject.startsWith("wake:comment:") && ms(f.at) > ms(wait!.f.at) && ms(f.at) <= now && f.actor !== "kernel" && f.actor !== `agent:${who}`);
-    if (answer) { wait.end = ms(answer.at); quiet = Math.max(quiet, wait.end); }
+  // wake opened after a wait by anyone but its holder and the kernel ends it, as the comment would have, and an agent's answer to it
+  // settles that wait's question, so a re-arm of it is not raised again. Each delegator wait is checked against the wakes before the
+  // next one, so a re-arm after an answered question is still told from the answer.
+  for (let i = 0; i < delegatorWaits.length; i++) {
+    const w = delegatorWaits[i]!;
+    const until = i + 1 < delegatorWaits.length ? ms(delegatorWaits[i + 1]!.at) : Infinity;
+    const answer = own.find((f) => f.type === "wake.opened" && f.subject.startsWith("wake:comment:") && ms(f.at) > ms(w.at) && ms(f.at) < until && ms(f.at) <= now && f.actor !== "kernel" && f.actor !== `agent:${who}`);
+    if (!answer) continue;
+    if (wait?.f === w && !wait.end) { wait.end = ms(answer.at); quiet = Math.max(quiet, wait.end); }
+    const key = answer.actor.startsWith("agent:") ? askKey(w.data.question, w.data.detail) : undefined;
+    if (key) settledQuestions.add(key);
   }
   const open: Open[] = [];
   for (const [subject, j] of jobs) {
@@ -232,7 +256,12 @@ export function taskState(task: string, facts: FactRow[], now: number, stages: S
   const waitDetail = waitQuestion ? str(wait!.f.data.detail) : undefined;
   const blocker = open.find((o) => o.reason === "blocked")?.ref;
   const waitsOn = wait && !wait.end && wait.f.data.reason === "delegator_wait" ? str(wait.f.data.agent) : undefined;
-  const extra = { ...(blocker ? { blocker } : {}), ...(nextDue !== undefined ? { scheduled_for: iso(nextDue) } : {}), ...(waitsOn ? { waits_on: waitsOn } : {}), ...(waitQuestion ? { question: waitQuestion } : {}), ...(waitDetail ? { detail: waitDetail } : {}), ...(openNote ? { note: openNote } : {}), ...(judging ? { wait_since: judging } : {}), ...(openUntil ? { wait_until: openUntil } : {}) };
+  // A delegator wait asking a question (with its draft) this task already had settled: the agent is re-asking what was answered
+  // (the Steward's settlement handing it on, the live repro), so it is not a new judgement to raise. A new question, or the same
+  // one about a revised draft, carries no mark and is still raised once it is an hour old.
+  const settledKey = wait && !wait.end && wait.f.data.reason === "delegator_wait" ? askKey(wait.f.data.question, wait.f.data.detail) : undefined;
+  const askSettled = Boolean(settledKey && settledQuestions.has(settledKey));
+  const extra = { ...(blocker ? { blocker } : {}), ...(nextDue !== undefined ? { scheduled_for: iso(nextDue) } : {}), ...(waitsOn ? { waits_on: waitsOn } : {}), ...(waitQuestion ? { question: waitQuestion } : {}), ...(waitDetail ? { detail: waitDetail } : {}), ...(openNote ? { note: openNote } : {}), ...(judging ? { wait_since: judging } : {}), ...(openUntil ? { wait_until: openUntil } : {}), ...(askSettled ? { ask_settled: true as const } : {}) };
   const hint = () => {
     const occ = pair(own.filter((f) => after(f) && ms(f.at) <= now), stages)
       .filter((o) => o.module_fact && !o.end && ms(o.start) <= now && now - ms(o.start) <= STAGE_HINT_MS).at(-1);
